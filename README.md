@@ -2,25 +2,38 @@
 
 Personal portfolio site for Elie Rouphael, built with [Astro](https://astro.build/).
 
-The Astro project lives in [`app/`](./app).
+## Project structure
 
-## Getting started
-
-```bash
-cd app
-npm install
-npm run dev
+```
+.
+├── public/                  # static assets served as-is
+│   ├── assets/              # logo, profile photo, social icon SVGs
+│   └── images/              # gallery photos
+└── src/
+    ├── components/          # Header, Footer, ItemCard, GalleryItem,
+    │                        #   Lightbox, ResumeEntry
+    ├── data/                # research, reads, photos, resume (TS)
+    ├── layouts/             # BaseLayout.astro
+    ├── pages/               # index, research, resume,
+    │                        #   suggested-reads, photography
+    └── styles/              # global.css
 ```
 
-The dev server runs at http://localhost:4321.
+Page content for the research papers, suggested reads, gallery, and resume
+lives in [`src/data/`](./src/data) as typed TypeScript modules. Edit those
+files to update the corresponding pages.
 
-## Build
+## Commands
 
-```bash
-cd app
-npm run build
-```
+| Command           | Action                                        |
+| :---------------- | :-------------------------------------------- |
+| `npm install`     | Install dependencies                          |
+| `npm run dev`     | Start dev server at `localhost:4321`          |
+| `npm run build`   | Build the production site to `./dist/`        |
+| `npm run preview` | Preview the production build locally          |
+| `npm run astro`   | Run Astro CLI commands (`astro add`, `check`) |
 
-The production build is emitted to `app/dist/` and can be served by any static host (GitHub Pages, Netlify, Vercel, etc.).
+## Deploying
 
-See [`app/README.md`](./app/README.md) for more details.
+The production build in `dist/` is fully static and can be deployed to any
+static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages, etc.).
