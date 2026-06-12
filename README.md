@@ -1,50 +1,26 @@
 # elie-rouphael
 
-A small static portfolio site built with plain HTML, CSS and JavaScript.
+Personal portfolio site for Elie Rouphael, built with [Astro](https://astro.build/).
 
-## Run locally
+The Astro project lives in [`app/`](./app).
 
-Pick one of the following methods to serve the site on your machine:
+## Getting started
 
-- Python 3 (no extra installs):
+```bash
+cd app
+npm install
+npm run dev
+```
 
-	```bash
-	python3 -m http.server 8000
-	```
+The dev server runs at http://localhost:4321.
 
-	Open http://localhost:8000 in your browser.
+## Build
 
-- Node (using npx http-server):
+```bash
+cd app
+npm run build
+```
 
-	```bash
-	npx http-server -c-1 -p 8080
-	```
+The production build is emitted to `app/dist/` and can be served by any static host (GitHub Pages, Netlify, Vercel, etc.).
 
-	Or if you'd like to use the npm script added to this repo:
-
-	```bash
-	npm run start
-	```
-
-	Open http://localhost:8080 in your browser.
-
-## Hosting
-
-This is a static site and can be hosted on any static hosting provider (GitHub Pages, Netlify, Vercel, Surge, etc.). Recommended options:
-
-- GitHub Pages: push this repository to GitHub and enable Pages from repository settings. Serve from the `main` (or `master`) branch root.
-
-- Netlify / Vercel: connect your GitHub repo and deploy — these providers auto-detect static sites.
-
-## Notes
-
-- All asset paths are relative so the site is ready for static hosting.
-- The `package.json` includes quick start scripts; no build step is required.
-
-## Files
-
-- [index.html](index.html) — main page
-- [styles.css](styles.css) — styles
-- [script.js](script.js) — client-side behavior
-
-If you want, I can add an automated GitHub Actions workflow (or a `gh-pages` deploy script) to publish to GitHub Pages.
+See [`app/README.md`](./app/README.md) for more details.
