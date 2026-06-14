@@ -1,75 +1,111 @@
-export interface ReadItem {
+export interface ReadEntry {
   title: string;
-  description: string;
-  tag: string;
-  author: string;
-  source: string;
-  href?: string;
+  author?: string;
+  note?: string;
 }
 
-export const reads: ReadItem[] = [
+export interface ReadSubsection {
+  heading: string;
+  entries: ReadEntry[];
+}
+
+export interface ReadSection {
+  heading: string;
+  entries?: ReadEntry[];
+  subsections?: ReadSubsection[];
+}
+
+export const reads: ReadSection[] = [
   {
-    title: 'Feedback Systems: An Introduction for Scientists and Engineers',
-    description:
-      "\u00c5str\u00f6m & Murray's landmark textbook elegantly unifies classical and modern control, making the mathematics of stability, robustness, and performance accessible without sacrificing rigour. An essential companion for anyone entering the field.",
-    tag: 'Textbook',
-    author: '\u00c5str\u00f6m & Murray',
-    source: 'Princeton UP, 2021',
+    heading: 'Fiction',
+    subsections: [
+      {
+        heading: 'Classics',
+        entries: [
+          { title: 'The Idiot', author: 'Fyodor Dostoevsky' },
+        ],
+      },
+      {
+        heading: 'Contemporary',
+        entries: [
+          { title: 'Fairy Tale', author: 'Stephen King' },
+          { title: 'Small Great Things', author: 'Jodi Picoult' },
+          { title: 'A Spark of Light', author: 'Jodi Picoult' },
+        ],
+      },
+    ],
   },
   {
-    title: 'The C Programming Language',
-    description:
-      "Kernighan and Ritchie's canonical text remains the clearest exposition of C ever written. Every embedded and systems programmer should read it cover-to-cover at least once \u2014 ideally twice.",
-    tag: 'Textbook',
-    author: 'Kernighan & Ritchie',
-    source: 'Prentice Hall, 1988',
+    heading: 'Science',
+    subsections: [
+      {
+        heading: 'Control & System Identification',
+        entries: [
+          {
+            title: 'Linear Parameter Varying Control: Theory and Application to Automotive Systems',
+            author: 'Olivier Sename',
+          },
+          {
+            title: 'Optimal State Estimation: Kalman, H\u221e, and Nonlinear Approaches',
+            author: 'Dan Simon',
+          },
+          {
+            title: 'Subspace Methods for System Identification',
+            author: 'Tohru Katayama',
+          },
+          {
+            title: 'Control and System Theory',
+            author: 'Jan H. Van Schuppen',
+          },
+          {
+            title: 'Modeling and Identification of Linear Parameter-Varying Systems',
+            author: 'Roland T\u00f3th',
+          },
+        ],
+      },
+    ],
   },
   {
-    title: 'Introduction to Embedded Systems: A Cyber-Physical Systems Approach',
-    description:
-      "Lee & Seshia's freely available text bridges the gap between software and physical reality, covering concurrency, real-time semantics, and model-based design in a unified framework. Indispensable for CPS researchers and practitioners alike.",
-    tag: 'Textbook',
-    author: 'Lee & Seshia',
-    source: 'MIT Press, 2017',
+    heading: 'Self Development',
+    entries: [
+      { title: 'The Subtle Art of Not Giving a F*ck', author: 'Mark Manson' },
+      { title: '12 Rules for Life', author: 'Jordan Peterson' },
+      { title: 'How to Talk to Anyone', author: 'Leil Lowndes' },
+      { title: 'The Mindful Body', author: 'Ellen Langer' },
+    ],
   },
   {
-    title: 'Probabilistic Robotics',
-    description:
-      'Thrun, Burgard, and Fox set the standard for probabilistic state estimation in autonomous systems. From Kalman filters to particle filters and SLAM, the treatment is both rigorous and richly illustrated with real robot deployments.',
-    tag: 'Textbook',
-    author: 'Thrun, Burgard & Fox',
-    source: 'MIT Press, 2005',
+    heading: 'Shorts',
+    entries: [
+      { title: 'The Fall of the House of Usher', author: 'Edgar Allan Poe' },
+      { title: 'The Tell-Tale Heart', author: 'Edgar Allan Poe' },
+      { title: 'The Black Cat', author: 'Edgar Allan Poe' },
+      { title: 'The Facts in the Case of M. Valdemar', author: 'Edgar Allan Poe' },
+      { title: 'The Shot', author: 'Alexander Pushkin' },
+      { title: 'That Evening Sun', author: 'William Faulkner' },
+      {
+        title: 'Red Screen',
+        author: 'Stephen King',
+        note: 'from the collection \u201cYou Like It Darker\u201d',
+      },
+      {
+        title: 'The Sisters',
+        author: 'James Joyce',
+        note: 'from the collection \u201cDubliners\u201d',
+      },
+      {
+        title: 'An Encounter',
+        author: 'James Joyce',
+        note: 'from the collection \u201cDubliners\u201d',
+      },
+    ],
   },
   {
-    title: 'A Mathematical Introduction to Logic',
-    description:
-      "Enderton's concise and precise treatment of first-order logic and computability underpins much of formal verification. I revisit certain chapters regularly when reasoning about program correctness and model-checking algorithms.",
-    tag: 'Textbook',
-    author: 'Herbert B. Enderton',
-    source: 'Academic Press, 2001',
-  },
-  {
-    title: 'The Art of Doing Science and Engineering: Learning to Learn',
-    description:
-      "Richard Hamming's transcribed lectures are a meditation on what it means to do first-rate research. Unconventional, opinionated, and frequently brilliant \u2014 a book that rewards rereading at every stage of a research career.",
-    tag: 'Essay / Lecture Notes',
-    author: 'Richard Hamming',
-    source: 'Stripe Press, 2020',
-  },
-  {
-    title: 'Thinking, Fast and Slow',
-    description:
-      "Kahneman's synthesis of decades of behavioural research offers a sobering corrective to overconfidence in engineering judgement. Understanding cognitive biases is, I believe, as important for an engineer as understanding circuit theory.",
-    tag: 'Non-Fiction',
-    author: 'Daniel Kahneman',
-    source: 'Farrar, Straus & Giroux, 2011',
-  },
-  {
-    title: 'The Soul of a New Machine',
-    description:
-      "Tracy Kidder's Pulitzer-winning account of the design of a new minicomputer captures the human drama of engineering under pressure better than any textbook. A reminder that behind every system there are people making difficult trade-offs under imperfect information.",
-    tag: 'Non-Fiction',
-    author: 'Tracy Kidder',
-    source: 'Little, Brown, 1981',
+    heading: 'Poems',
+    entries: [
+      { title: 'Lenore', author: 'Edgar Allan Poe' },
+      { title: 'Annabel Lee', author: 'Edgar Allan Poe' },
+      { title: 'The Raven', author: 'Edgar Allan Poe' },
+    ],
   },
 ];
