@@ -13,7 +13,7 @@ export interface Bio {
 
 export const bio: Bio = {
   name: 'Elie Rouphael',
-  subtitle: 'Senior Lecturer \u00b7 University of Lille',
+  subtitle: 'Postdoctoral Researcher in AI, System Identification & Control',
   image: {
     src: '/assets/elie-img-1.jpg',
     alt: 'Elie Rouphael',
