@@ -1,50 +1,39 @@
 # elie-rouphael
 
-A small static portfolio site built with plain HTML, CSS and JavaScript.
+Personal portfolio site for Elie Rouphael, built with [Astro](https://astro.build/).
 
-## Run locally
+## Project structure
 
-Pick one of the following methods to serve the site on your machine:
+```
+.
+├── public/                  # static assets served as-is
+│   ├── assets/              # logo, profile photo, social icon SVGs
+│   └── images/              # gallery photos
+└── src/
+    ├── components/          # Header, Footer, ItemCard, GalleryItem,
+    │                        #   Lightbox, ResumeEntry
+    ├── data/                # research, reads, photos, resume (TS)
+    ├── layouts/             # BaseLayout.astro
+    ├── pages/               # index, research, resume,
+    │                        #   suggested-reads, photography
+    └── styles/              # global.css
+```
 
-- Python 3 (no extra installs):
+Page content for the research papers, suggested reads, gallery, and resume
+lives in [`src/data/`](./src/data) as typed TypeScript modules. Edit those
+files to update the corresponding pages.
 
-	```bash
-	python3 -m http.server 8000
-	```
+## Commands
 
-	Open http://localhost:8000 in your browser.
+| Command           | Action                                        |
+| :---------------- | :-------------------------------------------- |
+| `npm install`     | Install dependencies                          |
+| `npm run dev`     | Start dev server at `localhost:4321`          |
+| `npm run build`   | Build the production site to `./dist/`        |
+| `npm run preview` | Preview the production build locally          |
+| `npm run astro`   | Run Astro CLI commands (`astro add`, `check`) |
 
-- Node (using npx http-server):
+## Deploying
 
-	```bash
-	npx http-server -c-1 -p 8080
-	```
-
-	Or if you'd like to use the npm script added to this repo:
-
-	```bash
-	npm run start
-	```
-
-	Open http://localhost:8080 in your browser.
-
-## Hosting
-
-This is a static site and can be hosted on any static hosting provider (GitHub Pages, Netlify, Vercel, Surge, etc.). Recommended options:
-
-- GitHub Pages: push this repository to GitHub and enable Pages from repository settings. Serve from the `main` (or `master`) branch root.
-
-- Netlify / Vercel: connect your GitHub repo and deploy — these providers auto-detect static sites.
-
-## Notes
-
-- All asset paths are relative so the site is ready for static hosting.
-- The `package.json` includes quick start scripts; no build step is required.
-
-## Files
-
-- [index.html](index.html) — main page
-- [styles.css](styles.css) — styles
-- [script.js](script.js) — client-side behavior
-
-If you want, I can add an automated GitHub Actions workflow (or a `gh-pages` deploy script) to publish to GitHub Pages.
+The production build in `dist/` is fully static and can be deployed to any
+static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages, etc.).
