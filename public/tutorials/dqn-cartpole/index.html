@@ -1,0 +1,1247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Teaching a Network to Balance</title>
+<meta name="description" content="Reinforcement learning from scratch: the ideas, the Gymnasium API, the math from MDPs to Double DQN, a line-by-line PyTorch implementation, and what training really looks like.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Reinforcement learning from scratch · Deep Q-Networks</span>
+  <h1>Teaching a network to balance a pole</h1>
+  <p class="lede">The network below learned to balance this pole from nothing but a score. This tutorial builds it from the ground up: what reinforcement learning is, the Gymnasium API, the mathematics from Markov decision processes to Double DQN, and a PyTorch implementation you can read line by line.</p>
+  <p class="byline">Elie Rouphael · Assumes Python and PyTorch; no prior reinforcement learning needed</p>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <canvas id="sim" width="880" height="400" aria-label="CartPole simulation"></canvas>
+      <div class="stage-bar">
+        <span>step <span id="stepCount" class="num">0</span> / 500</span>
+        <div class="progress" aria-hidden="true"><div id="progress"></div></div>
+        <span>best <span id="bestCount" class="num">0</span></span>
+      </div>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+    </div>
+    <div class="panel">
+      <div>
+        <label class="lbl" for="policy">Who is driving</label>
+        <select id="policy">
+          <option value="improved_best">Trained DQN (best checkpoint)</option>
+          <option value="baseline_final">DQN at the end of training</option>
+          <option value="random">Random actions</option>
+          <option value="human">You (← → keys, or hold the buttons)</option>
+        </select>
+      </div>
+      <div class="btn-row" role="group" aria-label="Disturb the pole">
+        <button class="btn" id="pokeL" type="button" title="Knock the pole to the left">◀ poke</button>
+        <button class="btn primary" id="resetBtn" type="button">reset</button>
+        <button class="btn" id="pokeR" type="button" title="Knock the pole to the right">poke ▶</button>
+      </div>
+      <div class="qbars">
+        <span class="lbl">Network output Q(s, a)</span>
+        <div class="qrow"><span>left</span><div class="qtrack"><div class="qfill" id="qL"></div></div><span class="v" id="qLv">–</span></div>
+        <div class="qrow"><span>right</span><div class="qtrack"><div class="qfill" id="qR"></div></div><span class="v" id="qRv">–</span></div>
+      </div>
+      <div>
+        <span class="lbl">Observation s</span>
+        <div class="statebox">
+          <span>x (cart)</span><span class="v" id="sx">0</span>
+          <span>ẋ</span><span class="v" id="sxd">0</span>
+          <span>θ (pole)</span><span class="v" id="sth">0</span>
+          <span>θ̇</span><span class="v" id="sthd">0</span>
+        </div>
+      </div>
+      <p class="hint">This is the actual trained network running in your browser: 4 numbers in, 2 Q-values out, push toward the larger one, 50 times a second. Poke the pole and watch it recover.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents">
+  <nav class="toc">
+    <a href="#rl"><span class="n">1</span><span class="t">RL from scratch</span><span class="d">The problem, the vocabulary, the map of methods</span></a>
+    <a href="#gym"><span class="n">2</span><span class="t">The Gymnasium API</span><span class="d">Environments, spaces, wrappers, CartPole</span></a>
+    <a href="#math"><span class="n">3</span><span class="t">The math</span><span class="d">From averages to Bellman to the DQN loss</span></a>
+    <a href="#code"><span class="n">4</span><span class="t">The code</span><span class="d">DQN in PyTorch, line by line</span></a>
+    <a href="#practice"><span class="n">5</span><span class="t">Training in practice</span><span class="d">What 70 training runs look like</span></a>
+    <a href="#exercises"><span class="n">6</span><span class="t">Exercises</span><span class="d">Things to try next</span></a>
+    <a href="#references"><span class="n">7</span><span class="t">References</span><span class="d">Books, papers and courses</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 1: RL FROM SCRATCH                                             -->
+<!-- =================================================================== -->
+<section id="rl">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Reinforcement learning from scratch</h2>
+  </div>
+  <div class="col prose">
+    <h3>1.1 Learning from consequences</h3>
+    <p>Most machine learning you have met is <em>supervised</em>: a dataset of inputs paired with correct answers, and a model trained to reproduce those answers. Reinforcement learning (RL) drops the answers. An <em>agent</em> acts in an <em>environment</em>, the environment responds, and every so often a number called the <em>reward</em> says how well things are going. The agent's job is to discover, by trial and error, behaviour that collects as much reward as possible over time.</p>
+    <p>That small change makes the problem different in kind, not just in degree:</p>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th></th><th>Supervised learning</th><th>Reinforcement learning</th></tr></thead>
+      <tbody>
+        <tr><td>Data</td><td>A fixed dataset, collected beforehand</td><td>Generated by the agent's own actions, so what it sees depends on how it behaves</td></tr>
+        <tr><td>Feedback</td><td>The correct answer for every input</td><td>A scalar reward that says how good an outcome was, never what the right action would have been</td></tr>
+        <tr><td>Timing</td><td>Immediate: each prediction is scored on its own</td><td>Often delayed: a move early in a chess game decides the result 40 moves later</td></tr>
+        <tr><td>Samples</td><td>Assumed independent and identically distributed</td><td>Strongly correlated sequences, and the distribution shifts as the agent improves</td></tr>
+        <tr><td>Goal</td><td>Minimise prediction error on new inputs</td><td>Maximise cumulative reward</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Two difficulties follow from this table and run through the whole field. The <strong>credit assignment problem</strong>: when a reward finally arrives, which of the many earlier actions deserve the credit? And the <strong>exploration–exploitation dilemma</strong>: to find better behaviour the agent must try things it currently thinks are worse (section 1.3).</p>
+    <p class="readmore"><b>Read more:</b> the opening chapter of <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 1]</a> is the classic, very readable introduction. <a class="cite" href="#ref-mor">[Morales, ch. 1–2]</a> covers the same ground with more pictures and code.</p>
+
+    <h3>1.2 The vocabulary</h3>
+    <p>Every RL problem is described with the same handful of words. You will see all of them again in the math and in the code.</p>
+    <ul>
+      <li><strong>Agent:</strong> the learner and decision-maker. Here, a neural network plus the rule for choosing actions.</li>
+      <li><strong>Environment:</strong> everything outside the agent. It receives actions and returns observations and rewards. Here, the simulated cart and pole.</li>
+      <li><strong>State <span class="m">s</span></strong> (or <strong>observation</strong>): what the agent sees at a time step. A <em>state</em> fully describes the situation, an <em>observation</em> may be partial. In CartPole they coincide.</li>
+      <li><strong>Action <span class="m">a</span>:</strong> what the agent can do. CartPole has two: push left or push right.</li>
+      <li><strong>Reward <span class="m">r</span>:</strong> a scalar signal after each step. It defines the goal, but only through its sum over time.</li>
+      <li><strong>Episode:</strong> one run from a start state to an end, such as one game or one attempt at balancing.</li>
+      <li><strong>Policy <span class="m">\pi</span>:</strong> the agent's behaviour, a mapping from states to actions (or to probabilities of actions). Learning a good policy is the whole point.</li>
+      <li><strong>Return <span class="m">G</span>:</strong> the (discounted) sum of rewards from some time onwards. The quantity the agent actually maximises.</li>
+      <li><strong>Value function:</strong> the expected return from a state, or from a state and an action. It predicts long-term consequences, which is how RL tackles credit assignment.</li>
+      <li><strong>Model:</strong> the agent's knowledge of how the environment works, meaning which state follows which action and what reward arrives. DQN does not use one.</li>
+    </ul>
+    <p>The field rests on one assumption, which Sutton and Barto call the <em>reward hypothesis</em>: any goal we care about can be expressed as maximising the expected cumulative sum of a scalar reward. Designing that reward is part of the problem:</p>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th>Task</th><th>State</th><th>Actions</th><th>Reward</th></tr></thead>
+      <tbody>
+        <tr><td>CartPole</td><td>Cart position and velocity, pole angle and angular velocity</td><td>Push left, push right</td><td>+1 per step the pole stays up</td></tr>
+        <tr><td>Chess</td><td>The board and whose turn it is</td><td>Legal moves</td><td>+1 win, −1 loss, 0 otherwise (only at the end)</td></tr>
+        <tr><td>Thermostat</td><td>Temperatures, time of day, occupancy</td><td>Heating power</td><td>− energy cost − discomfort</td></tr>
+        <tr><td>Robot arm grasping</td><td>Joint angles, camera image</td><td>Joint torques (continuous)</td><td>+1 when the object is lifted</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p class="readmore"><b>Read more:</b> the agent–environment interface and the reward hypothesis are in <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §3.1–3.2]</a>.</p>
+
+    <h3>1.3 Exploration versus exploitation</h3>
+    <p>Imagine you have a favourite restaurant. Going back is <em>exploiting</em> what you know. Trying a new place is <em>exploring</em>: usually worse, occasionally a new favourite. With only exploitation you never find out whether something better exists. With only exploration you never benefit from what you've learned.</p>
+    <p>The simplest RL problem that captures this is the <strong>multi-armed bandit</strong>: <span class="m">k</span> slot machines, each paying out a random reward with an unknown mean <span class="m">q_*(a)</span>. There are no states and no delayed consequences, just repeated choices. A natural strategy is to estimate each machine's value by the average reward it has paid so far, <span class="m">Q(a)</span>, and usually pick the best estimate. The standard rule is <strong>ε-greedy</strong>: with probability <span class="m">1-\varepsilon</span> pick <span class="m">\arg\max_a Q(a)</span>, and with probability <span class="m">\varepsilon</span> pick uniformly at random. DQN uses exactly this rule (section 3.14). The averaging trick behind <span class="m">Q(a)</span> turns out to underpin every update in this tutorial (section 3.1).</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 2]</a> is devoted to bandits, including the 10-armed testbed and cleverer strategies such as optimistic initial values and upper confidence bounds.</p>
+
+    <h3>1.4 A map of RL methods</h3>
+    <p>RL algorithms differ along a few independent axes. Knowing them tells you what DQN is, and what it is not.</p>
+  </div>
+  <figure class="col">
+    <svg class="diagram" viewBox="0 0 700 300" role="img" aria-label="A map of reinforcement learning methods: model-based versus model-free, and within model-free, value-based, policy-based and actor-critic. DQN is model-free and value-based.">
+      <rect x="260" y="6" width="180" height="40" rx="10" fill="var(--surface)" stroke="var(--rule)" stroke-width="1.5"/>
+      <text class="box-title" x="350" y="31" text-anchor="middle">RL algorithms</text>
+      <path d="M350,46 L350,60 L170,60 L170,74 M350,60 L530,60 L530,74" fill="none" stroke="var(--ink-2)" stroke-width="1.2"/>
+      <rect x="40" y="74" width="260" height="58" rx="10" fill="var(--surface)" stroke="var(--rule)" stroke-width="1.5"/>
+      <text class="box-title" x="170" y="98" text-anchor="middle">Model-based</text>
+      <text x="170" y="120" text-anchor="middle">learn or use a model, then plan</text>
+      <text x="170" y="154" text-anchor="middle">e.g. Dyna, AlphaZero, MuZero</text>
+      <rect x="400" y="74" width="260" height="58" rx="10" fill="var(--surface)" stroke="var(--rule)" stroke-width="1.5"/>
+      <text class="box-title" x="530" y="98" text-anchor="middle">Model-free</text>
+      <text x="530" y="120" text-anchor="middle">learn from samples only</text>
+      <path d="M530,132 L530,176 M530,160 L118,160 L118,176 M530,160 L592,160 L592,176" fill="none" stroke="var(--ink-2)" stroke-width="1.2"/>
+      <path d="M355,160 L355,176" fill="none" stroke="var(--ink-2)" stroke-width="1.2"/>
+      <rect x="10" y="176" width="216" height="112" rx="10" fill="var(--accent-wash)" stroke="var(--accent)" stroke-width="2"/>
+      <text class="box-title" x="118" y="202" text-anchor="middle">Value-based</text>
+      <text x="118" y="226" text-anchor="middle">learn Q, act greedily</text>
+      <text x="118" y="248" text-anchor="middle">Q-learning, SARSA</text>
+      <text x="118" y="272" text-anchor="middle" style="fill:var(--accent);font-weight:600">DQN (this tutorial)</text>
+      <rect x="242" y="176" width="226" height="112" rx="10" fill="var(--surface)" stroke="var(--rule)" stroke-width="1.5"/>
+      <text class="box-title" x="355" y="202" text-anchor="middle">Policy-based</text>
+      <text x="355" y="226" text-anchor="middle">optimise π directly</text>
+      <text x="355" y="248" text-anchor="middle">REINFORCE</text>
+      <rect x="484" y="176" width="206" height="112" rx="10" fill="var(--surface)" stroke="var(--rule)" stroke-width="1.5"/>
+      <text class="box-title" x="587" y="202" text-anchor="middle">Actor-critic</text>
+      <text x="587" y="226" text-anchor="middle">learn both π and V or Q</text>
+      <text x="587" y="248" text-anchor="middle">A2C, PPO, SAC</text>
+    </svg>
+  </figure>
+  <div class="col prose">
+    <ul>
+      <li><strong>Model-based or model-free.</strong> A model-based method knows or learns the environment's dynamics and plans with them. AlphaZero searches ahead with the rules of chess. A model-free method learns what to do directly from experienced transitions. DQN is model-free: it never learns the physics of the cart.</li>
+      <li><strong>Value-based, policy-based or actor-critic.</strong> Value-based methods learn how good each action is and act greedily on those estimates. Policy-based methods adjust a parameterised policy <span class="m">\pi_\theta(a \mid s)</span> directly by gradient ascent on expected return. Actor-critic methods do both. DQN is value-based.</li>
+      <li><strong>On-policy or off-policy.</strong> On-policy methods learn about the policy they are currently running, so old data goes stale. Off-policy methods can learn about one policy (the greedy one) from data generated by another (an exploring one, or an older version). DQN is off-policy, which is what lets it replay old experience.</li>
+      <li><strong>Discrete or continuous actions.</strong> DQN needs a <span class="m">\max</span> over actions, so it is built for small discrete action sets. Continuous control (the robot arm) usually calls for actor-critic methods such as SAC.</li>
+    </ul>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §1.3–1.6]</a> for the elements of RL, <a class="cite" href="#ref-gk">[Graesser &amp; Keng, ch. 1]</a> for a taxonomy of deep RL algorithms, and <a class="cite" href="#ref-spin">[OpenAI Spinning Up, part 2]</a> for a one-page map.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 2: GYMNASIUM                                                   -->
+<!-- =================================================================== -->
+<section id="gym">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The Gymnasium API</h2>
+  </div>
+  <div class="col prose">
+    <p><a href="https://gymnasium.farama.org/" rel="noopener">Gymnasium</a> <a class="cite" href="#ref-gym">[Towers et al., 2024]</a>, the maintained successor of OpenAI Gym, is the standard Python interface between RL agents and environments. Because every environment speaks the same small API, the same agent code runs on CartPole, Atari games, MuJoCo robots, or an environment you write yourself. This part covers the API in depth. Everything shown was run with Gymnasium 1.3.</p>
+    <h3>2.1 The interaction loop</h3>
+  </div>
+  <figure class="col">
+    <svg class="diagram" viewBox="0 0 640 210" role="img" aria-label="The agent-environment loop">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-2)"/>
+        </marker>
+      </defs>
+      <rect x="20" y="60" width="190" height="90" rx="12" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+      <text class="box-title" x="115" y="98" text-anchor="middle">Agent</text>
+      <text x="115" y="120" text-anchor="middle">policy π(a | s)</text>
+      <rect x="430" y="60" width="190" height="90" rx="12" fill="var(--surface)" stroke="var(--rule)" stroke-width="2"/>
+      <text class="box-title" x="525" y="98" text-anchor="middle">Environment</text>
+      <text x="525" y="120" text-anchor="middle">gym.Env</text>
+      <path d="M210,80 C300,20 340,20 430,80" fill="none" stroke="var(--ink-2)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="320" y="26" text-anchor="middle">action aₜ</text>
+      <path d="M430,130 C340,190 300,190 210,130" fill="none" stroke="var(--ink-2)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="320" y="176" text-anchor="middle">sₜ₊₁, rₜ₊₁, terminated, truncated, info</text>
+      <text x="320" y="198" text-anchor="middle" style="fill:var(--muted)">env.step(action)</text>
+    </svg>
+  </figure>
+  <div class="col">
+    <pre><code class="language-python">import gymnasium as gym
+
+env = gym.make("CartPole-v1")
+
+obs, info = env.reset(seed=42)          # first observation of a new episode
+episode_return = 0.0
+while True:
+    action = env.action_space.sample()  # a random policy, for now
+    obs, reward, terminated, truncated, info = env.step(action)
+    episode_return += reward
+    if terminated or truncated:          # the episode is over
+        break
+
+print(episode_return)                   # about 22 on average for random actions
+env.close()                             # free resources (windows, simulators)</code></pre>
+  </div>
+  <div class="col prose">
+    <p>Every environment is a subclass of <code>gym.Env</code> and exposes:</p>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th>Member</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>reset(seed=None, options=None)</code></td><td>Starts a new episode. Returns <code>(observation, info)</code>.</td></tr>
+        <tr><td><code>step(action)</code></td><td>Advances one time step. Returns <code>(observation, reward, terminated, truncated, info)</code>.</td></tr>
+        <tr><td><code>render()</code></td><td>Draws the current state, in the mode chosen at creation: <code>render_mode="human"</code> opens a window, <code>"rgb_array"</code> returns a NumPy image.</td></tr>
+        <tr><td><code>close()</code></td><td>Releases resources.</td></tr>
+        <tr><td><code>observation_space</code>, <code>action_space</code></td><td>Describe valid observations and actions (section 2.2).</td></tr>
+        <tr><td><code>spec</code>, <code>metadata</code></td><td>Registration details (id, time limit, reward threshold) and supported render modes.</td></tr>
+        <tr><td><code>np_random</code></td><td>The environment's own NumPy random generator, seeded by <code>reset(seed=...)</code>.</td></tr>
+        <tr><td><code>unwrapped</code></td><td>The raw environment underneath all wrappers (section 2.5).</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The five values from <code>step</code> deserve care. <code>reward</code> is a float. <code>terminated</code> is <code>True</code> when the environment reached a terminal state of the task itself, for CartPole when the pole fell or the cart left the track. <code>truncated</code> is <code>True</code> when something outside the task stopped the episode, usually a time limit. <code>info</code> is a dict of diagnostics that should never be used for learning. Older Gym versions returned a single <code>done</code> flag. Splitting it in two matters for learning, as section 3.11 explains.</p>
+
+    <h3>2.2 Spaces: describing inputs and outputs</h3>
+    <p>A <em>space</em> describes a set of valid values, can check membership, and can sample from itself. The network's input and output sizes come straight from the environment's spaces.</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import numpy as np
+from gymnasium import spaces
+
+box = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+disc = spaces.Discrete(4)
+
+box.sample()                                 # array([ 0.27, -0.46, -0.92], dtype=float32)
+disc.sample()                                # 3
+box.contains(np.zeros(3, dtype=np.float32))  # True
+disc.n, box.shape, box.dtype                 # 4, (3,), float32
+
+env = gym.make("CartPole-v1")
+env.observation_space        # Box([-4.8 -inf -0.419 -inf], [4.8 inf 0.419 inf], (4,), float32)
+env.action_space             # Discrete(2)
+state_dim = env.observation_space.shape[0]   # 4 -> network input size
+n_actions = env.action_space.n               # 2 -> network output size</code></pre>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th>Space</th><th>Values</th><th>Typical use</th></tr></thead>
+      <tbody>
+        <tr><td><code>Discrete(n)</code></td><td>Integers <code>0 … n−1</code></td><td>CartPole's actions, Atari joystick directions</td></tr>
+        <tr><td><code>Box(low, high, shape)</code></td><td>Real-valued arrays with bounds</td><td>CartPole's observations, images as <code>Box(0, 255, (210, 160, 3), uint8)</code>, robot torques</td></tr>
+        <tr><td><code>MultiDiscrete([n1, n2, …])</code></td><td>Several independent discrete choices</td><td>A game controller with several buttons</td></tr>
+        <tr><td><code>MultiBinary(n)</code></td><td>Binary vectors of length <code>n</code></td><td>On/off switches</td></tr>
+        <tr><td><code>Tuple</code>, <code>Dict</code></td><td>Combinations of other spaces</td><td>An image plus a vector of sensor readings</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Each space has its own random generator for <code>sample()</code>, seeded with <code>space.seed(n)</code>. That is separate from the environment's generator, which is seeded through <code>reset</code>.</p>
+
+    <h3>2.3 Creating environments: <code>make</code>, the registry and specs</h3>
+    <p>Environments are created by id from a global <em>registry</em>. <code>gym.make</code> looks up the id, builds the environment, and wraps it in a few standard wrappers:</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">env = gym.make("CartPole-v1")
+print(env)          # &lt;TimeLimit&lt;OrderEnforcing&lt;PassiveEnvChecker&lt;CartPoleEnv&lt;CartPole-v1&gt;&gt;&gt;&gt;&gt;
+print(env.spec.id, env.spec.max_episode_steps, env.spec.reward_threshold)  # CartPole-v1 500 475.0
+print(env.metadata) # {'render_modes': ['human', 'rgb_array'], 'render_fps': 50}
+print(env.unwrapped)                                   # &lt;CartPoleEnv&lt;CartPole-v1&gt;&gt;
+
+short = gym.make("CartPole-v1", max_episode_steps=200)   # override the time limit
+video = gym.make("CartPole-v1", render_mode="rgb_array") # frames as NumPy arrays
+gym.pprint_registry()                                   # list every registered id</code></pre>
+  </div>
+  <div class="col prose">
+    <ul>
+      <li><code>PassiveEnvChecker</code> checks, once, that the environment follows the API (correct return types, observations inside the observation space).</li>
+      <li><code>OrderEnforcing</code> raises an error if you call <code>step</code> before <code>reset</code>.</li>
+      <li><code>TimeLimit</code> counts steps and sets <code>truncated=True</code> after <code>max_episode_steps</code>. The time limit is not part of CartPole's physics; this wrapper adds it.</li>
+    </ul>
+    <p>The <code>-v1</code> suffix is a version number. When an environment's behaviour changes, its version is bumped, so published results remain comparable.</p>
+
+    <h3>2.4 Seeding and reproducibility</h3>
+    <p>Randomness enters an RL experiment in several places, and each has its own seed:</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">obs_a, _ = env.reset(seed=0)
+obs_b, _ = env.reset(seed=0)
+assert (obs_a == obs_b).all()     # same seed, same start state
+obs_c, _ = env.reset()            # no seed: continue the RNG seeded above -&gt; new start state
+
+env.action_space.seed(0)          # the RNG behind env.action_space.sample()
+
+import random, numpy as np, torch
+random.seed(0); np.random.seed(0); torch.manual_seed(0)   # the agent's own randomness</code></pre>
+  </div>
+  <div class="col prose">
+    <p>Passing <code>seed</code> to <code>reset</code> re-seeds <code>env.np_random</code>. The usual pattern is to seed the first reset only and let later resets continue the same random stream. The code in Part 4 instead passes a different seed on every episode, which makes each episode's start state reproducible on its own. Even with every seed fixed, results can differ slightly across hardware and library versions, which is one reason to average over several runs (section 5.2).</p>
+
+    <h3>2.5 Wrappers</h3>
+    <p>A <em>wrapper</em> is an environment that contains another environment and changes some part of its behaviour: observations, rewards, actions, or bookkeeping. Wrappers compose, and the outermost one is applied last.</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">from gymnasium.wrappers import RecordEpisodeStatistics, TransformReward
+
+env = gym.make("CartPole-v1")
+env = RecordEpisodeStatistics(env)            # adds the episode's return and length to info
+env = TransformReward(env, lambda r: 0.1 * r) # scales every reward
+
+obs, info = env.reset(seed=1)
+while True:
+    obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
+    if terminated or truncated:
+        break
+print(reward)            # 0.1: the agent sees scaled rewards
+print(info["episode"])   # {'r': 29.0, 'l': 29, 't': 0.001}: statistics of the raw rewards</code></pre>
+  </div>
+  <div class="col prose">
+    <p>Order matters: <code>RecordEpisodeStatistics</code> sits inside <code>TransformReward</code>, so it records the original rewards while the agent trains on the scaled ones. Commonly used built-in wrappers include:</p>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th>Wrapper</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>TimeLimit</code></td><td>Truncates episodes after a number of steps (added by <code>make</code>)</td></tr>
+        <tr><td><code>RecordEpisodeStatistics</code></td><td>Puts return <code>r</code>, length <code>l</code> and time <code>t</code> in <code>info["episode"]</code> when an episode ends</td></tr>
+        <tr><td><code>RecordVideo</code></td><td>Saves videos of selected episodes (needs <code>render_mode="rgb_array"</code>)</td></tr>
+        <tr><td><code>NormalizeObservation</code></td><td>Standardises observations with a running mean and variance</td></tr>
+        <tr><td><code>TransformObservation</code>, <code>TransformReward</code></td><td>Apply any function to observations or rewards</td></tr>
+        <tr><td><code>FrameStackObservation</code></td><td>Stacks the last <span class="m">k</span> observations, which makes single image frames Markov (section 3.2)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Writing your own wrapper means subclassing <code>gym.Wrapper</code> (or the narrower <code>ObservationWrapper</code>, <code>RewardWrapper</code> and <code>ActionWrapper</code>) and overriding the method you want to change. This one adds a penalty for drifting away from the centre, a technique called <em>reward shaping</em> that exercise 4 asks you to try:</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">class CenteringPenalty(gym.Wrapper):
+    """Penalise the cart for drifting away from the centre of the track."""
+
+    def __init__(self, env, weight=0.5):
+        super().__init__(env)
+        self.weight = weight
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        reward -= self.weight * abs(obs[0]) / 2.4     # obs[0] is the cart position
+        return obs, reward, terminated, truncated, info
+
+env = CenteringPenalty(gym.make("CartPole-v1"))</code></pre>
+  </div>
+  <div class="col prose">
+    <h3 id="corridor-env">2.6 Writing your own environment</h3>
+    <p>The best way to understand the interface is to implement it. Here is a tiny environment used again in section 3.9: a corridor of 7 cells. The agent starts in the middle and can step left or right. Reaching the right end gives +1 and ends the episode. Reaching the left end ends it with nothing.</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import gymnasium as gym
+from gymnasium import spaces
+
+class Corridor(gym.Env):
+    """Walk right to the goal. Actions: 0 = left, 1 = right."""
+    metadata = {"render_modes": []}
+
+    def __init__(self, length=7):
+        self.length = length
+        self.observation_space = spaces.Discrete(length)  # the cell index
+        self.action_space = spaces.Discrete(2)
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)          # seeds self.np_random; always call it
+        self.pos = self.length // 2
+        return self.pos, {}               # (observation, info)
+
+    def step(self, action):
+        self.pos += 1 if action == 1 else -1
+        terminated = self.pos in (0, self.length - 1)
+        reward = 1.0 if self.pos == self.length - 1 else 0.0
+        return self.pos, reward, terminated, False, {}   # truncation is TimeLimit's job
+
+from gymnasium.utils.env_checker import check_env
+check_env(Corridor())                     # raises if the API contract is broken
+
+gym.register(id="Corridor-v0", entry_point=Corridor, max_episode_steps=50)
+env = gym.make("Corridor-v0")             # &lt;TimeLimit&lt;OrderEnforcing&lt;PassiveEnvChecker&lt;Corridor&gt;&gt;&gt;&gt;</code></pre>
+  </div>
+  <div class="col prose">
+    <p>Note the division of labour: the environment reports <code>terminated</code> for real endings, and the <code>TimeLimit</code> wrapper added by registration reports <code>truncated</code>. Any randomness in <code>reset</code> or <code>step</code> should come from <code>self.np_random</code>, so that seeding works.</p>
+
+    <h3>2.7 Vectorised environments</h3>
+    <p>Deep RL is often limited by how fast it can collect experience. A vectorised environment steps several copies at once and returns batched arrays:</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">envs = gym.make_vec("CartPole-v1", num_envs=8, vectorization_mode="sync")  # or "async"
+obs, info = envs.reset(seed=42)       # obs.shape == (8, 4)
+envs.single_action_space              # Discrete(2)
+envs.action_space                     # MultiDiscrete([2 2 2 2 2 2 2 2])
+obs, rewards, terminated, truncated, info = envs.step(envs.action_space.sample())
+rewards.shape, terminated.shape       # (8,), (8,)</code></pre>
+  </div>
+  <div class="col prose">
+    <p>Sub-environments reset themselves automatically. In Gymnasium 1.x the default <em>next-step</em> autoreset means that the step after a sub-environment's episode ends returns the first observation of its new episode, and the action you sent for it on that step is ignored. Handle this when storing transitions. The DQN in this tutorial uses a single environment, which keeps the code simple.</p>
+
+    <h3>2.8 CartPole-v1 in detail</h3>
+    <p>A pole is attached by an unactuated hinge to a cart that moves along a frictionless track. The agent pushes the cart left or right with a fixed force of 10&nbsp;N, 50 times per second, and must keep the pole upright. This is the same problem that Barto, Sutton and Anderson used in 1983 <a class="cite" href="#ref-bsa">[Barto et al., 1983]</a>.</p>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th>Index</th><th>Observation</th><th class="n">Min</th><th class="n">Max</th><th>Episode ends when</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>Cart position <span class="m">x</span> (m)</td><td class="n">−4.8</td><td class="n">4.8</td><td><span class="m">|x| > 2.4</span></td></tr>
+        <tr><td>1</td><td>Cart velocity <span class="m">\dot x</span> (m/s)</td><td class="n">−∞</td><td class="n">∞</td><td></td></tr>
+        <tr><td>2</td><td>Pole angle <span class="m">\theta</span> (rad, 0 = upright)</td><td class="n">−0.419</td><td class="n">0.419</td><td><span class="m">|\theta| > 12^\circ \approx 0.2095</span></td></tr>
+        <tr><td>3</td><td>Pole angular velocity <span class="m">\dot\theta</span> (rad/s)</td><td class="n">−∞</td><td class="n">∞</td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <div class="facts">
+      <div class="fact"><span class="k">Actions</span><span class="v"><code>0</code>: push left, <code>1</code>: push right. There is no "do nothing".</span></div>
+      <div class="fact"><span class="k">Reward</span><span class="v">+1 for every step taken, including the last one.</span></div>
+      <div class="fact"><span class="k">Start state</span><span class="v">All four values drawn uniformly from [−0.05, 0.05].</span></div>
+      <div class="fact"><span class="k">Terminated</span><span class="v">Pole beyond ±12°, or cart beyond ±2.4&nbsp;m.</span></div>
+      <div class="fact"><span class="k">Truncated</span><span class="v">After 500 steps, by the <code>TimeLimit</code> wrapper.</span></div>
+      <div class="fact"><span class="k">"Solved"</span><span class="v">Average return ≥ 475 over 100 episodes (<code>env.spec.reward_threshold</code>).</span></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The episode return is therefore the number of steps survived, and 500 is a perfect score. A random policy survives about 22 steps on average. The observation bounds for <span class="m">x</span> and <span class="m">\theta</span> are twice the termination thresholds, so the episode always ends before an observation reaches them.</p>
+
+    <h3>2.9 The physics inside <code>step</code></h3>
+    <p>With cart mass <span class="m">m_c = 1</span>&nbsp;kg, pole mass <span class="m">m_p = 0.1</span>&nbsp;kg, half pole length <span class="m">l = 0.5</span>&nbsp;m, <span class="m">g = 9.8</span>&nbsp;m/s² and force <span class="m">F = \pm 10</span>&nbsp;N, CartPole integrates the equations of motion of a cart carrying an inverted pendulum <a class="cite" href="#ref-bsa">[Barto et al., 1983]</a>, as corrected by <a class="cite" href="#ref-flo">[Florian, 2007]</a>:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Equations of motion</span>
+    <div class="math-block">\ddot\theta = \frac{g\sin\theta - \cos\theta\,\dfrac{F + m_p l \dot\theta^2 \sin\theta}{m_c + m_p}}{l\left(\dfrac{4}{3} - \dfrac{m_p \cos^2\theta}{m_c + m_p}\right)}</div>
+    <div class="math-block">\ddot x = \frac{F + m_p l \dot\theta^2 \sin\theta}{m_c + m_p} - \frac{m_p l\, \ddot\theta \cos\theta}{m_c + m_p}</div>
+    <span class="eq-name">Explicit Euler step, τ = 0.02 s</span>
+    <div class="math-block">x_{t+1} = x_t + \tau \dot x_t, \qquad \dot x_{t+1} = \dot x_t + \tau \ddot x_t</div>
+    <div class="math-block">\theta_{t+1} = \theta_t + \tau \dot\theta_t, \qquad \dot\theta_{t+1} = \dot\theta_t + \tau \ddot\theta_t</div>
+  </div>
+  <div class="col prose">
+    <p>Two things to take from this. First, the dynamics are <strong>deterministic</strong>: the only randomness in CartPole is the start state. Second, the agent never sees these equations. DQN is model-free (section 1.4) and learns only from sampled transitions. The simulation at the top of this page runs exactly these equations in JavaScript.</p>
+    <p class="callout">Why is this hard at all? Pushing the cart right tips the pole <em>left</em> at first (try it in the demo as "You"). To move the pole right you must first move the cart the "wrong" way. The agent has to discover this from rewards alone.</p>
+    <p class="readmore"><b>Read more:</b> the <a href="https://gymnasium.farama.org/" rel="noopener">Gymnasium documentation</a> (API reference, wrapper list, and the "Create a custom environment" tutorial), <a class="cite" href="#ref-gym">[Towers et al., 2024]</a> for the design rationale, and <a class="cite" href="#ref-lap">[Lapan, ch. 2]</a> for a hands-on tour of the Gym API.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 3: THE MATH                                                    -->
+<!-- =================================================================== -->
+<section id="math">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The math, from averages to the DQN loss</h2>
+  </div>
+  <div class="col prose">
+    <p>This part builds everything DQN needs, one idea at a time. The only prerequisites are expectations and a little calculus. The notation follows <a class="cite" href="#ref-sb">[Sutton &amp; Barto]</a> where possible.</p>
+
+    <h3>3.1 Expectations and running averages</h3>
+    <p>The <em>expectation</em> of a function <span class="m">f</span> of a random variable <span class="m">x</span> with distribution <span class="m">p</span> is its probability-weighted average. When we can only draw samples, we estimate it by a sample mean:</p>
+    <div class="math-block">\mathbb{E}_{x \sim p}\big[f(x)\big] = \sum_x p(x)\, f(x) \;\approx\; \frac{1}{n} \sum_{i=1}^{n} f(x_i), \qquad x_i \sim p</div>
+    <p>Keeping every sample to recompute the mean is wasteful. With a little algebra the mean of <span class="m">n</span> samples can be written in terms of the mean of the first <span class="m">n-1</span>:</p>
+    <div class="math-block">\mu_n = \frac{1}{n}\sum_{i=1}^{n} x_i = \frac{1}{n}\Big( x_n + (n-1)\,\mu_{n-1} \Big) = \mu_{n-1} + \frac{1}{n}\big( x_n - \mu_{n-1} \big)</div>
+    <p>Replace the step <span class="m">1/n</span> by a constant <span class="m">\alpha \in (0, 1]</span> and you get the update at the heart of almost every RL algorithm:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">The universal update</span>
+    <div class="math-block">\text{estimate} \leftarrow \text{estimate} + \alpha \,\big(\, \text{target} - \text{estimate} \,\big)</div>
+  </div>
+  <div class="col prose">
+    <p>A constant <span class="m">\alpha</span> weights recent samples more than old ones: after <span class="m">n</span> updates, <span class="m">\mu_n = (1-\alpha)^n \mu_0 + \sum_{i=1}^{n} \alpha (1-\alpha)^{n-i} x_i</span>. That is what you want when the thing being estimated keeps changing, and in RL it always does, because the targets depend on a policy that keeps improving. With a decreasing step size <span class="m">\alpha_n</span>, stochastic approximation theory <a class="cite" href="#ref-rm">[Robbins &amp; Monro, 1951]</a> guarantees convergence to the true mean under the conditions</p>
+    <div class="math-block">\sum_{n=1}^{\infty} \alpha_n = \infty, \qquad \sum_{n=1}^{\infty} \alpha_n^2 \lt \infty</div>
+    <p>The first condition makes the steps large enough to overcome any initial error, and the second makes them small enough to average out the noise eventually. <span class="m">\alpha_n = 1/n</span> satisfies both; a constant <span class="m">\alpha</span> does not, and keeps tracking instead. Every learning rule below is this update with a different <em>target</em>.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §2.4–2.5]</a> derive the incremental update and the step-size conditions. For probability background see <a class="cite" href="#ref-dl">[Goodfellow et al., ch. 3]</a>.</p>
+
+    <h3>3.2 Markov decision processes</h3>
+    <p>RL problems are formalised as a <em>Markov decision process</em> (MDP) <a class="cite" href="#ref-bell">[Bellman, 1957]</a>, a tuple</p>
+    <div class="math-block">\mathcal{M} = (\mathcal{S}, \mathcal{A}, P, R, \gamma)</div>
+    <ul class="where">
+      <li><span class="m">\mathcal S</span>, the set of states. For CartPole, <span class="m">s = (x, \dot x, \theta, \dot\theta) \in \mathbb{R}^4</span>.</li>
+      <li><span class="m">\mathcal A</span>, the set of actions: <span class="m">\{0, 1\}</span>.</li>
+      <li><span class="m">P(s' \mid s, a)</span>, the probability of moving to <span class="m">s'</span> after taking <span class="m">a</span> in <span class="m">s</span>. For CartPole all of it sits on the single state given by the Euler step in section 2.9.</li>
+      <li><span class="m">R(s, a)</span>, the expected immediate reward. For CartPole, always 1.</li>
+      <li><span class="m">\gamma \in [0, 1)</span>, the discount factor (section 3.3).</li>
+    </ul>
+    <p>At each step <span class="m">t</span> the agent sees <span class="m">s_t</span>, picks <span class="m">a_t</span>, receives <span class="m">r_{t+1}</span> and lands in <span class="m">s_{t+1}</span>. The word <em>Markov</em> means the current state contains everything needed to predict what happens next:</p>
+    <div class="math-block">P(s_{t+1} \mid s_t, a_t) = P(s_{t+1} \mid s_0, a_0, s_1, a_1, \dots, s_t, a_t)</div>
+    <p>CartPole's observation is Markov because it includes the velocities. A single camera frame would not be: from one image you cannot tell which way the pole is swinging. That is why DQN on Atari stacks the last four frames (the <code>FrameStackObservation</code> wrapper from section 2.5).</p>
+    <p>A policy <span class="m">\pi(a \mid s)</span> and the dynamics together define the probability of a whole trajectory <span class="m">\tau = (s_0, a_0, s_1, a_1, \dots)</span>:</p>
+    <div class="math-block">p_\pi(\tau) = p(s_0) \prod_{t \ge 0} \pi(a_t \mid s_t)\, P(s_{t+1} \mid s_t, a_t)</div>
+    <p>Tasks that end, like CartPole or a game of chess, are <em>episodic</em>. Tasks that go on forever, like the thermostat, are <em>continuing</em>. Discounting handles both with the same formulas.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 3]</a> for finite MDPs. <a class="cite" href="#ref-put">[Puterman, ch. 2–4]</a> is the rigorous reference, and <a class="cite" href="#ref-bert">[Bertsekas, ch. 1]</a> gives the control-theory perspective.</p>
+
+    <h3>3.3 Returns and discounting</h3>
+    <p>The agent maximises the <em>return</em>, the discounted sum of future rewards:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Discounted return</span>
+    <div class="math-block">G_t = r_{t+1} + \gamma r_{t+2} + \gamma^2 r_{t+3} + \dots = \sum_{k=0}^{\infty} \gamma^k\, r_{t+k+1}</div>
+    <span class="eq-name">Its recursive form, which everything below builds on</span>
+    <div class="math-block">G_t = r_{t+1} + \gamma\, G_{t+1}</div>
+  </div>
+  <div class="col prose">
+    <p>If rewards are bounded by <span class="m">|r| \le r_{\max}</span>, then <span class="m">|G_t| \le r_{\max}/(1-\gamma)</span>, so the discount keeps infinite sums finite. It also makes reward that arrives sooner worth more than reward that arrives later. A useful rule of thumb is that the agent effectively looks about <span class="m">1/(1-\gamma)</span> steps ahead. After an episode ends, all later rewards are taken to be 0. In CartPole every reward is 1, so a state from which the pole survives exactly <span class="m">N</span> more steps has return</p>
+    <div class="math-block">G = \sum_{k=0}^{N-1} \gamma^k = \frac{1 - \gamma^N}{1 - \gamma}, \qquad \lim_{N \to \infty} G = \frac{1}{1-\gamma}</div>
+    <p>With <span class="m">\gamma = 0.99</span>, balancing forever is worth 100, while a state 10 steps before a certain fall is worth only about 9.6. That gap is how the agent "sees" danger. Drag the slider to see how <span class="m">\gamma</span> shapes it:</p>
+  </div>
+  <figure class="col">
+    <div class="chart-card">
+      <div class="controls">
+        <div class="slider">
+          <div class="row"><label class="lbl" for="gamma">Discount <span class="gk">γ</span></label><output id="gammaOut" for="gamma">0.990</output></div>
+          <input id="gamma" type="range" min="0.9" max="0.999" step="0.001" value="0.99">
+        </div>
+      </div>
+      <div class="chart" id="gammaChart"></div>
+      <div class="readouts">
+        <div class="readout"><span class="val" id="gHorizon">100</span><span class="cap">effective horizon 1/(1−γ), in steps</span></div>
+        <div class="readout"><span class="val" id="gForever">100</span><span class="cap">value of balancing forever</span></div>
+        <div class="readout"><span class="val" id="g10">9.6</span><span class="cap">value 10 steps before a fall</span></div>
+        <div class="readout"><span class="val" id="g100">36.6%</span><span class="cap">weight of a reward 100 steps away, γ¹⁰⁰</span></div>
+      </div>
+    </div>
+    <figcaption>The weight <span class="m">\gamma^k</span> given to a reward <span class="m">k</span> steps in the future. The dashed line marks the effective horizon. At γ = 0.99 a 500-step episode is much longer than the horizon, so what happens at step 500 barely affects a decision at step 1.</figcaption>
+  </figure>
+  <div class="col prose">
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §3.3–3.4]</a> on returns, episodic and continuing tasks.</p>
+
+    <h3>3.4 Policies and value functions</h3>
+    <p>A policy can be <em>deterministic</em>, a function <span class="m">a = \mu(s)</span>, or <em>stochastic</em>, a distribution <span class="m">\pi(a \mid s)</span>. ε-greedy is stochastic. Returns are random: they depend on the start state, on the policy's random choices and, in general, on random transitions. <em>Value functions</em> are their expectations, and they come in two flavours:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">State-value function: how good is it to be in s?</span>
+    <div class="math-block">V^\pi(s) = \mathbb{E}_\pi\!\left[\, G_t \mid s_t = s \,\right]</div>
+    <span class="eq-name">Action-value function: how good is it to take a in s, then follow π?</span>
+    <div class="math-block">Q^\pi(s, a) = \mathbb{E}_\pi\!\left[\, G_t \mid s_t = s,\ a_t = a \,\right]</div>
+  </div>
+  <div class="col prose">
+    <p>The subscript <span class="m">\pi</span> means the expectation is over trajectories generated by following <span class="m">\pi</span>. The two functions are tied together. The value of a state is the policy-weighted average of its action values, and the value of an action is its immediate reward plus the discounted value of where it leads:</p>
+    <div class="math-block">V^\pi(s) = \sum_{a} \pi(a \mid s)\, Q^\pi(s, a)</div>
+    <div class="math-block">Q^\pi(s, a) = R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\pi(s')</div>
+    <p>For control, <span class="m">Q</span> is the more useful of the two. To choose between actions with <span class="m">V</span> you need to know where each action leads, which requires <span class="m">P</span>. With <span class="m">Q</span> you compare numbers directly, without a model.</p>
+
+    <h3>3.5 The Bellman expectation equation</h3>
+    <p>Here is the derivation that makes RL tractable. Start from the definition of <span class="m">V^\pi</span> and substitute the recursive return from section 3.3:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Derivation</span>
+    <div class="deriv">
+      <div class="line"><span class="m">\displaystyle V^\pi(s) = \mathbb{E}_\pi\big[\, G_t \mid s_t = s \,\big]</span><span class="why">definition</span></div>
+      <div class="line cont"><span class="m">\displaystyle = \mathbb{E}_\pi\big[\, r_{t+1} + \gamma\, G_{t+1} \mid s_t = s \,\big]</span><span class="why">recursive return</span></div>
+      <div class="line cont"><span class="m">\displaystyle = \sum_a \pi(a \mid s) \Big( R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\; \mathbb{E}_\pi\big[\, G_{t+1} \mid s_{t+1} = s' \,\big] \Big)</span><span class="why">condition on a and s′; Markov property</span></div>
+      <div class="line cont"><span class="m">\displaystyle = \sum_a \pi(a \mid s) \Big( R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\; V^\pi(s') \Big)</span><span class="why">definition of V<sup>π</sup>(s′)</span></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The second line uses linearity of expectation. The third conditions on the first action and next state, and uses the Markov property: once we know <span class="m">s_{t+1} = s'</span>, the future return does not depend on how we got there. The last line recognises that expectation as <span class="m">V^\pi(s')</span>. The result is the <strong>Bellman expectation equation</strong>, and the same steps give its action-value form:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Bellman expectation equations</span>
+    <div class="math-block">V^\pi(s) = \sum_a \pi(a \mid s) \Big( R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\pi(s') \Big)</div>
+    <div class="math-block">Q^\pi(s, a) = R(s, a) + \gamma \sum_{s'} P(s' \mid s, a) \sum_{a'} \pi(a' \mid s')\, Q^\pi(s', a')</div>
+  </div>
+  <div class="col prose">
+    <p>A statement about infinitely long futures has become a relation between neighbouring states. For a finite MDP with <span class="m">n</span> states this is a linear system: stacking values into a vector, <span class="m">V^\pi = R^\pi + \gamma P^\pi V^\pi</span>, so <span class="m">V^\pi = (I - \gamma P^\pi)^{-1} R^\pi</span>. The matrix is invertible because <span class="m">\gamma \lt 1</span>.</p>
+
+    <h3>3.6 Optimality</h3>
+    <p>The <strong>optimal value functions</strong> are the best achievable over all policies:</p>
+    <div class="math-block">V^*(s) = \max_\pi V^\pi(s), \qquad Q^*(s, a) = \max_\pi Q^\pi(s, a)</div>
+    <div class="math-block">V^*(s) = \max_a Q^*(s, a)</div>
+    <p>Acting optimally from <span class="m">s</span> means taking the best action, collecting its reward, and acting optimally again from wherever you land. Replacing the policy average in section 3.5 by a maximum gives the <strong>Bellman optimality equations</strong>:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Bellman optimality equations</span>
+    <div class="math-block">V^*(s) = \max_a \Big( R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^*(s') \Big)</div>
+    <div class="math-block">Q^*(s, a) = R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, \max_{a'} Q^*(s', a')</div>
+  </div>
+  <div class="col prose">
+    <p>Once you have <span class="m">Q^*</span>, acting optimally needs no model and no planning. The <em>greedy</em> policy is optimal:</p>
+    <div class="math-block">\pi^*(s) = \arg\max_{a} Q^*(s, a)</div>
+    <p>Why greedy is enough is the <strong>policy improvement theorem</strong>: if <span class="m">\pi'</span> is greedy with respect to <span class="m">Q^\pi</span>, then <span class="m">V^{\pi'}(s) \ge V^\pi(s)</span> in every state. A policy greedy with respect to <span class="m">Q^*</span> therefore cannot be improved on. In finite MDPs an optimal policy that is deterministic always exists. This is the quantity DQN learns, and it is what the demo does: the network outputs <span class="m">Q(s,\text{left})</span> and <span class="m">Q(s,\text{right})</span>, and the cart is pushed toward the larger one.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §3.5–3.6 and §4.2]</a> for the Bellman equations and policy improvement. <a class="cite" href="#ref-put">[Puterman, ch. 6]</a> proves existence of deterministic optimal policies.</p>
+
+    <h3>3.7 Dynamic programming: solving Bellman when the model is known</h3>
+    <p>If we know <span class="m">P</span> and <span class="m">R</span>, we can compute <span class="m">Q^*</span> by treating the right-hand side of the optimality equation as an operator <span class="m">\mathcal T</span> that maps one Q-function to another:</p>
+    <div class="math-block">(\mathcal{T} Q)(s, a) = R(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, \max_{a'} Q(s', a')</div>
+    <p><span class="m">Q^*</span> is a fixed point: <span class="m">\mathcal T Q^* = Q^*</span>. The key fact is that <span class="m">\mathcal T</span> is a <strong><span class="m">\gamma</span>-contraction</strong> in the max-norm <span class="m">\|Q\|_\infty = \max_{s,a} |Q(s,a)|</span>. For any two Q-functions,</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Contraction</span>
+    <div class="deriv">
+      <div class="line"><span class="m">\displaystyle \big|(\mathcal{T} Q)(s,a) - (\mathcal{T} Q')(s,a)\big| = \gamma \,\Big| \sum_{s'} P(s' \mid s,a) \big( \max_{a'} Q(s',a') - \max_{a'} Q'(s',a') \big) \Big|</span><span class="why">R(s, a) cancels</span></div>
+      <div class="line cont"><span class="m">\displaystyle \le \gamma \sum_{s'} P(s' \mid s,a)\, \max_{a'} \big| Q(s',a') - Q'(s',a') \big|</span><span class="why">triangle inequality; |max f − max g| ≤ max |f − g|</span></div>
+      <div class="line cont"><span class="m">\displaystyle \le \gamma\, \| Q - Q' \|_\infty</span><span class="why">probabilities sum to 1</span></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The middle step uses <span class="m">|\max_a f(a) - \max_a g(a)| \le \max_a |f(a) - g(a)|</span>, and the last uses that the probabilities sum to 1. Taking the maximum over <span class="m">(s,a)</span> gives <span class="m">\|\mathcal T Q - \mathcal T Q'\|_\infty \le \gamma \|Q - Q'\|_\infty</span>. By the Banach fixed-point theorem, <span class="m">Q^*</span> is the <em>unique</em> fixed point, and repeatedly applying <span class="m">\mathcal T</span> from any starting point converges to it geometrically:</p>
+    <div class="math-block">Q_{k+1} = \mathcal{T} Q_k \quad\Longrightarrow\quad \| Q_k - Q^* \|_\infty \le \gamma^k\, \| Q_0 - Q^* \|_\infty</div>
+    <p>This algorithm is <strong>value iteration</strong>. Its sibling, <strong>policy iteration</strong>, alternates between computing <span class="m">V^\pi</span> exactly (section 3.5) and making the policy greedy (section 3.6), and converges in finitely many iterations for finite MDPs. Both are <em>planning</em> methods: they need <span class="m">P</span> and <span class="m">R</span>. Reinforcement learning is what you do when you don't have them and can only sample. You can run value iteration by hand in the corridor widget in section 3.9.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 4]</a> for dynamic programming, <a class="cite" href="#ref-sz">[Szepesvári, §1.3 and ch. 2]</a> and <a class="cite" href="#ref-ajks">[Agarwal et al., ch. 1]</a> for the contraction argument, <a class="cite" href="#ref-bert">[Bertsekas]</a> for the broader theory.</p>
+
+    <h3>3.8 Learning from samples: Monte Carlo and temporal differences</h3>
+    <p>Without a model, we estimate values from experience using the universal update of section 3.1. The question is what to use as the <em>target</em>. Consider estimating <span class="m">V^\pi</span> while following <span class="m">\pi</span>:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Monte Carlo: wait for the actual return</span>
+    <div class="math-block">V(s_t) \leftarrow V(s_t) + \alpha \big[\, G_t - V(s_t) \,\big]</div>
+    <span class="eq-name">Temporal difference, TD(0): use one reward plus the current estimate</span>
+    <div class="math-block">V(s_t) \leftarrow V(s_t) + \alpha \big[\, r_{t+1} + \gamma V(s_{t+1}) - V(s_t) \,\big]</div>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th></th><th>Monte Carlo</th><th>Temporal difference</th></tr></thead>
+      <tbody>
+        <tr><td>Target</td><td><span class="m">G_t</span>, the real return</td><td><span class="m">r_{t+1} + \gamma V(s_{t+1})</span></td></tr>
+        <tr><td>Can update</td><td>Only after the episode ends</td><td>After every step, online</td></tr>
+        <tr><td>Bias</td><td>Unbiased: <span class="m">\mathbb{E}[G_t] = V^\pi(s_t)</span></td><td>Biased while <span class="m">V</span> is wrong</td></tr>
+        <tr><td>Variance</td><td>High: sums many random rewards</td><td>Low: one random step</td></tr>
+        <tr><td>Uses the Markov property</td><td>No</td><td>Yes: <em>bootstraps</em> from its own estimate</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The TD target is a one-sample estimate of the right-hand side of the Bellman equation, so TD learning is a sampled, incremental version of dynamic programming. The bracketed quantity <span class="m">\delta_t = r_{t+1} + \gamma V(s_{t+1}) - V(s_t)</span> is the <strong>TD error</strong>. Methods in between, which sum <span class="m">n</span> real rewards and then bootstrap, are called <span class="m">n</span>-step methods.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 5]</a> for Monte Carlo methods, <a class="cite" href="#ref-sb">[ch. 6]</a> for TD learning (the random-walk example in §6.2 is a close cousin of the corridor below), and <a class="cite" href="#ref-sb">[ch. 7]</a> for n-step methods.</p>
+
+    <h3>3.9 From prediction to control: SARSA and Q-learning</h3>
+    <p>To improve behaviour we estimate action values instead of state values and act (mostly) greedily on them. There are two classic ways to build the TD target:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">SARSA (on-policy): bootstrap from the action actually taken next</span>
+    <div class="math-block">Q(s, a) \leftarrow Q(s, a) + \alpha \big[\, r + \gamma\, Q(s', a') - Q(s, a) \,\big], \qquad a' \sim \pi(\cdot \mid s')</div>
+    <span class="eq-name">Q-learning (off-policy): bootstrap from the best next action</span>
+    <div class="math-block">Q(s, a) \leftarrow Q(s, a) + \alpha\, \underbrace{\Big[\, \overbrace{r + \gamma \max_{a'} Q(s', a')}^{\text{TD target } y} - Q(s, a) \,\Big]}_{\text{TD error } \delta}</div>
+  </div>
+  <div class="col prose">
+    <p>SARSA (named after the quintuple <span class="m">s, a, r, s', a'</span>) learns the value of the policy it is running, exploration included. Q-learning <a class="cite" href="#ref-wd">[Watkins &amp; Dayan, 1992]</a> uses <span class="m">\max_{a'}</span>, so its target is a sample of the Bellman <em>optimality</em> equation: it learns about the greedy policy whatever the agent actually does next. That makes it <strong>off-policy</strong>, which is what later lets DQN learn from random exploration and from old, replayed experience. For a table of Q-values, Watkins and Dayan proved that Q-learning converges to <span class="m">Q^*</span> with probability 1, provided every state–action pair is visited infinitely often and the step sizes satisfy the conditions of section 3.1. For terminal <span class="m">s'</span> the future term is dropped, and the target is just <span class="m">r</span>.</p>
+    <p>Try it. Each cell below is a state of the corridor environment from section 2.6, showing its two Q-values. The small grey numbers are <span class="m">Q^*</span>, computed by value iteration. The update line shows exactly the formula above with the numbers filled in.</p>
+  </div>
+  <figure class="col">
+    <div class="chart-card">
+      <div class="chart-title">Q-learning in a corridor, γ = 0.9</div>
+      <div class="chart-sub">The agent starts in cell 3. Reaching cell 6 gives +1, reaching cell 0 gives nothing. Both end the episode.</div>
+      <div class="corridor" id="corridor" aria-live="polite"></div>
+      <div class="c-log" id="cLog"></div>
+      <div class="controls">
+        <div class="slider">
+          <div class="row"><label class="lbl" for="cAlpha">Step size <span class="gk">α</span></label><output id="cAlphaOut" for="cAlpha">0.50</output></div>
+          <input id="cAlpha" type="range" min="0.05" max="1" step="0.05" value="0.5">
+        </div>
+        <div class="slider">
+          <div class="row"><label class="lbl" for="cEps">Exploration <span class="gk">ε</span></label><output id="cEpsOut" for="cEps">0.20</output></div>
+          <input id="cEps" type="range" min="0" max="1" step="0.05" value="0.2">
+        </div>
+      </div>
+      <div class="c-buttons">
+        <button class="btn" id="cStep" type="button">1 step</button>
+        <button class="btn" id="cEpisode" type="button">1 episode</button>
+        <button class="btn" id="cMany" type="button">50 episodes</button>
+        <button class="btn" id="cVI" type="button">1 value-iteration sweep</button>
+        <button class="btn primary" id="cReset" type="button">reset</button>
+      </div>
+      <div class="c-stats" id="cStats"></div>
+    </div>
+    <figcaption>Things to notice. Value spreads backwards from the goal one cell at a time, because each update only looks one step ahead. Q-values of actions the agent rarely tries stay wrong for a long time. With ε = 0 and ties broken at random, the agent may lock onto early estimates. A value-iteration sweep updates every cell at once using the model, and 6 sweeps reach Q* exactly here, one per step of the longest path the values must travel. Q-learning needs many noisy samples to get the same answer without the model.</figcaption>
+  </figure>
+  <div class="col prose">
+    <p>The same algorithm in Python, using the corridor environment from section 2.6:</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import numpy as np
+
+Q = np.zeros((7, 2))                     # one row per cell, one column per action
+alpha, gamma, epsilon = 0.5, 0.9, 0.1
+rng = np.random.default_rng(0)
+
+def greedy(q_row):                       # argmax with random tie-breaking
+    return int(rng.choice(np.flatnonzero(q_row == q_row.max())))
+
+env = gym.make("Corridor-v0")
+for episode in range(300):
+    s, _ = env.reset(seed=episode)
+    done = False
+    while not done:
+        a = int(rng.integers(2)) if rng.random() &lt; epsilon else greedy(Q[s])
+        s_next, r, terminated, truncated, _ = env.step(a)
+        target = r + gamma * (0.0 if terminated else Q[s_next].max())
+        Q[s, a] += alpha * (target - Q[s, a])            # the universal update
+        s, done = s_next, terminated or truncated
+
+print(Q.round(3))   # Q[3:6, 1] -> 0.81, 0.9, 1.0: matches Q* along the path to the goal</code></pre>
+  </div>
+  <div class="col prose">
+    <p class="callout"><b>A classic pitfall:</b> with <code>np.argmax(Q[s])</code> in place of <code>greedy</code>, ties always go to action 0. All Q-values start at 0, so the agent walks left every time, rarely reaches the goal with ε = 0.1, and learns nothing. Random tie-breaking fixes it.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §6.4–6.5]</a> for SARSA and Q-learning, including the cliff-walking example that shows how their behaviour differs. The convergence proof is in <a class="cite" href="#ref-wd">[Watkins &amp; Dayan, 1992]</a>.</p>
+
+    <h3>3.10 From a table to a neural network</h3>
+    <p>CartPole's state is continuous, so no table can hold it, and even a fine grid would never visit the same cell twice. Instead we <em>approximate</em> <span class="m">Q</span> with a neural network <span class="m">Q(s, a; \theta)</span> with weights <span class="m">\theta</span>. Similar states get similar values, so what is learned in one state <em>generalises</em> to states never seen before. The network takes the 4 state numbers and outputs one value per action, so a single forward pass scores both actions. The Q-learning update becomes a regression problem: make <span class="m">Q(s,a;\theta)</span> match the TD target, on average over transitions <span class="m">(s,a,r,s',d)</span> drawn from a replay buffer <span class="m">\mathcal D</span>:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">DQN loss <a class="cite" href="#ref-dqn">[Mnih et al., 2015]</a></span>
+    <div class="math-block">\mathcal{L}(\theta) = \mathbb{E}_{(s,a,r,s',d) \sim \mathcal{D}}\Big[ \big(\, y - Q(s, a; \theta) \,\big)^2 \Big]</div>
+    <div class="math-block">y = r + \gamma\,(1 - d)\, \max_{a'} Q(s', a'; \theta^-)</div>
+  </div>
+  <div class="col prose">
+    <ul class="where">
+      <li><span class="m">d \in \{0, 1\}</span> is the terminal flag. When <span class="m">d = 1</span> the future term vanishes and <span class="m">y = r</span>, exactly as the Bellman equation requires.</li>
+      <li><span class="m">\theta^-</span> are the weights of a separate <em>target network</em>, a lagged copy of <span class="m">\theta</span> (section 3.12).</li>
+    </ul>
+    <p>Differentiating while treating the target <span class="m">y</span> as a constant label gives the <strong>semi-gradient</strong>:</p>
+    <div class="math-block">\nabla_\theta \mathcal{L} = -2\, \mathbb{E}\Big[ \big(y - Q(s,a;\theta)\big)\, \nabla_\theta Q(s,a;\theta) \Big]</div>
+    <p>A gradient step with learning rate <span class="m">\eta</span> is then <span class="m">\theta \leftarrow \theta + 2\eta\, \delta\, \nabla_\theta Q(s,a;\theta)</span> with <span class="m">\delta = y - Q(s,a;\theta)</span>: the universal update of section 3.1, applied to the parameters instead of a table entry. For a table, where <span class="m">\nabla_\theta Q</span> picks out one entry, it reduces to tabular Q-learning. We deliberately don't differentiate through <span class="m">y</span>, even though it depends on the network too. The target plays the role of a label, and letting gradients flow through it would also move the label toward the prediction, which in practice learns worse. In PyTorch this means computing <span class="m">y</span> inside <code>torch.no_grad()</code>.</p>
+    <p>Many implementations replace the square with the <strong>Huber loss</strong> <a class="cite" href="#ref-hub">[Huber, 1964]</a>, which is quadratic for small errors and linear for large ones, so one surprising transition cannot produce a huge gradient:</p>
+    <div class="math-block">\ell(\delta) = \begin{cases} \tfrac12 \delta^2 &amp; |\delta| \le 1 \\ |\delta| - \tfrac12 &amp; \text{otherwise} \end{cases}</div>
+    <p>Its derivative is <span class="m">\ell'(\delta) = \operatorname{clip}(\delta, -1, 1)</span>: each transition's pull on the weights is capped.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 9–10]</a> for semi-gradient methods with function approximation, <a class="cite" href="#ref-dl">[Goodfellow et al., ch. 6 and 8]</a> for neural networks and their optimisation.</p>
+
+    <h3 id="truncation">3.11 Terminated is not truncated</h3>
+    <p>The terminal flag <span class="m">d</span> needs care, because an episode can stop for two reasons and only one of them is terminal in the MDP. This is why Gymnasium's <code>step</code> returns two flags (section 2.1).</p>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th></th><th>Terminated (pole fell)</th><th>Truncated (500 steps reached)</th></tr></thead>
+      <tbody>
+        <tr><td>What happened</td><td>The MDP reached a terminal state</td><td>We stopped watching; the pole is still up</td></tr>
+        <tr><td>True future value</td><td>0</td><td>Up to <span class="m">1/(1-\gamma) = 100</span></td></tr>
+        <tr><td>Correct target</td><td><span class="m">y = r</span></td><td><span class="m">y = r + \gamma \max_{a'} Q(s', a'; \theta^-)</span></td></tr>
+        <tr><td>Flag to store</td><td><span class="m">d = 1</span></td><td><span class="m">d = 0</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The time step <span class="m">t</span> is not part of CartPole's state. A balanced state at step 500 is indistinguishable from the same balanced state at step 200. If we stored <span class="m">d = 1</span> on truncation, the network would get the target <span class="m">y = 1</span> for inputs whose target is close to 100 everywhere else: contradictory labels for the same input, attached to the agent's most successful moments. Formally, the time limit makes the process non-Markov with respect to the observed state, unless you either bootstrap through it or add <span class="m">t</span> to the observation <a class="cite" href="#ref-time">[Pardo et al., 2018]</a>.</p>
+    <p class="callout"><b>Rule:</b> end the episode loop on <code>terminated or truncated</code>, but store only <code>terminated</code> as the terminal flag.</p>
+    <p data-bind="trunc_evidence"></p>
+
+    <h3>3.12 Making it stable: replay and target networks</h3>
+    <p>Function approximation, bootstrapping and off-policy learning are each useful, but together they can make value estimates diverge. Sutton and Barto call this combination the <em>deadly triad</em> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §11.3]</a>. DQN's two stabilisers each tackle a different cause.</p>
+    <p><strong>Experience replay</strong> <a class="cite" href="#ref-lin">[Lin, 1992]</a>. Consecutive transitions are almost identical, while stochastic gradient descent assumes roughly independent samples. So every transition is stored in a buffer <span class="m">\mathcal D</span> holding the most recent <span class="m">N</span> (50,000 here), and each update samples a random mini-batch from it. This breaks the correlations, reuses each experience many times, and averages over many past behaviours. It works only because Q-learning is off-policy: the stored transitions were generated by older policies.</p>
+    <p><strong>Target network.</strong> If <span class="m">y</span> used <span class="m">\theta</span> itself, every gradient step would also move the target it is chasing. Using a lagged copy <span class="m">\theta^-</span> turns each stretch of training into an almost ordinary regression problem, which is roughly one step of value iteration (section 3.7) carried out by gradient descent. There are two common ways to update it:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Hard update, every C steps (or episodes)</span>
+    <div class="math-block">\theta^- \leftarrow \theta</div>
+    <span class="eq-name">Soft (Polyak) update, every step, τ ≪ 1</span>
+    <div class="math-block">\theta^- \leftarrow \tau\, \theta + (1 - \tau)\, \theta^-</div>
+  </div>
+  <div class="col prose">
+    <p>With <span class="m">\tau = 0.005</span>, the target network is an exponential moving average of the online weights over roughly the last <span class="m">1/\tau = 200</span> steps. This is the running average of section 3.1 again.</p>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 11]</a> on off-policy divergence, <a class="cite" href="#ref-dqn">[Mnih et al., 2015]</a> (Methods section) for the original design, and <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §16.5]</a> for a textbook account of DQN on Atari.</p>
+
+    <h3>3.13 Double DQN: the max is biased</h3>
+    <p>The network's estimates are noisy, and the maximum of noisy numbers picks up the lucky ones. For any random estimates <span class="m">\hat Q</span>, because the max is a convex function (Jensen's inequality),</p>
+    <div class="math-block">\mathbb{E}\big[\max_{a} \hat Q(s, a)\big] \;\ge\; \max_{a} \mathbb{E}\big[\hat Q(s, a)\big]</div>
+    <p>so the DQN target is biased upward, and bootstrapping copies the bias from state to state. <strong>Double DQN</strong> <a class="cite" href="#ref-ddqn">[van Hasselt et al., 2016]</a> decouples choosing the action from evaluating it. The online network picks the action and the target network scores it:</p>
+  </div>
+  <div class="col eq-card">
+    <span class="eq-name">Double DQN target</span>
+    <div class="math-block">y = r + \gamma\,(1-d)\; Q\big(s',\ \underbrace{\arg\max_{a'} Q(s', a'; \theta)}_{\text{chosen by the online net}};\ \theta^-\big)</div>
+  </div>
+  <figure class="col">
+    <div class="chart-card">
+      <div class="chart-title">See the bias yourself</div>
+      <div class="chart-sub">Every action's true value is 0. Each estimate is the truth plus Gaussian noise. Averaged over 4,000 simulated states.</div>
+      <div class="controls">
+        <div class="slider">
+          <div class="row"><label class="lbl" for="nActions">Actions</label><output id="nActionsOut" for="nActions">2</output></div>
+          <input id="nActions" type="range" min="2" max="10" step="1" value="2">
+        </div>
+        <div class="slider">
+          <div class="row"><label class="lbl" for="noise">Noise <span class="gk">σ</span></label><output id="noiseOut" for="noise">1.0</output></div>
+          <input id="noise" type="range" min="0.1" max="3" step="0.1" value="1">
+        </div>
+      </div>
+      <div class="chart" id="biasChart"></div>
+    </div>
+    <figcaption>The single estimator takes <span class="m">\max_a \hat Q(s,a)</span> and always comes out too high, more so with more actions and more noise. The double estimator picks the argmax from one set of noisy estimates and reads the value from an independent second set, which is unbiased here.</figcaption>
+  </figure>
+  <div class="col prose">
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-sb">[Sutton &amp; Barto, §6.7]</a> on maximisation bias and double learning in the tabular case.</p>
+
+    <h3>3.14 Exploration with ε-greedy</h3>
+    <p>The ε-greedy rule from section 1.3 takes a uniformly random action with probability <span class="m">\varepsilon</span> and the greedy action otherwise. With <span class="m">|\mathcal A| = 2</span>, the greedy action is chosen with probability <span class="m">1 - \varepsilon/2</span>. Exploration matters most early on, when the estimates are poor, so <span class="m">\varepsilon</span> decays with the number of environment steps <span class="m">t</span>:</p>
+    <div class="math-block">\varepsilon(t) = \varepsilon_{\text{end}} + (\varepsilon_{\text{start}} - \varepsilon_{\text{end}})\, e^{-t / T}</div>
+    <p>with <span class="m">\varepsilon_{\text{start}} = 1</span>, <span class="m">\varepsilon_{\text{end}} = 0.05</span> and <span class="m">T = 8000</span> steps in the code of Part 4.</p>
+    <p>Because Q-learning is off-policy, this random behaviour does not corrupt what is learned: the targets still describe the greedy policy.</p>
+
+    <h3>3.15 The whole algorithm</h3>
+  </div>
+  <div class="col algo">
+    <h4>Deep Q-learning with experience replay</h4>
+    <ol>
+      <li>Initialise the online network <span class="m">\theta</span> randomly, copy it into the target network <span class="m">\theta^- \leftarrow \theta</span>, and create an empty replay buffer <span class="m">\mathcal D</span>.</li>
+      <li>For each episode, reset the environment to get <span class="m">s</span>. Then repeat until the episode ends:
+        <ol>
+          <li>With probability <span class="m">\varepsilon(t)</span> pick a random action, otherwise <span class="m">a = \arg\max_a Q(s,a;\theta)</span>.</li>
+          <li>Step the environment to get <span class="m">r</span>, <span class="m">s'</span>, <code>terminated</code> and <code>truncated</code>. Store <span class="m">(s, a, r, s', d)</span> in <span class="m">\mathcal D</span> with <span class="m">d =</span> <code>terminated</code>.</li>
+          <li>Sample a mini-batch from <span class="m">\mathcal D</span>, compute the targets <span class="m">y</span> with <span class="m">\theta^-</span>, and take one gradient step on <span class="m">(y - Q(s,a;\theta))^2</span>.</li>
+          <li>Update <span class="m">\theta^-</span> (hard or soft). Set <span class="m">s \leftarrow s'</span>, and stop if <code>terminated</code> or <code>truncated</code>.</li>
+        </ol>
+      </li>
+    </ol>
+  </div>
+  <div class="col prose">
+    <h3>3.16 Beyond DQN</h3>
+    <p>DQN opened the field of deep RL, and many improvements build directly on it:</p>
+    <ul>
+      <li><strong>Dueling networks</strong> <a class="cite" href="#ref-duel">[Wang et al., 2016]</a> split the output into a state value and per-action advantages, <span class="m">Q(s,a) = V(s) + A(s,a) - \tfrac{1}{|\mathcal A|}\sum_{a'} A(s,a')</span>.</li>
+      <li><strong>Prioritised replay</strong> <a class="cite" href="#ref-per">[Schaul et al., 2016]</a> samples transitions with large TD error more often.</li>
+      <li><strong>Rainbow</strong> <a class="cite" href="#ref-rain">[Hessel et al., 2018]</a> combines six extensions, including n-step returns and distributional value estimates.</li>
+      <li><strong>Policy-gradient and actor-critic methods</strong> such as PPO <a class="cite" href="#ref-ppo">[Schulman et al., 2017]</a> optimise the policy directly and handle continuous actions. See <a class="cite" href="#ref-sb">[Sutton &amp; Barto, ch. 13]</a>.</li>
+    </ul>
+    <p class="readmore"><b>Read more:</b> <a class="cite" href="#ref-gk">[Graesser &amp; Keng]</a> and <a class="cite" href="#ref-lap">[Lapan]</a> implement most of these step by step. <a class="cite" href="#ref-mor">[Morales, ch. 9–10]</a> covers DQN, Double DQN, dueling networks and prioritised replay.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 4: THE CODE                                                    -->
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The code, line by line</h2>
+  </div>
+  <div class="col prose">
+    <p>Here is each piece of the algorithm in PyTorch. The snippets are condensed from the project's package (<code>dqn_cartpole/</code>): the same logic, with fewer configuration options.</p>
+    <h3>4.1 The Q-network</h3>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+
+class DQN(nn.Module):
+    def __init__(self, state_dim=4, action_dim=2, hidden_sizes=(128, 128)):
+        super().__init__()
+        layers, d = [], state_dim
+        for h in hidden_sizes:
+            layers += [nn.Linear(d, h), nn.ReLU()]
+            d = h
+        layers.append(nn.Linear(d, action_dim))  # one output per action, no activation
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, s):   # s: (batch, 4)
+        return self.net(s)  # -> (batch, 2): Q(s, left), Q(s, right)</code></pre>
+  </div>
+  <div class="col prose">
+    <p>A plain multilayer perceptron, 4 → 128 → 128 → 2, with 17,410 parameters. The output layer has no activation because Q-values are unbounded real numbers. One forward pass evaluates <span class="m">Q(s,\cdot\,;\theta)</span> for both actions at once, which is why DQN is built for discrete action spaces.</p>
+    <h3>4.2 The replay buffer</h3>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import random
+from collections import deque, namedtuple
+
+Transition = namedtuple("Transition", "state action reward next_state terminal")
+
+class ReplayBuffer:
+    def __init__(self, capacity=50_000):
+        self.buffer = deque(maxlen=capacity)  # the oldest transitions fall off the end
+
+    def push(self, state, action, reward, next_state, terminal):
+        self.buffer.append(Transition(state, action, reward, next_state, terminal))
+
+    def sample(self, batch_size=64):
+        batch = random.sample(self.buffer, batch_size)  # uniform, without replacement
+        return Transition(*zip(*batch))                  # rows -> columns
+
+    def __len__(self):
+        return len(self.buffer)</code></pre>
+  </div>
+  <div class="col prose">
+    <p><code>Transition(*zip(*batch))</code> transposes a list of 64 transitions into one <code>Transition</code> whose fields are 64-tuples, ready to become tensors. A <code>deque</code> with <code>maxlen</code> gives first-in, first-out memory for free.</p>
+    <h3>4.3 Acting: ε-greedy</h3>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import math
+
+def epsilon_by_step(t, eps_start=1.0, eps_end=0.05, decay_steps=8_000):
+    return eps_end + (eps_start - eps_end) * math.exp(-t / decay_steps)
+
+def select_action(q_net, state, epsilon):
+    if random.random() &lt; epsilon:
+        return random.randrange(2)                     # explore
+    with torch.no_grad():                              # acting needs no gradients
+        s = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)  # (1, 4)
+        return int(q_net(s).argmax(dim=1))             # exploit: argmax_a Q(s, a)</code></pre>
+  </div>
+  <div class="col prose">
+    <p><code>unsqueeze(0)</code> adds the batch dimension the network expects, and <code>argmax(dim=1)</code> picks the action with the larger Q-value: the greedy policy of section 3.6. With continuous-valued network outputs, exact ties practically never happen, unlike in the tabular example.</p>
+    <h3>4.4 The TD target</h3>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">@torch.no_grad()  # y is a fixed label: the semi-gradient of section 3.10
+def td_targets(r, s_next, terminal, q_net, target_net, gamma=0.99, double_dqn=True):
+    q_next_target = target_net(s_next)                      # Q(s', . ; theta-)    (B, 2)
+    if double_dqn:
+        a_star = q_net(s_next).argmax(dim=1, keepdim=True)  # choose with theta    (B, 1)
+    else:
+        a_star = q_next_target.argmax(dim=1, keepdim=True)  # choose with theta-
+    q_next = q_next_target.gather(1, a_star)                # evaluate with theta- (B, 1)
+    return r + gamma * (1.0 - terminal) * q_next</code></pre>
+  </div>
+  <div class="col prose">
+    <p>This is the target from sections 3.10 and 3.13, one line per symbol. <code>terminal</code> is a float tensor of 0s and 1s, so <code>(1.0 - terminal)</code> switches off the future term exactly for true terminal transitions. <code>gather(1, a_star)</code> picks one column per row: row <span class="m">i</span> returns <code>q_next_target[i, a_star[i]]</code>.</p>
+    <h3>4.5 One gradient step</h3>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import numpy as np
+import torch.nn.functional as F
+
+def optimize(q_net, target_net, optimizer, buffer, batch_size=64, gamma=0.99):
+    s, a, r, s_next, terminal = buffer.sample(batch_size)
+    s        = torch.as_tensor(np.array(s), dtype=torch.float32)             # (64, 4)
+    a        = torch.as_tensor(a, dtype=torch.int64).unsqueeze(1)            # (64, 1)
+    r        = torch.as_tensor(r, dtype=torch.float32).unsqueeze(1)          # (64, 1)
+    s_next   = torch.as_tensor(np.array(s_next), dtype=torch.float32)        # (64, 4)
+    terminal = torch.as_tensor(terminal, dtype=torch.float32).unsqueeze(1)   # (64, 1)
+
+    q_sa = q_net(s).gather(1, a)             # Q(s, a; theta) for the actions actually taken
+    y = td_targets(r, s_next, terminal, q_net, target_net, gamma)
+    loss = F.smooth_l1_loss(q_sa, y)         # Huber loss (F.mse_loss for the squared error)
+
+    optimizer.zero_grad()
+    loss.backward()                          # gradients flow through q_sa only
+    torch.nn.utils.clip_grad_norm_(q_net.parameters(), max_norm=10.0)
+    optimizer.step()
+    return loss.item()</code></pre>
+  </div>
+  <div class="col prose">
+    <p>The network outputs Q-values for both actions, but the loss only involves the action actually taken in each transition, selected with another <code>gather</code>. The other action's output gets no gradient from that sample. Gradient-norm clipping is an extra safety net on top of the Huber loss.</p>
+    <h3>4.6 The training loop</h3>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">import gymnasium as gym
+
+env = gym.make("CartPole-v1")
+q_net, target_net = DQN(), DQN()
+target_net.load_state_dict(q_net.state_dict())   # theta- = theta
+optimizer = torch.optim.Adam(q_net.parameters(), lr=1e-3)
+buffer = ReplayBuffer(50_000)
+t = 0                                            # environment steps so far
+
+for episode in range(300):
+    state, _ = env.reset(seed=episode)
+    while True:
+        action = select_action(q_net, state, epsilon_by_step(t))
+        next_state, reward, terminated, truncated, _ = env.step(action)
+
+        # Only a real failure has no future. Hitting the time limit does (section 3.11).
+        buffer.push(state, action, reward, next_state, terminated)
+
+        if len(buffer) &gt;= 1_000:                 # warm up the buffer before learning
+            optimize(q_net, target_net, optimizer, buffer)
+        t += 1
+        state = next_state
+        if terminated or truncated:              # either way, this episode is over
+            break
+
+    if (episode + 1) % 10 == 0:                  # hard target update
+        target_net.load_state_dict(q_net.state_dict())</code></pre>
+  </div>
+  <div class="col prose">
+    <p>Note the two different uses of the flags: <code>terminated</code> goes into the buffer, while <code>terminated or truncated</code> ends the loop. The soft update from section 3.12 would replace the last two lines with a call after every <code>optimize</code>:</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">@torch.no_grad()
+def soft_update(target_net, q_net, tau=0.005):
+    for p_target, p in zip(target_net.parameters(), q_net.parameters()):
+        p_target.lerp_(p, tau)                   # theta- += tau * (theta - theta-)</code></pre>
+  </div>
+  <div class="col prose">
+    <h3>4.7 Evaluating a policy</h3>
+    <p>Training returns are measured while the agent is still exploring, so they understate the greedy policy, and they come from the starting states the agent trains on. Evaluate separately instead: greedy actions, fresh starting states, several episodes.</p>
+  </div>
+  <div class="col">
+    <pre><code class="language-python">def evaluate(q_net, episodes=20, seed_offset=20_000_000):
+    env = gym.make("CartPole-v1")
+    returns = []
+    for i in range(episodes):
+        state, _ = env.reset(seed=seed_offset + i)   # starting states never used in training
+        total, done = 0.0, False
+        while not done:
+            action = select_action(q_net, state, epsilon=0.0)   # purely greedy
+            state, reward, terminated, truncated, _ = env.step(action)
+            total += reward
+            done = terminated or truncated
+        returns.append(total)
+    env.close()
+    return float(np.mean(returns))</code></pre>
+  </div>
+  <div class="col prose">
+    <h3>4.8 The PyTorch calls used, and why</h3>
+  </div>
+  <div class="col table-wrap">
+    <table>
+      <thead><tr><th>Call</th><th>Role in DQN</th></tr></thead>
+      <tbody>
+        <tr><td><code>torch.as_tensor(x, dtype=...)</code></td><td>Turns NumPy observations and batches into tensors, without copying when possible</td></tr>
+        <tr><td><code>t.unsqueeze(0)</code>, <code>t.unsqueeze(1)</code></td><td>Adds a batch dimension to one state, or a column dimension to per-sample scalars so shapes line up as <code>(B, 1)</code></td></tr>
+        <tr><td><code>q.argmax(dim=1, keepdim=True)</code></td><td>The greedy action per row: <span class="m">\arg\max_a Q(s, a)</span></td></tr>
+        <tr><td><code>q.gather(1, idx)</code></td><td>Selects one Q-value per row, the taken action's or the chosen next action's</td></tr>
+        <tr><td><code>torch.no_grad()</code></td><td>Stops gradient tracking: for acting, and for the TD target (semi-gradient)</td></tr>
+        <tr><td><code>F.smooth_l1_loss</code>, <code>F.mse_loss</code></td><td>Huber and squared TD losses</td></tr>
+        <tr><td><code>optimizer.zero_grad()</code>, <code>loss.backward()</code>, <code>optimizer.step()</code></td><td>One gradient step on <span class="m">\mathcal L(\theta)</span></td></tr>
+        <tr><td><code>clip_grad_norm_(params, 10.0)</code></td><td>Rescales the gradient if its norm exceeds 10</td></tr>
+        <tr><td><code>state_dict()</code>, <code>load_state_dict()</code></td><td>Hard target update <span class="m">\theta^- \leftarrow \theta</span>; also saving checkpoints</td></tr>
+        <tr><td><code>p_target.lerp_(p, tau)</code></td><td>In-place soft update <span class="m">\theta^- \leftarrow \theta^- + \tau(\theta - \theta^-)</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The full project adds a few things on top of this: every setting in a frozen dataclass, a greedy validation run every 10 episodes that keeps the best checkpoint, many seeds trained in parallel processes, and unit tests for the target computation.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 5: PRACTICE                                                    -->
+<!-- =================================================================== -->
+<section id="practice">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Training in practice</h2>
+  </div>
+  <div class="col prose">
+    <p>Theory tells you what DQN converges to in the limit. Practice is 300 episodes on a laptop. To show what that really looks like, I trained 7 configurations with 10 random seeds each, using the code from Part 4. Each configuration changes one thing relative to those defaults, except the "improved recipe", which combines several.</p>
+    <p>Every 10 episodes the greedy policy was scored on 5 <em>validation</em> starts. At the end, both the final network and the best validation checkpoint were scored on 20 separate <em>test</em> starts. The validation and test starts are the same for every run, so all configurations are compared on identical episodes.</p>
+    <h3>5.1 Exploration is slower than it looks</h3>
+  </div>
+  <figure class="col">
+    <div class="chart-card">
+      <div class="chart-title">Probability of a random action, by episode</div>
+      <div class="chart-sub">ε(t) plotted against episodes instead of steps, averaged over 10 seeds</div>
+      <div class="chart" id="epsChart"></div>
+      <div class="legend" id="epsLegend"></div>
+    </div>
+    <figcaption>ε decays per <b>step</b>, but people usually think in <b>episodes</b>. Early episodes last only 10–30 steps, so with <span class="m">T = 8000</span> the agent still acts randomly about <span data-bind="eps_end_baseline"></span> of the time after 300 episodes. Always plot your schedules in the units you reason in.</figcaption>
+  </figure>
+
+  <div class="col prose">
+    <h3>5.2 One training run tells you very little</h3>
+    <p>The random seed sets the initial weights, the random actions and the replay samples. Changing nothing but the seed gives a very different learning curve:</p>
+  </div>
+  <figure class="wide">
+    <div class="chart-card">
+      <div class="chart-title">Same code, same settings, ten seeds</div>
+      <div class="chart-sub">Greedy validation return during training: one thin line per seed, thick line = mean</div>
+      <div class="controls"><div class="seg" id="spagSeg" role="group" aria-label="Configuration"></div></div>
+      <div class="chart" id="spagChart"></div>
+    </div>
+    <figcaption data-bind="spag_caption"></figcaption>
+  </figure>
+  <div class="col prose">
+    <p>This is why RL papers should report means over many seeds with confidence intervals, and why two configurations should never be compared from one run each <a class="cite" href="#ref-hend">[Henderson et al., 2018]</a>, <a class="cite" href="#ref-prec">[Agarwal et al., 2021]</a>. The rest of this section follows that rule.</p>
+    <h3>5.3 Comparing configurations fairly</h3>
+  </div>
+  <figure class="wide">
+    <div class="chart-card">
+      <div class="chart-title">Test return by configuration</div>
+      <div class="chart-sub">Each dot is one seed (mean of 20 greedy test episodes). Bar = mean over seeds, whisker = 95% bootstrap confidence interval. 500 is perfect.</div>
+      <div class="controls">
+        <div class="seg" id="dotSeg" role="group" aria-label="Which network">
+          <button type="button" data-metric="final" aria-pressed="true">final network</button>
+          <button type="button" data-metric="best" aria-pressed="false">best validation checkpoint</button>
+        </div>
+      </div>
+      <div class="chart" id="dotChart"></div>
+      <details>
+        <summary>Show as a table</summary>
+        <div class="table-wrap" id="summaryTable"></div>
+      </details>
+    </div>
+    <figcaption data-bind="dot_caption"></figcaption>
+  </figure>
+  <div class="col prose" id="resultsProse"></div>
+
+  <div class="col prose"><h3>5.4 DQN forgets</h3></div>
+  <figure class="wide">
+    <div class="chart-card">
+      <div class="chart-title">Learning curves without exploration noise</div>
+      <div class="chart-sub">Greedy validation return every 10 episodes. Line = mean of 10 seeds, band = 95% bootstrap CI. Click a configuration to show or hide it.</div>
+      <div class="legend" id="curveLegend"></div>
+      <div class="chart" id="curveChart"></div>
+    </div>
+    <figcaption data-bind="curve_caption"></figcaption>
+  </figure>
+
+  <div class="col prose">
+    <h3>5.5 Look at how the agent fails</h3>
+    <p>A return of 130 could mean a pole that wobbles and falls, or something else entirely. Every test episode ends in one of three ways, so let's count them:</p>
+  </div>
+  <figure class="wide">
+    <div class="chart-card">
+      <div class="chart-title">How the test episodes end</div>
+      <div class="chart-sub">100 greedy test episodes per configuration (10 seeds × 10 starts)</div>
+      <div class="controls">
+        <div class="seg" id="failSeg" role="group" aria-label="Which network">
+          <button type="button" data-metric="final" aria-pressed="true">final network</button>
+          <button type="button" data-metric="best" aria-pressed="false">best validation checkpoint</button>
+        </div>
+        <div class="legend" id="failLegend"></div>
+      </div>
+      <div class="chart" id="failChart"></div>
+    </div>
+    <figcaption data-bind="fail_caption"></figcaption>
+  </figure>
+
+  <div class="col prose">
+    <h3>5.6 The Q-values are not what the math predicts</h3>
+    <p data-bind="q_text"></p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 6: EXERCISES                                                   -->
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>The best way to understand DQN is to break it. Each exercise changes one or two lines of the code in Parts 2 to 4. Run at least 5 seeds before drawing a conclusion.</p>
+    <ol class="exercises">
+      <li><div><b>Predict the Q-values.</b> Set <span class="m">\gamma = 0.9</span>. Using section 3.3, what should <span class="m">Q</span> be for a well-balanced state? Train, then print <code>q_net(torch.zeros(1, 4))</code>. Is it closer to the prediction than at <span class="m">\gamma = 0.99</span>, and why? (Section 5.6 has a hint.)</div></li>
+      <li><div><b>Solve the corridor exactly.</b> Write value iteration for the corridor of section 2.6 in NumPy, check that it matches the grey <span class="m">Q^*</span> numbers in the widget, and verify the contraction bound <span class="m">\|Q_k - Q^*\|_\infty \le \gamma^k \|Q_0 - Q^*\|_\infty</span> numerically.</div></li>
+      <li><div><b>SARSA versus Q-learning.</b> Change one line of the tabular code in section 3.9 to get SARSA. With <span class="m">\varepsilon = 0.3</span>, do the learned values differ? Which one estimates the values of the policy you are actually running?</div></li>
+      <li><div><b>Fix the drift with reward shaping.</b> Section 5.5 shows the cart drifting off the track. Train with the <code>CenteringPenalty</code> wrapper from section 2.5. Does the failure mode change? Evaluate with the original reward.</div></li>
+      <li><div><b>Remove the target network.</b> Use <code>q_net</code> in place of <code>target_net</code> inside <code>td_targets</code>. Plot the loss and the greedy return. What changes?</div></li>
+      <li><div><b>Get the terminal flag wrong.</b> Store <code>terminated or truncated</code> in the buffer and shorten the time limit with <code>gym.make("CartPole-v1", max_episode_steps=200)</code>, so it is hit often. Compare with the correct version over several seeds.</div></li>
+      <li><div><b>Measure the overestimation.</b> Log the mean of <code>q_sa</code> during training with <code>double_dqn=True</code> and <code>False</code>. Do you see the bias from section 3.13?</div></li>
+      <li><div><b>Stop forgetting.</b> Decay the learning rate over training, or enlarge the replay buffer. Does the gap between the final network and the best checkpoint shrink?</div></li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <div class="col part-head">
+    <span class="part-num">Code</span>
+    <h2>Run the full project</h2>
+  </div>
+  <div class="col prose">
+    <p>The complete package has one module per idea: <code>config.py</code> (every configuration as a frozen dataclass), <code>agent.py</code> (targets, Double DQN, ε-greedy), <code>experiment.py</code> (training, checkpointing, parallel seeds), <code>analysis.py</code> (bootstrap confidence intervals) and <code>tests/</code>. The 70 training runs in Part 5 took <span data-bind="compute_time"></span>.</p>
+    <pre><code class="language-bash">pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+python train_dqn_cartpole.py --seeds 10    # all configurations, 10 seeds each
+python export_web_data.py                  # rebuild this page's data
+pytest tests                               # unit tests for the tricky parts</code></pre>
+    <p class="hint">Method notes: seeds 0–9 for every configuration. Training, validation and test episodes use disjoint environment seeds. Confidence intervals are percentile bootstrap intervals of the mean over seeds (10,000 resamples). A policy counts as perfect if its mean test return is at least 475.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<!-- PART 7: REFERENCES                                                  -->
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>References and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p>If you read one book, make it Sutton and Barto: it is the standard text, and the authors provide it free online. For deep RL in code, pick one of Graesser &amp; Keng, Lapan or Morales. For rigour, go to Puterman, Bertsekas, Szepesvári, or Agarwal et al.</p>
+    <div class="ref-group">Textbooks</div>
+    <ul class="refs">
+      <li id="ref-sb"><span class="rn">[SB]</span><div>Richard S. Sutton and Andrew G. Barto. <em>Reinforcement Learning: An Introduction</em>, 2nd edition. MIT Press, 2018. <a href="http://incompleteideas.net/book/the-book-2nd.html" rel="noopener">Free online</a>. <span class="note">Chapters used here: 1 (introduction), 2 (bandits), 3 (MDPs), 4 (dynamic programming), 5 (Monte Carlo), 6 (TD learning, Q-learning, double learning), 7 (n-step), 9–11 (function approximation, deadly triad), 13 (policy gradients), 16.5 (DQN on Atari).</span></div></li>
+      <li id="ref-put"><span class="rn">[Put]</span><div>Martin L. Puterman. <em>Markov Decision Processes: Discrete Stochastic Dynamic Programming</em>. Wiley, 1994. <span class="note">The rigorous reference for MDP theory.</span></div></li>
+      <li id="ref-bert"><span class="rn">[Ber]</span><div>Dimitri P. Bertsekas. <em>Reinforcement Learning and Optimal Control</em>. Athena Scientific, 2019. <span class="note">RL from the dynamic-programming and control viewpoint.</span></div></li>
+      <li id="ref-sz"><span class="rn">[Sze]</span><div>Csaba Szepesvári. <em>Algorithms for Reinforcement Learning</em>. Morgan &amp; Claypool, 2010. <span class="note">A short, mathematically precise overview; the author distributes a free PDF.</span></div></li>
+      <li id="ref-ajks"><span class="rn">[AJKS]</span><div>Alekh Agarwal, Nan Jiang, Sham M. Kakade and Wen Sun. <em>Reinforcement Learning: Theory and Algorithms</em>. Monograph, 2022. <a href="https://rltheorybook.github.io/" rel="noopener">Free online</a>. <span class="note">Modern theory, including the contraction arguments of section 3.7.</span></div></li>
+      <li id="ref-gk"><span class="rn">[GK]</span><div>Laura Graesser and Wah Loon Keng. <em>Foundations of Deep Reinforcement Learning: Theory and Practice in Python</em>. Addison-Wesley, 2019. <span class="note">Deep RL algorithms with PyTorch implementations.</span></div></li>
+      <li id="ref-mor"><span class="rn">[Mor]</span><div>Miguel Morales. <em>Grokking Deep Reinforcement Learning</em>. Manning, 2020. <span class="note">A gentle, visual introduction with code.</span></div></li>
+      <li id="ref-lap"><span class="rn">[Lap]</span><div>Maxim Lapan. <em>Deep Reinforcement Learning Hands-On</em>, 2nd edition. Packt, 2020. <span class="note">Practical, code-first coverage of DQN and its extensions.</span></div></li>
+      <li id="ref-dl"><span class="rn">[GBC]</span><div>Ian Goodfellow, Yoshua Bengio and Aaron Courville. <em>Deep Learning</em>. MIT Press, 2016. <a href="https://www.deeplearningbook.org/" rel="noopener">Free online</a>. <span class="note">Probability (ch. 3), neural networks (ch. 6) and optimisation (ch. 8).</span></div></li>
+      <li id="ref-bell"><span class="rn">[Bel]</span><div>Richard Bellman. <em>Dynamic Programming</em>. Princeton University Press, 1957. <span class="note">Where the Bellman equation comes from.</span></div></li>
+    </ul>
+    <div class="ref-group">Papers</div>
+    <ul class="refs">
+      <li id="ref-wd"><span class="rn">[WD92]</span><div>Christopher J. C. H. Watkins and Peter Dayan. "Q-learning". <em>Machine Learning</em> 8, 279–292, 1992.</div></li>
+      <li id="ref-lin"><span class="rn">[Lin92]</span><div>Long-Ji Lin. "Self-improving reactive agents based on reinforcement learning, planning and teaching". <em>Machine Learning</em> 8, 293–321, 1992. <span class="note">Introduces experience replay.</span></div></li>
+      <li id="ref-dqn"><span class="rn">[Mni15]</span><div>Volodymyr Mnih et al. "Human-level control through deep reinforcement learning". <em>Nature</em> 518, 529–533, 2015. <span class="note">The DQN paper.</span></div></li>
+      <li id="ref-ddqn"><span class="rn">[vH16]</span><div>Hado van Hasselt, Arthur Guez and David Silver. "Deep reinforcement learning with double Q-learning". AAAI, 2016.</div></li>
+      <li id="ref-duel"><span class="rn">[Wan16]</span><div>Ziyu Wang et al. "Dueling network architectures for deep reinforcement learning". ICML, 2016.</div></li>
+      <li id="ref-per"><span class="rn">[Sch16]</span><div>Tom Schaul, John Quan, Ioannis Antonoglou and David Silver. "Prioritized experience replay". ICLR, 2016.</div></li>
+      <li id="ref-rain"><span class="rn">[Hes18]</span><div>Matteo Hessel et al. "Rainbow: Combining improvements in deep reinforcement learning". AAAI, 2018.</div></li>
+      <li id="ref-ppo"><span class="rn">[Sch17]</span><div>John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford and Oleg Klimov. "Proximal policy optimization algorithms". arXiv:1707.06347, 2017.</div></li>
+      <li id="ref-time"><span class="rn">[Par18]</span><div>Fabio Pardo, Arash Tavakoli, Vitaly Levdik and Petar Kormushev. "Time limits in reinforcement learning". ICML, 2018. <span class="note">The analysis behind section 3.11.</span></div></li>
+      <li id="ref-hend"><span class="rn">[Hen18]</span><div>Peter Henderson et al. "Deep reinforcement learning that matters". AAAI, 2018. <span class="note">On seeds, variance and reproducibility.</span></div></li>
+      <li id="ref-prec"><span class="rn">[Aga21]</span><div>Rishabh Agarwal, Max Schwarzer, Pablo Samuel Castro, Aaron Courville and Marc G. Bellemare. "Deep reinforcement learning at the edge of the statistical precipice". NeurIPS, 2021. <span class="note">Why and how to report confidence intervals.</span></div></li>
+      <li id="ref-bsa"><span class="rn">[BSA83]</span><div>Andrew G. Barto, Richard S. Sutton and Charles W. Anderson. "Neuronlike adaptive elements that can solve difficult learning control problems". <em>IEEE Transactions on Systems, Man, and Cybernetics</em> 13(5), 834–846, 1983. <span class="note">The original cart-pole learning problem.</span></div></li>
+      <li id="ref-flo"><span class="rn">[Flo07]</span><div>Răzvan V. Florian. "Correct equations for the dynamics of the cart-pole system". Technical report, Center for Cognitive and Neural Studies (Coneural), Romania, 2007.</div></li>
+      <li id="ref-gym"><span class="rn">[Tow24]</span><div>Mark Towers et al. "Gymnasium: A standard interface for reinforcement learning environments". arXiv:2407.17032, 2024.</div></li>
+      <li id="ref-rm"><span class="rn">[RM51]</span><div>Herbert Robbins and Sutton Monro. "A stochastic approximation method". <em>Annals of Mathematical Statistics</em> 22(3), 400–407, 1951.</div></li>
+      <li id="ref-hub"><span class="rn">[Hub64]</span><div>Peter J. Huber. "Robust estimation of a location parameter". <em>Annals of Mathematical Statistics</em> 35(1), 73–101, 1964.</div></li>
+    </ul>
+    <div class="ref-group">Online courses and documentation</div>
+    <ul class="refs">
+      <li id="ref-spin"><span class="rn">[SpUp]</span><div>OpenAI. <a href="https://spinningup.openai.com/" rel="noopener"><em>Spinning Up in Deep RL</em></a>, 2018. <span class="note">Concise introductions, a taxonomy of algorithms, and reference implementations.</span></div></li>
+      <li id="ref-silver"><span class="rn">[Sil15]</span><div>David Silver. <em>Reinforcement Learning</em> lecture course, University College London, 2015. <span class="note">Ten video lectures that follow Sutton &amp; Barto closely.</span></div></li>
+      <li id="ref-gymdocs"><span class="rn">[Docs]</span><div>Farama Foundation. <a href="https://gymnasium.farama.org/" rel="noopener"><em>Gymnasium documentation</em></a>, and <a href="https://pytorch.org/docs/stable/" rel="noopener"><em>PyTorch documentation</em></a>.</div></li>
+    </ul>
+  </div>
+</section>
+
+<footer class="col">
+  <p>Built with PyTorch and Gymnasium. The network in the demo runs in plain JavaScript, using weights exported from the PyTorch checkpoint. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="data.js"></script>
+<script src="narrative.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

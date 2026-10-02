@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>11 · Federated Learning — A Tour of Machine Learning</title>
+<meta name="description" content="An original FedAvg simulation: three clients train locally on real patient data and average their models, compared to a centrally-trained baseline.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 11 of 11</span>
+  <h1>Federated Learning</h1>
+  <div class="intro prose">
+<p>The original MADIS workshop material ends with a slide citing federated learning as
+a concept, with no runnable code. This chapter closes that gap with an original,
+small <strong>FedAvg</strong> simulation, written from scratch: it's the natural place to end a
+tour of machine learning, because it's less about a new model than about a new
+<em>constraint</em> — what happens to training when the data can't be centralised at all.</p>
+<p><strong>Objectives:</strong> partition data across simulated clients, train a small local model on
+each client's own shard, average the resulting models (FedAvg), and compare the
+federated model's accuracy to a model trained centrally on all the data at once.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/11_federated_learning.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-training-without-collecting-the-data">1. Training without collecting the data</a></li>
+    <li><a href="#2-what-averaging-computes-and-when-it-drifts">2. What averaging computes, and when it drifts</a></li>
+    <li><a href="#3-the-local-model-logistic-regression">3. The local model: logistic regression</a></li>
+    <li><a href="#4-weighted-averaging-by-hand">4. Weighted averaging by hand</a></li>
+    <li><a href="#5-the-data-and-three-simulated-clients">5. The data and three simulated clients</a></li>
+    <li><a href="#6-the-centralised-baseline">6. The centralised baseline</a></li>
+    <li><a href="#7-fedavg-from-scratch">7. FedAvg, from scratch</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-training-without-collecting-the-data">1. Training without collecting the data</h2>
+<p>Normally, training means gathering all the data in one place and fitting a model on it. Sometimes the data cannot be gathered: hospitals may not share patient records, and phones should not upload what their owners type. <strong>Federated learning</strong> trains one shared model anyway, by moving the <em>model</em> to the data instead of the data to the model.</p>
+<p><strong>The setting.</strong> There are <span class="math inline">K</span> <strong>clients</strong> (hospitals, phones) and one <strong>server</strong>. Client <span class="math inline">k</span> holds a local dataset <span class="math inline">D_k</span> of <span class="math inline">n_k</span> examples <span class="math inline">(\mathbf x_i, y_i)</span>, and <span class="math inline">n = n_1 + \dots + n_K</span> is the total. The data never leave their client. The model has a parameter vector <span class="math inline">w</span> (all its weights), and <span class="math inline">\ell(w; \mathbf x_i, y_i)</span> is the loss on one example: a number that measures how wrong the model is on it.</p>
+<p><strong>The objective.</strong> Client <span class="math inline">k</span>'s average loss is its <strong>local objective</strong>:</p>
+<div class="math display">F_k(w) = \frac{1}{n_k} \sum_{i \in D_k} \ell(w; \mathbf x_i, y_i).</div>
+<p>The goal is the model we would get by pooling all the data, the one that minimises the average loss over all <span class="math inline">n</span> examples. Split that average by client:</p>
+<div class="math display">F(w) = \frac{1}{n}\sum_{k=1}^{K} \sum_{i \in D_k} \ell(w; \mathbf x_i, y_i) = \sum_{k=1}^{K} \frac{n_k}{n}\, F_k(w).</div>
+<p>The global objective is a weighted average of the local ones, and client <span class="math inline">k</span>'s weight <span class="math inline">p_k = n_k/n</span> is its share of the data. A client with twice as many examples counts twice as much, exactly as its examples would in the pooled data. The weights are positive and sum to 1.</p>
+<p><strong>FedAvg.</strong> The Federated Averaging algorithm (McMahan et al., 2017) repeats rounds <span class="math inline">t = 0, 1, 2, \dots</span>:</p>
+<ol>
+<li><strong>Broadcast.</strong> The server sends the current global model <span class="math inline">w^{t}</span> to the clients.</li>
+<li><strong>Local training.</strong> Each client starts from <span class="math inline">w^{t}</span> and runs <span class="math inline">E</span> steps of gradient descent on its own <span class="math inline">F_k</span>, with learning rate <span class="math inline">\eta</span>, ending at <span class="math inline">w_k^{t+1}</span>.</li>
+<li><strong>Aggregation.</strong> The clients send their models back, and the server takes the weighted average <span class="math inline">w^{t+1} = \sum_{k} p_k\, w_k^{t+1}</span>.</li>
+</ol>
+<p>Only model parameters travel; the raw examples stay where they are.</p>
+</div>
+
+<div class="md">
+<h2 id="2-what-averaging-computes-and-when-it-drifts">2. What averaging computes, and when it drifts</h2>
+<p><strong>One local step is exact.</strong> Let each client take a single step (<span class="math inline">E = 1</span>):</p>
+<div class="math display">w_k^{t+1} = w^{t} - \eta\, \nabla F_k(w^{t}).</div>
+<p>Here <span class="math inline">\nabla F_k</span> is the gradient: the vector of partial derivatives of <span class="math inline">F_k</span> with respect to each parameter, which points uphill. Average with the weights <span class="math inline">p_k</span> and use <span class="math inline">\sum_k p_k = 1</span>:</p>
+<div class="math display">\begin{aligned} w^{t+1} = \sum_{k} p_k\, w_k^{t+1} &amp;= \Big(\sum_k p_k\Big) w^{t} - \eta \sum_k p_k\, \nabla F_k(w^{t}) \\ &amp;= w^{t} - \eta\, \nabla\Big(\sum_k p_k F_k\Big)(w^{t}) \\ &amp;= w^{t} - \eta\, \nabla F(w^{t}). \end{aligned}</div>
+<p>The second line uses that the gradient of a sum is the sum of the gradients. The result is exactly one step of gradient descent on the pooled objective <span class="math inline">F</span>. With one local step, federated training reproduces centralised gradient descent without anyone seeing the pooled data. It also shows why the weights must be <span class="math inline">n_k/n</span>: any other weights would descend a different objective.</p>
+<p><strong>Several local steps drift.</strong> One step per round means one round of communication per gradient step, which is slow. So in practice clients take many local steps (<span class="math inline">E &gt; 1</span>), and the equality breaks: from the second step on, each client evaluates <span class="math inline">\nabla F_k</span> at its own updated point, not at a common one. If the clients' data come from the same distribution (<strong>IID</strong>: independent and identically distributed), every <span class="math inline">F_k</span> is close to <span class="math inline">F</span> and the clients move in similar directions. If not (<strong>non-IID</strong>), each client heads toward its own minimum, and the average of the endpoints can miss the minimum of <span class="math inline">F</span>. This is <strong>client drift</strong>.</p>
+<p>A one-parameter example makes it concrete. Two clients with equal data (<span class="math inline">p_1 = p_2 = \tfrac12</span>) have local objectives</p>
+<div class="math display">F_1(w) = \tfrac12 (w - 0)^2, \qquad F_2(w) = \tfrac32 (w - 4)^2 .</div>
+<p>The pooled objective is <span class="math inline">F = \tfrac12 F_1 + \tfrac12 F_2</span>, so <span class="math inline">F&#x27;(w) = \tfrac12 w + \tfrac32 (w - 4) = 2w - 6</span>, which is zero at <span class="math inline">w^\star = 3</span>. With many local steps, however, each client converges to its own minimum, 0 and 4, and the server averages them to 2 in every round. The steeper client 2 should pull harder; averaging endpoints forgets that.</p>
+<p><strong>Communication.</strong> In each round every client downloads and uploads one copy of the parameters: with <span class="math inline">d</span> parameters, <span class="math inline">2Kd</span> numbers per round. Choosing <span class="math inline">E</span> is a trade-off: more local steps mean fewer rounds and less communication, but more drift.</p>
+</div>
+
+<div class="md">
+<h2 id="3-the-local-model-logistic-regression">3. The local model: logistic regression</h2>
+<p>Each client trains a model that predicts the probability of diabetes from <span class="math inline">d = 8</span> standardised clinical measurements. For a patient with feature vector <span class="math inline">\mathbf x \in \mathbb R^{d}</span>, weights <span class="math inline">\mathbf w \in \mathbb R^{d}</span> and a bias <span class="math inline">b</span> (one number):</p>
+<div class="math display">z = \mathbf x \cdot \mathbf w + b, \qquad p = \sigma(z) = \frac{1}{1 + e^{-z}} .</div>
+<p>The score <span class="math inline">z</span> can be any real number; the <strong>sigmoid</strong> <span class="math inline">\sigma</span> squeezes it into <span class="math inline">(0, 1)</span>, with <span class="math inline">\sigma(0) = 0.5</span>, <span class="math inline">p</span> near 1 for large positive <span class="math inline">z</span> and near 0 for large negative <span class="math inline">z</span>. We read <span class="math inline">p</span> as the predicted probability that <span class="math inline">y = 1</span> (diabetes), and predict 1 when <span class="math inline">p &gt; 0.5</span>, that is, when <span class="math inline">z &gt; 0</span>.</p>
+<p><strong>Loss.</strong> For a label <span class="math inline">y \in \{0, 1\}</span>, the <strong>cross-entropy</strong> loss is</p>
+<div class="math display">\ell = -\big[\,y \log p + (1 - y)\log(1 - p)\,\big].</div>
+<p>If <span class="math inline">y = 1</span> it reduces to <span class="math inline">-\log p</span>: zero when <span class="math inline">p = 1</span>, very large when the model is confidently wrong. If <span class="math inline">y = 0</span> it is <span class="math inline">-\log(1 - p)</span>.</p>
+<p><strong>Gradient, step by step.</strong> The sigmoid has a convenient derivative, <span class="math inline">\sigma&#x27;(z) = \sigma(z)\,\big(1 - \sigma(z)\big) = p(1 - p)</span>. By the chain rule,</p>
+<div class="math display">\frac{\partial \ell}{\partial z} = \frac{\partial \ell}{\partial p}\,\frac{\partial p}{\partial z} = \Big(-\frac{y}{p} + \frac{1-y}{1-p}\Big)\, p(1-p) = -y(1-p) + (1-y)\,p = p - y .</div>
+<p>Sigmoid and cross-entropy together give the simplest possible derivative: predicted probability minus truth. Since <span class="math inline">\partial z/\partial \mathbf w = \mathbf x</span> and <span class="math inline">\partial z/\partial b = 1</span>,</p>
+<div class="math display">\frac{\partial \ell}{\partial \mathbf w} = (p - y)\,\mathbf x, \qquad \frac{\partial \ell}{\partial b} = p - y .</div>
+<p>Averaging over the <span class="math inline">n_k</span> patients of client <span class="math inline">k</span>, stacked as the rows of <span class="math inline">X_k</span> (<span class="math inline">n_k \times d</span>) with labels <span class="math inline">\mathbf y_k</span> (<span class="math inline">n_k</span> entries):</p>
+<div class="math display">\nabla_{\mathbf w} F_k = \frac{1}{n_k}\, X_k^\top \big(\sigma(X_k \mathbf w + b) - \mathbf y_k\big), \qquad \frac{\partial F_k}{\partial b} = \frac{1}{n_k}\sum_{i \in D_k} (p_i - y_i).</div>
+<p>Each patient contributes their own feature vector, scaled by how wrong the prediction for them was.</p>
+<p><strong>What the updates reveal.</strong> The same formula shows the limit of &quot;the data never leave&quot;. For a single patient, dividing the weight gradient <span class="math inline">(p - y)\,\mathbf x</span> by the bias gradient <span class="math inline">p - y</span> returns <span class="math inline">\mathbf x</span> exactly. Averaged over many patients and many steps the leak is weaker, but not zero. Two standard defences exist. With <strong>secure aggregation</strong>, a cryptographic protocol, the server learns only the sum of the client updates, never an individual one. With <strong>differential privacy</strong>, each update is clipped to a maximum size and random noise is added, so that the result barely changes when any single record is added or removed.</p>
+</div>
+
+<div class="md">
+<h2 id="4-weighted-averaging-by-hand">4. Weighted averaging by hand</h2>
+<p>Three clients and a model with two weights, to keep the arithmetic short. After local training they send back:</p>
+<table>
+<thead>
+<tr>
+<th>client <span class="math inline">k</span></th>
+<th><span class="math inline">n_k</span></th>
+<th><span class="math inline">p_k = n_k/n</span></th>
+<th>local weights <span class="math inline">w_k</span></th>
+<th><span class="math inline">p_k\, w_k</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>200</td>
+<td>0.50</td>
+<td>(1.0, 2.0)</td>
+<td>(0.50, 1.00)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>100</td>
+<td>0.25</td>
+<td>(3.0, 0.0)</td>
+<td>(0.75, 0.00)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>100</td>
+<td>0.25</td>
+<td>(1.0, 4.0)</td>
+<td>(0.25, 1.00)</td>
+</tr>
+<tr>
+<td>sum</td>
+<td>400</td>
+<td>1.00</td>
+<td></td>
+<td>(1.50, 2.00)</td>
+</tr>
+</tbody>
+</table>
+<p>The new global model is the sum of the last column: <span class="math inline">w^{t+1} = (1.50,\ 2.00)</span>. An unweighted average would give <span class="math inline">\big(\tfrac{1 + 3 + 1}{3},\ \tfrac{2 + 0 + 4}{3}\big) \approx (1.67,\ 2.00)</span>, letting client 2 count as much as client 1 with half the data. The bias <span class="math inline">b</span> is averaged in the same way.</p>
+<p><strong>What the code does.</strong> Section 5 standardises the features with statistics from the training set only, then splits the 614 training patients at random into three clients (<code>client_indices</code>) of 205, 205 and 204 patients. The split is IID, and the weights <span class="math inline">p_k</span> are all close to <span class="math inline">1/3</span>. Section 6 fits the centralised baseline, scikit-learn's <code>LogisticRegression</code> on the pooled data, which minimises the same cross-entropy plus a small <span class="math inline">L_2</span> penalty by default. Section 7 implements the rest: <code>sigmoid</code> is <span class="math inline">\sigma</span>; <code>local_train(Xc, yc, w, b, epochs, lr)</code> runs <span class="math inline">E</span> = <code>epochs</code> = 30 full-batch gradient steps with <span class="math inline">\eta</span> = <code>lr</code> = 0.2, using <code>grad_w = Xc.T @ (p - yc) / n</code>, the gradient of section 3 with <code>n</code> playing the role of <span class="math inline">n_k</span>; and each of the <code>rounds</code> = 15 rounds broadcasts <code>global_w</code> and <code>global_b</code>, trains the three clients, and averages their results with <code>weights = np.array(sizes) / sum(sizes)</code>, the <span class="math inline">p_k</span> of section 1.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+import mlutils
+mlutils.set_style()</code></pre>
+</div>
+
+<div class="md">
+<h2 id="5-the-data-and-three-simulated-clients">5. The data and three simulated clients</h2>
+<p>Pima Indians Diabetes dataset: 768 patients, 8 clinical measurements, and whether
+they were diagnosed with diabetes. We split it into a held-out test set, then split
+the <em>remaining</em> data three ways to simulate three separate clients (three clinics,
+say) that never see each other's patients.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">diabetes = pd.read_csv(&quot;data/diabetes.csv&quot;)
+print(diabetes.shape)
+X = diabetes.drop(columns=[&quot;Outcome&quot;]).values
+y = diabetes[&quot;Outcome&quot;].values
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+scaler = StandardScaler().fit(X_train)               # fit on training data only
+X_train, X_test = scaler.transform(X_train), scaler.transform(X_test)
+
+rng = np.random.default_rng(1)
+shuffled = rng.permutation(len(X_train))
+client_indices = np.array_split(shuffled, 3)
+print(&quot;client sizes:&quot;, [len(c) for c in client_indices])</code></pre>
+<pre class="output">(768, 9)
+client sizes: [205, 205, 204]</pre>
+</div>
+
+<div class="md">
+<h2 id="6-the-centralised-baseline">6. The centralised baseline</h2>
+<p>If sharing the data were not a problem, this is what we'd train: one logistic
+regression on the full training set. It's the benchmark federated learning has to
+come close to, using strictly less information per round.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">central_model = LogisticRegression(max_iter=1000).fit(X_train, y_train)
+central_acc = central_model.score(X_test, y_test)
+print(f&quot;centralised baseline test accuracy: {central_acc:.3f}&quot;)</code></pre>
+<pre class="output">centralised baseline test accuracy: 0.714</pre>
+</div>
+
+<div class="md">
+<h2 id="7-fedavg-from-scratch">7. FedAvg, from scratch</h2>
+<p>The local model is the logistic regression of section 3, trained by plain gradient descent (the same
+mechanics as chapters 02 and 06) so each &quot;local training step&quot; is transparent. Every
+round, every client starts from the <em>current global weights</em>, takes a few gradient
+steps on its own shard only, and the server averages the results — weighted by how
+much data each client has, per the original FedAvg paper (section 2 shows why).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def local_train(Xc, yc, w, b, epochs, lr):
+    n = len(Xc)
+    for _ in range(epochs):
+        p = sigmoid(Xc @ w + b)
+        grad_w = Xc.T @ (p - yc) / n
+        grad_b = np.mean(p - yc)
+        w = w - lr * grad_w
+        b = b - lr * grad_b
+    return w, b
+
+def federated_accuracy(w, b, X, y):
+    preds = sigmoid(X @ w + b) &gt; 0.5
+    return (preds == y).mean()</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">n_features = X_train.shape[1]
+global_w, global_b = np.zeros(n_features), 0.0
+rounds = 15
+history = []
+
+for r in range(rounds):
+    local_ws, local_bs, sizes = [], [], []
+    for idx in client_indices:
+        Xc, yc = X_train[idx], y_train[idx]
+        w, b = local_train(Xc, yc, global_w.copy(), global_b, epochs=30, lr=0.2)
+        local_ws.append(w); local_bs.append(b); sizes.append(len(idx))
+
+    weights = np.array(sizes) / sum(sizes)                          # FedAvg: weight by client data size
+    global_w = sum(w * wt for w, wt in zip(local_ws, weights))
+    global_b = sum(b * wt for b, wt in zip(local_bs, weights))
+    history.append(federated_accuracy(global_w, global_b, X_test, y_test))
+
+print(f&quot;federated test accuracy after {rounds} rounds: {history[-1]:.3f}&quot;)
+print(f&quot;centralised baseline:                          {central_acc:.3f}&quot;)</code></pre>
+<pre class="output">federated test accuracy after 15 rounds: 0.714
+centralised baseline:                          0.714</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, ax = plt.subplots(figsize=(6.5, 4.5))
+ax.plot(range(1, rounds + 1), history, color=mlutils.BLUE, marker=&quot;o&quot;, label=&quot;federated (FedAvg)&quot;)
+ax.axhline(central_acc, color=mlutils.ORANGE, ls=&quot;--&quot;, label=&quot;centralised baseline&quot;)
+ax.set(xlabel=&quot;federated round&quot;, ylabel=&quot;test accuracy&quot;, title=&quot;FedAvg converges toward the centralised model&quot;)
+ax.legend()</code></pre>
+<pre class="output">&lt;matplotlib.legend.Legend at 0x27811598440&gt;</pre>
+<figure class="output-figure"><img src="img/11-1.png" alt="Figure 1 produced by the code above" width="669" height="478" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>No client's data was ever pooled, yet averaging local model updates over a handful of
+rounds reaches accuracy close to the centralised model trained on all the data at
+once. That's the entire promise of federated learning: the <em>statistical</em> result of
+training on all the data, without the <em>logistical and privacy</em> cost of ever
+collecting it in one place.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-fewer-larger-clients-vs-many-small-ones">Exercise 1: Fewer, larger clients vs. many small ones</h3>
+<p>Rerun with <code>np.array_split(shuffled, 10)</code> (10 clients instead of 3). Does convergence
+speed (rounds needed to approach the centralised accuracy) change?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">client_indices_10 = np.array_split(shuffled, 10)
+</code></pre>
+<p>With more, smaller clients each local update is noisier (fewer local samples per
+round), which typically means more rounds are needed to reach the same accuracy —
+though each round is still cheap, since a client with less data also trains faster.</p>
+</details>
+<h3 id="exercise-2-non-iid-clients">Exercise 2: Non-IID clients</h3>
+<p>Instead of a random split, sort patients by <code>Age</code> before splitting into 3 clients, so
+each client's local data distribution is systematically different (younger vs. older
+patients). Does FedAvg still converge as smoothly?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">age_order = diabetes.drop(columns=[&quot;Outcome&quot;]).values[:, 7].argsort()
+</code></pre>
+<p>Non-IID (non-identically-distributed) client data is one of federated learning's
+hardest real-world problems: local updates can pull the global model in different
+directions each round, and convergence is typically slower and less smooth than with
+randomly (IID) split clients like the main example above.</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>FedAvg trains a shared global model by repeatedly sending it to clients, training
+briefly on each client's local data only, and averaging the updated weights back on
+the server — the model moves, the raw data never does.</li>
+<li>Averaging is weighted by how much data each client contributes, matching what
+training on the pooled data would implicitly weight by.</li>
+<li>On data that's split randomly (IID) across clients, federated training can
+approach centralised accuracy in a modest number of rounds; genuinely non-IID
+client data (Exercise 2) is where federated learning gets substantially harder.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="10-transformers-self-attention.html"><span class="lbl">Previous · 10</span><span class="t">Transformers and Self-Attention</span></a>
+  <span></span>
+</nav>
+
+<footer class="col">
+  <p>Chapter 11 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

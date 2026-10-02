@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>05 · Kalman filtering and the NIS consistency test — TrustDrive course</title>
+<meta name="description" content="The Kalman filter as recursive Bayes, innovation whiteness, the chi-squared NIS statistic and consistency tests.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 05 of 09</span>
+  <h1>Kalman filtering and the NIS consistency test</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Build the independent, model-based check that catches a perception failure
+even when the network is confident. We derive the Kalman filter as recursive
+Bayesian estimation, establish the <em>whiteness</em> of its innovations, prove that the
+normalised innovation squared (NIS) is chi-squared distributed, and use that to test
+consistency and detect faults. This is the mathematical core of the whole project.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/05_kalman_and_nis.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-recursive-bayesian-estimation">1. Recursive Bayesian estimation</a></li>
+    <li><a href="#2-the-kalman-filter">2. The Kalman filter</a></li>
+    <li><a href="#3-the-innovation-and-why-it-is-white">3. The innovation and why it is white</a></li>
+    <li><a href="#4-the-nis-statistic-and-the-consistency-test">4. The NIS statistic and the consistency test</a></li>
+    <li><a href="#5-from-consistency-to-fault-detection">5. From consistency to fault detection</a></li>
+    <li><a href="#6-where-this-plugs-in">6. Where this plugs in</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-recursive-bayesian-estimation">1. Recursive Bayesian estimation</h2>
+<p>Consider a linear-Gaussian state-space model</p>
+<div class="math display"> x_k = A x_{k-1} + B u_{k-1} + w_{k-1},\quad w\sim\mathcal N(0,Q); \qquad
+   y_k = C x_k + v_k,\quad v\sim\mathcal N(0,R). </div>
+<p>The goal is the posterior <span class="math inline">p(x_k\mid y_{1:k})</span>. It obeys a two-step recursion [2,4]:</p>
+<p><strong>Predict (Chapman-Kolmogorov):</strong>
+<span class="math display"> p(x_k\mid y_{1:k-1}) = \int p(x_k\mid x_{k-1})\,p(x_{k-1}\mid y_{1:k-1})\,\mathrm d x_{k-1}. </span></p>
+<p><strong>Update (Bayes):</strong>
+<span class="math display"> p(x_k\mid y_{1:k}) \propto p(y_k\mid x_k)\,p(x_k\mid y_{1:k-1}). </span></p>
+<p>For a linear-Gaussian model every distribution here stays Gaussian, so the whole
+recursion collapses to propagating a <strong>mean and covariance</strong> - and that is exactly
+the Kalman filter [1].</p>
+</div>
+
+<div class="md">
+<h2 id="2-the-kalman-filter">2. The Kalman filter</h2>
+<p>Writing the Gaussians as <span class="math inline">(\hat x, P)</span>, the recursion becomes:</p>
+<p><strong>Time update (predict)</strong>
+<span class="math display"> \hat x_{k\mid k-1}=A\hat x_{k-1}+Bu_{k-1},\qquad P_{k\mid k-1}=A P_{k-1}A^\top+Q. </span></p>
+<p><strong>Measurement update</strong>
+<span class="math display"> \nu_k = y_k - C\hat x_{k\mid k-1},\qquad S_k = C P_{k\mid k-1}C^\top + R, </span>
+<span class="math display"> K_k = P_{k\mid k-1}C^\top S_k^{-1},\qquad
+   \hat x_k = \hat x_{k\mid k-1}+K_k\nu_k,\qquad
+   P_k = (I-K_kC)P_{k\mid k-1}. </span></p>
+<p>The gain <span class="math inline">K_k</span> can be derived two ways that give the same answer [2,3]: as the
+<strong>Bayesian</strong> posterior mean of a Gaussian, or - without any Gaussian assumption - as
+the <strong>best linear unbiased estimator</strong> (minimum-variance) that minimises
+<span class="math inline">\mathbb E\|x_k-\hat x_k\|^2</span>. Either way, <span class="math inline">K_k=P_{k\mid k-1}C^\top S_k^{-1}</span>.</p>
+</div>
+
+<div class="md">
+<h2 id="3-the-innovation-and-why-it-is-white">3. The innovation and why it is white</h2>
+<p>The <strong>innovation</strong> <span class="math inline">\nu_k = y_k - C\hat x_{k\mid k-1}</span> is the part of the new
+measurement that the model did not predict. For the correct model with the optimal
+gain it has three properties [5,6]:</p>
+<div class="math display"> \mathbb E[\nu_k]=0,\qquad \mathrm{Cov}[\nu_k]=S_k,\qquad
+   \mathbb E[\nu_k\,\nu_j^\top]=0\ \text{ for } k\neq j. </div>
+<p>The last one - <strong>whiteness</strong> - is the powerful part: an optimal filter extracts <em>all</em>
+the predictable information, so what remains is temporally uncorrelated noise. The
+filter effectively transforms the correlated measurements into a white innovations
+sequence (the &quot;innovations representation&quot; [5]). If the innovations are <em>not</em> white,
+or not zero-mean, or do not match <span class="math inline">S_k</span>, the model is wrong. That is the hook for
+both consistency testing and fault detection.</p>
+</div>
+
+<div class="md">
+<h2 id="4-the-nis-statistic-and-the-consistency-test">4. The NIS statistic and the consistency test</h2>
+<p>Since <span class="math inline">\nu_k\sim\mathcal N(0,S_k)</span>, whiten it: <span class="math inline">e_k=S_k^{-1/2}\nu_k\sim\mathcal N(0,I_m)</span>.
+Then the <strong>normalised innovation squared</strong></p>
+<div class="math display"> \boxed{\;\mathrm{NIS}_k=\nu_k^\top S_k^{-1}\nu_k = e_k^\top e_k\;}
+   \;\sim\;\chi^2_m,\qquad m=\dim(y),\quad \mathbb E[\mathrm{NIS}_k]=m. </div>
+<p><strong>Single-sample gate.</strong> <span class="math inline">\mathrm{NIS}_k&gt;\chi^2_{m,1-\alpha}</span> flags an inconsistent
+sample; for <span class="math inline">m=2</span>, <span class="math inline">\chi^2_{2,0.99}=9.21</span>.</p>
+<p><strong>Time-averaged test.</strong> A single sample is noisy. Averaging over a window of <span class="math inline">N</span>
+(approximately independent) steps, <span class="math inline">\sum_k\mathrm{NIS}_k\sim\chi^2_{Nm}</span>, so the mean
+<span class="math inline">\overline{\mathrm{NIS}}</span> should fall inside a tight two-sided interval around <span class="math inline">m</span> -
+the <strong>filter consistency test</strong> of Bar-Shalom [6]. Too high means the filter is
+<em>overconfident</em> (real errors exceed the claimed <span class="math inline">S</span>); too low means it is
+<em>conservative</em>.</p>
+<p><strong>NEES (a simulation-only cousin).</strong> When the true state is known (as in a
+simulator) the normalised estimation error squared
+<span class="math inline">\mathrm{NEES}_k=(x_k-\hat x_k)^\top P_k^{-1}(x_k-\hat x_k)\sim\chi^2_n</span> tests whether
+the reported covariance <span class="math inline">P_k</span> is honest [6]. We use it below to validate our filter.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+rng = np.random.default_rng(0)
+L, Ts, V = 2.7, 0.05, 15.0
+A = np.array([[1, V*Ts], [0, 1.0]]); B = np.array([0.0, V*Ts/L]); C = np.eye(2)
+Qt = np.diag([2e-4, 1e-4])                 # true process-noise covariance
+Rt = np.diag([0.02**2, 0.01**2])           # true measurement-noise covariance
+
+def run_filter(N=500, bias_after=None, bias=(0.0, 0.0), R_scale=1.0, seed=0):
+    r = np.random.default_rng(seed)
+    x = np.zeros(2); xhat = np.zeros(2); P = np.diag([0.05, 0.02])
+    Rc = Rt*R_scale                        # covariance the filter *claims* (may be wrong)
+    out = {k: [] for k in (&quot;nu0&quot;, &quot;s0&quot;, &quot;nis&quot;, &quot;nees&quot;, &quot;biased&quot;)}
+    for k in range(N):
+        u = 0.05*np.sin(2*np.pi*k*Ts/3.0)                 # known steering input
+        x = A@x + B*u + r.multivariate_normal([0, 0], Qt) # true dynamics
+        b = np.array(bias) if (bias_after is not None and k &gt;= bias_after) else np.zeros(2)
+        y = C@x + b + r.multivariate_normal([0, 0], Rt)   # measurement (+ optional OOD bias)
+        # --- Kalman filter ---
+        xp = A@xhat + B*u; Pp = A@P@A.T + Qt
+        nu = y - C@xp; S = C@Pp@C.T + Rc
+        nis = float(nu @ np.linalg.solve(S, nu))
+        K = Pp@C.T@np.linalg.inv(S); xhat = xp + K@nu; P = (np.eye(2) - K@C)@Pp
+        nees = float((x - xhat) @ np.linalg.solve(P, x - xhat))
+        out[&quot;nu0&quot;].append(nu[0]); out[&quot;s0&quot;].append(S[0, 0])
+        out[&quot;nis&quot;].append(nis); out[&quot;nees&quot;].append(nees); out[&quot;biased&quot;].append(b[0] != 0)
+    return {k: np.array(v) for k, v in out.items()}
+
+H0 = run_filter(seed=1)                     # correct model, no fault
+print(&quot;mean NIS  = %.2f  (expected m = 2)&quot; % H0[&quot;nis&quot;].mean())
+print(&quot;mean NEES = %.2f  (expected n = 2)&quot; % H0[&quot;nees&quot;].mean())</code></pre>
+<pre class="output">mean NIS  = 2.08  (expected m = 2)
+mean NEES = 2.01  (expected n = 2)</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Demo A: the filter is consistent under the correct model
+t = np.arange(len(H0[&quot;nis&quot;]))*Ts
+fig, ax = plt.subplots(3, 1, figsize=(8, 6), sharex=True)
+ax[0].plot(t, H0[&quot;nu0&quot;], color=&quot;#1f77b4&quot;, lw=.8)
+ax[0].plot(t,  1.96*np.sqrt(H0[&quot;s0&quot;]), &#x27;r--&#x27;, lw=.7); ax[0].plot(t, -1.96*np.sqrt(H0[&quot;s0&quot;]), &#x27;r--&#x27;, lw=.7)
+ax[0].set_ylabel(&quot;innovation $\\nu_1$&quot;); ax[0].set_title(&quot;zero-mean, within $\\pm1.96\\sqrt{S}$ ~95% of the time&quot;)
+ax[1].plot(t, H0[&quot;nis&quot;], color=&quot;#e67e22&quot;, lw=.8); ax[1].axhline(9.21, ls=&quot;--&quot;, color=&quot;k&quot;, label=&quot;$\\chi^2_{2,0.99}$&quot;)
+ax[1].set_ylabel(&quot;NIS&quot;); ax[1].legend(loc=&quot;upper right&quot;)
+ax[2].plot(t, H0[&quot;nees&quot;], color=&quot;#2e7d32&quot;, lw=.8); ax[2].axhline(9.21, ls=&quot;--&quot;, color=&quot;k&quot;)
+ax[2].set_ylabel(&quot;NEES&quot;); ax[2].set_xlabel(&quot;t [s]&quot;)
+for a in ax: a.grid(alpha=.3)
+plt.tight_layout(); plt.show()
+print(&quot;fraction of NIS above the 99%% gate: %.2f  (expected ~0.01)&quot; % np.mean(H0[&quot;nis&quot;] &gt; 9.21))</code></pre>
+<figure class="output-figure"><img src="img/05-1.png" alt="Figure: zero-mean, within 1.96 S ~95% of the time" width="879" height="648" loading="lazy"></figure>
+<pre class="output">fraction of NIS above the 99% gate: 0.02  (expected ~0.01)</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Whiteness of the innovations, and the time-averaged consistency test (Monte-Carlo bounds)
+def autocorr(x, maxlag=25):
+    x = x - x.mean(); c = np.correlate(x, x, &quot;full&quot;); c = c[c.size//2:]
+    return c[:maxlag] / c[0]
+
+warm = 50; m = 2                                   # skip filter warm-up
+avg_nis = H0[&quot;nis&quot;][warm:].mean(); avg_nees = H0[&quot;nees&quot;][warm:].mean()
+Nw = len(H0[&quot;nis&quot;]) - warm
+mc = np.mean(rng.chisquare(m, size=(20000, Nw)), axis=1)   # sampling dist. of the mean
+lo, hi = np.percentile(mc, [2.5, 97.5])
+
+fig, ax = plt.subplots(1, 2, figsize=(9, 3.2))
+ax[0].stem(range(25), autocorr(H0[&quot;nu0&quot;]))
+ax[0].axhline(0, color=&#x27;k&#x27;, lw=.5); ax[0].set(xlabel=&quot;lag&quot;, ylabel=&quot;autocorrelation&quot;,
+    title=&quot;Innovations are white (only lag 0)&quot;)
+ax[0].grid(alpha=.3)
+ax[1].hist(mc, bins=40, color=&quot;#bbb&quot;); ax[1].axvline(lo, color=&#x27;r&#x27;, ls=&#x27;--&#x27;); ax[1].axvline(hi, color=&#x27;r&#x27;, ls=&#x27;--&#x27;)
+ax[1].axvline(avg_nis, color=&quot;#e67e22&quot;, lw=2, label=&quot;observed mean NIS&quot;)
+ax[1].set(xlabel=&quot;mean NIS over window&quot;, title=&quot;95% consistency interval&quot;); ax[1].legend()
+plt.tight_layout(); plt.show()
+print(&quot;time-averaged NIS  = %.2f   95%% acceptance interval [%.2f, %.2f]&quot; % (avg_nis, lo, hi))
+print(&quot;time-averaged NEES = %.2f   -&gt; filter covariance P is honest&quot; % avg_nees)</code></pre>
+<figure class="output-figure"><img src="img/05-2.png" alt="Figure 2 produced by the code above" width="979" height="340" loading="lazy"></figure>
+<pre class="output">time-averaged NIS  = 2.09   95% acceptance interval [1.82, 2.19]
+time-averaged NEES = 1.99   -&gt; filter covariance P is honest</pre>
+</div>
+
+<div class="md">
+<h2 id="5-from-consistency-to-fault-detection">5. From consistency to fault detection</h2>
+<p>Because NIS tests the innovation against the model, anything that breaks the model
+raises it: a bias, an unmodelled manoeuvre, a wrong noise covariance, or an
+<strong>out-of-distribution regime</strong> the perception was never trained on. The classical
+theory of innovation-based fault detection [7,8] formalises this; a validation gate
+on NIS also rejects outliers in measurement association [6].</p>
+<p>The case that matters for us: the perception network becomes <em>confidently wrong</em>.
+The measurement <span class="math inline">y_k</span> acquires a systematic bias, but the network keeps reporting a
+small <span class="math inline">R</span>. The innovation <span class="math inline">\nu_k</span> then grows while <span class="math inline">S_k</span> stays small, so
+<span class="math inline">\mathrm{NIS}=\nu^\top S^{-1}\nu</span> explodes - the failure is detected even though the
+perception's own uncertainty never rose. This is precisely the gap that notebook 04
+warned about.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Demo B: an out-of-distribution bias appears at t = 12.5 s; reported R stays small
+fault = run_filter(N=500, bias_after=250, bias=(0.22, 0.06), seed=2)
+t = np.arange(500)*Ts
+plt.figure(figsize=(8, 3.2))
+plt.plot(t, run_filter(N=500, seed=2)[&quot;nis&quot;], color=&quot;#999&quot;, lw=.7, label=&quot;no fault&quot;)
+plt.plot(t, fault[&quot;nis&quot;], color=&quot;#e67e22&quot;, lw=.8, label=&quot;OOD bias&quot;)
+plt.axhline(9.21, ls=&quot;--&quot;, color=&quot;k&quot;, label=&quot;$\\chi^2_{2,0.99}$&quot;)
+plt.axvspan(250*Ts, 500*Ts, color=&quot;red&quot;, alpha=.06)
+plt.ylabel(&quot;NIS&quot;); plt.xlabel(&quot;t [s]&quot;); plt.title(&quot;The NIS detects a confident-but-wrong perception&quot;)
+plt.legend(loc=&quot;upper left&quot;); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
+print(&quot;mean NIS  before bias: %.1f    after bias: %.1f&quot; % (fault[&quot;nis&quot;][:250].mean(), fault[&quot;nis&quot;][250:].mean()))
+print(&quot;detection rate after bias (NIS&gt;9.21): %.0f%%&quot; % (100*np.mean(fault[&quot;nis&quot;][250:] &gt; 9.21)))</code></pre>
+<figure class="output-figure"><img src="img/05-3.png" alt="Figure: The NIS detects a confident-but-wrong perception" width="869" height="340" loading="lazy"></figure>
+<pre class="output">mean NIS  before bias: 1.9    after bias: 10.5
+detection rate after bias (NIS&gt;9.21): 47%</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Why an *honest* R matters: the test compares the innovation to the CLAIMED S
+print(&quot;claimed-R scale   mean NIS   interpretation&quot;)
+for scale in (0.25, 0.5, 1.0, 2.0, 4.0):
+    mn = run_filter(N=500, R_scale=scale, seed=3)[&quot;nis&quot;][50:].mean()
+    tag = (&quot;overconfident R -&gt; false alarms&quot; if scale &lt; 1 else
+           &quot;honest R -&gt; mean ~ 2&quot; if scale == 1 else
+           &quot;conservative R -&gt; misses faults&quot;)
+    print(&quot;   %5.2f          %6.2f    %s&quot; % (scale, mn, tag))</code></pre>
+<pre class="output">claimed-R scale   mean NIS   interpretation
+    0.25            4.06    overconfident R -&gt; false alarms
+    0.50            2.89    overconfident R -&gt; false alarms
+    1.00            1.93    honest R -&gt; mean ~ 2
+    2.00            1.24    conservative R -&gt; misses faults
+    4.00            0.79    conservative R -&gt; misses faults</pre>
+</div>
+
+<div class="md">
+<h2 id="6-where-this-plugs-in">6. Where this plugs in</h2>
+<p>The NIS is the second of the three signals fused into the integrity score of
+notebook 06: <span class="math inline">s_{NIS}=\exp\!\big(-(\mathrm{NIS}-\chi^2)^+/c\big)</span> is near <span class="math inline">1</span> while
+the filter is consistent and decays once NIS crosses the threshold. Unlike the
+perception's self-reported uncertainty (notebook 04) and the pixel-level ODD
+features (notebook 03), the NIS is an <em>external</em> check grounded in the vehicle
+dynamics - which is why it catches the out-of-distribution curve the others miss.</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Confirm <span class="math inline">\mathbb E[\mathrm{NIS}]=m</span> and <span class="math inline">\mathbb E[\mathrm{NEES}]=n</span> empirically by
+averaging over many independent runs, and check the variance matches <span class="math inline">2m</span>, <span class="math inline">2n</span>.</li>
+<li>Make the true process noise larger than the filter's <span class="math inline">Q</span> (an under-modelled
+manoeuvre). Which statistic reacts - NIS, NEES, or both?</li>
+<li>Replace the step bias with a slow ramp and compare single-sample gating against a
+windowed average. Which detects the gradual drift sooner? (Foreshadows CUSUM in notebook 09.)</li>
+<li>Add a whiteness test: compute the lag-1 innovation autocorrelation under H0 and
+under the bias. Does a constant bias break whiteness, or only zero-mean?</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>R. E. Kalman. <em>A New Approach to Linear Filtering and Prediction Problems.</em> ASME Journal of Basic Engineering, 82(1):35-45, 1960. <a href="https://doi.org/10.1115/1.3662552">doi:10.1115/1.3662552</a></li>
+<li>A. H. Jazwinski. <em>Stochastic Processes and Filtering Theory.</em> Academic Press, 1970.</li>
+<li>B. D. O. Anderson, J. B. Moore. <em>Optimal Filtering.</em> Prentice Hall, 1979.</li>
+<li>S. Sarkka. <em>Bayesian Filtering and Smoothing.</em> Cambridge University Press, 2013.</li>
+<li>T. Kailath. <em>An innovations approach to least-squares estimation - Part I: Linear filtering in additive white noise.</em> IEEE Transactions on Automatic Control, 13(6):646-655, 1968. <a href="https://doi.org/10.1109/TAC.1968.1099025">doi:10.1109/TAC.1968.1099025</a></li>
+<li>Y. Bar-Shalom, X.-R. Li, T. Kirubarajan. <em>Estimation with Applications to Tracking and Navigation.</em> Wiley, 2001. (NIS / NEES consistency tests and validation gating.)</li>
+<li>R. K. Mehra, J. Peschon. <em>An innovations approach to fault detection and diagnosis in dynamic systems.</em> Automatica, 7(5):637-640, 1971. <a href="https://doi.org/10.1016/0005-1098(71)90028-8">doi:10.1016/0005-1098(71)90028-8</a></li>
+<li>A. S. Willsky. <em>A survey of design methods for failure detection in dynamic systems.</em> Automatica, 12(6):601-611, 1976. <a href="https://doi.org/10.1016/0005-1098(76)90041-8">doi:10.1016/0005-1098(76)90041-8</a></li>
+<li>R. G. Brown, P. Y. C. Hwang. <em>Introduction to Random Signals and Applied Kalman Filtering,</em> 4th ed. Wiley, 2012. (Integrity monitoring context.)</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="04-uncertainty-ensembles.html"><span class="lbl">Previous · 04</span><span class="t">Uncertainty and ensembles</span></a>
+  <a class="next" rel="next" href="06-odd-and-integrity.html"><span class="lbl">Next · 06</span><span class="t">ODD and integrity</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 05 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

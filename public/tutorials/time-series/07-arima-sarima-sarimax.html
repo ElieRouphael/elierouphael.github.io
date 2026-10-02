@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>07 · ARIMA, SARIMA and SARIMAX — Time-series course</title>
+<meta name="description" content="Differencing inside the model, the airline model, residual diagnostics, auto_arima, cross-correlation, and weather as inputs: oracle vs. honest.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 07 of 11</span>
+  <h1>ARIMA, SARIMA and SARIMAX</h1>
+  <div class="intro prose">
+<p>Chapter 06 left us with a strong model and a hard ceiling. Beyond a couple of days, <strong>nothing in PM2.5's own past</strong> predicts its future much better than the seasonal profile. This chapter extends the ARMA family in three directions:</p>
+<ol>
+<li><strong>ARIMA</strong> puts the differencing from chapter 03 <em>inside</em> the model, for series with a unit root.</li>
+<li><strong>SARIMA</strong> adds seasonal differencing and seasonal AR/MA terms. CO₂ is the textbook case.</li>
+<li><strong>SARIMAX</strong> adds <strong>external regressors</strong>. For PM2.5 that means the weather, the one source of information that can break through the ceiling.</li>
+</ol>
+<p>The last part raises a question that decides whether a forecast is honest: <strong>what do you feed the model for future weather you haven't observed yet?</strong> We'll answer it three ways and compare.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>explain what the <em>d</em> in ARIMA(p, d, q) does, and connect ARIMA(0,1,1) to exponential smoothing</li>
+<li>run the full residual check (Ljung–Box, Jarque–Bera, heteroskedasticity, Durbin–Watson) and an automatic order search with <code>auto_arima</code></li>
+<li>read a <strong>cross-correlation</strong> to see whether an input leads the series</li>
+<li>read SARIMA notation, identify the classic <strong>airline model</strong> from ACF/PACF, and fit and check it</li>
+<li>build a <strong>regression with ARMA errors</strong> (SARIMAX) and interpret its coefficients</li>
+<li>tell an <strong>oracle</strong> evaluation from an honest one, and measure what perfect information would be worth</li>
+<li>use a practical refit schedule: refit monthly, update daily</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/07_arima_sarima_sarimax.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-arima-differencing-inside-the-model">1. ARIMA: differencing inside the model</a></li>
+    <li><a href="#2-sarima-seasonal-arima">2. SARIMA: seasonal ARIMA</a></li>
+    <li><a href="#3-sarimax-bringing-in-the-weather">3. SARIMAX: bringing in the weather</a></li>
+    <li><a href="#4-the-question-that-decides-honesty-what-is-the-future-weather">4. The question that decides honesty: what is the future weather?</a></li>
+    <li><a href="#5-what-the-three-approaches-tell-us">5. What the three approaches tell us</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import warnings
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.holtwinters import ExponentialSmoothing, SimpleExpSmoothing
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 3)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+origins, H = tsutils.BACKTEST_ORIGINS, tsutils.HORIZON
+co2 = sm.datasets.co2.load_pandas().data[&quot;co2&quot;].resample(&quot;MS&quot;).mean().interpolate()</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-arima-differencing-inside-the-model">1. ARIMA: differencing inside the model</h2>
+<p>An <strong>ARIMA(p, d, q)</strong> model differences the series <span class="math inline">d</span> times, then fits an ARMA(p, q) to the result. Using the backshift operator <span class="math inline">B</span> (so <span class="math inline">B y_t = y_{t-1}</span>, and <span class="math inline">(1 - B) y_t = y_t - y_{t-1}</span>):</p>
+<div class="math display">\underbrace{(1 - \phi_1 B - \dots - \phi_p B^p)}_{\text{AR}}\;\underbrace{(1 - B)^d}_{\text{differencing}}\; y_t = c + \underbrace{(1 + \theta_1 B + \dots + \theta_q B^q)}_{\text{MA}}\;\varepsilon_t</div>
+<p>Putting the differencing inside the model has a practical benefit. Forecasts come back <strong>on the original scale</strong>, and the intervals correctly reflect the accumulated uncertainty of the integrated series. The choice of <span class="math inline">d</span> should follow chapter 03: difference a unit root, don't difference a mean-reverting series.</p>
+<p>Several models from earlier chapters are special cases:</p>
+<table>
+<thead>
+<tr>
+<th>ARIMA</th>
+<th>Equivalent to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(0, 1, 0)</td>
+<td>random walk → the <strong>naive</strong> forecast</td>
+</tr>
+<tr>
+<td>(0, 1, 0) with a constant</td>
+<td>random walk with drift → the <strong>drift</strong> forecast</td>
+</tr>
+<tr>
+<td>(0, 1, 1)</td>
+<td><strong>simple exponential smoothing</strong>, with <span class="math inline">\alpha = 1 + \theta_1</span></td>
+</tr>
+</tbody>
+</table>
+<p>The last one is the least obvious, so let's check it on log PM2.5:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">log_train = np.log(y[:&quot;2013-12-31&quot;]).to_numpy()
+
+arima011 = ARIMA(log_train, order=(0, 1, 1)).fit()
+ses = SimpleExpSmoothing(log_train, initialization_method=&quot;estimated&quot;).fit()
+
+theta = arima011.params[0]
+print(f&quot;ARIMA(0,1,1): θ = {theta:.3f}  -&gt;  implied α = 1 + θ = {1 + theta:.3f}&quot;)
+print(f&quot;SES (chapter 05):              estimated α = {ses.params[&#x27;smoothing_level&#x27;]:.3f}&quot;)
+print(f&quot;next-day forecasts: {arima011.forecast(1)[0]:.4f} vs {ses.forecast(1)[0]:.4f}&quot;)</code></pre>
+<pre class="output">ARIMA(0,1,1): θ = -0.366  -&gt;  implied α = 1 + θ = 0.634
+SES (chapter 05):              estimated α = 0.633
+next-day forecasts: 3.8767 vs 3.8765</pre>
+</div>
+
+<div class="md">
+<p>Two different estimation methods, one answer. This equivalence also explains chapter 05's result from a new angle: SES is an <strong>integrated</strong> model. It assumes a unit root, so it can never revert to a mean, and PM2.5 doesn't have a unit root (chapter 03). ARIMA(2,0,0), with <span class="math inline">d = 0</span>, was the right member of the family.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-sarima-seasonal-arima">2. SARIMA: seasonal ARIMA</h2>
+<p>A seasonal series with period <span class="math inline">m</span> can depend on the same season last year as well as on last month. <strong>SARIMA(p, d, q)(P, D, Q)ₘ</strong> adds a second set of terms that work at multiples of <span class="math inline">m</span>:</p>
+<ul>
+<li><span class="math inline">D</span>: seasonal differences, <span class="math inline">(1 - B^m)</span>, i.e. <span class="math inline">y_t - y_{t-m}</span> (chapter 03)</li>
+<li><span class="math inline">P</span>: seasonal AR terms, on <span class="math inline">y_{t-m}, y_{t-2m}, \dots</span></li>
+<li><span class="math inline">Q</span>: seasonal MA terms, on <span class="math inline">\varepsilon_{t-m}, \varepsilon_{t-2m}, \dots</span></li>
+</ul>
+<p>The seasonal and non-seasonal parts <strong>multiply</strong>. The most famous SARIMA, (0,1,1)(0,1,1)₁₂, was made popular by Box and Jenkins for airline passenger data and is still known as the <strong>airline model</strong>:</p>
+<div class="math display">(1 - B)(1 - B^{12})\, y_t = (1 + \theta B)(1 + \Theta B^{12})\, \varepsilon_t.</div>
+<p>Multiplying out the right-hand side gives MA terms at lags 1, 12 <strong>and 13</strong> (<span class="math inline">\theta\Theta</span>), from only two parameters. That's the appeal of the multiplicative form: rich structure, few parameters.</p>
+<h3 id="identifying-a-sarima-for-co">Identifying a SARIMA for CO₂</h3>
+<p>Chapter 03 established that CO₂ needs one regular and one seasonal difference (<span class="math inline">d = D = 1</span>). What does the doubly-differenced series look like?</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_train = co2[:&quot;1989-12&quot;]
+double_diff = co2_train.diff().diff(12).dropna()
+tsutils.plot_acf_pacf(double_diff, lags=36, title=&quot;CO₂, (1−B)(1−B¹²):&quot;)</code></pre>
+<figure class="output-figure"><img src="img/07-1.png" alt="Figure 1 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The two dominant features of the ACF are <strong>negative spikes at lag 1 and lag 12</strong>, with smaller positive side-spikes at lags 11 and 13 (Exercise 1 shows the airline model <em>predicts</em> those) and a modest one at lag 3. The PACF decays from lag 1 and again from lag 12. Negative ACF spikes with a decaying PACF are the MA(1) fingerprint (chapter 06), once at the regular lag and once at the seasonal lag. That's the airline model: MA(1) × seasonal MA(1).</p>
+<p>Let's confirm with a small search over the other orders (<span class="math inline">p, q, P, Q \le 1</span>, with <span class="math inline">d = D = 1</span> fixed).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">rows = []
+with warnings.catch_warnings():
+    warnings.simplefilter(&quot;ignore&quot;)
+    for p in range(2):
+        for q in range(2):
+            for P in range(2):
+                for Q in range(2):
+                    fit = SARIMAX(co2_train, order=(p, 1, q), seasonal_order=(P, 1, Q, 12)).fit(disp=False)
+                    rows.append({&quot;order&quot;: f&quot;({p},1,{q})({P},1,{Q})₁₂&quot;, &quot;AIC&quot;: fit.aic, &quot;BIC&quot;: fit.bic})
+pd.DataFrame(rows).set_index(&quot;order&quot;).sort_values(&quot;AIC&quot;).head(5)</code></pre>
+<pre class="output">                      AIC      BIC
+order                             
+(1,1,1)(0,1,1)₁₂  199.824  215.467
+(1,1,1)(1,1,1)₁₂  201.549  221.102
+(0,1,1)(0,1,1)₁₂  203.595  215.328
+(0,1,1)(1,1,1)₁₂  205.311  220.954
+(1,1,0)(0,1,1)₁₂  211.795  223.528</pre>
+</div>
+
+<div class="md">
+<p>The criteria split. <strong>BIC</strong>, with its heavier penalty, prefers the two-parameter <strong>airline model</strong> by a whisker. <strong>AIC</strong> prefers adding a regular AR term, (1,1,1)(0,1,1)₁₂. Let's look at both fits' residuals:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">candidates = {&quot;airline (0,1,1)(0,1,1)&quot;: (0, 1, 1), &quot;(1,1,1)(0,1,1)&quot;: (1, 1, 1)}
+co2_fits = {name: SARIMAX(co2_train, order=order, seasonal_order=(0, 1, 1, 12)).fit(disp=False)
+            for name, order in candidates.items()}
+
+for name, fit in co2_fits.items():
+    print(name, fit.params.round(3).to_dict())
+
+# the first 13 residuals are start-up values of the differencing, so skip them
+pd.concat({name: acorr_ljungbox(fit.resid.iloc[13:], lags=[12, 24]) for name, fit in co2_fits.items()})</code></pre>
+<pre class="output">airline (0,1,1)(0,1,1) {&#x27;ma.L1&#x27;: -0.392, &#x27;ma.S.L12&#x27;: -0.848, &#x27;sigma2&#x27;: 0.096}
+(1,1,1)(0,1,1) {&#x27;ar.L1&#x27;: 0.309, &#x27;ma.L1&#x27;: -0.665, &#x27;ma.S.L12&#x27;: -0.847, &#x27;sigma2&#x27;: 0.094}
+                           lb_stat  lb_pvalue
+airline (0,1,1)(0,1,1) 12   24.350      0.018
+                       24   34.194      0.081
+(1,1,1)(0,1,1)         12   13.861      0.310
+                       24   26.400      0.333</pre>
+</div>
+
+<div class="md">
+<p>The airline model leaves a little autocorrelation behind (Ljung–Box p ≈ 0.02 at 12 lags). The (1,1,1) version doesn't. The seasonal MA coefficient Θ ≈ −0.85 is close to −1 in both, which tells us the seasonal pattern is nearly fixed from year to year, evolving only slowly. Exercise 4 asks whether the cleaner residuals translate into better forecasts. We'll backtest the airline model, the classic, against chapter 05's winners.</p>
+</div>
+
+<div class="md">
+<h3 id="beyond-ljung-box-the-full-residual-check">Beyond Ljung–Box: the full residual check</h3>
+<p>Ljung–Box asks only whether residuals are <em>uncorrelated</em>. A well-specified model with Gaussian errors, which is the assumption behind its prediction intervals, should also have residuals that are <strong>normally distributed</strong> and have <strong>constant variance</strong>. statsmodels bundles the standard checks:</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Null hypothesis</th>
+<th>We want</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Ljung–Box</strong></td>
+<td>no autocorrelation up to lag <span class="math inline">m</span></td>
+<td>large p</td>
+</tr>
+<tr>
+<td><strong>Jarque–Bera</strong></td>
+<td>residuals are normal (skewness 0, kurtosis 3)</td>
+<td>large p</td>
+</tr>
+<tr>
+<td><strong>Heteroskedasticity</strong> (<code>breakvar</code>)</td>
+<td>variance is the same in the first and last thirds of the sample</td>
+<td>large p</td>
+</tr>
+<tr>
+<td><strong>Durbin–Watson</strong></td>
+<td><em>statistic</em> near 2 means no lag-1 autocorrelation (below 2: positive, above 2: negative)</td>
+<td>≈ 2</td>
+</tr>
+</tbody>
+</table>
+<p><code>plot_diagnostics</code> shows the same information as pictures: standardised residuals over time, their histogram against a normal curve, a normal Q-Q plot, and the residual ACF.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from statsmodels.stats.stattools import durbin_watson
+
+airline_fit = co2_fits[&quot;airline (0,1,1)(0,1,1)&quot;]
+airline_fit.plot_diagnostics(figsize=(12, 7), lags=24)
+plt.tight_layout()
+
+jb_stat, jb_p, skew, kurtosis = airline_fit.test_normality(&quot;jarquebera&quot;)[0]
+het_stat, het_p = airline_fit.test_heteroskedasticity(&quot;breakvar&quot;)[0]
+pd.Series({
+    &quot;Jarque–Bera p-value&quot;: jb_p, &quot;skewness&quot;: skew, &quot;kurtosis&quot;: kurtosis,
+    &quot;heteroskedasticity p-value&quot;: het_p,
+    &quot;Durbin–Watson&quot;: durbin_watson(airline_fit.resid.iloc[13:]),
+}).round(3).to_frame(&quot;airline model&quot;)</code></pre>
+<pre class="output">                            airline model
+Jarque–Bera p-value                 0.607
+skewness                            0.023
+kurtosis                            3.251
+heteroskedasticity p-value          0.093
+Durbin–Watson                       1.910</pre>
+<figure class="output-figure"><img src="img/07-2.png" alt="Figure 2 produced by the code above" width="1190" height="690" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Apart from the small Ljung–Box warning above, the airline model passes: residuals look <strong>normal</strong> (Jarque–Bera p ≈ 0.6, skewness near 0, kurtosis near 3), there's <strong>no significant change in variance</strong>, and <strong>Durbin–Watson ≈ 1.9</strong>, close to 2. These checks are about the <em>model's assumptions</em>, which matter most for its <strong>prediction intervals</strong>. The backtest below remains the judge of its <strong>forecasts</strong>.</p>
+<h3 id="letting-the-computer-search-auto-arima">Letting the computer search: <code>auto_arima</code></h3>
+<p>Choosing orders by hand, from ACF plots and a small grid, is instructive but slow. The <strong><code>pmdarima</code></strong> package ports R's <code>auto.arima</code> (Hyndman &amp; Khandakar, 2008), a <strong>stepwise search</strong>. It starts from a few simple models, repeatedly tries neighbouring orders (one more or one fewer AR or MA term, seasonal or not), and keeps moving while AIC improves. We fix <span class="math inline">d = D = 1</span> from chapter 03 and let it search the rest. It fits a few dozen models, so this cell takes a minute or so.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import pmdarima as pm
+
+auto_fit = pm.auto_arima(co2_train, seasonal=True, m=12, d=1, D=1, stepwise=True,
+                         suppress_warnings=True, error_action=&quot;ignore&quot;)
+print(f&quot;auto_arima chose {auto_fit.order}{auto_fit.seasonal_order}, AIC {auto_fit.aic():.1f} &quot;
+      f&quot;(airline: {co2_fits[&#x27;airline (0,1,1)(0,1,1)&#x27;].aic:.1f})&quot;)</code></pre>
+<pre class="output">auto_arima chose (0, 1, 3)(0, 1, 1, 12), AIC 193.4 (airline: 203.6)</pre>
+</div>
+
+<div class="md">
+<p>The search goes further than our small grid could. It adds extra MA terms and lowers AIC below both of our candidates. Whether that buys better <em>forecasts</em> is a separate question, the one Exercise 4 raises for the (1,1,1) model, so we include <code>auto_arima</code>'s pick in the backtest.</p>
+<blockquote>
+<p><strong>Use the automation, keep the judgement.</strong> An automatic search optimises one in-sample number over a limited menu of models. It won't tell you that a series needs a log transform, that a structural break happened, or that the backtest disagrees. Check its choice with the same diagnostics and backtests as any hand-picked model.</p>
+</blockquote>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_origins = pd.date_range(&quot;1990-01-01&quot;, &quot;2000-12-01&quot;, freq=&quot;QS&quot;)      # quarterly, to keep runtime modest
+co2_coverage = []
+
+def airline_forecast(history, horizon):
+    fit = SARIMAX(history, order=(0, 1, 1), seasonal_order=(0, 1, 1, 12)).fit(disp=False)
+    prediction = fit.get_forecast(horizon)
+    band = prediction.conf_int(alpha=0.2).to_numpy()
+    target = co2.reindex(pd.date_range(history.index[-1] + pd.offsets.MonthBegin(1), periods=horizon, freq=&quot;MS&quot;)).to_numpy()
+    co2_coverage.append(np.where(np.isnan(target), np.nan, (target &gt;= band[:, 0]) &amp; (target &lt;= band[:, 1])))
+    return prediction.predicted_mean.to_numpy()
+
+def holt_winters(seasonal):
+    return lambda history, horizon: ExponentialSmoothing(
+        history.to_numpy(), trend=&quot;add&quot;, seasonal=seasonal, seasonal_periods=12,
+        initialization_method=&quot;estimated&quot;).fit().forecast(horizon)
+
+def seasonal_naive_drift(history, horizon, period=12):
+    growth = history.iloc[-period:].mean() - history.iloc[-2 * period:-period].mean()
+    last_year = np.tile(history.iloc[-period:].to_numpy(), int(np.ceil(horizon / period)))[:horizon]
+    return last_year + growth * np.ceil(np.arange(1, horizon + 1) / period)
+
+co2_models = {
+    &quot;baseline: seasonal naive + drift&quot;: seasonal_naive_drift,
+    &quot;Holt-Winters (additive)&quot;: holt_winters(&quot;add&quot;),
+    &quot;Holt-Winters (multiplicative)&quot;: holt_winters(&quot;mul&quot;),
+    &quot;SARIMA airline&quot;: airline_forecast,
+    f&quot;SARIMA auto_arima {auto_fit.order}{auto_fit.seasonal_order}&quot;: lambda history, horizon: SARIMAX(
+        history, order=auto_fit.order, seasonal_order=auto_fit.seasonal_order).fit(disp=False).forecast(horizon).to_numpy(),
+}
+co2_table = pd.DataFrame({name: tsutils.evaluate(tsutils.backtest(co2, f, co2_origins, 12))[&quot;MAE&quot;]
+                          for name, f in co2_models.items()})
+co2_table.loc[[1, 3, 6, 12]].T</code></pre>
+<pre class="output">h                                            1      3      6      12
+baseline: seasonal naive + drift          0.494  0.564  0.683  0.842
+Holt-Winters (additive)                   0.225  0.357  0.489  0.644
+Holt-Winters (multiplicative)             0.229  0.336  0.471  0.671
+SARIMA airline                            0.218  0.310  0.437  0.643
+SARIMA auto_arima (0, 1, 3)(0, 1, 1, 12)  0.221  0.336  0.461  0.656</pre>
+</div>
+
+<div class="md">
+<p>The airline model edges out both Holt-Winters versions at most horizons. They're close competitors: both families were built for this kind of series, and the differences are a few hundredths of a ppm.</p>
+<p><code>auto_arima</code>'s pick, despite its clearly lower AIC, forecasts <strong>slightly worse than the airline model at every horizon</strong>. The extra MA terms fit the 1958–1989 history a little better, but they don't carry over to the future. This is the &quot;keep the judgement&quot; warning in practice: the two-parameter classic, chosen by BIC and the ACF, wins where it counts.</p>
+<p>How about the intervals?</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pd.Series(np.nanmean(co2_coverage, axis=0), index=pd.RangeIndex(1, 13, name=&quot;months ahead&quot;),
+          name=&quot;coverage of 80% interval&quot;).to_frame().T.style.format(&quot;{:.0%}&quot;)</code></pre>
+<pre class="output">months ahead                1    2    3    4    5    6    7    8    9   10   11   12
+coverage of 80% interval  86%  80%  86%  75%  73%  80%  75%  75%  75%  75%  80%  82%</pre>
+</div>
+
+<div class="md">
+<p>Like ETS in chapter 05, SARIMA's model-based intervals run <strong>a little narrow</strong> at medium horizons: about three in four actuals land inside a nominal 80% band. That's the same El Niño story. Occasional bursts of faster growth are bigger than the model's Gaussian errors allow for.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-sarimax-bringing-in-the-weather">3. SARIMAX: bringing in the weather</h2>
+<p><strong>SARIMAX</strong> adds external (&quot;exogenous&quot;) regressors <span class="math inline">x_t</span>. The cleanest way to read it is as a <strong>regression with ARMA errors</strong>:</p>
+<div class="math display">a_t = \beta_0 + \beta^\top x_t + \eta_t, \qquad \eta_t \sim \text{ARMA}(p, q).</div>
+<p>Here <span class="math inline">a_t</span> is the log PM2.5 anomaly from chapter 06, the deviation from the seasonal profile. The regression part says how the weather moves PM2.5. The ARMA errors capture the memory that remains after accounting for the weather.</p>
+<p><code>tsutils.load_daily_weather()</code> summarises the hourly weather into daily features. Chapter 01's wind-direction exercise already hinted at which ones matter.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">weather = tsutils.load_daily_weather()
+
+def anomalies(series, profile):
+    return np.log(series) - profile.reindex(series.index.dayofyear).to_numpy()
+
+train = y[:&quot;2013-12-31&quot;]
+profile = tsutils.log_climatology_profile(train)
+train_anomaly = anomalies(train, profile)
+
+same_day = [&quot;dew_point&quot;, &quot;humidity&quot;, &quot;pressure&quot;, &quot;temp&quot;, &quot;precip&quot;, &quot;nw_share&quot;, &quot;calm_share&quot;, &quot;wind&quot;]
+weather.loc[train.index, same_day].corrwith(train_anomaly).sort_values().round(2).to_frame(&quot;correlation with same-day PM2.5 anomaly&quot;)</code></pre>
+<pre class="output">            correlation with same-day PM2.5 anomaly
+nw_share                                      -0.49
+wind                                          -0.40
+pressure                                      -0.11
+temp                                          -0.00
+precip                                         0.01
+dew_point                                      0.23
+calm_share                                     0.44
+humidity                                       0.53</pre>
+</div>
+
+<div class="md">
+<p>The pattern makes physical sense:</p>
+<ul>
+<li><strong>Humid, calm days are polluted.</strong> Moist, stagnant air traps particles and helps secondary particles form.</li>
+<li><strong>North-westerly wind and high wind speeds clean the air.</strong> Dry air from the north-west sweeps pollution out of the city.</li>
+</ul>
+</div>
+
+<div class="md">
+<h3 id="lead-or-lag-cross-correlation">Lead or lag? Cross-correlation</h3>
+<p>A same-day correlation can't tell us whether the weather <em>drives</em> PM2.5 or merely moves <em>with</em> it. The <strong>cross-correlation function (CCF)</strong> helps by shifting one series against the other: the correlation between PM2.5 today and the weather <span class="math inline">k</span> days <strong>earlier</strong>, for a range of <span class="math inline">k</span>. If a variable's influence arrives with a delay, its correlation peaks at a positive lag.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">lead_lag = pd.DataFrame({
+    column: {k: np.corrcoef(weather.loc[train.index, column].shift(k).iloc[10:-10],
+                            train_anomaly.iloc[10:-10])[0, 1]
+             for k in range(-2, 4)}
+    for column in [&quot;nw_share&quot;, &quot;nw_evening&quot;, &quot;humidity&quot;, &quot;pressure_change&quot;]
+})
+lead_lag.index.name = &quot;weather this many days earlier&quot;
+lead_lag.round(2)</code></pre>
+<pre class="output">                                nw_share  nw_evening  humidity  \
+weather this many days earlier                                   
+-2                                 -0.04        0.02      0.17   
+-1                                 -0.13       -0.04      0.34   
+ 0                                 -0.50       -0.28      0.53   
+ 1                                 -0.42       -0.54      0.21   
+ 2                                 -0.11       -0.20      0.02   
+ 3                                 -0.01       -0.04     -0.03   
+
+                                pressure_change  
+weather this many days earlier                   
+-2                                         0.21  
+-1                                         0.06  
+ 0                                        -0.38  
+ 1                                        -0.12  
+ 2                                         0.04  
+ 3                                         0.03</pre>
+</div>
+
+<div class="md">
+<p>Most variables correlate most strongly on the <strong>same day</strong> (lag 0), with a weaker echo at lag 1, partly because both PM2.5 and weather are autocorrelated. <strong>Evening north-westerly wind is the exception</strong>: its strongest correlation is with PM2.5 <strong>the following day</strong> (lag 1). An evening wind shift is the leading edge of the air mass that clears the next day's smog. We'll exploit exactly this lead in section 4.</p>
+<p>Two cautions for reading a CCF. First, autocorrelation in <em>both</em> series inflates correlations at neighbouring lags, so a peak's location is more trustworthy than the exact values. The rigorous fix is to <em>prewhiten</em> both series with an ARMA filter first. Second, a lead is evidence of predictive value, not proof of causation (chapter 03's spurious correlations).</p>
+</div>
+
+<div class="md">
+<p>Now fit the model on 2010–2013, with the weather standardised so the coefficients are comparable:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">X_train = weather.loc[train.index, same_day]
+X_std = (X_train - X_train.mean()) / X_train.std()
+
+no_weather = SARIMAX(train_anomaly.to_numpy(), order=(2, 0, 0), trend=&quot;c&quot;).fit(disp=False)
+with_weather = SARIMAX(train_anomaly, exog=X_std, order=(2, 0, 0), trend=&quot;c&quot;).fit(disp=False)
+
+print(f&quot;AIC without weather: {no_weather.aic:.0f}   with weather: {with_weather.aic:.0f}&quot;)
+with_weather.summary().tables[1]</code></pre>
+<pre class="output">AIC without weather: 3049   with weather: 2086
+&lt;class &#x27;statsmodels.iolib.table.SimpleTable&#x27;&gt;</pre>
+</div>
+
+<div class="md">
+<p>AIC falls by about <strong>a third</strong>. Same-day weather explains a large share of what the AR(2) alone called &quot;noise&quot;. Each coefficient is the change in log PM2.5 for a one-standard-deviation change in that weather variable, holding the others fixed:</p>
+<ul>
+<li><strong>Humidity</strong> and <strong>calm</strong> conditions push PM2.5 up. <strong>North-westerly wind</strong>, <strong>wind speed</strong>, <strong>rain</strong> (which washes particles out) and <strong>higher pressure</strong> push it down.</li>
+<li><strong>Dew point</strong> is no longer significant. It moves together with humidity and temperature, so once those are in the model it adds little. Coefficients of correlated inputs should be read with care: the model can shift weight between them without changing its forecasts much.</li>
+<li>The <strong>second AR coefficient has collapsed to about zero</strong>. In chapter 06, AR(2) needed that lag to capture how quickly episodes clear. We can now see what it was standing in for: the <strong>weather</strong>. Sharp clean-ups are fronts arriving, and once the model sees the wind, one lag of memory is enough. This is a common pattern, where apparent dynamics in a series turn out to be the footprint of a missing driver.</li>
+</ul>
+<hr />
+<h2 id="4-the-question-that-decides-honesty-what-is-the-future-weather">4. The question that decides honesty: what is the future weather?</h2>
+<p>This fit used each day's <strong>observed</strong> weather. To forecast next Tuesday, we'd need next Tuesday's weather, which hasn't happened yet. Our dataset has no weather <em>forecasts</em>, only what actually occurred. There are three ways to handle this:</p>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Future weather fed to the model</th>
+<th>Honest?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A. Oracle</strong></td>
+<td>the weather that actually happened</td>
+<td>❌ uses the future, but it shows the <strong>upper bound</strong> a perfect weather forecast would give</td>
+</tr>
+<tr>
+<td><strong>B. Naive weather forecast</strong></td>
+<td>today's weather, repeated</td>
+<td>✅ uses only the past</td>
+</tr>
+<tr>
+<td><strong>C. Only what's known today</strong></td>
+<td>a model built so that tomorrow's PM2.5 depends on <strong>today's</strong> weather</td>
+<td>✅ uses only the past</td>
+</tr>
+</tbody>
+</table>
+<p>Approach A is only acceptable because it's <strong>labelled and kept out of the leaderboard</strong>. Its scores go to a separate file, <code>tsutils.ORACLE_RESULTS_PATH</code>.</p>
+<h3 id="a-practical-refit-schedule">A practical refit schedule</h3>
+<p>Refitting a SARIMAX with eight regressors at every one of 359 origins is slow. A common production pattern is to <strong>refit the parameters once a month</strong>, and in between <strong>update the model with each new day's data</strong> using the fixed parameters. statsmodels' <code>results.apply(new_data)</code> does exactly that update. The parameters only ever come from data before the refit date, so nothing leaks.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def weather_forecaster(features, lag=0, future=&quot;mean&quot;, future_source=None, order=(2, 0, 0)):
+    &quot;&quot;&quot;Seasonal log profile + SARIMAX(order) on anomalies with weather regressors.
+
+    lag:     0 -&gt; each day&#x27;s PM2.5 is explained by that day&#x27;s weather
+             1 -&gt; ... by the previous day&#x27;s weather
+    future:  how to fill regressor values not yet observed at the origin:
+             &quot;oracle&quot;  - the actual weather (from `future_source`, default the real data)
+             &quot;persist&quot; - repeat the origin day&#x27;s weather
+             &quot;mean&quot;    - the historical average (i.e. &quot;no information&quot;)
+    Parameters are refitted at the first origin of each month and reused until the next.
+    &quot;&quot;&quot;
+    lagged = weather[features].shift(lag)
+    lagged_future = (weather if future_source is None else future_source)[features].shift(lag)
+    cache = {}
+
+    def forecast(history, horizon):
+        origin = history.index[-1]
+        month = (origin.year, origin.month)
+        if month not in cache:
+            profile_ = tsutils.log_climatology_profile(history)
+            X_hist = lagged.loc[history.index].iloc[lag:]
+            mean, std = X_hist.mean(), X_hist.std()
+            fit = SARIMAX(anomalies(history, profile_).iloc[lag:].to_numpy(),
+                          exog=((X_hist - mean) / std).to_numpy(), order=order, trend=&quot;c&quot;).fit(disp=False)
+            cache[month] = (profile_, mean, std, fit)
+        profile_, mean, std, fit = cache[month]
+
+        X_hist = ((lagged.loc[history.index].iloc[lag:] - mean) / std).to_numpy()
+        updated = fit.apply(anomalies(history, profile_).iloc[lag:].to_numpy(), exog=X_hist)
+
+        targets = pd.date_range(origin + pd.Timedelta(days=1), periods=horizon, freq=&quot;D&quot;)
+        X_future = lagged_future.loc[targets].copy()
+        unknown = (targets - pd.Timedelta(days=lag)) &gt; origin     # regressor values not yet observed
+        if future == &quot;persist&quot;:
+            X_future.loc[unknown] = weather.loc[origin, features].to_numpy()
+        elif future == &quot;mean&quot;:
+            X_future.loc[unknown] = mean.to_numpy()
+        X_future = ((X_future - mean) / std).to_numpy()
+
+        seasonal = profile_.reindex(targets.dayofyear).to_numpy()
+        return np.exp(updated.forecast(horizon, exog=X_future) + seasonal)
+
+    return forecast</code></pre>
+</div>
+
+<div class="md">
+<p>First, a sanity check on the refit schedule. With <strong>no</strong> weather, monthly refits should score almost exactly like chapter 06's AR(2), which refitted every day. We handle &quot;no regressors&quot; with a tiny wrapper:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ar2_monthly_refit():
+    cache = {}
+    def forecast(history, horizon):
+        origin = history.index[-1]
+        month = (origin.year, origin.month)
+        if month not in cache:
+            profile_ = tsutils.log_climatology_profile(history)
+            cache[month] = (profile_, SARIMAX(anomalies(history, profile_).to_numpy(),
+                                              order=(2, 0, 0), trend=&quot;c&quot;).fit(disp=False))
+        profile_, fit = cache[month]
+        updated = fit.apply(anomalies(history, profile_).to_numpy())
+        targets = pd.date_range(origin + pd.Timedelta(days=1), periods=horizon, freq=&quot;D&quot;)
+        return np.exp(updated.forecast(horizon) + profile_.reindex(targets.dayofyear).to_numpy())
+    return forecast
+
+monthly = tsutils.evaluate(tsutils.backtest(y, ar2_monthly_refit(), origins, H, actuals=actual))
+board = tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;)
+pd.DataFrame({&quot;AR(2), refit daily (ch. 06)&quot;: board[&quot;AR(2) on anomalies&quot;], &quot;AR(2), refit monthly&quot;: monthly[&quot;MAE&quot;]})</code></pre>
+<pre class="output">   AR(2), refit daily (ch. 06)  AR(2), refit monthly
+h                                                   
+1                       46.803                46.936
+2                       55.419                55.581
+3                       56.264                56.432
+4                       56.533                56.731
+5                       56.587                56.747
+6                       56.491                56.677
+7                       56.407                56.547</pre>
+</div>
+
+<div class="md">
+<p>Practically identical, so the schedule costs nothing in accuracy. Now the three approaches.</p>
+<h3 id="a-the-oracle-perfect-weather-forecasts">A. The oracle: perfect weather forecasts</h3>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">oracle = tsutils.evaluate(tsutils.backtest(y, weather_forecaster(same_day, lag=0, future=&quot;oracle&quot;),
+                                           origins, H, actuals=actual))
+tsutils.save_scores(&quot;ORACLE: SARIMAX with actual future weather&quot;, oracle, path=tsutils.ORACLE_RESULTS_PATH)
+oracle[[&quot;MAE&quot;, &quot;RMSE&quot;]].T</code></pre>
+<pre class="output">h          1       2       3       4       5       6       7
+MAE   34.172  42.827  46.197  47.723  48.823  49.481  49.679
+RMSE  50.895  64.262  69.680  71.623  72.796  73.812  74.108</pre>
+</div>
+
+<div class="md">
+<h3 id="b-the-same-model-with-a-naive-weather-forecast">B. The same model, with a naive weather forecast</h3>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">persisted = tsutils.evaluate(tsutils.backtest(y, weather_forecaster(same_day, lag=0, future=&quot;persist&quot;),
+                                              origins, H, actuals=actual))
+tsutils.save_scores(&quot;SARIMAX, weather persisted&quot;, persisted)
+persisted[[&quot;MAE&quot;, &quot;RMSE&quot;]].T</code></pre>
+<pre class="output">h          1       2       3       4       5       6       7
+MAE   50.177  66.730  70.935  71.757  68.258  66.357  67.962
+RMSE  69.778  91.241  95.748  97.557  94.821  93.577  95.444</pre>
+</div>
+
+<div class="md">
+<h3 id="c-use-only-what-s-known-today">C. Use only what's known today</h3>
+<p>Approach C changes the model instead of the inputs. It regresses each day's anomaly on the <strong>previous</strong> day's weather. At the forecast origin (the end of day <span class="math inline">T</span>), today's weather is fully observed, so the forecast for day <span class="math inline">T + 1</span> uses real information. For later days, the regressors are unknown and set to their average, so those forecasts rely on the AR memory alone.</p>
+<p>Which of today's weather features say something about <em>tomorrow</em>? The best candidates describe <strong>changes in progress</strong>: the evening wind (a north-westerly arriving after dark signals tomorrow's clean-up), and today's change in pressure and humidity (a cold front passing).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">known_today = [&quot;nw_share&quot;, &quot;calm_share&quot;, &quot;humidity&quot;, &quot;wind&quot;,
+               &quot;nw_evening&quot;, &quot;humidity_evening&quot;, &quot;pressure_change&quot;, &quot;humidity_change&quot;]
+
+ar2_residual = pd.Series(no_weather.resid, index=train.index)
+(weather[known_today].shift(1).loc[train.index].corrwith(ar2_residual)
+ .sort_values().round(2).to_frame(&quot;correlation with the part of PM2.5 AR(2) can&#x27;t predict&quot;))</code></pre>
+<pre class="output">                  correlation with the part of PM2.5 AR(2) can&#x27;t predict
+nw_evening                                                    -0.44     
+nw_share                                                      -0.18     
+humidity                                                      -0.06     
+wind                                                          -0.05     
+humidity_change                                               -0.04     
+humidity_evening                                               0.06     
+calm_share                                                     0.08     
+pressure_change                                                0.13</pre>
+</div>
+
+<div class="md">
+<p><strong>Evening north-westerly wind</strong> stands out. It predicts much of what the AR(2) model gets wrong about tomorrow, because it's the leading edge of the weather change that clears the smog.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">honest = tsutils.evaluate(tsutils.backtest(y, weather_forecaster(known_today, lag=1, future=&quot;mean&quot;),
+                                           origins, H, actuals=actual))
+tsutils.save_scores(&quot;SARIMAX, today&#x27;s weather&quot;, honest)
+honest[[&quot;MAE&quot;, &quot;RMSE&quot;]].T</code></pre>
+<pre class="output">h          1       2       3       4       5       6       7
+MAE   40.937  55.956  56.834  56.809  56.687  56.634  56.545
+RMSE  61.627  82.695  84.237  84.488  84.419  84.418  84.331</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-what-the-three-approaches-tell-us">5. What the three approaches tell us</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">comparison = pd.DataFrame({
+    &quot;climatology (median)&quot;: board[&quot;climatology (median)&quot;],
+    &quot;AR(2) on anomalies (ch. 06)&quot;: board[&quot;AR(2) on anomalies&quot;],
+    &quot;B: weather persisted&quot;: persisted[&quot;MAE&quot;],
+    &quot;C: today&#x27;s weather&quot;: honest[&quot;MAE&quot;],
+    &quot;A: ORACLE (perfect weather)&quot;: oracle[&quot;MAE&quot;],
+})
+
+fig, ax = plt.subplots()
+for name, column in comparison.items():
+    style = dict(ls=&quot;--&quot;, color=&quot;0.3&quot;) if name.startswith(&quot;A:&quot;) else {}
+    ax.plot(column.index, column, marker=&quot;o&quot;, label=name, **style)
+ax.set(title=&quot;MAE by horizon: the value of weather information&quot;, xlabel=&quot;days ahead&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+ax.legend(fontsize=8)
+comparison</code></pre>
+<pre class="output">   climatology (median)  AR(2) on anomalies (ch. 06)  B: weather persisted  \
+h                                                                            
+1                56.079                       46.803                50.177   
+2                56.561                       55.419                66.730   
+3                56.771                       56.264                70.935   
+4                57.133                       56.533                71.757   
+5                57.099                       56.587                68.258   
+6                57.132                       56.491                66.357   
+7                57.068                       56.407                67.962   
+
+   C: today&#x27;s weather  A: ORACLE (perfect weather)  
+h                                                   
+1              40.937                       34.172  
+2              55.956                       42.827  
+3              56.834                       46.197  
+4              56.809                       47.723  
+5              56.687                       48.823  
+6              56.634                       49.481  
+7              56.545                       49.679</pre>
+<figure class="output-figure"><img src="img/07-3.png" alt="Figure 3 produced by the code above" width="997" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Three lessons, one per approach:</p>
+<p><strong>A. Perfect weather would be worth a lot.</strong> The oracle cuts the one-day error by roughly a quarter against the AR(2), and stays well ahead at every horizon. With a perfect weather forecast, PM2.5 would be far more predictable a week out than anything we've managed so far. This number isn't achievable. It's a <strong>ceiling</strong>, and it tells you how much a <em>real</em> weather forecast could be worth.</p>
+<p><strong>B. Bad inputs are worse than no inputs.</strong> Feeding the same model &quot;tomorrow's weather = today's&quot; makes it <strong>worse than ignoring the weather altogether</strong>, at every horizon. The model learned that weather effects are strong, so it trusts its weather inputs, and a naive weather forecast is often wrong in exactly the situations that matter, like the day a front arrives. A model trained on perfect inputs and run on rough ones is a very common failure in practice, and it's easy to miss if you only ever evaluate with the oracle.</p>
+<p><strong>C. Honest information helps where it exists.</strong> Building the model around what's actually known gives the <strong>best honest one-day forecast so far</strong>, a clear gain over AR(2). The evening wind carries real, observable news about tomorrow. From day 2 on it's level with AR(2), a fraction behind, because today's weather says nothing reliable about the day after tomorrow. Closing that gap to the oracle would take <strong>real weather forecasts</strong> as inputs, which is exactly what operational air-quality services use.</p>
+<blockquote>
+<p><strong>Rule for the rest of the course:</strong> any input a model uses at forecast time must be something you would actually have at that time. When a study reports skill from inputs like observed future weather, check whether it's quietly an oracle.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-the-airline-model-s-autocorrelation-fingerprint">Exercise 1: The airline model's autocorrelation fingerprint</h3>
+<p>Multiplying out <span class="math inline">(1 + \theta B)(1 + \Theta B^{12})</span> gives MA coefficients at lags 1, 12 and 13. Using the fitted airline model's <span class="math inline">\theta</span> and <span class="math inline">\Theta</span> (from <code>co2_fits</code>), build the 13-coefficient MA polynomial and compute its <strong>theoretical</strong> ACF with <code>ArmaProcess</code>. Plot it next to the sample ACF of <code>double_diff</code>. Where are the non-zero lags, and why is there one at lag 11?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">from statsmodels.tsa.arima_process import ArmaProcess
+from statsmodels.tsa.stattools import acf
+
+airline = co2_fits[&quot;airline (0,1,1)(0,1,1)&quot;]
+th, Th = airline.params[&quot;ma.L1&quot;], airline.params[&quot;ma.S.L12&quot;]
+ma = np.zeros(13)
+ma[0], ma[11], ma[12] = th, Th, th * Th            # lags 1, 12 and 13
+theory = ArmaProcess.from_coeffs([], ma).acf(25)[1:]
+sample = acf(double_diff, nlags=24)[1:]
+
+lags_ = np.arange(1, 25)
+plt.vlines(lags_, 0, sample, lw=3, alpha=0.5, label=&quot;sample&quot;)
+plt.plot(lags_, theory, &quot;o&quot;, color=&quot;#d1495b&quot;, label=&quot;airline theory&quot;)
+plt.axhline(0, color=&quot;k&quot;, lw=0.8)
+plt.legend()
+plt.title(&quot;ACF of the doubly-differenced CO₂&quot;)
+print(pd.Series(theory, index=lags_).round(2).loc[lambda s: s.abs() &gt; 0.01])
+</code></pre>
+<p>The theoretical ACF is non-zero only at lags <strong>1, 11, 12 and 13</strong>. Lag 11 appears because the shock at lag 1 and the shock at lag 12 are 11 steps apart. Two MA parameters generate this whole pattern, and the sample ACF follows it closely, which is why the airline model fits so many monthly series with trend and seasonality.</p>
+</details>
+<h3 id="exercise-2-how-much-is-the-evening-wind-worth">Exercise 2: How much is the evening wind worth?</h3>
+<p>Refit approach C <strong>without</strong> <code>nw_evening</code> and compare the one-day-ahead MAE with the full honest model. This is an <em>ablation</em>: removing one input to measure its contribution.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">without_evening = [f for f in known_today if f != &quot;nw_evening&quot;]
+ablated = tsutils.evaluate(tsutils.backtest(y, weather_forecaster(without_evening, lag=1, future=&quot;mean&quot;),
+                                            origins, H, actuals=actual))
+pd.DataFrame({&quot;with nw_evening&quot;: honest[&quot;MAE&quot;], &quot;without&quot;: ablated[&quot;MAE&quot;]}).loc[[1, 2]]
+</code></pre>
+<p>Removing the evening wind gives back a good part of the one-day improvement. Other features, like the daily north-west share and the pressure change, carry some of the same information, so the loss is smaller than the feature's correlation alone would suggest. Ablations measure what a feature adds <em>given the others</em>, and that's usually less than what it shows on its own.</p>
+</details>
+<h3 id="exercise-3-how-good-does-a-weather-forecast-have-to-be">Exercise 3: How good does a weather forecast have to be?</h3>
+<p>Real weather forecasts are imperfect, and they get worse with lead time. Simulate that. Add random noise to the actual weather, with a standard deviation of 0.5× and then 1.0× each variable's own standard deviation, and pass it as <code>future_source</code> to the oracle model. Where do the noisy versions fall between approach B, the oracle, and the AR(2) without weather?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">noise_rng = np.random.default_rng(0)
+noisy_results = {}
+for scale in [0.5, 1.0]:
+    noisy = weather.copy()
+    scale_by = weather.loc[:tsutils.DEV_END, same_day].std().to_numpy()      # development-period spread
+    noisy[same_day] += noise_rng.normal(size=(len(weather), len(same_day))) * scale_by * scale
+    noisy_results[f&quot;noise {scale}×sd&quot;] = tsutils.evaluate(tsutils.backtest(
+        y, weather_forecaster(same_day, lag=0, future=&quot;oracle&quot;, future_source=noisy),
+        origins, H, actuals=actual))[&quot;MAE&quot;]
+
+pd.DataFrame({&quot;ORACLE&quot;: oracle[&quot;MAE&quot;], **noisy_results,
+              &quot;AR(2), no weather&quot;: board[&quot;AR(2) on anomalies&quot;], &quot;B: persisted&quot;: persisted[&quot;MAE&quot;]})
+</code></pre>
+<p>The advantage disappears fast. With noise of <strong>half</strong> each variable's spread, the weather model is already <strong>worse than AR(2) with no weather at all</strong>, at every horizon. With noise as large as the weather's own variability, errors nearly double. The model's coefficients were learned from accurate weather, so it passes every input error straight into the forecast, and with eight inputs the errors add up.</p>
+<p>Two caveats keep this from being as bleak as it looks. Real day-ahead weather forecasts are much better than half-spread noise, and their errors are correlated across variables and grow with lead time, unlike this independent noise. Still, the lesson holds. <strong>An exogenous-input model is only as good as its input forecasts, and it can be worse than no inputs.</strong> The standard remedy is to train the model on <em>forecast</em> weather, the inputs it will actually receive, so it learns how much to trust them.</p>
+</details>
+<h3 id="exercise-4-do-cleaner-residuals-mean-better-forecasts">Exercise 4: Do cleaner residuals mean better forecasts?</h3>
+<p>AIC and the Ljung–Box test preferred (1,1,1)(0,1,1)₁₂ to the airline model. Backtest it on the same quarterly CO₂ origins and compare MAE by horizon.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def sarima_111(history, horizon):
+    return SARIMAX(history, order=(1, 1, 1), seasonal_order=(0, 1, 1, 12)).fit(disp=False).forecast(horizon).to_numpy()
+
+alt = tsutils.evaluate(tsutils.backtest(co2, sarima_111, co2_origins, 12))[&quot;MAE&quot;]
+pd.DataFrame({&quot;airline&quot;: co2_table[&quot;SARIMA airline&quot;], &quot;(1,1,1)(0,1,1)&quot;: alt}).loc[[1, 3, 6, 12]]
+</code></pre>
+<p>The two forecast almost identically, and if anything the airline model is slightly <em>better</em> at every horizon. The extra AR term mops up a small amount of residual autocorrelation, but that structure is too weak to help the forecasts, and the extra parameter adds a little estimation noise. &quot;The residuals pass Ljung–Box&quot; is a useful diagnostic. It isn't the same as &quot;the forecasts are better&quot;, and when the gain is this small, the simpler model is easier to explain and maintain.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li><strong>ARIMA</strong> puts differencing inside the model. ARIMA(0,1,1) <em>is</em> SES, which is why SES can't revert to a mean.</li>
+<li><strong>SARIMA</strong> adds seasonal differencing and seasonal AR/MA terms that multiply with the regular ones. The <strong>airline model</strong> (0,1,1)(0,1,1)₁₂ is the classic, identified from spikes at lags 1 and 12 of the doubly-differenced ACF, and it edges out Holt-Winters on CO₂.</li>
+<li>Residual checks test the model's <strong>assumptions</strong>, which matter for intervals. <code>auto_arima</code> automates the order search. The backtest still judges the forecasts.</li>
+<li>A <strong>cross-correlation</strong> revealed that evening wind <em>leads</em> PM2.5 by a day.</li>
+<li><strong>SARIMAX</strong> = regression on external inputs + ARMA errors. Same-day weather explains a large share of PM2.5's day-to-day swings.</li>
+<li><strong>Future inputs decide honesty.</strong> With perfect weather (the <em>oracle</em>, kept off the leaderboard) errors fall sharply. Naively guessed weather, or even moderately noisy weather (Exercise 3), makes the model <strong>worse</strong> than no weather. Weather that's genuinely known today gives the <strong>best honest one-day forecast</strong> so far.</li>
+<li><strong>Refit monthly, update daily</strong> is a practical schedule that costs nothing in accuracy here.</li>
+</ul>
+<p><strong>Next:</strong> <em>08 · Prophet</em>. A very different philosophy: a curve-fitting model with trend changepoints, multiple seasonalities and holidays, built for business forecasting at scale. We'll see how it fares on the same tasks.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="06-autocorrelation-and-arma.html"><span class="lbl">Previous · 06</span><span class="t">Autocorrelation and ARMA</span></a>
+  <a class="next" rel="next" href="08-prophet.html"><span class="lbl">Next · 08</span><span class="t">Prophet</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 07 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

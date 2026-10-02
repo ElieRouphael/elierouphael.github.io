@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>05 · Exponential Smoothing — Time-series course</title>
+<meta name="description" content="SES from scratch, fitting objectives, Holt, damped trend, Holt-Winters, and ETS with AIC and interval coverage.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 05 of 11</span>
+  <h1>Exponential Smoothing</h1>
+  <div class="intro prose">
+<p>Chapter 04's two strongest baselines sit at opposite extremes. <strong>Naive</strong> puts all its weight on today. The <strong>mean</strong> spreads its weight equally over every day ever recorded. Exponential smoothing sits between them: a weighted average in which <strong>recent observations count more and older ones fade away geometrically</strong>. Add components for trend and seasonality and you get a family of models that has powered business and supply-chain forecasting since the 1950s, and still performs remarkably well in forecasting competitions.</p>
+<p>This chapter builds the family up one component at a time, then puts it through the same honest backtest as the baselines. The results are instructive in both directions. On one of our series exponential smoothing is excellent. On the other it runs into a mismatch between its assumptions and the data, and understanding <em>why</em> is the real lesson.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>implement simple exponential smoothing from scratch and explain the smoothing parameter α</li>
+<li>explain how α is estimated, and why the <strong>fitting objective</strong> matters as much as the model</li>
+<li>extend the model with <strong>trend</strong> (Holt), <strong>damped trend</strong> and <strong>seasonality</strong> (Holt-Winters)</li>
+<li>use the <strong>ETS</strong> state-space framework for model selection by AIC and for prediction intervals</li>
+<li>judge when exponential smoothing's core assumption, <em>the level persists</em>, fits a series</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/05_exponential_smoothing.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-simple-exponential-smoothing-ses">1. Simple exponential smoothing (SES)</a></li>
+    <li><a href="#2-estimating">2. Estimating α</a></li>
+    <li><a href="#3-ses-on-the-pm2-5-task">3. SES on the PM2.5 task</a></li>
+    <li><a href="#4-matching-the-objective-to-the-task">4. Matching the objective to the task</a></li>
+    <li><a href="#5-adding-a-trend-holt-s-method">5. Adding a trend: Holt's method</a></li>
+    <li><a href="#6-adding-seasonality-holt-winters">6. Adding seasonality: Holt-Winters</a></li>
+    <li><a href="#7-the-ets-framework-a-statistical-model-underneath">7. The ETS framework: a statistical model underneath</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from statsmodels.tsa.holtwinters import ExponentialSmoothing, SimpleExpSmoothing
+from statsmodels.tsa.exponential_smoothing.ets import ETSModel
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 2)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+origins, H = tsutils.BACKTEST_ORIGINS, tsutils.HORIZON</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-simple-exponential-smoothing-ses">1. Simple exponential smoothing (SES)</h2>
+<p>SES keeps a single number, the <strong>level</strong> <span class="math inline">\ell_t</span>, and updates it each time a new observation arrives:</p>
+<div class="math display">\ell_t = \alpha\, y_t + (1 - \alpha)\, \ell_{t-1}, \qquad 0 &lt; \alpha \le 1.</div>
+<p>The forecast for every future step is simply the latest level: <span class="math inline">\hat y_{t+h} = \ell_t</span>.</p>
+<p>Unrolling the recursion shows where the name comes from. The level is a weighted average of all past observations,</p>
+<div class="math display">\ell_t = \alpha\, y_t + \alpha(1-\alpha)\, y_{t-1} + \alpha(1-\alpha)^2\, y_{t-2} + \dots</div>
+<p>with weights that shrink <strong>exponentially</strong> with age. <span class="math inline">\alpha</span> sets how fast. With <span class="math inline">\alpha = 1</span>, SES <em>is</em> the naive forecast. As <span class="math inline">\alpha \to 0</span> it approaches a long-run average.</p>
+<p>The same update can be written in <strong>error-correction</strong> form, which is often more intuitive:</p>
+<div class="math display">\ell_t = \ell_{t-1} + \alpha\,(y_t - \ell_{t-1}).</div>
+<p>Each day we nudge the level towards the new observation by a fraction <span class="math inline">\alpha</span> of the surprise. <span class="math inline">\alpha</span> works like a learning rate.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">lags = np.arange(15)
+fig, ax = plt.subplots(figsize=(10, 3.5))
+for i, alpha in enumerate([0.2, 0.5, 0.8]):
+    ax.bar(lags + (i - 1) * 0.28, alpha * (1 - alpha) ** lags, width=0.28, label=f&quot;α = {alpha}&quot;)
+ax.set(title=&quot;Weight SES gives to the observation k days ago&quot;, xlabel=&quot;k (days ago)&quot;, ylabel=&quot;weight&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/05-1.png" alt="Figure 1 produced by the code above" width="846" height="354" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Let's implement it. SES needs a starting level <span class="math inline">\ell_0</span> before the first observation; the simplest choice is the first observation itself.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ses_levels(values, alpha, initial_level):
+    &quot;&quot;&quot;Level after each observation: l_t = alpha * y_t + (1 - alpha) * l_{t-1}.&quot;&quot;&quot;
+    levels = np.empty(len(values))
+    level = initial_level
+    for t, value in enumerate(values):
+        level = alpha * value + (1 - alpha) * level
+        levels[t] = level
+    return levels
+
+train = y[:&quot;2013-12-31&quot;]
+ours = ses_levels(train.to_numpy(), alpha=0.3, initial_level=train.iloc[0])
+
+library = SimpleExpSmoothing(train.to_numpy(), initialization_method=&quot;known&quot;,
+                             initial_level=train.iloc[0]).fit(smoothing_level=0.3, optimized=False)
+print(&quot;levels match statsmodels:&quot;, np.allclose(ours, library.level))</code></pre>
+<pre class="output">levels match statsmodels: True</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-estimating">2. Estimating α</h2>
+<p>How much should yesterday count? statsmodels picks <span class="math inline">\alpha</span> (and the starting level) by minimising the <strong>sum of squared one-step-ahead errors</strong> over the training data: at each day, how far was yesterday's level from today's value? We can draw that objective ourselves.</p>
+<p>We'll work on the <strong>log</strong> scale. Chapter 04 showed that MAE rewards forecasting the median, and exponentiating a forecast made on the log scale gives a median-type forecast, exactly what we want.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">log_train = np.log(train.to_numpy())
+alphas = np.round(np.arange(0.01, 1.0, 0.01), 2)
+
+def one_step_sse(values, alpha):
+    levels = ses_levels(values, alpha, initial_level=values[0])
+    errors = values[1:] - levels[:-1]          # forecast for day t is the level after day t-1
+    return np.sum(errors ** 2)
+
+sse = pd.Series([one_step_sse(log_train, a) for a in alphas], index=alphas)
+fitted = SimpleExpSmoothing(log_train, initialization_method=&quot;estimated&quot;).fit()
+
+ax = sse.plot(title=&quot;One-step squared error on 2010–2013 (log scale)&quot;, xlabel=&quot;α&quot;, ylabel=&quot;SSE&quot;)
+ax.axvline(fitted.params[&quot;smoothing_level&quot;], color=&quot;k&quot;, ls=&quot;--&quot;,
+           label=f&quot;statsmodels estimate α = {fitted.params[&#x27;smoothing_level&#x27;]:.2f}&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/05-2.png" alt="Figure 2 produced by the code above" width="1006" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The curve has a clear minimum at a fairly <strong>high</strong> <span class="math inline">\alpha</span>: SES wants to follow yesterday closely. That's consistent with chapter 04, where naive was the best one-day-ahead baseline. statsmodels lands in the same place (small differences come from also estimating the starting level).</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-ses-on-the-pm2-5-task">3. SES on the PM2.5 task</h2>
+<p>Now the honest test: the chapter 04 backtest, refitting <span class="math inline">\alpha</span> at every origin so each forecast only uses data up to that day.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ses_log_forecast(history, horizon):
+    model = SimpleExpSmoothing(np.log(history.to_numpy()), initialization_method=&quot;estimated&quot;).fit()
+    return np.exp(model.forecast(horizon))
+
+ses_scores = tsutils.evaluate(tsutils.backtest(y, ses_log_forecast, origins, H, actuals=actual))
+tsutils.save_scores(&quot;SES (log)&quot;, ses_scores)
+
+board = tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;)
+comparison = board[[&quot;naive&quot;, &quot;climatology (median)&quot;]].assign(**{&quot;SES (log)&quot;: ses_scores[&quot;MAE&quot;]})
+comparison</code></pre>
+<pre class="output">model  naive  climatology (median)  SES (log)
+h                                            
+1      51.10                 56.08      52.06
+2      72.24                 56.56      69.29
+3      81.27                 56.77      74.87
+4      81.56                 57.13      73.41
+5      76.29                 57.10      68.14
+6      75.10                 57.13      68.64
+7      76.94                 57.07      69.07</pre>
+</div>
+
+<div class="md">
+<p><strong>SES loses.</strong> It roughly ties naive for tomorrow, and from day 2 it's well behind climatology, the simple seasonal baseline.</p>
+<p>The reason goes to the heart of the method. <strong>SES assumes the level persists</strong>: whatever level it has estimated today is its forecast for next week too. That's the right assumption for a series whose changes are permanent, like a random walk observed with noise (Exercise 3). But chapter 03 showed PM2.5 <strong>mean-reverts</strong> with a half-life of about a day. A smog peak today is gone by the weekend. SES, fitted to follow yesterday closely, confidently carries today's peak forward for a week.</p>
+<p>There's a second, subtler problem: <strong>the fitting objective doesn't match the use.</strong> <span class="math inline">\alpha</span> was chosen to minimise <em>one-step</em> errors, but we judge the model on steps 1 through 7. What would <span class="math inline">\alpha</span> look like if we chose it separately for each horizon?</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-matching-the-objective-to-the-task">4. Matching the objective to the task</h2>
+<p>A useful property of SES with a fixed <span class="math inline">\alpha</span> is that it's a <strong>causal filter</strong>: the level on day <span class="math inline">t</span> uses only data up to day <span class="math inline">t</span>. So we can run it once over the whole series and read off the forecast at each origin without leaking anything. That makes it cheap to try many values of <span class="math inline">\alpha</span>.</p>
+<p>We choose <span class="math inline">\alpha</span> for each horizon on the <strong>2013</strong> backtest, then report on <strong>2014</strong>, following the discipline from chapter 04.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">log_y = np.log(y.to_numpy())
+tuning_origins = pd.date_range(&quot;2012-12-31&quot;, &quot;2013-12-24&quot;, freq=&quot;D&quot;)
+
+def fixed_alpha_scores(alpha, origins_):
+    level = pd.Series(np.exp(ses_levels(log_y, alpha, log_y[0])), index=y.index)
+    forecaster = lambda history, horizon: np.full(horizon, level[history.index[-1]])
+    return tsutils.evaluate(tsutils.backtest(y, forecaster, origins_, H, actuals=actual))
+
+tuning = pd.DataFrame({a: fixed_alpha_scores(a, tuning_origins)[&quot;MAE&quot;] for a in alphas[::2]}).T
+best_alpha = tuning.idxmin()
+
+fig, ax = plt.subplots(figsize=(10, 3.5))
+for h in [1, 2, 7]:
+    tuning[h].plot(ax=ax, label=f&quot;{h} day(s) ahead&quot;)
+ax.set(title=&quot;2013 backtest MAE as a function of α&quot;, xlabel=&quot;α&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+ax.legend()
+best_alpha.rename(&quot;best α on 2013&quot;).to_frame().T</code></pre>
+<pre class="output">h                  1     2     3     4     5     6     7
+best α on 2013  0.61  0.03  0.01  0.01  0.01  0.01  0.01</pre>
+<figure class="output-figure"><img src="img/05-3.png" alt="Figure 3 produced by the code above" width="842" height="353" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Two completely different answers:</p>
+<ul>
+<li><strong>For tomorrow</strong>, the best <span class="math inline">\alpha</span> is high, close to what the one-step fit found: follow yesterday. The curve is remarkably flat, though, so for one day ahead almost any <span class="math inline">\alpha</span> does about as well.</li>
+<li><strong>For two days and beyond</strong>, the best <span class="math inline">\alpha</span> is tiny, 0.01–0.03, at the bottom of the range we tried. Ignore the last few days almost entirely and use a long average. With weights fading as <span class="math inline">(1-\alpha)^k</span>, that average effectively spans the past one to three months.</li>
+</ul>
+<p>In other words, the data are telling us that <em>recent information is valuable for one day and then worthless</em>, the same one-day half-life we keep meeting. A single <span class="math inline">\alpha</span> can't represent that, but a separate <span class="math inline">\alpha</span> per horizon can. Let's score that on 2014:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">per_horizon = pd.concat(
+    [fixed_alpha_scores(best_alpha[h], origins).loc[[h]] for h in range(1, H + 1)])
+tsutils.save_scores(&quot;SES (log), α per horizon&quot;, per_horizon)
+
+comparison[&quot;SES (log), α per horizon&quot;] = per_horizon[&quot;MAE&quot;]
+comparison</code></pre>
+<pre class="output">model  naive  climatology (median)  SES (log)  SES (log), α per horizon
+h                                                                      
+1      51.10                 56.08      52.06                     52.13
+2      72.24                 56.56      69.29                     56.28
+3      81.27                 56.77      74.87                     56.08
+4      81.56                 57.13      73.41                     56.35
+5      76.29                 57.10      68.14                     56.31
+6      75.10                 57.13      68.64                     56.32
+7      76.94                 57.07      69.07                     56.26</pre>
+</div>
+
+<div class="md">
+<p>Choosing <span class="math inline">\alpha</span> for the job transforms SES. It stays within about 1 µg/m³ of naive at one day, and it now <strong>edges out climatology from day 2 onwards</strong>. The long average tracks the slowly drifting level (chapter 03's 2015-style shifts) a little better than a fixed seasonal profile does.</p>
+<p>This is known as a <strong>direct</strong> forecasting strategy: a separately tuned forecaster for each horizon. We'll meet it again in the machine-learning chapter. The broader lesson reaches well beyond SES:</p>
+<blockquote>
+<p><strong>A model is only as good as the objective it was fitted to.</strong> Fitting for one-step accuracy and then forecasting a week ahead is a mismatch many real systems quietly suffer from.</p>
+</blockquote>
+<p>Still, even the tuned version only <em>switches</em> between &quot;yesterday&quot; and &quot;long average&quot;. It can't express the <strong>gradual</strong> fade from one to the other that mean reversion implies. Chapter 04's damped-persistence exercise did that by hand, and chapter 06's AR models will do it properly.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-adding-a-trend-holt-s-method">5. Adding a trend: Holt's method</h2>
+<p>Where exponential smoothing really comes into its own is on series with <strong>persistent</strong> structure. Our showcase is the Mauna Loa CO₂ record: a trend that persists for decades and a seasonal cycle that repeats every year.</p>
+<p><strong>Holt's linear method</strong> adds a second smoothed quantity, the <strong>trend</strong> (slope) <span class="math inline">b_t</span>:</p>
+<div class="math display">\begin{aligned}
+\ell_t &amp;= \alpha\, y_t + (1-\alpha)(\ell_{t-1} + b_{t-1}) \\
+b_t &amp;= \beta\,(\ell_t - \ell_{t-1}) + (1-\beta)\, b_{t-1} \\
+\hat y_{t+h} &amp;= \ell_t + h\, b_t
+\end{aligned}</div>
+<p>The level is updated towards the new observation, starting from where last period's level <em>plus</em> slope predicted we'd be. The slope is then updated towards the latest change in level.</p>
+<p>Holt's forecasts are straight lines that continue forever, which is often too confident. The <strong>damped trend</strong> (Gardner &amp; McKenzie, 1985) adds a parameter <span class="math inline">0 &lt; \phi &lt; 1</span> that makes the slope fade out:</p>
+<div class="math display">\hat y_{t+h} = \ell_t + (\phi + \phi^2 + \dots + \phi^h)\, b_t.</div>
+<p>Forecasts then level off rather than climbing forever. Damped trend is one of the most dependable methods in forecasting competitions.</p>
+<h2 id="6-adding-seasonality-holt-winters">6. Adding seasonality: Holt-Winters</h2>
+<p><strong>Holt-Winters</strong> adds a seasonal component <span class="math inline">s_t</span> with period <span class="math inline">m</span>. In the <strong>additive</strong> version:</p>
+<div class="math display">\begin{aligned}
+\ell_t &amp;= \alpha\,(y_t - s_{t-m}) + (1-\alpha)(\ell_{t-1} + b_{t-1}) \\
+b_t &amp;= \beta\,(\ell_t - \ell_{t-1}) + (1-\beta)\, b_{t-1} \\
+s_t &amp;= \gamma\,(y_t - \ell_{t-1} - b_{t-1}) + (1-\gamma)\, s_{t-m} \\
+\hat y_{t+h} &amp;= \ell_t + h\, b_t + s_{t+h-m}
+\end{aligned}</div>
+<p>(For <span class="math inline">h &gt; m</span>, reuse the most recent estimate of the matching season.) The <strong>multiplicative</strong> version divides by the seasonal factor instead of subtracting it, which suits series whose seasonal swings grow with the level (chapter 02).</p>
+<p>Each smoothing parameter (<span class="math inline">\alpha</span>, <span class="math inline">\beta</span>, <span class="math inline">\gamma</span>) controls how quickly its component adapts, and all are estimated from the data.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2 = sm.datasets.co2.load_pandas().data[&quot;co2&quot;].resample(&quot;MS&quot;).mean().interpolate()
+
+def es_forecaster(**settings):
+    &quot;&quot;&quot;Build a forecaster that refits statsmodels&#x27; ExponentialSmoothing at each origin.&quot;&quot;&quot;
+    def forecast(history, horizon):
+        model = ExponentialSmoothing(history.to_numpy(), initialization_method=&quot;estimated&quot;, **settings)
+        return model.fit().forecast(horizon)
+    return forecast
+
+def seasonal_naive_drift(history, horizon, period=12):
+    &quot;&quot;&quot;Chapter 04&#x27;s best CO₂ baseline: last year&#x27;s values plus one year&#x27;s growth per year ahead.&quot;&quot;&quot;
+    growth = history.iloc[-period:].mean() - history.iloc[-2 * period:-period].mean()
+    last_year = np.tile(history.iloc[-period:].to_numpy(), int(np.ceil(horizon / period)))[:horizon]
+    return last_year + growth * np.ceil(np.arange(1, horizon + 1) / period)
+
+co2_models = {
+    &quot;baseline: seasonal naive + drift&quot;: seasonal_naive_drift,
+    &quot;SES&quot;: es_forecaster(),
+    &quot;Holt&quot;: es_forecaster(trend=&quot;add&quot;),
+    &quot;Holt, damped&quot;: es_forecaster(trend=&quot;add&quot;, damped_trend=True),
+    &quot;Holt-Winters (additive)&quot;: es_forecaster(trend=&quot;add&quot;, seasonal=&quot;add&quot;, seasonal_periods=12),
+    &quot;Holt-Winters (multiplicative)&quot;: es_forecaster(trend=&quot;add&quot;, seasonal=&quot;mul&quot;, seasonal_periods=12),
+}</code></pre>
+</div>
+
+<div class="md">
+<p>First a picture: all models forecasting 12 months ahead from a single origin, January 1995.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_origin = pd.Timestamp(&quot;1995-01-01&quot;)
+history = co2[:co2_origin]
+future_index = pd.date_range(co2_origin + pd.offsets.MonthBegin(1), periods=12, freq=&quot;MS&quot;)
+
+ax = co2[&quot;1993&quot;:&quot;1996&quot;].plot(color=&quot;k&quot;, lw=2, label=&quot;actual&quot;)
+for name, forecaster in list(co2_models.items())[1:]:
+    pd.Series(forecaster(history, 12), index=future_index).plot(ax=ax, label=name)
+ax.axvline(co2_origin, color=&quot;0.5&quot;, ls=&quot;:&quot;)
+ax.set(title=&quot;12-month forecasts of CO₂ from January 1995&quot;, ylabel=&quot;ppm&quot;)
+ax.legend(fontsize=8);</code></pre>
+<figure class="output-figure"><img src="img/05-4.png" alt="Figure 4 produced by the code above" width="1019" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>SES draws a flat line and Holt extrapolates whatever slope the seasonal wiggle happens to have at the origin. Only Holt-Winters understands that the wiggle <em>repeats</em>. Now the full backtest: a forecast from every month from 1990 to 2000, 12 months ahead.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_origins = pd.date_range(&quot;1990-01-01&quot;, &quot;2000-12-01&quot;, freq=&quot;MS&quot;)
+co2_scores = {name: tsutils.evaluate(tsutils.backtest(co2, f, co2_origins, 12))
+              for name, f in co2_models.items()}
+
+pd.DataFrame({name: s[&quot;MAE&quot;] for name, s in co2_scores.items()}).loc[[1, 3, 6, 12]].T</code></pre>
+<pre class="output">h                                   1     3     6      12
+baseline: seasonal naive + drift  0.52  0.61  0.72   0.85
+SES                               1.14  2.91  3.78   1.52
+Holt                              0.73  3.28  8.15  13.25
+Holt, damped                      0.70  2.68  5.22   3.94
+Holt-Winters (additive)           0.25  0.37  0.52   0.66
+Holt-Winters (multiplicative)     0.25  0.37  0.50   0.64</pre>
+</div>
+
+<div class="md">
+<p>On CO₂ the picture reverses completely:</p>
+<ul>
+<li><strong>Holt-Winters beats the best baseline at every horizon</strong>, cutting its error roughly in half at short horizons. This is exponential smoothing in its element: a series whose level, slope and seasonal shape all <em>persist</em>, so projecting them forward is exactly right.</li>
+<li><strong>Holt without seasonality is disastrous</strong> at long horizons. It mistakes the seasonal upswing for a trend and extrapolates it. A misspecified trend is worse than none, which is why <strong>SES</strong>, flat but harmless, beats it.</li>
+<li><strong>Damping</strong> rescues Holt partially, by limiting how far a bad slope is extrapolated.</li>
+<li>The additive and multiplicative seasonal versions are nearly tied. Over this range CO₂'s seasonal swing grows only slightly (chapter 02), so either form works.</li>
+</ul>
+<p>Put the two series side by side and the rule is clear: <strong>exponential smoothing projects the current state forward.</strong> It excels when the state persists (CO₂) and struggles when the series keeps snapping back (PM2.5).</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-the-ets-framework-a-statistical-model-underneath">7. The ETS framework: a statistical model underneath</h2>
+<p>The methods above were invented as sensible recipes. In the 2000s, Hyndman and colleagues showed that each one corresponds to a <strong>state-space model</strong> with an explicit error term. That gives three things the recipes lack:</p>
+<ol>
+<li>a <strong>likelihood</strong>, so models can be compared with information criteria such as <strong>AIC</strong></li>
+<li><strong>prediction intervals</strong> derived from the model</li>
+<li>a clean <strong>taxonomy</strong>: each model is labelled <strong>E</strong>rror, <strong>T</strong>rend, <strong>S</strong>easonal</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Options</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Error</td>
+<td><strong>A</strong>dditive, <strong>M</strong>ultiplicative</td>
+</tr>
+<tr>
+<td>Trend</td>
+<td><strong>N</strong>one, <strong>A</strong>dditive, <strong>A</strong>d (additive damped)</td>
+</tr>
+<tr>
+<td>Seasonal</td>
+<td><strong>N</strong>one, <strong>A</strong>dditive, <strong>M</strong>ultiplicative</td>
+</tr>
+</tbody>
+</table>
+<p>So SES is ETS(A,N,N), Holt is ETS(A,A,N), and additive Holt-Winters is ETS(A,A,A). The error type doesn't change the point forecasts, but it does change the likelihood and the intervals.</p>
+<p>Let's fit several ETS models to CO₂ up to the end of 1989 and compare their AIC. Lower is better: AIC rewards fit and penalises extra parameters.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_train = co2[:&quot;1989-12&quot;]
+ets_candidates = {
+    &quot;A,N,N&quot;: dict(error=&quot;add&quot;),
+    &quot;A,A,N&quot;: dict(error=&quot;add&quot;, trend=&quot;add&quot;),
+    &quot;A,Ad,N&quot;: dict(error=&quot;add&quot;, trend=&quot;add&quot;, damped_trend=True),
+    &quot;A,A,A&quot;: dict(error=&quot;add&quot;, trend=&quot;add&quot;, seasonal=&quot;add&quot;),
+    &quot;A,Ad,A&quot;: dict(error=&quot;add&quot;, trend=&quot;add&quot;, damped_trend=True, seasonal=&quot;add&quot;),
+    &quot;A,A,M&quot;: dict(error=&quot;add&quot;, trend=&quot;add&quot;, seasonal=&quot;mul&quot;),
+    &quot;M,A,M&quot;: dict(error=&quot;mul&quot;, trend=&quot;add&quot;, seasonal=&quot;mul&quot;),
+}
+
+def fit_ets(series, settings):
+    periods = 12 if settings.get(&quot;seasonal&quot;) else None
+    return ETSModel(series, seasonal_periods=periods, **settings).fit(disp=False)
+
+pd.Series({label: fit_ets(co2_train, s).aic for label, s in ets_candidates.items()},
+          name=&quot;AIC&quot;).sort_values().to_frame()</code></pre>
+<pre class="output">            AIC
+A,A,M    174.18
+M,A,M    178.78
+A,A,A    202.87
+A,Ad,A   221.30
+A,Ad,N   954.93
+A,N,N   1199.87
+A,A,N   1201.29</pre>
+</div>
+
+<div class="md">
+<p>The seasonal models win by a huge margin. Among them the multiplicative-seasonal ones come out slightly ahead, and damping doesn't help, because CO₂'s trend doesn't fade. (Exercise 4 checks whether AIC's ranking agrees with an out-of-sample backtest.)</p>
+<p>AIC comparisons are only valid between models fitted to <strong>the same data on the same scale</strong>. Never compare the AIC of a model on <span class="math inline">y</span> with one on <span class="math inline">\log y</span>.</p>
+<h3 id="prediction-intervals-and-whether-to-trust-them">Prediction intervals, and whether to trust them</h3>
+<p>ETS gives intervals directly. Let's draw an 80% interval, then check its coverage across the whole 1990–2000 backtest, as we did with the empirical intervals in chapter 04.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">ets_model = fit_ets(co2[:co2_origin], ets_candidates[&quot;A,A,A&quot;])
+frame = ets_model.get_prediction(start=len(co2[:co2_origin]), end=len(co2[:co2_origin]) + 11).summary_frame(alpha=0.2)
+frame.index = future_index
+
+ax = co2[&quot;1993&quot;:&quot;1996&quot;].plot(color=&quot;k&quot;, label=&quot;actual&quot;)
+frame[&quot;mean&quot;].plot(ax=ax, label=&quot;ETS(A,A,A) forecast&quot;)
+ax.fill_between(frame.index, frame[&quot;pi_lower&quot;], frame[&quot;pi_upper&quot;], alpha=0.25, label=&quot;80% interval&quot;)
+ax.set(title=&quot;ETS(A,A,A) from January 1995&quot;, ylabel=&quot;ppm&quot;)
+ax.legend(loc=&quot;upper left&quot;);</code></pre>
+<figure class="output-figure"><img src="img/05-5.png" alt="Figure 5 produced by the code above" width="1006" height="392" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">inside = []
+for origin_ in co2_origins:
+    history_ = co2[:origin_]
+    fit = fit_ets(history_, ets_candidates[&quot;A,A,A&quot;])
+    pi = fit.get_prediction(start=len(history_), end=len(history_) + 11).summary_frame(alpha=0.2)
+    target = co2.reindex(pd.date_range(origin_ + pd.offsets.MonthBegin(1), periods=12, freq=&quot;MS&quot;)).to_numpy()
+    hit = (target &gt;= pi[&quot;pi_lower&quot;].to_numpy()) &amp; (target &lt;= pi[&quot;pi_upper&quot;].to_numpy())
+    inside.append(np.where(np.isnan(target), np.nan, hit))
+
+coverage = pd.Series(np.nanmean(inside, axis=0), index=pd.RangeIndex(1, 13, name=&quot;months ahead&quot;), name=&quot;coverage&quot;)
+coverage.to_frame().T.style.format(&quot;{:.0%}&quot;)</code></pre>
+<pre class="output">months ahead    1    2    3    4    5    6    7    8    9   10   11   12
+coverage      81%  76%  77%  70%  71%  73%  73%  74%  76%  77%  80%  80%</pre>
+</div>
+
+<div class="md">
+<p>The target is 80%, but actual coverage falls to the low 70s at medium horizons: the model's intervals are <strong>somewhat too narrow</strong>. Model-based intervals assume the model is exactly right, with errors that are independent and identically distributed. Real series violate that. Here, bursts of faster CO₂ growth in strong El Niño years (chapter 03) are larger than anything the model's error term expects.</p>
+<p>Treat model-based intervals as a starting point and <strong>verify coverage out of sample</strong> before relying on them. Chapter 04's empirical intervals are a robust alternative.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-holt-from-scratch">Exercise 1: Holt from scratch</h3>
+<p>Implement Holt's linear method (section 5) as <code>holt_forecast(values, alpha, beta, initial_level, initial_trend, horizon)</code>. Check it against statsmodels on <code>co2_train</code>, with <code>alpha=0.5</code>, <code>beta=0.1</code>, a starting level equal to the first observation and a starting trend of 0.1. In statsmodels, use <code>initialization_method=&quot;known&quot;</code>, and <code>optimized=False</code> in <code>fit</code>.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def holt_forecast(values, alpha, beta, initial_level, initial_trend, horizon):
+    level, trend = initial_level, initial_trend
+    for value in values:
+        previous_level = level
+        level = alpha * value + (1 - alpha) * (level + trend)
+        trend = beta * (level - previous_level) + (1 - beta) * trend
+    return level + trend * np.arange(1, horizon + 1)
+
+values = co2_train.to_numpy()
+lib = ExponentialSmoothing(values, trend=&quot;add&quot;, initialization_method=&quot;known&quot;,
+                           initial_level=values[0], initial_trend=0.1).fit(
+    smoothing_level=0.5, smoothing_trend=0.1, optimized=False)
+print(np.allclose(lib.forecast(12), holt_forecast(values, 0.5, 0.1, values[0], 0.1, 12)))
+</code></pre>
+</details>
+<h3 id="exercise-2-to-damp-or-not-to-damp-a-decade-ahead">Exercise 2: To damp or not to damp, a decade ahead</h3>
+<p>Fit additive Holt-Winters to CO₂ up to the end of 1989, once with and once without a damped trend. Forecast all the way to December 2001, 144 months. Compare each forecast's MAE in the first year and in the last three years. What's the estimated damping parameter φ, and why does damping hurt here?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">future = co2[&quot;1990&quot;:]
+for damped in [False, True]:
+    fit = ExponentialSmoothing(co2_train, trend=&quot;add&quot;, damped_trend=damped, seasonal=&quot;add&quot;,
+                               seasonal_periods=12, initialization_method=&quot;estimated&quot;).fit()
+    fc = fit.forecast(len(future)).to_numpy()
+    err = np.abs(fc - future.to_numpy())
+    phi = fit.params[&quot;damping_trend&quot;] if damped else 1.0
+    print(f&quot;damped={damped}: φ={phi:.3f}  first-year MAE {err[:12].mean():.2f}  &quot;
+          f&quot;last-3-years MAE {err[-36:].mean():.2f}  Dec 2001 forecast {fc[-1]:.1f} vs actual {future.iloc[-1]:.1f}&quot;)
+</code></pre>
+<p>In the first year the two are indistinguishable. A decade out, the damped version is clearly worse. With φ just below 1, the slope fades slowly but steadily, and after 12 years it has flattened noticeably, while real CO₂ growth didn't slow; it accelerated. Both forecasts end up too low, and the undamped one less so. Damping is a good default when trends are uncertain. It's the wrong choice when there's strong physical reason to expect the trend to continue.</p>
+</details>
+<h3 id="exercise-3-when-is-the-level-persists-the-right-assumption">Exercise 3: When is &quot;the level persists&quot; the right assumption?</h3>
+<p>Simulate two series of 1,500 daily values:</p>
+<ul>
+<li>a <strong>local level</strong> series, a random walk observed with noise: <code>np.cumsum(rng.normal(0, 0.5, n)) + rng.normal(0, 1, n)</code></li>
+<li>a <strong>mean-reverting</strong> AR(1) with φ = 0.5, as in chapter 03</li>
+</ul>
+<p>Backtest SES (with α estimated), naive and the historical mean on each, with origins from day 1,000 to 1,490 and a 5-step horizon. Which wins on each series?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">rng = np.random.default_rng(1)
+n = 1500
+index = pd.date_range(&quot;2000-01-01&quot;, periods=n, freq=&quot;D&quot;)
+local_level = np.cumsum(rng.normal(0, 0.5, n)) + rng.normal(0, 1, n)
+shocks = rng.normal(size=n)
+ar = np.zeros(n)
+for t in range(1, n):
+    ar[t] = 0.5 * ar[t - 1] + shocks[t]
+
+ses = lambda h, H: SimpleExpSmoothing(h.to_numpy(), initialization_method=&quot;estimated&quot;).fit().forecast(H)
+mean = lambda h, H: np.full(H, h.mean())
+sim_origins = index[1000:1490]
+
+pd.DataFrame({
+    (series_name, model_name): tsutils.evaluate(
+        tsutils.backtest(pd.Series(values, index=index), f, sim_origins, 5))[&quot;MAE&quot;].loc[[1, 5]]
+    for series_name, values in [(&quot;local level&quot;, local_level), (&quot;AR(1), φ=0.5&quot;, ar)]
+    for model_name, f in [(&quot;SES&quot;, ses), (&quot;naive&quot;, tsutils.naive_forecast), (&quot;mean&quot;, mean)]
+}).T
+</code></pre>
+<p>On the <strong>local level</strong> series SES wins at both horizons: it averages away the observation noise better than naive, and the mean is hopeless because the level really does wander. On the <strong>AR(1)</strong>, SES still beats naive, but at 5 steps ahead the plain <strong>mean</strong> beats SES, because the series has returned to its mean and SES is still carrying old information forward. SES is, in fact, the optimal forecast for the local-level model. Match the model's assumptions to the data's behaviour.</p>
+</details>
+<h3 id="exercise-4-does-aic-pick-the-model-that-forecasts-best">Exercise 4: Does AIC pick the model that forecasts best?</h3>
+<p>For the ETS configurations <code>A,A,A</code>, <code>A,A,M</code>, <code>M,A,M</code> and <code>A,Ad,A</code>, record the AIC when fitted to <code>co2_train</code>. Then run a backtest with <strong>yearly</strong> origins (December 1989, 1990, …, 1999) and a 12-month horizon, refitting ETS at each origin, and compute the average MAE. Do the two rankings agree?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">yearly_origins = pd.date_range(&quot;1989-12-01&quot;, &quot;1999-12-01&quot;, freq=&quot;12MS&quot;)
+rows = {}
+for label in [&quot;A,A,A&quot;, &quot;A,A,M&quot;, &quot;M,A,M&quot;, &quot;A,Ad,A&quot;]:
+    settings = ets_candidates[label]
+    forecaster = lambda h, H, s=settings: fit_ets(h, s).forecast(H).to_numpy()
+    rows[label] = {
+        &quot;AIC (fit to 1958–1989)&quot;: fit_ets(co2_train, settings).aic,
+        &quot;backtest MAE (1990–2000)&quot;: tsutils.evaluate(tsutils.backtest(co2, forecaster, yearly_origins, 12))[&quot;MAE&quot;].mean(),
+    }
+pd.DataFrame(rows).T.sort_values(&quot;AIC (fit to 1958–1989)&quot;)
+</code></pre>
+<p>Here the rankings agree: the two multiplicative-seasonal models have the lowest AIC and the lowest backtest error, followed by A,A,A and then the damped model. That's reassuring, but not guaranteed in general. AIC measures in-sample fit, penalised for complexity, under the model's own assumptions. The backtest measures what you actually care about. When they disagree, trust the backtest, and when the backtest is too expensive to run, AIC is a reasonable proxy.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Exponential smoothing is a weighted average with <strong>geometrically decaying weights</strong>. α sets the memory: α = 1 is naive, small α is a long average.</li>
+<li>Holt adds a <strong>trend</strong>, damping stops the trend from <strong>extrapolating forever</strong>, and Holt-Winters adds <strong>seasonality</strong>. ETS puts them all in one statistical framework with <strong>AIC</strong> and <strong>prediction intervals</strong>.</li>
+<li>The core assumption is that <strong>the current state persists</strong>. On CO₂, which persists, Holt-Winters halves the best baseline's error. On PM2.5, which mean-reverts within a day, SES can't beat the simple baselines.</li>
+<li><strong>Fit to the objective you'll be judged on.</strong> Choosing α per horizon turned SES from a loser into a narrow winner on PM2.5, a direct forecasting strategy.</li>
+<li>Model-based intervals assume the model is right. <strong>Check their coverage</strong> out of sample: ETS ran a little narrow on CO₂.</li>
+<li>New scoreboard entries: <code>SES (log)</code> and <code>SES (log), α per horizon</code>.</li>
+</ul>
+<p><strong>Next:</strong> <em>06 · Autocorrelation and ARMA</em>. We'll look at models built precisely for series that remember the past <em>and</em> revert to a mean: the gradual fade that exponential smoothing can't express.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="04-baselines-and-evaluation.html"><span class="lbl">Previous · 04</span><span class="t">Baselines and honest evaluation</span></a>
+  <a class="next" rel="next" href="06-autocorrelation-and-arma.html"><span class="lbl">Next · 06</span><span class="t">Autocorrelation and ARMA</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 05 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

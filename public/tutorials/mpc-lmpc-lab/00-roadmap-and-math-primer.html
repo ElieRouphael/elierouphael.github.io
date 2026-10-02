@@ -1,0 +1,1702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>00 · Roadmap and Mathematical Primer — Advanced MPC and Learning MPC</title>
+<meta name="description" content="States, inputs and discrete-time models, Schur stability, Lyapunov functions, the DARE, and a first constrained MPC on the double integrator.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Chapter 00 of 09</span>
+  <h1>Roadmap and Mathematical Primer</h1>
+  <div class="intro prose">
+<h2 id="advanced-model-predictive-control-learning-mpc">Advanced Model Predictive Control &amp; Learning MPC</h2>
+<p>This notebook builds the <strong>mathematical vocabulary and mental models</strong> used throughout the repository. It is intentionally more than a list of formulas: the goal is to understand how dynamics, optimization, constraints, stability, invariant sets, dynamic programming, and learning fit together.</p>
+<p>By the end, you should be able to explain every link in the following chain:</p>
+<div class="math display">
+\boxed{\text{dynamics}}
+\;\longrightarrow\;
+\boxed{\text{prediction}}
+\;\longrightarrow\;
+\boxed{\text{constrained optimal control}}
+\;\longrightarrow\;
+\boxed{\text{receding horizon MPC}}
+</div>
+<div class="math display">
+\boxed{\text{terminal set + terminal value}}
+\;\longrightarrow\;
+\boxed{\text{recursive feasibility + stability}}
+\;\longrightarrow\;
+\boxed{\text{learn those ingredients from data (LMPC)}}.
+</div>
+<blockquote>
+<p><strong>Big idea.</strong> Classical feedback tells us how to react to the current state. MPC adds two ingredients that become essential for complex systems: <strong>prediction</strong> and <strong>explicit constraint handling</strong>.</p>
+</blockquote>
+<h3 id="learning-objectives">Learning objectives</h3>
+<p>After working through this notebook, you should be able to:</p>
+<ul>
+<li>distinguish nonlinear, LTI, LTV, and affine discrete-time models;</li>
+<li>derive stacked prediction matrices <span class="math inline">\mathcal S_x,\mathcal S_u</span>;</li>
+<li>recognize when a finite-horizon linear-quadratic problem becomes a convex QP;</li>
+<li>distinguish feasibility, recursive feasibility, invariance, and stability;</li>
+<li>derive the discrete LQR gain and the associated Lyapunov decrease identity;</li>
+<li>explain the role of terminal sets and terminal costs in stabilizing MPC;</li>
+<li>state Bellman's recursion and connect value functions to MPC;</li>
+<li>explain how Learning MPC replaces hand-designed terminal ingredients with successful closed-loop data;</li>
+<li>understand why Frenet coordinates are convenient for path/racing problems.</li>
+</ul>
+<p>This notebook uses <code>$...$</code> and <code>$$...$$</code> math delimiters so equations render correctly in <strong>VS Code, Jupyter, and GitHub</strong>.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/00_roadmap_and_math_primer.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need the <code>advanced_mpc_lmpc</code> package: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#advanced-model-predictive-control-learning-mpc">Advanced Model Predictive Control &amp; Learning MPC</a></li>
+    <li><a href="#0-repository-roadmap">0. Repository roadmap</a></li>
+    <li><a href="#table-of-contents">Table of Contents</a></li>
+    <li><a href="#part-i-the-language-of-dynamical-systems">Part I — The language of dynamical systems</a></li>
+    <li><a href="#i-1-state-input-dynamics-output">I.1 State, input, dynamics, output</a></li>
+    <li><a href="#i-2-notation-and-mathematical-conventions">I.2 Notation and mathematical conventions</a></li>
+    <li><a href="#part-ii-prediction-turning-dynamics-into-algebra">Part II — Prediction: turning dynamics into algebra</a></li>
+    <li><a href="#ii-1-multi-step-prediction">II.1 Multi-step prediction</a></li>
+    <li><a href="#part-iii-optimization-and-finite-horizon-optimal-control">Part III — Optimization and finite-horizon optimal control</a></li>
+    <li><a href="#iii-1-anatomy-of-a-constrained-optimization-problem">III.1 Anatomy of a constrained optimization problem</a></li>
+    <li><a href="#iii-2-from-a-quadratic-control-objective-to-a-qp">III.2 From a quadratic control objective to a QP</a></li>
+    <li><a href="#iii-3-constrained-finite-time-optimal-control-cftoc">III.3 Constrained finite-time optimal control (CFTOC)</a></li>
+    <li><a href="#part-iv-receding-horizon-control">Part IV — Receding horizon control</a></li>
+    <li><a href="#iv-1-mpc-is-an-optimization-generated-feedback-law">IV.1 MPC is an optimization-generated feedback law</a></li>
+    <li><a href="#iv-2-four-notions-that-must-not-be-conflated">IV.2 Four notions that must not be conflated</a></li>
+    <li><a href="#part-v-stability-and-lqr">Part V — Stability and LQR</a></li>
+    <li><a href="#v-1-continuous-time-and-discrete-time-stability-tests-are-different">V.1 Continuous-time and discrete-time stability tests are different</a></li>
+    <li><a href="#v-2-infinite-horizon-lqr-and-the-dare">V.2 Infinite-horizon LQR and the DARE</a></li>
+    <li><a href="#part-vi-reachability-and-invariant-sets">Part VI — Reachability and invariant sets</a></li>
+    <li><a href="#vi-1-predecessors-from-where-can-i-enter-this-set-in-one-step">VI.1 Predecessors: “from where can I enter this set in one step?”</a></li>
+    <li><a href="#vi-2-positive-invariance-versus-control-invariance">VI.2 Positive invariance versus control invariance</a></li>
+    <li><a href="#vi-3-a-terminal-invariant-set-for-constrained-lqr">VI.3 A terminal invariant set for constrained LQR</a></li>
+    <li><a href="#part-vii-why-terminal-ingredients-matter-in-mpc">Part VII — Why terminal ingredients matter in MPC</a></li>
+    <li><a href="#vii-1-the-standard-terminal-set-stability-mechanism">VII.1 The standard terminal-set stability mechanism</a></li>
+    <li><a href="#vii-2-recursive-feasibility-the-shifted-sequence-argument">VII.2 Recursive feasibility: the shifted-sequence argument</a></li>
+    <li><a href="#vii-3-stability-the-optimal-mpc-value-as-a-lyapunov-function">VII.3 Stability: the optimal MPC value as a Lyapunov function</a></li>
+    <li><a href="#part-viii-dynamic-programming-and-value-functions">Part VIII — Dynamic programming and value functions</a></li>
+    <li><a href="#viii-1-bellman-s-principle-of-optimality">VIII.1 Bellman's principle of optimality</a></li>
+    <li><a href="#part-ix-from-designed-terminal-ingredients-to-learning-mpc">Part IX — From designed terminal ingredients to Learning MPC</a></li>
+    <li><a href="#ix-1-why-learn-a-terminal-set-or-terminal-value">IX.1 Why learn a terminal set or terminal value?</a></li>
+    <li><a href="#ix-2-sampled-safe-set">IX.2 Sampled safe set</a></li>
+    <li><a href="#ix-3-convex-safe-set-and-barycentric-coordinates">IX.3 Convex safe set and barycentric coordinates</a></li>
+    <li><a href="#ix-4-learning-a-terminal-value-from-stored-cost-to-go">IX.4 Learning a terminal value from stored cost-to-go</a></li>
+    <li><a href="#part-x-preview-autonomous-racing-in-frenet-coordinates">Part X — Preview: autonomous racing in Frenet coordinates</a></li>
+    <li><a href="#x-1-why-change-coordinates">X.1 Why change coordinates?</a></li>
+    <li><a href="#part-xi-common-conceptual-pitfalls">Part XI — Common conceptual pitfalls</a></li>
+    <li><a href="#xi-1-things-worth-catching-before-an-implementation-review">XI.1 Things worth catching before an implementation review</a></li>
+    <li><a href="#part-xii-check-your-understanding">Part XII — Check your understanding</a></li>
+    <li><a href="#part-xiii-exercises">Part XIII — Exercises</a></li>
+    <li><a href="#part-xiv-notation-cheat-sheet">Part XIV — Notation cheat sheet</a></li>
+    <li><a href="#part-xv-scope-and-references">Part XV — Scope and references</a></li>
+    <li><a href="#next-notebook">Next notebook</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="0-repository-roadmap">0. Repository roadmap</h2>
+<p>The notebooks are organized as a progression rather than as independent demos.</p>
+<table>
+<thead>
+<tr>
+<th>Notebook</th>
+<th>Main question</th>
+<th>Core mathematics</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>00</strong></td>
+<td>What language do all later notebooks share?</td>
+<td>state space, QP, Lyapunov, sets, Bellman</td>
+</tr>
+<tr>
+<td><strong>01</strong></td>
+<td>How do we formulate finite-horizon constrained control?</td>
+<td>convex optimization, CFTOC, KKT intuition</td>
+</tr>
+<tr>
+<td><strong>02</strong></td>
+<td>Which states can reach / remain in a safe set?</td>
+<td>polytopes, predecessor operators, invariance</td>
+</tr>
+<tr>
+<td><strong>03</strong></td>
+<td>Why can MPC be recursively feasible and stable?</td>
+<td>shifted sequence, terminal controller, Lyapunov decrease</td>
+</tr>
+<tr>
+<td><strong>04</strong></td>
+<td>How do logical choices enter optimal control?</td>
+<td>collision avoidance, mixed logical/continuous decisions</td>
+</tr>
+<tr>
+<td><strong>05</strong></td>
+<td>How can repeated successful trajectories improve MPC?</td>
+<td>sampled/convex safe sets, learned terminal value</td>
+</tr>
+<tr>
+<td><strong>06</strong></td>
+<td>How do we formulate minimum-time racing?</td>
+<td>Frenet coordinates, spatial dynamics, CFTOC</td>
+</tr>
+<tr>
+<td><strong>07</strong></td>
+<td>How can data provide a local prediction model?</td>
+<td>local affine/LTV identification for control</td>
+</tr>
+<tr>
+<td><strong>08</strong></td>
+<td>How are optimal control, DP and RL related?</td>
+<td>Bellman equations, value/policy iteration</td>
+</tr>
+<tr>
+<td><strong>09</strong></td>
+<td>Can we justify and extend the full pipeline?</td>
+<td>synthesis, design choices, limitations</td>
+</tr>
+</tbody>
+</table>
+<h3 id="suggested-way-to-study">Suggested way to study</h3>
+<p>For every notebook, always identify four layers:</p>
+<ol>
+<li><strong>Model:</strong> what are the state <span class="math inline">x</span>, input <span class="math inline">u</span>, and dynamics <span class="math inline">f</span>?</li>
+<li><strong>Optimization:</strong> what are the decision variables, objective, and constraints?</li>
+<li><strong>Guarantees:</strong> what gives feasibility, safety, or stability?</li>
+<li><strong>Limitations:</strong> which assumptions would fail on a real platform?</li>
+</ol>
+<p>The same four questions also give a good structure for explaining or reviewing any controller design.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from pathlib import Path
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.linalg import block_diag
+from scipy.spatial import ConvexHull
+
+ROOT = Path.cwd().resolve()
+if ROOT.name == &quot;notebooks&quot;:
+    ROOT = ROOT.parent
+sys.path.insert(0, str(ROOT / &quot;src&quot;))
+
+from advanced_mpc_lmpc.linear import prediction_matrices, dlqr, rollout
+from advanced_mpc_lmpc.mpc import LinearMPC, simulate_receding_horizon
+from advanced_mpc_lmpc.polytopes import HPolytope, maximal_invariant
+
+np.set_printoptions(precision=4, suppress=True)
+plt.rcParams.update({
+    &quot;figure.figsize&quot;: (8, 4.6),
+    &quot;axes.grid&quot;: True,
+    &quot;font.size&quot;: 11,
+})
+
+print(&quot;Project root:&quot;, ROOT.name)
+</code></pre>
+<pre class="output">Project root: advanced_mpc_lmpc_lab</pre>
+</div>
+
+<div class="md">
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><strong><a href="#part-1">Part I — The language of dynamical systems</a></strong> — I.1 State, input, dynamics, output · I.2 Notation and mathematical conventions</li>
+<li><strong><a href="#part-2">Part II — Prediction: turning dynamics into algebra</a></strong> — II.1 Multi-step prediction</li>
+<li><strong><a href="#part-3">Part III — Optimization and finite-horizon optimal control</a></strong> — III.1 Anatomy of a constrained optimization problem · III.2 From a quadratic control objective to a QP · III.3 Constrained finite-time optimal control (CFTOC)</li>
+<li><strong><a href="#part-4">Part IV — Receding horizon control</a></strong> — IV.1 MPC is an optimization-generated feedback law · IV.2 Four notions that must not be conflated</li>
+<li><strong><a href="#part-5">Part V — Stability and LQR</a></strong> — V.1 Continuous-time and discrete-time stability tests are different · V.2 Infinite-horizon LQR and the DARE</li>
+<li><strong><a href="#part-6">Part VI — Reachability and invariant sets</a></strong> — VI.1 Predecessors: “from where can I enter this set in one step?” · VI.2 Positive invariance versus control invariance · VI.3 A terminal invariant set for constrained LQR</li>
+<li><strong><a href="#part-7">Part VII — Why terminal ingredients matter in MPC</a></strong> — VII.1 The standard terminal-set stability mechanism · VII.2 Recursive feasibility: the shifted-sequence argument · VII.3 Stability: the optimal MPC value as a Lyapunov function</li>
+<li><strong><a href="#part-8">Part VIII — Dynamic programming and value functions</a></strong> — VIII.1 Bellman's principle of optimality</li>
+<li><strong><a href="#part-9">Part IX — From designed terminal ingredients to Learning MPC</a></strong> — IX.1 Why learn a terminal set or terminal value? · IX.2 Sampled safe set · IX.3 Convex safe set and barycentric coordinates · IX.4 Learning a terminal value from stored cost-to-go</li>
+<li><strong><a href="#part-10">Part X — Preview: autonomous racing in Frenet coordinates</a></strong> — X.1 Why change coordinates?</li>
+<li><strong><a href="#part-11">Part XI — Common conceptual pitfalls</a></strong> — XI.1 Things worth catching before an implementation review</li>
+<li><strong><a href="#part-12">Part XII — Check your understanding</a></strong></li>
+<li><strong><a href="#part-13">Part XIII — Exercises</a></strong></li>
+<li><strong><a href="#part-14">Part XIV — Notation cheat sheet</a></strong></li>
+<li><strong><a href="#part-15">Part XV — Scope and references</a></strong></li>
+</ul>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-1"></a></p>
+<h2 id="part-i-the-language-of-dynamical-systems">Part I — The language of dynamical systems</h2>
+<h2 id="i-1-state-input-dynamics-output">I.1 State, input, dynamics, output</h2>
+<p>A deterministic discrete-time system is written</p>
+<div class="math display">
+x_{k+1}=f_k(x_k,u_k),
+</div>
+<p>with</p>
+<div class="math display">
+x_k\in\mathbb R^n,\qquad u_k\in\mathbb R^m.
+</div>
+<p>The <strong>state</strong> is a sufficient internal description: once <span class="math inline">x_k</span> and future inputs are known, the model can predict future states. An output equation may be added,</p>
+<div class="math display">
+y_k=h_k(x_k,u_k),
+</div>
+<p>but MPC is most naturally formulated in state space.</p>
+<h3 id="models-we-will-repeatedly-use">Models we will repeatedly use</h3>
+<p><strong>LTI (linear time invariant)</strong></p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k.
+</div>
+<p><strong>Affine</strong></p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k+c.
+</div>
+<p><strong>LTV (linear time varying)</strong></p>
+<div class="math display">
+x_{k+1}=A_kx_k+B_ku_k+c_k.
+</div>
+<p><strong>Nonlinear</strong></p>
+<div class="math display">
+x_{k+1}=f(x_k,u_k).
+</div>
+<p>The later racing notebooks deliberately move between these descriptions: the simulated vehicle may be nonlinear, while the optimizer can use a locally identified or linearized prediction model.</p>
+<blockquote>
+<p><strong>Important:</strong> the <em>plant/test model</em> and the <em>prediction model</em> do not have to coincide. MPC optimizes with a model; the real system evolves according to physics. Model mismatch is therefore a central practical issue.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<h3 id="i-1-1-running-example-a-sampled-double-integrator">I.1.1 Running example: a sampled double integrator</h3>
+<p>Let position be <span class="math inline">p</span> and velocity be <span class="math inline">v</span>. With constant acceleration <span class="math inline">a</span> over one sample of duration <span class="math inline">T_s</span>,</p>
+<div class="math display">
+\begin{aligned}
+p_{k+1} &amp;= p_k + T_s v_k + \frac{1}{2}T_s^2 a_k,\\
+v_{k+1} &amp;= v_k + T_s a_k.
+\end{aligned}
+</div>
+<p>Therefore</p>
+<div class="math display">
+x_k=\begin{bmatrix}p_k\\v_k\end{bmatrix},\qquad
+u_k=a_k,
+</div>
+<p>and</p>
+<div class="math display">
+A=\begin{bmatrix}1&amp;T_s\\0&amp;1\end{bmatrix},\qquad
+B=\begin{bmatrix}T_s^2/2\\T_s\end{bmatrix}.
+</div>
+<p>This tiny system is useful because it already contains the main MPC difficulties: the input affects velocity immediately, position only indirectly, and physical limits naturally create constraints on both states and inputs.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">Ts = 1.0
+A = np.array([[1.0, Ts],
+              [0.0, 1.0]])
+B = np.array([[0.5 * Ts**2],
+              [Ts]])
+
+x0 = np.array([-5.0, 0.0])
+U_demo = np.array([[1.0], [1.0], [0.0], [-1.0], [-1.0]])
+X_demo = rollout(A, B, x0, U_demo)
+
+print(&quot;A =\n&quot;, A)
+print(&quot;B =\n&quot;, B)
+print(&quot;trajectory [position, velocity] =\n&quot;, X_demo)
+
+fig, ax = plt.subplots()
+ax.plot(X_demo[:, 0], X_demo[:, 1], &quot;o-&quot;)
+ax.set_xlabel(&quot;position $p$&quot;)
+ax.set_ylabel(&quot;velocity $v$&quot;)
+ax.set_title(&quot;A trajectory is constrained by dynamics: states cannot be chosen independently&quot;)
+plt.show()
+</code></pre>
+<pre class="output">A =
+ [[1. 1.]
+ [0. 1.]]
+B =
+ [[0.5]
+ [1. ]]
+trajectory [position, velocity] =
+ [[-5.   0. ]
+ [-4.5  1. ]
+ [-3.   2. ]
+ [-1.   2. ]
+ [ 0.5  1. ]
+ [ 1.   0. ]]</pre>
+<figure class="output-figure"><img src="img/00-1.png" alt="Figure: A trajectory is constrained by dynamics: states cannot be chosen independently" width="767" height="445" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="i-2-notation-and-mathematical-conventions">I.2 Notation and mathematical conventions</h2>
+<p>The following conventions will be used consistently.</p>
+<h3 id="vectors-and-matrices">Vectors and matrices</h3>
+<ul>
+<li><span class="math inline">x^\top y</span>: Euclidean inner product.</li>
+<li><span class="math inline">\|x\|_2=\sqrt{x^\top x}</span>: Euclidean norm.</li>
+<li><span class="math inline">P=P^\top\succ0</span>: symmetric positive definite matrix.</li>
+<li><span class="math inline">P\succeq0</span>: symmetric positive semidefinite matrix.</li>
+<li><span class="math inline">\lambda_i(A)</span>: eigenvalues of <span class="math inline">A</span>.</li>
+<li><span class="math inline">\rho(A)=\max_i|\lambda_i(A)|</span>: spectral radius.</li>
+</ul>
+<p>A quadratic form</p>
+<div class="math display">
+V(x)=x^\top Px
+</div>
+<p>is strictly positive for all <span class="math inline">x\neq0</span> exactly when <span class="math inline">P\succ0</span>.</p>
+<h3 id="set-notation">Set notation</h3>
+<p>A polyhedral state constraint is commonly written</p>
+<div class="math display">
+\mathcal X=\{x\in\mathbb R^n:H_xx\le h_x\},
+</div>
+<p>and an input set as</p>
+<div class="math display">
+\mathcal U=\{u\in\mathbb R^m:H_uu\le h_u\}.
+</div>
+<p>Inequalities between vectors are componentwise.</p>
+<h3 id="feedback-sign-convention">Feedback sign convention</h3>
+<p>Throughout this repository, LQR feedback is written</p>
+<div class="math display">
+\boxed{u=-Kx}.
+</div>
+<p>Hence</p>
+<div class="math display">
+\boxed{A_{\mathrm{cl}}=A-BK}.
+</div>
+<p>If another text defines <span class="math inline">u=Fx</span>, then <span class="math inline">F=-K</span> and the same closed loop may appear as <span class="math inline">A+BF</span>. Always check the convention before copying a stability formula.</p>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-2"></a></p>
+<h2 id="part-ii-prediction-turning-dynamics-into-algebra">Part II — Prediction: turning dynamics into algebra</h2>
+<h2 id="ii-1-multi-step-prediction">II.1 Multi-step prediction</h2>
+<p>MPC needs to predict how an input sequence affects future states. For the LTI model</p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k,
+</div>
+<p>the first steps are</p>
+<div class="math display">
+\begin{aligned}
+x_1 &amp;= Ax_0+Bu_0,\\
+x_2 &amp;= A^2x_0+ABu_0+Bu_1,\\
+x_3 &amp;= A^3x_0+A^2Bu_0+ABu_1+Bu_2.
+\end{aligned}
+</div>
+<p>Stack</p>
+<div class="math display">
+X=\begin{bmatrix}x_1\\x_2\\\vdots\\x_N\end{bmatrix},\qquad
+U=\begin{bmatrix}u_0\\u_1\\\vdots\\u_{N-1}\end{bmatrix}.
+</div>
+<p>Then</p>
+<div class="math display">
+\boxed{X=\mathcal S_xx_0+\mathcal S_uU},
+</div>
+<p>with</p>
+<div class="math display">
+\mathcal S_x=
+\begin{bmatrix}
+A\\A^2\\\vdots\\A^N
+\end{bmatrix},
+</div>
+<p>and the lower block-Toeplitz matrix</p>
+<div class="math display">
+\mathcal S_u=
+\begin{bmatrix}
+B&amp;0&amp;\cdots&amp;0\\
+AB&amp;B&amp;\cdots&amp;0\\
+\vdots&amp;\vdots&amp;\ddots&amp;\vdots\\
+A^{N-1}B&amp;A^{N-2}B&amp;\cdots&amp;B
+\end{bmatrix}.
+</div>
+<p>This single identity is the backbone of <strong>condensed linear MPC</strong>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">N = 4
+Sx, Su = prediction_matrices(A, B, N)
+print(&quot;Sx shape:&quot;, Sx.shape)
+print(&quot;Su shape:&quot;, Su.shape)
+print(&quot;\nSx =\n&quot;, Sx)
+print(&quot;\nSu =\n&quot;, Su)
+
+# Numerical verification against direct simulation
+U = np.array([[0.8], [0.2], [-0.4], [-0.5]])
+X_rollout = rollout(A, B, x0, U)[1:].reshape(-1)
+X_condensed = Sx @ x0 + Su @ U.reshape(-1)
+
+print(&quot;\nmax prediction error =&quot;, np.max(np.abs(X_rollout - X_condensed)))
+assert np.allclose(X_rollout, X_condensed)
+</code></pre>
+<pre class="output">Sx shape: (8, 2)
+Su shape: (8, 4)
+
+Sx =
+ [[1. 1.]
+ [0. 1.]
+ [1. 2.]
+ [0. 1.]
+ [1. 3.]
+ [0. 1.]
+ [1. 4.]
+ [0. 1.]]
+
+Su =
+ [[0.5 0.  0.  0. ]
+ [1.  0.  0.  0. ]
+ [1.5 0.5 0.  0. ]
+ [1.  1.  0.  0. ]
+ [2.5 1.5 0.5 0. ]
+ [1.  1.  1.  0. ]
+ [3.5 2.5 1.5 0.5]
+ [1.  1.  1.  1. ]]
+
+max prediction error = 1.1102230246251565e-16</pre>
+</div>
+
+<div class="md">
+<h3 id="checkpoint-what-is-really-being-optimized">Checkpoint — what is really being optimized?</h3>
+<p>In the <strong>condensed</strong> formulation, the future states are eliminated using</p>
+<div class="math display">
+X=\mathcal S_xx_0+\mathcal S_uU.
+</div>
+<p>The optimization variable is then only <span class="math inline">U</span>.</p>
+<p>In the <strong>sparse/uncondensed</strong> formulation, both <span class="math inline">X</span> and <span class="math inline">U</span> remain optimization variables, and the dynamics are imposed as equality constraints.</p>
+<p>Neither formulation changes the control problem; they only change its numerical representation. Sparse formulations often scale better for long horizons and structured solvers, whereas condensed QPs are convenient for small/medium linear MPC problems.</p>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-3"></a></p>
+<h2 id="part-iii-optimization-and-finite-horizon-optimal-control">Part III — Optimization and finite-horizon optimal control</h2>
+<h2 id="iii-1-anatomy-of-a-constrained-optimization-problem">III.1 Anatomy of a constrained optimization problem</h2>
+<p>A generic optimization problem is</p>
+<div class="math display">
+\begin{aligned}
+\min_z\quad &amp; f(z)\\
+\text{s.t.}\quad &amp; g_i(z)\le0,\quad i=1,\ldots,m,\\
+&amp; h_j(z)=0,\quad j=1,\ldots,p.
+\end{aligned}
+</div>
+<p>Here <span class="math inline">z</span> is the <strong>decision variable</strong>. In optimal control, <span class="math inline">z</span> may contain a complete input trajectory, a state trajectory, logical variables, or combinations of them.</p>
+<h3 id="convexity-matters">Convexity matters</h3>
+<p>If</p>
+<ul>
+<li><span class="math inline">f</span> is convex,</li>
+<li>each inequality function <span class="math inline">g_i</span> is convex,</li>
+<li>each equality constraint <span class="math inline">h_j</span> is affine,</li>
+</ul>
+<p>then the problem is convex. Any local optimum is global.</p>
+<p>A quadratic program (QP) has the standard form</p>
+<div class="math display">
+\begin{aligned}
+\min_z\quad &amp; \frac12 z^\top Hz+q^\top z\\
+\text{s.t.}\quad &amp; Gz\le b,\\
+&amp; Ez=d,
+\end{aligned}
+</div>
+<p>and is convex when <span class="math inline">H\succeq0</span>.</p>
+<blockquote>
+<p>Convexity is not just mathematical elegance: it changes what we can reliably solve online.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<h2 id="iii-2-from-a-quadratic-control-objective-to-a-qp">III.2 From a quadratic control objective to a QP</h2>
+<p>Consider the horizon-<span class="math inline">N</span> linear-quadratic cost</p>
+<div class="math display">
+J_N=
+\sum_{k=0}^{N-1}
+\left(x_k^\top Qx_k+u_k^\top Ru_k\right)
++x_N^\top Px_N,
+</div>
+<p>where</p>
+<div class="math display">
+Q\succeq0,\qquad R\succ0,\qquad P\succeq0.
+</div>
+<p>Ignoring the constant term involving <span class="math inline">x_0</span>, define</p>
+<div class="math display">
+\bar Q=\mathrm{blkdiag}(Q,\ldots,Q,P),\qquad
+\bar R=I_N\otimes R.
+</div>
+<p>Since <span class="math inline">X=\mathcal S_xx_0+\mathcal S_uU</span>,</p>
+<div class="math display">
+J_N(U;x_0)
+=
+(\mathcal S_xx_0+\mathcal S_uU)^\top
+\bar Q
+(\mathcal S_xx_0+\mathcal S_uU)
++U^\top\bar RU.
+</div>
+<p>Collecting terms gives</p>
+<div class="math display">
+J_N(U;x_0)=\frac12U^\top HU+f(x_0)^\top U+c(x_0),
+</div>
+<p>with</p>
+<div class="math display">
+\boxed{H=2(\mathcal S_u^\top\bar Q\mathcal S_u+\bar R)},
+</div>
+<div class="math display">
+\boxed{f(x_0)=2\mathcal S_u^\top\bar Q\mathcal S_xx_0}.
+</div>
+<p>Because <span class="math inline">R\succ0</span>, typically <span class="math inline">H\succ0</span>, so the unconstrained minimizer is unique.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">Q = np.diag([1.0, 0.2])
+R = np.array([[0.1]])
+P = Q.copy()
+N = 6
+Sx, Su = prediction_matrices(A, B, N)
+
+Qbar = block_diag(*([Q] * (N - 1) + [P]))
+Rbar = np.kron(np.eye(N), R)
+H = 2 * (Su.T @ Qbar @ Su + Rbar)
+f = 2 * Su.T @ Qbar @ Sx @ x0
+
+print(&quot;eigenvalues(H) =&quot;, np.linalg.eigvalsh(H))
+print(&quot;H is positive definite:&quot;, np.all(np.linalg.eigvalsh(H) &gt; 1e-10))
+
+# Unconstrained minimizer of 1/2 U&#x27;HU + f&#x27;U
+U_star = -np.linalg.solve(H, f)
+X_star = (Sx @ x0 + Su @ U_star).reshape(N, 2)
+print(&quot;first optimal unconstrained input =&quot;, U_star[0])
+</code></pre>
+<pre class="output">eigenvalues(H) = [  0.3137   0.3697   0.5483   1.3056   7.9579 289.6046]
+H is positive definite: True
+first optimal unconstrained input = 4.199541601862761</pre>
+</div>
+
+<div class="md">
+<h3 id="iii-2-1-how-constraints-become-linear-inequalities-in-the-condensed-qp">III.2.1 How constraints become linear inequalities in the condensed QP</h3>
+<p>Suppose each predicted state must satisfy</p>
+<div class="math display">
+H_xx_k\le h_x.
+</div>
+<p>After stacking,</p>
+<div class="math display">
+\bar H_xX\le \bar h_x.
+</div>
+<p>Substitute <span class="math inline">X=\mathcal S_xx_0+\mathcal S_uU</span>:</p>
+<div class="math display">
+\boxed{
+\bar H_x\mathcal S_uU
+\le
+\bar h_x-\bar H_x\mathcal S_xx_0
+}.
+</div>
+<p>Input constraints are already linear in <span class="math inline">U</span>:</p>
+<div class="math display">
+\bar H_uU\le\bar h_u.
+</div>
+<p>This exposes one of the most useful facts in linear MPC:</p>
+<blockquote>
+<p><strong>Linear dynamics + quadratic objective + polyhedral constraints <span class="math inline">\Rightarrow</span> convex QP.</strong></p>
+</blockquote>
+<h3 id="hard-versus-soft-constraints">Hard versus soft constraints</h3>
+<p>A hard constraint such as</p>
+<div class="math display">
+H_xx_k\le h_x
+</div>
+<p>must always hold. If temporary violation is physically tolerable, introduce a slack <span class="math inline">\epsilon_k\ge0</span>:</p>
+<div class="math display">
+H_xx_k\le h_x+\epsilon_k,
+</div>
+<p>and penalize it, e.g.</p>
+<div class="math display">
+J\leftarrow J+\rho\sum_k\|\epsilon_k\|_1.
+</div>
+<p>Softening can protect against infeasibility, but it does <strong>not</strong> magically make a truly safety-critical constraint safe to violate. The modeling decision must reflect physics.</p>
+</div>
+
+<div class="md">
+<h2 id="iii-3-constrained-finite-time-optimal-control-cftoc">III.3 Constrained finite-time optimal control (CFTOC)</h2>
+<p>For a general discrete-time system,</p>
+<div class="math display">
+x_{k+1}=f(x_k,u_k),
+</div>
+<p>a finite-horizon optimal control problem can be written</p>
+<div class="math display">
+\begin{aligned}
+V_N^*(x_0)=
+\min_{u_0,\ldots,u_{N-1}}\quad &amp;
+V_f(x_N)+\sum_{k=0}^{N-1}\ell(x_k,u_k)\\
+\text{s.t.}\quad &amp; x_{k+1}=f(x_k,u_k),\\
+&amp;x_k\in\mathcal X,\\
+&amp;u_k\in\mathcal U,\\
+&amp;x_N\in\mathcal X_f,\\
+&amp;x_0=x(0).
+\end{aligned}
+</div>
+<p>Interpretation:</p>
+<ul>
+<li><span class="math inline">\ell(x,u)</span> is the <strong>stage cost</strong>: what is expensive now?</li>
+<li><span class="math inline">V_f(x_N)</span> is the <strong>terminal cost</strong>: what is the estimated price of the future beyond the prediction horizon?</li>
+<li><span class="math inline">\mathcal X_f</span> is the <strong>terminal set</strong>: where must the prediction end so that the future can still be handled safely/stably?</li>
+</ul>
+<p>The optimal solution is an entire open-loop sequence</p>
+<div class="math display">
+U^*(x_0)=\{u_0^*,u_1^*,\ldots,u_{N-1}^*\}.
+</div>
+<p>CFTOC by itself is an <strong>open-loop planning problem</strong>. MPC converts it into feedback by resolving it repeatedly.</p>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-4"></a></p>
+<h2 id="part-iv-receding-horizon-control">Part IV — Receding horizon control</h2>
+<h2 id="iv-1-mpc-is-an-optimization-generated-feedback-law">IV.1 MPC is an optimization-generated feedback law</h2>
+<p>At time <span class="math inline">t</span>:</p>
+<ol>
+<li>measure/estimate the current state <span class="math inline">x(t)</span>;</li>
+<li>solve the horizon-<span class="math inline">N</span> optimal control problem;</li>
+<li>obtain <span class="math inline">u_{0|t}^*,\ldots,u_{N-1|t}^*</span>;</li>
+<li>apply only</li>
+</ol>
+<div class="math display">
+\boxed{u(t)=u_{0|t}^*};
+</div>
+<ol start="5">
+<li>discard the unused tail, move to <span class="math inline">t+1</span>, and solve again.</li>
+</ol>
+<p>This is the <strong>receding horizon principle</strong>.</p>
+<p>The resulting feedback law is implicitly defined by optimization:</p>
+<div class="math display">
+\kappa_N(x)=u_0^*(x).
+</div>
+<p>The optimizer is therefore not an offline trajectory generator; it is part of the controller.</p>
+<h3 id="why-re-optimize">Why re-optimize?</h3>
+<p>Because the next measured state is rarely exactly the predicted state. Re-optimization incorporates disturbances, estimation errors, model mismatch, and changing references/constraints.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># A compact receding-horizon demonstration.
+# We deliberately keep it simple here; Notebook 03 develops the theory.
+
+Q_mpc = np.diag([2.0, 0.4])
+R_mpc = np.array([[0.2]])
+N_mpc = 8
+
+mpc = LinearMPC(
+    A, B, Q_mpc, R_mpc, N=N_mpc,
+    x_lower=np.array([-10.0, -3.0]),
+    x_upper=np.array([ 10.0,  3.0]),
+    u_lower=np.array([-1.0]),
+    u_upper=np.array([ 1.0]),
+)
+
+x_init = np.array([-7.0, 0.0])
+xs, us, costs = simulate_receding_horizon(mpc, x_init, steps=25)
+
+fig, axes = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
+axes[0].plot(xs[:, 0], &quot;o-&quot;)
+axes[0].axhline(0, color=&quot;k&quot;, linewidth=0.8)
+axes[0].set_ylabel(&quot;position&quot;)
+axes[0].set_title(&quot;Receding-horizon closed loop&quot;)
+
+axes[1].plot(xs[:, 1], &quot;o-&quot;)
+axes[1].set_ylabel(&quot;velocity&quot;)
+axes[1].axhline(3, color=&quot;k&quot;, linestyle=&quot;--&quot;, linewidth=0.8)
+axes[1].axhline(-3, color=&quot;k&quot;, linestyle=&quot;--&quot;, linewidth=0.8)
+
+axes[2].step(np.arange(len(us)), us[:, 0], where=&quot;post&quot;)
+axes[2].axhline(1, color=&quot;k&quot;, linestyle=&quot;--&quot;, linewidth=0.8)
+axes[2].axhline(-1, color=&quot;k&quot;, linestyle=&quot;--&quot;, linewidth=0.8)
+axes[2].set_ylabel(&quot;input&quot;)
+axes[2].set_xlabel(&quot;time step&quot;)
+plt.tight_layout()
+plt.show()
+
+print(&quot;number of applied MPC moves:&quot;, len(us))
+print(&quot;final state:&quot;, xs[-1])
+</code></pre>
+<figure class="output-figure"><img src="img/00-2.png" alt="Figure: Receding-horizon closed loop" width="786" height="686" loading="lazy"></figure>
+<pre class="output">number of applied MPC moves: 11
+final state: [ 0.0003 -0.0001]</pre>
+</div>
+
+<div class="md">
+<h2 id="iv-2-four-notions-that-must-not-be-conflated">IV.2 Four notions that must not be conflated</h2>
+<h3 id="iv-2-1-feasibility">IV.2.1 Feasibility</h3>
+<p>For a given state <span class="math inline">x</span>, the finite-horizon problem is <strong>feasible</strong> if at least one admissible input sequence exists.</p>
+<p>Define the <span class="math inline">N</span>-step feasible set</p>
+<div class="math display">
+\mathcal X_N=\{x:\exists U\text{ satisfying all horizon constraints}\}.
+</div>
+<h3 id="iv-2-2-recursive-feasibility">IV.2.2 Recursive feasibility</h3>
+<p>An MPC law is recursively feasible if</p>
+<div class="math display">
+x(t)\in\mathcal X_N
+\quad\Longrightarrow\quad
+x(t+1)\in\mathcal X_N
+</div>
+<p>under the applied MPC input.</p>
+<p>A controller can be feasible <strong>now</strong> but fail to remain feasible later. Recursive feasibility is the stronger closed-loop property.</p>
+<h3 id="iv-2-3-constraint-satisfaction">IV.2.3 Constraint satisfaction</h3>
+<p>If the optimization model is exact and the applied input is the first component of a feasible sequence, current-step hard constraints are satisfied. Under uncertainty, this conclusion needs robust/tube/chance-constraint arguments; nominal MPC alone is not a robust guarantee.</p>
+<h3 id="iv-2-4-stability">IV.2.4 Stability</h3>
+<p>Feasibility only says that a legal trajectory exists. Stability says something about asymptotic behavior of the closed loop. A feasible MPC controller need not automatically stabilize the desired equilibrium.</p>
+<blockquote>
+<p><strong>A common pitfall:</strong> “The optimizer solved successfully” is not a stability proof.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-5"></a></p>
+<h2 id="part-v-stability-and-lqr">Part V — Stability and LQR</h2>
+<h2 id="v-1-continuous-time-and-discrete-time-stability-tests-are-different">V.1 Continuous-time and discrete-time stability tests are different</h2>
+<p>For the continuous-time LTI system</p>
+<div class="math display">
+\dot x=Ax,
+</div>
+<p>asymptotic stability requires <span class="math inline">A</span> to be <strong>Hurwitz</strong>:</p>
+<div class="math display">
+\Re\lambda_i(A)&lt;0.
+</div>
+<p>For the discrete-time LTI system</p>
+<div class="math display">
+x_{k+1}=Ax_k,
+</div>
+<p>asymptotic stability requires <span class="math inline">A</span> to be <strong>Schur</strong>:</p>
+<div class="math display">
+\boxed{\rho(A)&lt;1}.
+</div>
+<h3 id="discrete-time-lyapunov-condition">Discrete-time Lyapunov condition</h3>
+<p>Let</p>
+<div class="math display">
+V(x)=x^\top Px,\qquad P\succ0.
+</div>
+<p>Then</p>
+<div class="math display">
+\Delta V
+=V(x_{k+1})-V(x_k)
+=x_k^\top(A^\top PA-P)x_k.
+</div>
+<p>If there exists <span class="math inline">P\succ0</span> such that</p>
+<div class="math display">
+A^\top PA-P\prec0,
+</div>
+<p>the origin is asymptotically stable.</p>
+<p>For an exponentially stable discrete-time LTI system, one can obtain</p>
+<div class="math display">
+\|x_k\|\le c\alpha^k\|x_0\|,
+\qquad c&gt;0,\quad 0&lt;\alpha&lt;1.
+</div>
+</div>
+
+<div class="md">
+<h2 id="v-2-infinite-horizon-lqr-and-the-dare">V.2 Infinite-horizon LQR and the DARE</h2>
+<p>Consider</p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k
+</div>
+<p>and</p>
+<div class="math display">
+J_\infty=\sum_{k=0}^{\infty}
+\left(x_k^\top Qx_k+u_k^\top Ru_k\right),
+</div>
+<p>with <span class="math inline">Q\succeq0</span> and <span class="math inline">R\succ0</span>.</p>
+<p>Under the usual stabilizability/detectability assumptions, the optimal stationary feedback is</p>
+<div class="math display">
+\boxed{u=-Kx},
+</div>
+<p>where</p>
+<div class="math display">
+K=(R+B^\top PB)^{-1}B^\top PA
+</div>
+<p>and <span class="math inline">P</span> solves the discrete algebraic Riccati equation (DARE)</p>
+<div class="math display">
+\boxed{
+P=A^\top PA
+-A^\top PB(R+B^\top PB)^{-1}B^\top PA
++Q.
+}
+</div>
+<p>The closed-loop matrix is</p>
+<div class="math display">
+A_{\mathrm{cl}}=A-BK.
+</div>
+<p>A fundamental identity is</p>
+<div class="math display">
+\boxed{
+A_{\mathrm{cl}}^\top P A_{\mathrm{cl}}-P
+=-(Q+K^\top RK).
+}
+</div>
+<p>Therefore, with <span class="math inline">V(x)=x^\top Px</span>,</p>
+<div class="math display">
+V(x^+)-V(x)=-\ell(x,-Kx)&lt;0
+</div>
+<p>away from the origin. This identity is precisely why the LQR value function is such a natural terminal cost for linear-quadratic MPC.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">K, P_lqr, eig_cl = dlqr(A, B, Q, R)
+Acl = A - B @ K
+residual = Acl.T @ P_lqr @ Acl - P_lqr + Q + K.T @ R @ K
+
+print(&quot;K =&quot;, K)
+print(&quot;P =\n&quot;, P_lqr)
+print(&quot;closed-loop eigenvalues =&quot;, eig_cl)
+print(&quot;spectral radius =&quot;, np.max(np.abs(eig_cl)))
+print(&quot;DARE/Lyapunov identity residual norm =&quot;, np.linalg.norm(residual))
+
+# Show monotonic decrease of V along the LQR closed loop.
+x = np.array([-5.0, 1.5])
+Vs = []
+Xs = [x.copy()]
+for k in range(25):
+    Vs.append(x @ P_lqr @ x)
+    u = -K @ x
+    x = A @ x + B @ u
+    Xs.append(x.copy())
+Vs.append(x @ P_lqr @ x)
+
+fig, ax = plt.subplots()
+ax.semilogy(Vs, &quot;o-&quot;)
+ax.set_xlabel(&quot;time step&quot;)
+ax.set_ylabel(r&quot;$V(x_k)=x_k^\top P x_k$&quot;)
+ax.set_title(&quot;LQR value function decreases along the nominal closed loop&quot;)
+plt.show()
+</code></pre>
+<pre class="output">K = [[0.8399 1.3494]]
+P =
+ [[1.6066 0.3873]
+ [0.3873 0.5286]]
+closed-loop eigenvalues = [0.1153+0.2393j 0.1153-0.2393j]
+spectral radius = 0.265602403550188
+DARE/Lyapunov identity residual norm = 2.2764225665202706e-15</pre>
+<figure class="output-figure"><img src="img/00-3.png" alt="Figure: LQR value function decreases along the nominal closed loop" width="721" height="441" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-6"></a></p>
+<h2 id="part-vi-reachability-and-invariant-sets">Part VI — Reachability and invariant sets</h2>
+<h2 id="vi-1-predecessors-from-where-can-i-enter-this-set-in-one-step">VI.1 Predecessors: “from where can I enter this set in one step?”</h2>
+<p>For</p>
+<div class="math display">
+x^+=Ax+Bu,
+</div>
+<p>and a target set <span class="math inline">\mathcal S</span>, define the one-step predecessor</p>
+<div class="math display">
+\boxed{
+\mathrm{Pre}(\mathcal S)=
+\{x:\exists u\in\mathcal U\text{ such that }Ax+Bu\in\mathcal S\}.
+}
+</div>
+<p>Repeated predecessor operations answer finite-horizon reachability questions:</p>
+<div class="math display">
+\mathrm{Pre}^2(\mathcal S),\quad
+\mathrm{Pre}^3(\mathcal S),\ldots
+</div>
+<p>This construction appears naturally when asking:</p>
+<blockquote>
+<p>“From which initial states can I reach a terminal/safe set within <span class="math inline">N</span> steps without violating constraints?”</p>
+</blockquote>
+<p>That is closely related to an MPC feasible set.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-2-positive-invariance-versus-control-invariance">VI.2 Positive invariance versus control invariance</h2>
+<p>These definitions look similar but their quantifiers are different.</p>
+<h3 id="positively-invariant-set">Positively invariant set</h3>
+<p>For autonomous dynamics <span class="math inline">x^+=F(x)</span>,</p>
+<div class="math display">
+\boxed{x\in\mathcal O\Rightarrow F(x)\in\mathcal O.}
+</div>
+<p>If a feedback controller is already fixed, e.g.</p>
+<div class="math display">
+u=-Kx,
+</div>
+<p>then we analyze invariance under</p>
+<div class="math display">
+x^+=(A-BK)x.
+</div>
+<h3 id="control-invariant-set">Control invariant set</h3>
+<p>For controlled dynamics,</p>
+<div class="math display">
+\boxed{
+\forall x\in\mathcal C,\ \exists u\in\mathcal U:
+Ax+Bu\in\mathcal C.
+}
+</div>
+<p><strong>Positive invariance:</strong> the future is safe under the fixed closed-loop dynamics.</p>
+<p><strong>Control invariance:</strong> at least one admissible action can keep the state safe.</p>
+<p>This is one of the most important quantifier distinctions in constrained control.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-3-a-terminal-invariant-set-for-constrained-lqr">VI.3 A terminal invariant set for constrained LQR</h2>
+<p>Suppose state and input constraints are</p>
+<div class="math display">
+x\in\mathcal X,
+\qquad
+u=-Kx\in\mathcal U.
+</div>
+<p>Define the set of states that satisfy both constraints under LQR,</p>
+<div class="math display">
+\mathcal X_{\mathrm{cl}}
+=
+\{x:x\in\mathcal X,\ -Kx\in\mathcal U\}.
+</div>
+<p>The <strong>maximal positively invariant subset</strong> of <span class="math inline">\mathcal X_{\mathrm{cl}}</span> under</p>
+<div class="math display">
+x^+=(A-BK)x
+</div>
+<p>is a natural terminal set candidate <span class="math inline">\mathcal X_f</span>.</p>
+<p>Inside <span class="math inline">\mathcal X_f</span>:</p>
+<ol>
+<li>the local LQR controller respects the constraints;</li>
+<li>the next state remains in <span class="math inline">\mathcal X_f</span>;</li>
+<li>the LQR terminal value decreases.</li>
+</ol>
+<p>Those are exactly the ingredients needed in the standard MPC stability argument.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Build a state/input admissible region for the local LQR controller.
+x_lower = np.array([-8.0, -3.0])
+x_upper = np.array([ 8.0,  3.0])
+u_max = 1.0
+
+X_box = HPolytope.box(x_lower, x_upper)
+H_cl = np.vstack([X_box.H, K, -K])
+h_cl = np.r_[X_box.h, u_max, u_max]
+X_cl = HPolytope(H_cl, h_cl).remove_redundancy()
+
+Xf, hist = maximal_invariant(Acl, X_cl, max_iter=100)
+V_box = X_box.vertices_2d()
+V_cl = X_cl.vertices_2d()
+V_f = Xf.vertices_2d()
+
+fig, ax = plt.subplots(figsize=(7, 5))
+if len(V_box):
+    ax.fill(V_box[:,0], V_box[:,1], alpha=0.12, label=r&quot;state box $\mathcal{X}$&quot;)
+if len(V_cl):
+    ax.fill(V_cl[:,0], V_cl[:,1], alpha=0.20, label=r&quot;$\mathcal{X}_{cl}$: state + LQR input admissible&quot;)
+if len(V_f):
+    ax.fill(V_f[:,0], V_f[:,1], alpha=0.35, label=r&quot;terminal invariant set $\mathcal{X}_f$&quot;)
+ax.set_xlabel(&quot;position&quot;)
+ax.set_ylabel(&quot;velocity&quot;)
+ax.set_title(&quot;Invariant terminal-set construction for constrained LQR&quot;)
+ax.legend()
+plt.show()
+
+print(&quot;invariance iterations:&quot;, len(hist)-1)
+print(&quot;number of terminal-set vertices:&quot;, len(V_f))
+</code></pre>
+<figure class="output-figure"><img src="img/00-4.png" alt="Figure: Invariant terminal-set construction for constrained LQR" width="615" height="472" loading="lazy"></figure>
+<pre class="output">invariance iterations: 2
+number of terminal-set vertices: 4</pre>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-7"></a></p>
+<h2 id="part-vii-why-terminal-ingredients-matter-in-mpc">Part VII — Why terminal ingredients matter in MPC</h2>
+<h2 id="vii-1-the-standard-terminal-set-stability-mechanism">VII.1 The standard terminal-set stability mechanism</h2>
+<p>Consider the MPC problem</p>
+<div class="math display">
+V_N^*(x)=
+\min_U
+\left[
+\sum_{k=0}^{N-1}\ell(x_k,u_k)+V_f(x_N)
+\right]
+</div>
+<p>with terminal constraint</p>
+<div class="math display">
+x_N\in\mathcal X_f.
+</div>
+<p>Assume there exists a local terminal controller <span class="math inline">\kappa_f(x)</span> such that for every <span class="math inline">x\in\mathcal X_f</span>:</p>
+<ol>
+<li><strong>invariance</strong></li>
+</ol>
+<div class="math display">
+f(x,\kappa_f(x))\in\mathcal X_f;
+</div>
+<ol start="2">
+<li><strong>constraint admissibility</strong></li>
+</ol>
+<div class="math display">
+x\in\mathcal X,\qquad \kappa_f(x)\in\mathcal U;
+</div>
+<ol start="3">
+<li><strong>terminal Lyapunov decrease</strong></li>
+</ol>
+<div class="math display">
+\boxed{
+V_f(f(x,\kappa_f(x)))-V_f(x)
+\le -\ell(x,\kappa_f(x)).
+}
+</div>
+<p>These assumptions are the conceptual heart of stabilizing MPC.</p>
+</div>
+
+<div class="md">
+<h2 id="vii-2-recursive-feasibility-the-shifted-sequence-argument">VII.2 Recursive feasibility: the shifted-sequence argument</h2>
+<p>Suppose at time <span class="math inline">t</span> an optimal feasible sequence is</p>
+<div class="math display">
+U_t^*=\{u_{0|t}^*,u_{1|t}^*,\ldots,u_{N-1|t}^*\},
+</div>
+<p>with predicted terminal state <span class="math inline">x_{N|t}^*\in\mathcal X_f</span>.</p>
+<p>MPC applies <span class="math inline">u_{0|t}^*</span>. At the next time step, consider the <strong>candidate</strong> sequence</p>
+<div class="math display">
+\widetilde U_{t+1}
+=
+\{u_{1|t}^*,\ldots,u_{N-1|t}^*,\kappa_f(x_{N|t}^*)\}.
+</div>
+<p>Why is this candidate feasible in the nominal case?</p>
+<ul>
+<li>all shifted predicted states were already feasible;</li>
+<li><span class="math inline">x_{N|t}^*\in\mathcal X_f</span>;</li>
+<li>the terminal controller respects constraints;</li>
+<li>invariance guarantees the new final state remains in <span class="math inline">\mathcal X_f</span>.</li>
+</ul>
+<p>Therefore</p>
+<div class="math display">
+\boxed{\text{feasible at }t\Rightarrow\text{feasible at }t+1}
+</div>
+<p>under the theorem assumptions.</p>
+<p>This is a proof of <strong>recursive feasibility</strong>, not merely a numerical observation.</p>
+</div>
+
+<div class="md">
+<h2 id="vii-3-stability-the-optimal-mpc-value-as-a-lyapunov-function">VII.3 Stability: the optimal MPC value as a Lyapunov function</h2>
+<p>The same shifted candidate provides a cost comparison. Since the optimizer at <span class="math inline">t+1</span> can only do better than a feasible candidate,</p>
+<div class="math display">
+V_N^*(x_{t+1})
+\le
+V_N^*(x_t)
+-
+\ell(x_t,u_t^*)
++
+\underbrace{
+V_f(x_{N+1})-V_f(x_N)
++
+\ell(x_N,\kappa_f(x_N))
+}_{\le0}.
+</div>
+<p>Hence</p>
+<div class="math display">
+\boxed{
+V_N^*(x_{t+1})-V_N^*(x_t)
+\le
+-\ell(x_t,u_t^*).
+}
+</div>
+<p>With a positive-definite stage cost, the optimal value decreases and acts as a Lyapunov function.</p>
+<h3 id="linear-quadratic-terminal-ingredients">Linear-quadratic terminal ingredients</h3>
+<p>For <span class="math inline">u=-Kx</span> and <span class="math inline">V_f=x^\top Px</span> from the DARE,</p>
+<div class="math display">
+V_f((A-BK)x)-V_f(x)
+=-x^\top(Q+K^\top RK)x
+=-\ell(x,-Kx).
+</div>
+<p>So the LQR pair <span class="math inline">(K,P)</span> naturally satisfies the required local decrease condition; the remaining task is to choose an invariant terminal set where the constraints are also satisfied.</p>
+</div>
+
+<div class="md">
+<blockquote>
+<h3 id="what-this-theorem-does-not-say">What this theorem does <strong>not</strong> say</h3>
+<ul>
+<li>It does not say every MPC formulation is stable.</li>
+<li>It does not say a long horizon automatically proves stability.</li>
+<li>It does not make nominal guarantees robust to disturbances/model error.</li>
+<li>It does not remove the need to check feasibility of the initial condition.</li>
+</ul>
+<p>These distinctions become crucial in real autonomous systems.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-8"></a></p>
+<h2 id="part-viii-dynamic-programming-and-value-functions">Part VIII — Dynamic programming and value functions</h2>
+<h2 id="viii-1-bellman-s-principle-of-optimality">VIII.1 Bellman's principle of optimality</h2>
+<p>For</p>
+<div class="math display">
+x_{k+1}=f(x_k,u_k)
+</div>
+<p>and finite-horizon cost</p>
+<div class="math display">
+J=
+ g_N(x_N)+\sum_{k=0}^{N-1}g_k(x_k,u_k),
+</div>
+<p>define the optimal cost-to-go <span class="math inline">J_k^*(x)</span> from stage <span class="math inline">k</span> onward.</p>
+<p>The terminal condition is</p>
+<div class="math display">
+J_N^*(x)=g_N(x),
+</div>
+<p>and backward recursion gives</p>
+<div class="math display">
+\boxed{
+J_k^*(x)
+=
+\min_{u\in\mathcal U_k(x)}
+\left[
+ g_k(x,u)+J_{k+1}^*(f(x,u))
+\right].
+}
+</div>
+<p>This is Bellman's equation for deterministic finite-horizon optimal control.</p>
+<h3 id="the-deep-connection-to-mpc">The deep connection to MPC</h3>
+<p>An ideal infinite-horizon value function contains the exact cost of the entire future. MPC cannot generally compute that online, so it truncates the horizon and inserts a <strong>terminal cost</strong> <span class="math inline">V_f</span> as an approximation of the missing tail.</p>
+<p>That is why terminal costs are not arbitrary tuning terms: conceptually they approximate a value function.</p>
+</div>
+
+<div class="md">
+<h3 id="viii-1-1-control-vocabulary-versus-rl-vocabulary">VIII.1.1 Control vocabulary versus RL vocabulary</h3>
+<p>The same mathematics often appears under different names.</p>
+<table>
+<thead>
+<tr>
+<th>Control / DP language</th>
+<th>RL language</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>system</td>
+<td>environment</td>
+</tr>
+<tr>
+<td>controller / decision maker</td>
+<td>agent</td>
+</tr>
+<tr>
+<td>control input</td>
+<td>action</td>
+</tr>
+<tr>
+<td>stage cost</td>
+<td>negative reward</td>
+</tr>
+<tr>
+<td>cost-to-go / value function</td>
+<td>value function</td>
+</tr>
+<tr>
+<td>state-action cost / Q-factor</td>
+<td>Q-value</td>
+</tr>
+<tr>
+<td>solve DP using a known model</td>
+<td>planning</td>
+</tr>
+<tr>
+<td>infer value/policy from interaction/data</td>
+<td>learning</td>
+</tr>
+<tr>
+<td>finite task repetition</td>
+<td>episode</td>
+</tr>
+</tbody>
+</table>
+<p>The vocabulary changes, but Bellman's principle remains the organizing equation.</p>
+<h3 id="curse-of-dimensionality">Curse of dimensionality</h3>
+<p>Dynamic programming recursively solves low-dimensional decision problems, but the value function must be represented over the state space. A grid with <span class="math inline">M</span> points per dimension requires <span class="math inline">M^n</span> state samples in <span class="math inline">n</span> dimensions. This exponential growth motivates approximation, learning, and structured optimization methods.</p>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-9"></a></p>
+<h2 id="part-ix-from-designed-terminal-ingredients-to-learning-mpc">Part IX — From designed terminal ingredients to Learning MPC</h2>
+<h2 id="ix-1-why-learn-a-terminal-set-or-terminal-value">IX.1 Why learn a terminal set or terminal value?</h2>
+<p>Classical stabilizing MPC asks us to supply:</p>
+<ul>
+<li>a terminal set <span class="math inline">\mathcal X_f</span> that is invariant/admissible;</li>
+<li>a terminal cost <span class="math inline">V_f</span> with a suitable decrease property.</li>
+</ul>
+<p>For constrained nonlinear systems these objects can be difficult to compute.</p>
+<p>Learning MPC (LMPC) targets a special but important situation:</p>
+<blockquote>
+<p><strong>the same control task is repeated over iterations</strong> — regulation runs, repeated path following, manufacturing cycles, racing laps, etc.</p>
+</blockquote>
+<p>If an earlier iteration completed the task safely, every state visited on that successful trajectory comes with something extremely valuable:</p>
+<ol>
+<li>a <strong>known feasible continuation</strong> to the goal;</li>
+<li>an observed <strong>cost-to-go</strong> along that continuation.</li>
+</ol>
+<p>LMPC turns these facts into terminal ingredients.</p>
+</div>
+
+<div class="md">
+<h2 id="ix-2-sampled-safe-set">IX.2 Sampled safe set</h2>
+<p>Let iteration <span class="math inline">i</span> generate a successful trajectory</p>
+<div class="math display">
+\mathbf x^i=\{x_0^i,x_1^i,\ldots,x_{T_i}^i\}
+</div>
+<p>with associated admissible inputs</p>
+<div class="math display">
+\mathbf u^i=\{u_0^i,\ldots,u_{T_i-1}^i\}.
+</div>
+<p>After iterations <span class="math inline">0,\ldots,j</span>, a sampled safe set can be formed from all states on successful trajectories:</p>
+<div class="math display">
+\boxed{
+\mathcal{SS}^j
+=
+\bigcup_{i=0}^{j}
+\bigcup_{t=0}^{T_i}
+\{x_t^i\}
+\quad
+(\text{possibly augmented by a terminal region }\mathcal O).
+}
+</div>
+<p>Why “safe”? Because from each stored state we already know at least one admissible sequence that completed the task: the remainder of the historical trajectory.</p>
+<p>For deterministic repeated tasks, this creates a data-driven certificate of <strong>existence of a feasible continuation</strong> for the sampled points.</p>
+</div>
+
+<div class="md">
+<h2 id="ix-3-convex-safe-set-and-barycentric-coordinates">IX.3 Convex safe set and barycentric coordinates</h2>
+<p>For a linear system with convex state/input constraints, it is often useful to convexify the sampled states:</p>
+<div class="math display">
+\boxed{
+\mathcal{CS}^j=\mathrm{conv}(\mathcal{SS}^j).
+}
+</div>
+<p>A point <span class="math inline">x\in\mathcal{CS}^j</span> can be represented as</p>
+<div class="math display">
+x=\sum_{r=1}^{M}\lambda_r x_r,
+</div>
+<p>where</p>
+<div class="math display">
+\lambda_r\ge0,
+\qquad
+\sum_{r=1}^{M}\lambda_r=1.
+</div>
+<p>The <span class="math inline">\lambda_r</span> are barycentric coordinates.</p>
+<p>Why does convexification help in the linear/convex setting? If each stored point <span class="math inline">x_r</span> has an admissible continuation/input, then convex combinations of states can be propagated by convex combinations of the corresponding inputs. Linearity and convex constraints preserve admissibility. Under the standard assumptions, this makes the convex safe set control invariant.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Geometry only: visualize sampled safe states and their convex hull.
+# The points mimic states collected from several successful iterations.
+traj1 = np.array([[-5.0, 0.0], [-4.2, 1.0], [-2.7, 1.4], [-1.2, 1.0], [0.0, 0.0]])
+traj2 = np.array([[-5.0, 0.0], [-4.0, 1.4], [-2.2, 1.6], [-0.8, 0.8], [0.0, 0.0]])
+traj3 = np.array([[-5.0, 0.0], [-3.8, 1.7], [-1.8, 1.5], [-0.5, 0.6], [0.0, 0.0]])
+pts = np.vstack([traj1, traj2, traj3])
+
+hull = ConvexHull(pts)
+Hpts = pts[hull.vertices]
+
+fig, ax = plt.subplots(figsize=(7,5))
+for i, tr in enumerate([traj1, traj2, traj3]):
+    ax.plot(tr[:,0], tr[:,1], &quot;o-&quot;, label=f&quot;successful iteration {i}&quot;)
+ax.fill(Hpts[:,0], Hpts[:,1], alpha=0.18, label=&quot;convex safe-set geometry&quot;)
+ax.set_xlabel(&quot;state component $x_1$&quot;)
+ax.set_ylabel(&quot;state component $x_2$&quot;)
+ax.set_title(&quot;Successful data can define a terminal region&quot;)
+ax.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/00-5.png" alt="Figure: Successful data can define a terminal region" width="630" height="476" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="ix-4-learning-a-terminal-value-from-stored-cost-to-go">IX.4 Learning a terminal value from stored cost-to-go</h2>
+<p>For a stored trajectory <span class="math inline">i</span>, define the realized cost-to-go from time <span class="math inline">t</span>:</p>
+<div class="math display">
+J_{t\rightarrow T_i}^{i}
+=
+\sum_{k=t}^{T_i-1}
+\ell(x_k^i,u_k^i)
++
+V_{\mathcal O}(x_{T_i}^i).
+</div>
+<p>If <span class="math inline">x</span> is represented as a convex combination of stored states,</p>
+<div class="math display">
+x=\sum_r\lambda_rx_r,
+</div>
+<p>one can construct a learned terminal value by solving a barycentric interpolation problem such as</p>
+<div class="math display">
+\boxed{
+\widehat V^j(x)
+=
+\min_{\lambda}
+\sum_r\lambda_r J_r
+}
+</div>
+<p>subject to</p>
+<div class="math display">
+\sum_r\lambda_rx_r=x,
+\qquad
+\sum_r\lambda_r=1,
+\qquad
+\lambda_r\ge0.
+</div>
+<p>Then an LMPC can use</p>
+<div class="math display">
+x_N\in\mathcal{CS}^j,
+\qquad
+V_f(x_N)=\widehat V^j(x_N).
+</div>
+<p>So the classical pair</p>
+<div class="math display">
+\boxed{\mathcal X_f,\;V_f}
+</div>
+<p>is replaced/augmented by the data-driven pair</p>
+<div class="math display">
+\boxed{\mathcal{CS}^j,\;\widehat V^j}.
+</div>
+<blockquote>
+<p><strong>LMPC is not synonymous with deep reinforcement learning.</strong> In the formulation studied here, the “learning” can be entirely geometric and optimization-based: successful trajectories supply terminal feasibility and terminal performance information.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<h3 id="ix-4-1-classical-mpc-lmpc-and-rl-one-conceptual-map">IX.4.1 Classical MPC, LMPC, and RL — one conceptual map</h3>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Classical MPC</th>
+<th>Learning MPC</th>
+<th>RL / approximate DP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Is a model used online?</td>
+<td>yes</td>
+<td>yes (possibly learned/local)</td>
+<td>may be model-free or model-based</td>
+</tr>
+<tr>
+<td>Constraints explicit in online optimization?</td>
+<td>yes</td>
+<td>yes</td>
+<td>not automatically</td>
+</tr>
+<tr>
+<td>Terminal knowledge</td>
+<td>designed <span class="math inline">\mathcal X_f,V_f</span></td>
+<td>learned from successful data</td>
+<td>value/policy approximation</td>
+</tr>
+<tr>
+<td>Main learning object</td>
+<td>none necessarily</td>
+<td>safe set / terminal value / possibly model</td>
+<td>value, Q-function, policy, model</td>
+</tr>
+<tr>
+<td>Repeated task useful?</td>
+<td>not required</td>
+<td>central</td>
+<td>often episodic but not required</td>
+</tr>
+</tbody>
+</table>
+<p>This table is intentionally conceptual; many modern methods blur these categories.</p>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-10"></a></p>
+<h2 id="part-x-preview-autonomous-racing-in-frenet-coordinates">Part X — Preview: autonomous racing in Frenet coordinates</h2>
+<h2 id="x-1-why-change-coordinates">X.1 Why change coordinates?</h2>
+<p>For path-following and racing, global Cartesian coordinates <span class="math inline">(X,Y)</span> are not always the most natural coordinates for optimization. If the track centerline is parameterized by arc length <span class="math inline">s</span>, define Frenet-type errors</p>
+<div class="math display">
+(s,e_y,e_\psi),
+</div>
+<p>where</p>
+<ul>
+<li><span class="math inline">s</span>: progress along the path;</li>
+<li><span class="math inline">e_y</span>: lateral deviation from the centerline;</li>
+<li><span class="math inline">e_\psi</span>: heading error relative to the path tangent.</li>
+</ul>
+<p>A track boundary becomes a simple constraint such as</p>
+<div class="math display">
+|e_y(s)|\le W(s).
+</div>
+<p>A minimum-time raceline problem then trades off:</p>
+<ul>
+<li>progress/lap time;</li>
+<li>track geometry and curvature <span class="math inline">\kappa(s)</span>;</li>
+<li>vehicle dynamics;</li>
+<li>tire/input limits;</li>
+<li>track boundaries.</li>
+</ul>
+<p>The later racing notebooks use this geometry to bridge optimal control, MPC, local model learning, and repeated-task learning.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># A tiny geometric preview of Frenet coordinates on a circular centerline.
+theta = np.linspace(0, 2*np.pi, 400)
+Rtrack = 10.0
+xc, yc = Rtrack*np.cos(theta), Rtrack*np.sin(theta)
+
+th = 0.75
+center = np.array([Rtrack*np.cos(th), Rtrack*np.sin(th)])
+tangent = np.array([-np.sin(th), np.cos(th)])
+normal = np.array([np.cos(th), np.sin(th)])
+ey = 1.4
+vehicle = center + ey*normal
+
+fig, ax = plt.subplots(figsize=(6,6))
+ax.plot(xc, yc, label=&quot;centerline&quot;)
+ax.plot(*center, &quot;ko&quot;, label=&quot;reference point at $s$&quot;)
+ax.plot(*vehicle, &quot;ro&quot;, label=&quot;vehicle&quot;)
+ax.arrow(*center, *(2.0*tangent), width=0.05, length_includes_head=True)
+ax.arrow(*center, *(ey*normal), width=0.04, length_includes_head=True)
+ax.text(*(center + 1.2*tangent), &quot;$s$ direction&quot;)
+ax.text(*(center + 0.55*ey*normal), &quot;$e_y$&quot;)
+ax.set_aspect(&quot;equal&quot;)
+ax.set_title(&quot;Frenet intuition: progress along the path + lateral deviation&quot;)
+ax.legend(loc=&quot;upper right&quot;)
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/00-6.png" alt="Figure: Frenet intuition: progress along the path + lateral deviation" width="581" height="529" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-11"></a></p>
+<h2 id="part-xi-common-conceptual-pitfalls">Part XI — Common conceptual pitfalls</h2>
+<h2 id="xi-1-things-worth-catching-before-an-implementation-review">XI.1 Things worth catching before an implementation review</h2>
+<ol>
+<li><strong>Discrete stability is not <span class="math inline">\Re\lambda&lt;0</span>.</strong> That is continuous time. Discrete time requires <span class="math inline">|\lambda|&lt;1</span>.</li>
+<li><strong>With <span class="math inline">u=-Kx</span>, the closed-loop matrix is <span class="math inline">A-BK</span>.</strong> A plus sign corresponds to a different feedback convention.</li>
+<li><strong>A feasible MPC problem is not automatically stable.</strong> Feasibility and stability are different properties.</li>
+<li><strong>A long horizon is not a proof.</strong> It can improve behavior, but a guarantee needs assumptions/analysis.</li>
+<li><strong>A terminal cost is not just an extra weight.</strong> It represents the unmodeled tail of the horizon and can support a Lyapunov proof.</li>
+<li><strong>A terminal set is not merely a final box.</strong> In stabilizing MPC it is usually designed to be admissible and invariant under a local controller.</li>
+<li><strong>Nominal constraint satisfaction is not robust safety.</strong> Disturbances/model error require additional design.</li>
+<li><strong>Control invariance has an existential input quantifier.</strong> <span class="math inline">\forall x\in\mathcal C,\exists u</span>.</li>
+<li><strong>LMPC learning does not require a neural network.</strong> Safe sets and value functions can be learned directly from successful trajectories.</li>
+<li><strong>Prediction model <span class="math inline">\neq</span> plant.</strong> MPC performance and robustness depend on the gap between them.</li>
+</ol>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-12"></a></p>
+<h2 id="part-xii-check-your-understanding">Part XII — Check your understanding</h2>
+<p>Try answering each question <strong>before</strong> opening the answer.</p>
+<h3 id="q1-why-is-mpc-a-feedback-controller-if-it-solves-an-open-loop-optimization">Q1. Why is MPC a feedback controller if it solves an open-loop optimization?</h3>
+<details><summary>Answer</summary>
+<p>At each sampling instant the optimization is re-solved using the new measured/estimated state. The applied law is <span class="math inline">u(t)=u_{0|t}^*(x(t))</span>, so the first optimizer output depends on the current state and defines an implicit feedback map.</p>
+</details>
+<h3 id="q2-what-is-the-algebraic-backbone-of-condensed-linear-mpc">Q2. What is the algebraic backbone of condensed linear MPC?</h3>
+<details><summary>Answer</summary>
+<p>The stacked prediction identity <span class="math inline">X=\mathcal S_xx_0+\mathcal S_uU</span>, which eliminates predicted states from the optimization and expresses them as an affine function of the initial state and future inputs.</p>
+</details>
+<h3 id="q3-when-is-a-linear-mpc-problem-a-convex-qp">Q3. When is a linear MPC problem a convex QP?</h3>
+<details><summary>Answer</summary>
+<p>With linear/affine dynamics, a convex quadratic objective (<span class="math inline">Q,P\succeq0</span>, <span class="math inline">R\succ0</span>) and affine/polyhedral constraints. Then the condensed Hessian is positive semidefinite (typically definite because of <span class="math inline">R\succ0</span>) and constraints are linear.</p>
+</details>
+<h3 id="q4-difference-between-feasible-and-recursively-feasible">Q4. Difference between feasible and recursively feasible?</h3>
+<details><summary>Answer</summary>
+<p>Feasible means an admissible sequence exists at the current state. Recursive feasibility means applying the controller keeps the next state inside the set of states from which the optimization remains feasible.</p>
+</details>
+<h3 id="q5-what-makes-the-standard-terminal-set-proof-work">Q5. What makes the standard terminal-set proof work?</h3>
+<details><summary>Answer</summary>
+<p>A local terminal controller that keeps <span class="math inline">\mathcal X_f</span> invariant while satisfying constraints, plus a terminal cost whose decrease under that controller dominates the stage cost. The shifted optimal sequence plus one terminal control move is then feasible at the next step.</p>
+</details>
+<h3 id="q6-why-does-lqr-naturally-provide-an-mpc-terminal-cost">Q6. Why does LQR naturally provide an MPC terminal cost?</h3>
+<details><summary>Answer</summary>
+<p>The DARE solution gives <span class="math inline">V_f=x^\top Px</span> and <span class="math inline">u=-Kx</span> satisfying <span class="math inline">V_f((A-BK)x)-V_f(x)=-x^\top(Q+K^\top RK)x=-\ell(x,-Kx)</span>.</p>
+</details>
+<h3 id="q7-why-is-a-sampled-lmpc-state-safe-in-the-deterministic-repeated-task-setting">Q7. Why is a sampled LMPC state “safe” in the deterministic repeated-task setting?</h3>
+<details><summary>Answer</summary>
+<p>Because it belongs to a previously successful admissible trajectory. The remainder of that stored trajectory is a known feasible continuation from that state to the task completion region.</p>
+</details>
+<h3 id="q8-why-can-convexification-preserve-safety-control-invariance-in-the-linear-convex-lmpc-setting">Q8. Why can convexification preserve safety/control invariance in the linear-convex LMPC setting?</h3>
+<details><summary>Answer</summary>
+<p>Linearity maps convex combinations of states/inputs to convex combinations of next states, while convex constraints preserve admissibility. Thus barycentric combinations of known safe transitions remain admissible under the standard assumptions.</p>
+</details>
+<h3 id="q9-how-are-bellman-value-functions-related-to-mpc-terminal-costs">Q9. How are Bellman value functions related to MPC terminal costs?</h3>
+<details><summary>Answer</summary>
+<p>The exact infinite-horizon value function represents the optimal future tail cost. Finite-horizon MPC truncates the future and uses <span class="math inline">V_f</span> as an approximation/certificate for the omitted tail.</p>
+</details>
+<h3 id="q10-what-changes-first-when-moving-from-textbook-mpc-to-a-real-vehicle">Q10. What changes first when moving from textbook MPC to a real vehicle?</h3>
+<details><summary>Answer</summary>
+<p>The assumptions: the state is estimated rather than perfectly known, the prediction model is imperfect, disturbances exist, constraints may be uncertain, actuators have dynamics/delays, and computation is finite. These motivate observers, robust/stochastic MPC, model adaptation, safety monitors, and real-time implementation analysis.</p>
+</details>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-13"></a></p>
+<h2 id="part-xiii-exercises">Part XIII — Exercises</h2>
+<h3 id="exercise-1-derive-the-prediction-matrices-by-hand">Exercise 1 — Derive the prediction matrices by hand</h3>
+<p>For</p>
+<div class="math display">
+A=\begin{bmatrix}1&amp;1\\0&amp;1\end{bmatrix},\qquad
+B=\begin{bmatrix}0.5\\1\end{bmatrix},
+</div>
+<p>write <span class="math inline">x_1,x_2,x_3</span> explicitly and construct <span class="math inline">\mathcal S_x,\mathcal S_u</span> for <span class="math inline">N=3</span>. Verify numerically against <code>prediction_matrices</code>.</p>
+<h3 id="exercise-2-condense-a-state-constraint">Exercise 2 — Condense a state constraint</h3>
+<p>Suppose <span class="math inline">|p_k|\le 6</span> for every predicted state. Write this as <span class="math inline">H_xx_k\le h_x</span>, stack it over the horizon, and derive the inequality in <span class="math inline">U</span>.</p>
+<h3 id="exercise-3-stability-convention">Exercise 3 — Stability convention</h3>
+<p>Take an arbitrary feedback row <span class="math inline">K=[k_1\;k_2]</span>. Compute the eigenvalues of both <span class="math inline">A-BK</span> and <span class="math inline">A+BK</span>. Explain why only one corresponds to the convention <span class="math inline">u=-Kx</span>.</p>
+<h3 id="exercise-4-terminal-decrease">Exercise 4 — Terminal decrease</h3>
+<p>Using the numerical LQR matrices computed above, draw 100 random states <span class="math inline">x</span> and verify</p>
+<div class="math display">
+V((A-BK)x)-V(x)=-x^\top(Q+K^\top RK)x
+</div>
+<p>up to numerical precision.</p>
+<h3 id="exercise-5-safe-set-reasoning">Exercise 5 — Safe-set reasoning</h3>
+<p>Pick one state on <code>traj2</code>. Explain the exact known feasible continuation. Then pick a point strictly inside the plotted convex hull that was never sampled. Explain why claiming it is safe requires the linearity/convexity assumptions; historical data alone is not enough for arbitrary nonlinear dynamics.</p>
+<h3 id="exercise-6-think-like-a-controls-engineer">Exercise 6 — Think like a controls engineer</h3>
+<p>For each of the following, decide whether the statement concerns <strong>feasibility</strong>, <strong>stability</strong>, <strong>invariance</strong>, <strong>optimality</strong>, or <strong>robustness</strong>:</p>
+<ol>
+<li>“The QP has a solution at every closed-loop time step.”</li>
+<li>“The state converges to the origin.”</li>
+<li>“Once inside this set, the local controller never leaves it.”</li>
+<li>“No other admissible horizon trajectory has a smaller finite-horizon cost.”</li>
+<li>“Constraints remain satisfied for all disturbances in a prescribed set.”</li>
+</ol>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-14"></a></p>
+<h2 id="part-xiv-notation-cheat-sheet">Part XIV — Notation cheat sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">x_k\in\mathbb R^n</span></td>
+<td>state</td>
+</tr>
+<tr>
+<td><span class="math inline">u_k\in\mathbb R^m</span></td>
+<td>control input</td>
+</tr>
+<tr>
+<td><span class="math inline">A,B</span></td>
+<td>LTI state/input matrices</td>
+</tr>
+<tr>
+<td><span class="math inline">N</span></td>
+<td>prediction horizon</td>
+</tr>
+<tr>
+<td><span class="math inline">X,U</span></td>
+<td>stacked future states/inputs</td>
+</tr>
+<tr>
+<td><span class="math inline">\mathcal S_x,\mathcal S_u</span></td>
+<td>stacked prediction matrices</td>
+</tr>
+<tr>
+<td><span class="math inline">\mathcal X,\mathcal U</span></td>
+<td>admissible state/input sets</td>
+</tr>
+<tr>
+<td><span class="math inline">\mathcal X_f</span></td>
+<td>terminal set</td>
+</tr>
+<tr>
+<td><span class="math inline">\ell(x,u)</span></td>
+<td>stage cost</td>
+</tr>
+<tr>
+<td><span class="math inline">V_f(x)</span></td>
+<td>terminal cost</td>
+</tr>
+<tr>
+<td><span class="math inline">V_N^*(x)</span></td>
+<td>optimal finite-horizon MPC value</td>
+</tr>
+<tr>
+<td><span class="math inline">K</span></td>
+<td>LQR gain under <span class="math inline">u=-Kx</span></td>
+</tr>
+<tr>
+<td><span class="math inline">P</span></td>
+<td>DARE / quadratic value-function matrix</td>
+</tr>
+<tr>
+<td><span class="math inline">\rho(A)</span></td>
+<td>spectral radius</td>
+</tr>
+<tr>
+<td><span class="math inline">\mathrm{Pre}(\mathcal S)</span></td>
+<td>one-step predecessor of set <span class="math inline">\mathcal S</span></td>
+</tr>
+<tr>
+<td><span class="math inline">\mathcal{SS}^j</span></td>
+<td>sampled safe set after LMPC iteration <span class="math inline">j</span></td>
+</tr>
+<tr>
+<td><span class="math inline">\mathcal{CS}^j</span></td>
+<td>convex safe set</td>
+</tr>
+<tr>
+<td><span class="math inline">\lambda_r</span></td>
+<td>barycentric coordinates</td>
+</tr>
+<tr>
+<td><span class="math inline">J_k^*(x)</span></td>
+<td>Bellman optimal cost-to-go</td>
+</tr>
+<tr>
+<td><span class="math inline">(s,e_y,e_\psi)</span></td>
+<td>Frenet progress, lateral error, heading error</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="md">
+<hr />
+<p><a id="part-15"></a></p>
+<h2 id="part-xv-scope-and-references">Part XV — Scope and references</h2>
+<p><strong>Scope.</strong> This notebook is a map of the whole series. It introduces the shared notation and, at the level needed to follow the later notebooks, the main ideas: discrete-time models and multi-step prediction, the QP form of linear-quadratic finite-horizon control, the receding-horizon principle, Lyapunov stability and LQR, predecessor and invariant sets, the terminal-set mechanism behind stabilizing MPC, Bellman's recursion, Learning MPC, and Frenet coordinates for racing. It assumes linear algebra, basic calculus and familiarity with state-space models. The derivations sketched here are developed in full, with numerical examples, in Notebooks 01–09.</p>
+<p><strong>References.</strong></p>
+<ul>
+<li>S. Boyd and L. Vandenberghe, <em>Convex Optimization</em>, Cambridge University Press, 2004: convexity, quadratic programs, duality.</li>
+<li>F. Borrelli, A. Bemporad and M. Morari, <em>Predictive Control for Linear and Hybrid Systems</em>, Cambridge University Press, 2017: constrained finite-time optimal control, invariant sets, MPC feasibility and stability.</li>
+<li>J. B. Rawlings, D. Q. Mayne and M. M. Diehl, <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed., Nob Hill Publishing, 2022: MPC theory and computation.</li>
+<li>D. Q. Mayne, J. B. Rawlings, C. V. Rao and P. O. M. Scokaert, &quot;Constrained model predictive control: Stability and optimality&quot;, <em>Automatica</em>, 36(6), 789–814, 2000: terminal ingredients and stability.</li>
+<li>F. Blanchini and S. Miani, <em>Set-Theoretic Methods in Control</em>, 2nd ed., Birkhäuser, 2015: invariant and controllable sets.</li>
+<li>H. K. Khalil, <em>Nonlinear Systems</em>, 3rd ed., Prentice Hall, 2002: Lyapunov stability.</li>
+<li>D. P. Bertsekas, <em>Dynamic Programming and Optimal Control</em>, Vol. I, 4th ed., Athena Scientific, 2017: Bellman's recursion.</li>
+<li>R. S. Sutton and A. G. Barto, <em>Reinforcement Learning: An Introduction</em>, 2nd ed., MIT Press, 2018: the reinforcement-learning view of value functions.</li>
+<li>U. Rosolia and F. Borrelli, &quot;Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework&quot;, <em>IEEE Transactions on Automatic Control</em>, 63(7), 1883–1896, 2018: sampled safe sets and learned terminal costs.</li>
+<li>G. Perantoni and D. J. N. Limebeer, &quot;Optimal control for a Formula One car with variable parameters&quot;, <em>Vehicle System Dynamics</em>, 52(5), 2014: minimum-time control in curvilinear (Frenet) coordinates.</li>
+</ul>
+<p>For implementation details and reproducible examples, the later notebooks are the primary reference inside this repository.</p>
+<hr />
+<h2 id="next-notebook">Next notebook</h2>
+<p>Continue with <strong><a href="01_convex_optimization_and_cftoc.ipynb">01 — Convex Optimization and CFTOC</a></strong>.</p>
+<p>A useful target before moving on: you should be able to derive <span class="math inline">X=\mathcal S_xx_0+\mathcal S_uU</span>, explain the shifted-sequence feasibility proof, and state why <span class="math inline">P</span> from the DARE is a natural terminal value matrix.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <span></span>
+  <a class="next" rel="next" href="01-convex-optimization-and-cftoc.html"><span class="lbl">Next · 01</span><span class="t">Convex Optimization and CFTOC</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 00 of the Advanced MPC and Learning MPC by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

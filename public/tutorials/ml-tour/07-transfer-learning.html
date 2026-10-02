@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>07 · Transfer Learning — A Tour of Machine Learning</title>
+<meta name="description" content="A small CNN trained on clean digits, then its frozen features reused on the same digits shifted and rotated, with almost no labels.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 07 of 11</span>
+  <h1>Transfer Learning</h1>
+  <div class="intro prose">
+<p><strong>A note on scope.</strong> &quot;Real&quot; transfer learning usually starts from a large model
+pretrained on millions of images (ImageNet) and fine-tunes it on a new task. Doing
+that reliably here would mean downloading tens or hundreds of megabytes of pretrained
+weights, which is exactly the kind of external dependency this course avoids. Instead,
+this chapter <strong>trains its own small feature extractor from scratch</strong> on one task and
+then reuses it on a second, related task with almost no labels — the same mechanism
+transfer learning relies on, at a scale that trains in seconds and needs nothing but
+what's already installed.</p>
+<p><strong>Objectives:</strong> train a small CNN on one classification task, freeze its convolutional
+layers, and show that the features it learned generalise to a second task where a
+plain classifier trained from scratch, with the same tiny number of labels, does not.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/07_transfer_learning.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-convolution-one-small-filter-slid-across-the-image">1. Convolution: one small filter slid across the image</a></li>
+    <li><a href="#2-pooling-depth-and-learned-features">2. Pooling, depth, and learned features</a></li>
+    <li><a href="#3-transfer-keep-the-features-retrain-the-head">3. Transfer: keep the features, retrain the head</a></li>
+    <li><a href="#4-source-task-clean-handwritten-digits">4. Source task: clean handwritten digits</a></li>
+    <li><a href="#5-target-task-the-same-digits-shifted-and-rotated-almost-unlabelled">5. Target task: the same digits, shifted and rotated, almost unlabelled</a></li>
+    <li><a href="#6-few-shot-comparison-raw-pixels-vs-transferred-features">6. Few-shot comparison: raw pixels vs. transferred features</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-convolution-one-small-filter-slid-across-the-image">1. Convolution: one small filter slid across the image</h2>
+<p>A digit image here is an <span class="math inline">8\times 8</span> grid of pixel intensities between 0 and 1. A
+dense layer treats those 64 numbers as an unordered list. It does not know that
+pixel <span class="math inline">(3, 4)</span> sits next to pixel <span class="math inline">(3, 5)</span>, and a pattern it learns in one corner has
+to be learned again for every other position. A <strong>convolutional layer</strong> builds in two
+facts about images: nearby pixels belong together, and the same pattern (an edge, the
+end of a stroke, a curve) can appear anywhere.</p>
+<p><strong>Definition.</strong> Let <span class="math inline">x</span> be an image with entries <span class="math inline">x[i,j]</span> (row <span class="math inline">i</span>, column <span class="math inline">j</span>), and
+let <span class="math inline">w</span> be a small <strong>kernel</strong> (or filter), here <span class="math inline">3\times 3</span>, with entries <span class="math inline">w[m,n]</span> for
+<span class="math inline">m, n \in \{0, 1, 2\}</span>. The discrete 2-D convolution produces a new grid</p>
+<div class="math display">(x * w)[i,j] = \sum_{m=0}^{2}\sum_{n=0}^{2} w[m,n]\;x[i+m,\,j+n] .</div>
+<p>Read it as: lay the kernel over the <span class="math inline">3\times 3</span> patch whose top-left corner is at
+<span class="math inline">(i, j)</span>, multiply the overlapping numbers pair by pair, and add the nine products.
+Then slide one pixel and repeat. The result is large where the patch looks like the
+kernel and small or negative where it does not, so each kernel is a <strong>pattern
+detector</strong>. (Textbook convolution flips the kernel first; without the flip the
+operation is called cross-correlation. Deep-learning libraries compute the unflipped
+version and call it convolution. Since the kernel is learned, the flip makes no
+difference.)</p>
+<p>On an <span class="math inline">H\times W</span> image a <span class="math inline">3\times 3</span> kernel fits in <span class="math inline">(H-2)\times(W-2)</span> positions. With
+<code>padding=&quot;same&quot;</code>, a border of zeros is added first so that the output keeps the input
+size, <span class="math inline">8\times 8</span> here.</p>
+<p>A convolutional layer adds a bias <span class="math inline">b</span> and an activation, giving a <strong>feature map</strong>
+<span class="math inline">a[i,j] = \mathrm{ReLU}\big((x*w)[i,j] + b\big)</span>, and it uses many kernels at once, one
+feature map per kernel. <code>conv1</code> has 16 kernels, so it turns the <span class="math inline">8\times8\times1</span> image
+into <span class="math inline">8\times8\times16</span> feature maps. When the input already has <span class="math inline">C</span> channels, like the
+16 maps entering <code>conv2</code>, each kernel is <span class="math inline">3\times3\times C</span> and the sum also runs over
+the channels.</p>
+<p><strong>Weight sharing.</strong> The same kernel weights are used at every position, so the number
+of parameters does not depend on the image size. For kernel size <span class="math inline">K</span>, <span class="math inline">C_{\text{in}}</span>
+input channels and <span class="math inline">C_{\text{out}}</span> kernels, each with one bias:</p>
+<div class="math display">\text{parameters} = (K\cdot K\cdot C_{\text{in}} + 1)\cdot C_{\text{out}} .</div>
+<p>For <code>conv1</code> this is <span class="math inline">(3\cdot3\cdot1+1)\cdot16 = 160</span>. A dense layer producing the same
+<span class="math inline">8\cdot8\cdot16 = 1024</span> outputs from the 64 input pixels needs one weight per
+input-output pair plus one bias per output: <span class="math inline">64\cdot1024 + 1024 = 66{,}560</span> parameters,
+about 416 times more. Sharing weights also fixes how the layer reacts to shifts: move
+the input by one pixel and the feature map moves by one pixel with it. This property
+is called <strong>translation equivariance</strong>.</p>
+<p><strong>Worked example.</strong> A <span class="math inline">5\times 5</span> image with a vertical stroke in column 2 (columns
+numbered 0 to 4), and a kernel that responds to vertical strokes:</p>
+<div class="math display">x = \begin{bmatrix}0&amp;0&amp;1&amp;0&amp;0\\0&amp;0&amp;1&amp;0&amp;0\\0&amp;0&amp;1&amp;0&amp;0\\0&amp;0&amp;1&amp;0&amp;0\\0&amp;0&amp;1&amp;0&amp;0\end{bmatrix},
+\qquad
+w = \begin{bmatrix}-1&amp;2&amp;-1\\-1&amp;2&amp;-1\\-1&amp;2&amp;-1\end{bmatrix}.</div>
+<p>Without padding the output is <span class="math inline">3\times 3</span>. Each kernel row meets an identical image
+row, so each output is 3 times the product for one row:</p>
+<table>
+<thead>
+<tr>
+<th>output</th>
+<th>patch columns</th>
+<th>one kernel row times one image row</th>
+<th>sum of 3 rows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">(x*w)[0,0]</span></td>
+<td>0, 1, 2</td>
+<td><span class="math inline">(-1)\cdot 0 + 2\cdot 0 + (-1)\cdot 1 = -1</span></td>
+<td><span class="math inline">-3</span></td>
+</tr>
+<tr>
+<td><span class="math inline">(x*w)[0,1]</span></td>
+<td>1, 2, 3</td>
+<td><span class="math inline">(-1)\cdot 0 + 2\cdot 1 + (-1)\cdot 0 = 2</span></td>
+<td><span class="math inline">6</span></td>
+</tr>
+<tr>
+<td><span class="math inline">(x*w)[0,2]</span></td>
+<td>2, 3, 4</td>
+<td><span class="math inline">(-1)\cdot 1 + 2\cdot 0 + (-1)\cdot 0 = -1</span></td>
+<td><span class="math inline">-3</span></td>
+</tr>
+</tbody>
+</table>
+<p>All image rows are the same, so every output row is <span class="math inline">(-3, 6, -3)</span>, and after ReLU it
+is <span class="math inline">(0, 6, 0)</span>: the map lights up exactly over the stroke. Now shift the stroke one
+column to the right, to column 3. The output rows become <span class="math inline">(0, -3, 6)</span>, and after ReLU
+<span class="math inline">(0, 0, 6)</span>. The detection moved with the stroke, and its strength, 6, did not
+change.</p>
+</div>
+
+<div class="md">
+<h2 id="2-pooling-depth-and-learned-features">2. Pooling, depth, and learned features</h2>
+<p><strong>Pooling</strong> summarises a feature map. <strong>Max pooling</strong> with a <span class="math inline">2\times 2</span> window
+(<code>pool1</code>) keeps the largest value in each non-overlapping <span class="math inline">2\times 2</span> block:</p>
+<div class="math display">p[i,j] = \max\big\{a[2i,2j],\; a[2i,2j+1],\; a[2i+1,2j],\; a[2i+1,2j+1]\big\} .</div>
+<p>The <span class="math inline">8\times 8</span> maps become <span class="math inline">4\times 4</span>, and a feature that moves by one pixel within a
+block gives the same pooled value. <strong>Global average pooling</strong> (<code>gap</code>) goes all the
+way: it replaces each whole <span class="math inline">H\times W</span> feature map by its average,
+<span class="math inline">\frac{1}{HW}\sum_{i,j} a[i,j]</span>, leaving one number per channel. In the worked example
+the largest value in the map is 6 before and after the shift: after pooling, the
+answer to &quot;is there a vertical stroke?&quot; no longer depends on where the stroke is.
+This built-in tolerance of small shifts matters below, because the target digits are
+shifted and rotated.</p>
+<p><strong>Depth makes features more abstract.</strong> A unit of <code>conv1</code> sees a <span class="math inline">3\times 3</span> patch of
+the image: its <strong>receptive field</strong> is 3 pixels wide. After <code>pool1</code>, each unit covers
+<span class="math inline">4\times 4</span> pixels, and neighbouring pooled units are 2 pixels apart. A <span class="math inline">3\times 3</span>
+kernel in <code>conv2</code> spans three pooled units, so its receptive field is
+<span class="math inline">4 + 2\cdot 2 = 8</span> pixels: the whole digit. The first layer can only detect local
+things such as edges and stroke directions. The second combines them into larger
+parts such as loops, corners and junctions. The dense layer <code>feat</code> combines those
+into 32 numbers that describe the digit as a whole. In large networks trained on
+photographs the same progression is observed directly: edges, then textures, then
+object parts, then objects.</p>
+<p><strong>The whole source model, counted.</strong></p>
+<table>
+<thead>
+<tr>
+<th>layer</th>
+<th>output shape</th>
+<th>parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conv1</code>: 16 kernels of <span class="math inline">3\times3\times1</span></td>
+<td><span class="math inline">8\times8\times16</span></td>
+<td><span class="math inline">(9+1)\cdot16 = 160</span></td>
+</tr>
+<tr>
+<td><code>pool1</code></td>
+<td><span class="math inline">4\times4\times16</span></td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>conv2</code>: 32 kernels of <span class="math inline">3\times3\times16</span></td>
+<td><span class="math inline">4\times4\times32</span></td>
+<td><span class="math inline">(144+1)\cdot32 = 4{,}640</span></td>
+</tr>
+<tr>
+<td><code>gap</code></td>
+<td><span class="math inline">32</span></td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>feat</code>: dense</td>
+<td><span class="math inline">32</span></td>
+<td><span class="math inline">32\cdot32+32 = 1{,}056</span></td>
+</tr>
+<tr>
+<td><code>source_head</code>: dense, softmax</td>
+<td><span class="math inline">10</span></td>
+<td><span class="math inline">32\cdot10+10 = 330</span></td>
+</tr>
+</tbody>
+</table>
+<p>The head produces 10 scores <span class="math inline">s_1, \dots, s_{10}</span> and turns them into class
+probabilities with the <strong>softmax</strong>, <span class="math inline">p_c = e^{s_c}/\sum_{c&#x27;} e^{s_{c&#x27;}}</span>, which are
+positive and add up to 1.</p>
+</div>
+
+<div class="md">
+<h2 id="3-transfer-keep-the-features-retrain-the-head">3. Transfer: keep the features, retrain the head</h2>
+<p><strong>A model in two parts.</strong> Write the network as a <strong>feature extractor</strong> followed by a
+<strong>head</strong>:</p>
+<div class="math display">\text{model}(x) = g_\phi\big(f_\theta(x)\big) .</div>
+<p><span class="math inline">f_\theta</span> maps an image to a feature vector in <span class="math inline">\mathbb{R}^{32}</span>. Its parameters
+<span class="math inline">\theta</span> are the weights of <code>conv1</code>, <code>conv2</code> and <code>feat</code>, <span class="math inline">160 + 4640 + 1056 = 5{,}856</span>
+numbers. <span class="math inline">g_\phi</span> maps the features to 10 class probabilities; its parameters <span class="math inline">\phi</span>
+are the 330 weights of <code>source_head</code>.</p>
+<p><strong>Two tasks, two distributions.</strong> In the <strong>source</strong> task the images come from a
+distribution <span class="math inline">P_S(x)</span>: clean, centred digits, with many labels. In the <strong>target</strong> task
+they come from <span class="math inline">P_T(x)</span>: the same digits, rotated and shifted, with few labels. So
+<span class="math inline">P_S(x) \neq P_T(x)</span>; this mismatch is called <strong>domain shift</strong>. What stays the same is
+the meaning of the labels: a rotated 3 is still a 3, so the rule linking an image to
+its class, <span class="math inline">P(y \mid x)</span>, is shared. Transfer learning bets that features useful for
+the source task are also useful for the target task.</p>
+<p><strong>Freezing.</strong> Source training fits both parts together, on <span class="math inline">N_S</span> labelled source
+images with the cross-entropy loss <span class="math inline">\ell</span>:</p>
+<div class="math display">\theta^\ast,\ \phi^\ast = \arg\min_{\theta,\,\phi}\ \frac{1}{N_S}\sum_{i=1}^{N_S} \ell\big(g_\phi(f_\theta(x_i)),\ y_i\big) .</div>
+<p>For the target task, keep <span class="math inline">\theta^\ast</span> fixed (<strong>frozen</strong>) and fit only a new head
+<span class="math inline">h_\psi</span> with parameters <span class="math inline">\psi</span>, on the <span class="math inline">N_T</span> labelled target images:</p>
+<div class="math display">\psi^\ast = \arg\min_{\psi}\ \frac{1}{N_T}\sum_{i=1}^{N_T} \ell\big(h_\psi(f_{\theta^\ast}(x_i)),\ y_i\big) .</div>
+<p>Each target image is turned once into its 32 features, and the new head is an
+ordinary classifier trained on those features.</p>
+<p><strong>Why this helps when labels are scarce.</strong> Compare parameters with labelled examples.
+With 3 labels per class there are <span class="math inline">N_T = 30</span> target examples. A logistic regression on
+the 64 raw pixels has <span class="math inline">10\cdot(64+1) = 650</span> parameters, and training the whole network
+from scratch would mean more than 6,000. On the 32 frozen features the head has
+<span class="math inline">10\cdot(32+1) = 330</span> parameters. More importantly, the hard part, learning what
+strokes and shapes look like, was already done with about 1,440 labelled source
+images. The few target labels only need to say which region of feature space belongs
+to which digit. The price is flexibility: frozen features cannot adapt to anything
+the source task never taught them.</p>
+<p><strong>Feature extraction vs. fine-tuning.</strong> The approach above is <strong>feature extraction</strong>:
+<span class="math inline">\theta</span> never changes. <strong>Fine-tuning</strong> starts from <span class="math inline">\theta^\ast</span> and continues to train
+all parameters on the target data, usually with a small learning rate so that the
+weights stay near where they started. Fine-tuning can adapt the features to the new
+domain, but with very few labels it can overfit and erase what was learned. A common
+rule: freeze when target labels are scarce, fine-tune when there are more of them.</p>
+<p><strong>In the code.</strong> <code>source_model</code> is <span class="math inline">g_\phi \circ f_\theta</span>, trained on the clean digits
+<code>Xc_train</code>. <code>feature_extractor = tf.keras.Model(inp, features)</code> is <span class="math inline">f_{\theta^\ast}</span> on
+its own; it stays frozen because it is only ever used for prediction afterwards. In
+section 6, <code>fewshot_accuracy</code> trains a <code>LogisticRegression</code> head <span class="math inline">h_\psi</span> on
+<code>feature_extractor.predict(...)</code> outputs for the transfer model, and the same
+classifier directly on the 64 raw pixels for the from-scratch baseline, with 3, 5 or
+8 labels per class.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import os
+os.environ[&quot;TF_CPP_MIN_LOG_LEVEL&quot;] = &quot;3&quot;
+os.environ[&quot;TF_ENABLE_ONEDNN_OPTS&quot;] = &quot;0&quot;
+import warnings
+warnings.filterwarnings(&quot;ignore&quot;)
+
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from scipy.ndimage import rotate, shift
+from sklearn.datasets import load_digits
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+
+import mlutils
+mlutils.set_style()
+tf.get_logger().setLevel(&quot;ERROR&quot;)
+tf.keras.utils.set_random_seed(1)          # seeds Python, NumPy and TensorFlow together
+tf.config.experimental.enable_op_determinism()  # identical results on every run
+rng = np.random.default_rng(0)</code></pre>
+</div>
+
+<div class="md">
+<h2 id="4-source-task-clean-handwritten-digits">4. Source task: clean handwritten digits</h2>
+<p><code>sklearn</code>'s digits dataset: 1797 handwritten digits, 8x8 pixels, already on disk —
+no download needed. We train a small CNN to recognise all 10 digits from clean,
+centred images. This is the <strong>source task</strong>: plenty of labels, and it's what the
+feature extractor will actually learn from.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">digits = load_digits()
+X_clean = (digits.images / 16.0)[..., np.newaxis].astype(&quot;float32&quot;)
+y_clean = digits.target
+
+Xc_train, Xc_test, yc_train, yc_test = train_test_split(
+    X_clean, y_clean, test_size=0.2, random_state=0, stratify=y_clean)
+
+fig, axes = plt.subplots(1, 8, figsize=(11, 1.6))
+for ax, img, label in zip(axes, Xc_train[:8], yc_train[:8]):
+    ax.imshow(img.squeeze(), cmap=&quot;Blues&quot;)
+    ax.set_title(str(label), fontsize=10)
+    ax.axis(&quot;off&quot;)
+fig.suptitle(&quot;Source task: clean, centred digits&quot;)</code></pre>
+<pre class="output">Text(0.5, 0.98, &#x27;Source task: clean, centred digits&#x27;)</pre>
+<figure class="output-figure"><img src="img/07-1.png" alt="Figure: Source task: clean, centred digits" width="959" height="157" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">inp = tf.keras.Input(shape=(8, 8, 1))
+z = tf.keras.layers.Conv2D(16, 3, activation=&quot;relu&quot;, padding=&quot;same&quot;, name=&quot;conv1&quot;)(inp)
+z = tf.keras.layers.MaxPooling2D(2, name=&quot;pool1&quot;)(z)
+z = tf.keras.layers.Conv2D(32, 3, activation=&quot;relu&quot;, padding=&quot;same&quot;, name=&quot;conv2&quot;)(z)
+z = tf.keras.layers.GlobalAveragePooling2D(name=&quot;gap&quot;)(z)
+features = tf.keras.layers.Dense(32, activation=&quot;relu&quot;, name=&quot;feat&quot;)(z)
+out = tf.keras.layers.Dense(10, activation=&quot;softmax&quot;, name=&quot;source_head&quot;)(features)
+
+source_model = tf.keras.Model(inp, out)
+source_model.compile(optimizer=&quot;adam&quot;, loss=&quot;sparse_categorical_crossentropy&quot;, metrics=[&quot;accuracy&quot;])
+source_model.fit(Xc_train, yc_train, epochs=20, batch_size=32, verbose=0)
+acc_source = source_model.evaluate(Xc_test, yc_test, verbose=0)[1]
+print(f&quot;source task test accuracy: {acc_source:.3f}&quot;)
+
+feature_extractor = tf.keras.Model(inp, features)   # everything up to (not including) the source head</code></pre>
+<pre class="output">source task test accuracy: 0.917</pre>
+</div>
+
+<div class="md">
+<h2 id="5-target-task-the-same-digits-shifted-and-rotated-almost-unlabelled">5. Target task: the same digits, shifted and rotated, almost unlabelled</h2>
+<p>The <strong>target task</strong> is deliberately related but different: the same 10 digit classes,
+but every image is randomly rotated (up to 20°) and shifted by a couple of pixels —
+and we only keep a handful of labelled examples per class, simulating the situation
+transfer learning is actually for: a new domain where labels are scarce.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def perturb(img):
+    dx, dy = rng.integers(-2, 3, size=2)
+    angle = rng.uniform(-20, 20)
+    warped = rotate(img, angle, reshape=False, order=1, mode=&quot;constant&quot;)
+    warped = shift(warped, (dy, dx), order=1, mode=&quot;constant&quot;)
+    return np.clip(warped, 0, 1)
+
+X_shifted = np.stack([perturb(im) for im in (digits.images / 16.0)])[..., np.newaxis].astype(&quot;float32&quot;)
+y_shifted = digits.target.copy()
+
+fig, axes = plt.subplots(1, 8, figsize=(11, 1.6))
+for ax, img, label in zip(axes, X_shifted[:8], y_shifted[:8]):
+    ax.imshow(img.squeeze(), cmap=&quot;Oranges&quot;)
+    ax.set_title(str(label), fontsize=10)
+    ax.axis(&quot;off&quot;)
+fig.suptitle(&quot;Target task: same digits, rotated + shifted&quot;)</code></pre>
+<pre class="output">Text(0.5, 0.98, &#x27;Target task: same digits, rotated + shifted&#x27;)</pre>
+<figure class="output-figure"><img src="img/07-2.png" alt="Figure: Target task: same digits, rotated + shifted" width="959" height="157" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="6-few-shot-comparison-raw-pixels-vs-transferred-features">6. Few-shot comparison: raw pixels vs. transferred features</h2>
+<p>With only a handful of labelled target examples per class, we compare two simple
+classifiers built on top of them:</p>
+<ul>
+<li><strong>From scratch:</strong> logistic regression directly on the raw (shifted, rotated) pixels.</li>
+<li><strong>Transfer learning:</strong> run each image through the <em>frozen</em> feature extractor from
+the source task, then logistic regression on those 32-dimensional features.</li>
+</ul>
+<p>Neither approach touches the convolutional weights again — the only thing trained on
+the target task's tiny label set is a linear classifier, which keeps the comparison
+about the features themselves, not about how much fine-tuning either gets.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def fewshot_accuracy(per_class, n_trials=6, seed=0):
+    trial_rng = np.random.default_rng(seed)
+    raw_accs, transfer_accs = [], []
+    for _ in range(n_trials):
+        train_idx = []
+        for c in range(10):
+            class_idx = np.where(y_shifted == c)[0]
+            train_idx.extend(trial_rng.choice(class_idx, size=per_class, replace=False))
+        train_idx = np.array(train_idx)
+        test_idx = np.array([i for i in range(len(y_shifted)) if i not in set(train_idx)])
+
+        y_tr, y_te = y_shifted[train_idx], y_shifted[test_idx]
+
+        X_tr_raw = X_shifted[train_idx].reshape(len(train_idx), -1)
+        X_te_raw = X_shifted[test_idx].reshape(len(test_idx), -1)
+        clf_raw = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000)).fit(X_tr_raw, y_tr)
+        raw_accs.append(clf_raw.score(X_te_raw, y_te))
+
+        X_tr_feat = feature_extractor.predict(X_shifted[train_idx], verbose=0)
+        X_te_feat = feature_extractor.predict(X_shifted[test_idx], verbose=0)
+        clf_feat = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000)).fit(X_tr_feat, y_tr)
+        transfer_accs.append(clf_feat.score(X_te_feat, y_te))
+    return np.mean(raw_accs), np.mean(transfer_accs)
+
+per_class_options = [3, 5, 8]
+results = [fewshot_accuracy(pc) for pc in per_class_options]
+for pc, (raw_acc, transfer_acc) in zip(per_class_options, results):
+    print(f&quot;{pc} labelled examples/class -&gt; from scratch: {raw_acc:.3f}   transfer learning: {transfer_acc:.3f}&quot;)</code></pre>
+<pre class="output">3 labelled examples/class -&gt; from scratch: 0.161   transfer learning: 0.254
+5 labelled examples/class -&gt; from scratch: 0.178   transfer learning: 0.320
+8 labelled examples/class -&gt; from scratch: 0.167   transfer learning: 0.371</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">raw_accs = [r[0] for r in results]
+transfer_accs = [r[1] for r in results]
+fig, ax = plt.subplots(figsize=(6.5, 4.5))
+width = 0.35
+xs = np.arange(len(per_class_options))
+ax.bar(xs - width/2, raw_accs, width, color=mlutils.GREY, label=&quot;from scratch (raw pixels)&quot;)
+ax.bar(xs + width/2, transfer_accs, width, color=mlutils.BLUE, label=&quot;transfer learning (frozen features)&quot;)
+ax.set(xticks=xs, xticklabels=[f&quot;{pc}/class&quot; for pc in per_class_options],
+       ylabel=&quot;target-task test accuracy&quot;, title=&quot;Transfer learning wins when target labels are scarce&quot;)
+ax.legend()</code></pre>
+<pre class="output">&lt;matplotlib.legend.Legend at 0x1eee744d550&gt;</pre>
+<figure class="output-figure"><img src="img/07-3.png" alt="Figure 3 produced by the code above" width="647" height="455" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>With only a few labelled examples per class, reusing features learned on the (larger,
+clean) source task clearly beats learning from the shifted target pixels directly.
+The convolution-and-pooling architecture picked up features that tolerate small
+shifts and rotations because it saw <em>many</em> clean digits during source training; raw
+pixel classifiers have no such tolerance and a handful of labels isn't enough to learn
+it from scratch.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-more-labels-closes-the-gap">Exercise 1: More labels closes the gap</h3>
+<p>Extend <code>per_class_options</code> to include 15 and 25. Does the transfer-learning advantage
+shrink as more target labels become available?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">print(fewshot_accuracy(15))
+print(fewshot_accuracy(25))
+</code></pre>
+<p>Yes — with enough target-task labels, a classifier trained from scratch can learn
+shift/rotation tolerance on its own, and the gap narrows. Transfer learning helps most
+exactly when labels are scarce, which is the point of the technique.</p>
+</details>
+<h3 id="exercise-2-fine-tune-instead-of-freezing">Exercise 2: Fine-tune instead of freezing</h3>
+<p>Instead of a frozen feature extractor + linear classifier, unfreeze <code>conv1</code>/<code>conv2</code>
+and fine-tune the whole network (with a small learning rate) on the few-shot target
+set. Does it beat the frozen-feature approach, or does it overfit with so few
+examples?</p>
+<details><summary>Solution</summary>
+<p>With only a handful of examples per class, fine-tuning every convolutional weight
+usually overfits badly — there simply isn't enough signal to safely move that many
+parameters. Freezing the features and only fitting a linear classifier, as in this
+chapter, is the safer choice in the extreme few-shot regime; fine-tuning becomes
+worthwhile once there are more target labels.</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Transfer learning reuses features learned on a data-rich <strong>source task</strong> for a
+related, label-scarce <strong>target task</strong>, instead of training a new model from zero on
+too little data.</li>
+<li>Freezing the pretrained layers and fitting only a small classifier head is a strong,
+low-risk baseline exactly when target labels are scarce.</li>
+<li>The benefit is largest precisely when target labels are scarce; with enough target
+data, training from scratch catches up.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="06-neural-network-from-scratch.html"><span class="lbl">Previous · 06</span><span class="t">A Neural Network from Scratch</span></a>
+  <a class="next" rel="next" href="08-lstm-for-sequences.html"><span class="lbl">Next · 08</span><span class="t">LSTM for Sequences</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 07 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

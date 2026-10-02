@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>08 · Prophet — Time-series course</title>
+<meta name="description" content="Fourier seasonality, changepoints, holiday effects, extra regressors, built-in cross-validation, logistic growth and a Prophet + AR hybrid.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 08 of 11</span>
+  <h1>Prophet</h1>
+  <div class="intro prose">
+<p>Every model so far has been <strong>dynamic</strong>: it forecasts tomorrow from what happened today. <strong>Prophet</strong>, released by Facebook's data science team in 2017 (Taylor &amp; Letham, <em>Forecasting at Scale</em>), takes a completely different approach. It treats forecasting as <strong>curve fitting</strong>: describe the series as a smooth function of the <em>calendar</em>, fit that function, and extend it into the future.</p>
+<p>Prophet became hugely popular because it's easy to use, its parts are easy to explain, and it handles things classical models find awkward: missing data, several seasonal cycles at once, and holidays. It's also been widely criticised for losing to simple methods on benchmark after benchmark. This chapter gives it a fair hearing, on the same backtests as everything else, and works out <em>why</em> it wins or loses.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>describe Prophet's decomposition into <strong>trend</strong>, <strong>seasonality</strong> and <strong>holidays</strong></li>
+<li>build <strong>Fourier seasonal features</strong> from scratch and see how their order controls flexibility</li>
+<li>explain Prophet's <strong>changepoint</strong> trend, and diagnose a common failure it causes</li>
+<li>add <strong>holiday effects</strong>, here Beijing's Spring Festival fireworks</li>
+<li>add <strong>extra regressors</strong> that are known in advance, and evaluate with Prophet's built-in <strong>cross-validation</strong></li>
+<li>use a <strong>logistic trend with a capacity</strong> for series that saturate</li>
+<li>recognise what Prophet lacks (<strong>autoregression</strong>) and repair it with a hybrid model</li>
+<li>decide when Prophet is the right tool</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/08_prophet.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-model">1. The model</a></li>
+    <li><a href="#2-seasonality-as-a-fourier-series">2. Seasonality as a Fourier series</a></li>
+    <li><a href="#3-the-trend-changepoints">3. The trend: changepoints</a></li>
+    <li><a href="#4-holidays-spring-festival-fireworks-in-beijing">4. Holidays: Spring Festival fireworks in Beijing</a></li>
+    <li><a href="#5-the-pm2-5-backtest">5. The PM2.5 backtest</a></li>
+    <li><a href="#6-extra-regressors-and-prophet-s-own-cross-validation">6. Extra regressors, and Prophet's own cross-validation</a></li>
+    <li><a href="#7-growth-with-a-ceiling-the-logistic-trend">7. Growth with a ceiling: the logistic trend</a></li>
+    <li><a href="#8-when-is-prophet-the-right-tool">8. When is Prophet the right tool?</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import logging
+import warnings
+logging.getLogger(&quot;prophet.plot&quot;).disabled = True        # plotly isn&#x27;t needed; silence its import notice
+warnings.filterwarnings(&quot;ignore&quot;, message=&quot;IProgress not found&quot;)   # progress-bar notice from Prophet&#x27;s import
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from prophet import Prophet
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+import tsutils
+
+logging.getLogger(&quot;cmdstanpy&quot;).disabled = True             # Prophet&#x27;s optimiser logs every fit
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 3)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+origins, H = tsutils.BACKTEST_ORIGINS, tsutils.HORIZON
+co2 = sm.datasets.co2.load_pandas().data[&quot;co2&quot;].resample(&quot;MS&quot;).mean().interpolate()</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-the-model">1. The model</h2>
+<p>Prophet writes a series as a sum of functions of time:</p>
+<div class="math display">y(t) = g(t) + s(t) + h(t) + \varepsilon_t</div>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>What it is</th>
+<th>How it's built</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">g(t)</span></td>
+<td><strong>trend</strong></td>
+<td>piecewise-linear, with automatically placed <strong>changepoints</strong></td>
+</tr>
+<tr>
+<td><span class="math inline">s(t)</span></td>
+<td><strong>seasonality</strong></td>
+<td><strong>Fourier series</strong> for yearly, weekly (and optionally daily) cycles</td>
+</tr>
+<tr>
+<td><span class="math inline">h(t)</span></td>
+<td><strong>holidays / events</strong></td>
+<td>an extra effect on listed dates, with optional windows around them</td>
+</tr>
+<tr>
+<td><span class="math inline">\varepsilon_t</span></td>
+<td>error</td>
+<td>assumed independent noise</td>
+</tr>
+</tbody>
+</table>
+<p>Statistically, this is a regression on functions of time (a generalised additive model), fitted with the Stan library.</p>
+<p>Notice what's <strong>not</strong> in the list. There's no term for <em>the value yesterday</em>. Prophet's forecast for tomorrow depends on the date, not on what the series did today, except indirectly, through a refit. Keep that in mind; it will explain most of this chapter's results.</p>
+<p>Prophet expects a data frame with two columns, <code>ds</code> (dates) and <code>y</code> (values):</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def to_prophet(series, log=False):
+    return pd.DataFrame({&quot;ds&quot;: series.index, &quot;y&quot;: np.log(series.to_numpy()) if log else series.to_numpy()})
+
+to_prophet(co2).head(3)</code></pre>
+<pre class="output">          ds        y
+0 1958-03-01  316.100
+1 1958-04-01  317.200
+2 1958-05-01  317.433</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-seasonality-as-a-fourier-series">2. Seasonality as a Fourier series</h2>
+<p>A seasonal pattern of period <span class="math inline">P</span> (365.25 days for yearly, 7 for weekly) is modelled as a sum of sine and cosine waves:</p>
+<div class="math display">s(t) = \sum_{k=1}^{K} \left[ a_k \sin\!\left(\frac{2\pi k t}{P}\right) + b_k \cos\!\left(\frac{2\pi k t}{P}\right) \right]</div>
+<p>The <strong>order</strong> <span class="math inline">K</span> controls flexibility. <span class="math inline">K = 1</span> gives a single smooth wave, and larger <span class="math inline">K</span> can trace sharper shapes but also chase noise. Prophet's defaults are <span class="math inline">K = 10</span> for yearly and <span class="math inline">K = 3</span> for weekly seasonality.</p>
+<p>These sine and cosine columns are ordinary regression features, so let's build them ourselves and see what different orders can express, using CO₂'s detrended seasonal wiggle as the target.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def fourier_features(dates, period, order):
+    &quot;&quot;&quot;sin/cos pairs for k = 1..order, with t measured in days since 1970-01-01 (as Prophet does).&quot;&quot;&quot;
+    t = ((pd.Series(dates) - pd.Timestamp(&quot;1970-01-01&quot;)).dt.total_seconds() / 86400).to_numpy()
+    return np.column_stack([f(2 * np.pi * k * t / period) for k in range(1, order + 1) for f in (np.sin, np.cos)])
+
+sample = co2[&quot;1980&quot;:&quot;1989&quot;]
+wiggle = sample - sample.rolling(13, center=True).mean()          # remove the trend, keep the cycle
+wiggle = wiggle.dropna()
+
+fig, ax = plt.subplots()
+wiggle[&quot;1985&quot;:&quot;1987&quot;].plot(ax=ax, color=&quot;k&quot;, lw=2, label=&quot;detrended CO₂&quot;)
+for order in [1, 2, 4]:
+    X = np.column_stack([np.ones(len(wiggle)), fourier_features(wiggle.index, 365.25, order)])
+    coefs = np.linalg.lstsq(X, wiggle.to_numpy(), rcond=None)[0]
+    pd.Series(X @ coefs, index=wiggle.index)[&quot;1985&quot;:&quot;1987&quot;].plot(ax=ax, label=f&quot;Fourier order {order}&quot;)
+ax.set(title=&quot;How much seasonal shape each Fourier order can express&quot;, ylabel=&quot;ppm&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/08-1.png" alt="Figure 1 produced by the code above" width="1000" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>One wave (order 1) gets the timing roughly right but misses the shape: CO₂ falls quickly in the northern summer and recovers slowly. Order 2 captures that asymmetry, and order 4 adds little more. For a smooth annual cycle, a handful of terms is plenty. Exercise 1 checks that these features match Prophet's own.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-the-trend-changepoints">3. The trend: changepoints</h2>
+<p>Prophet's trend is a straight line whose slope can change at a set of <strong>changepoints</strong>. By default it places 25 candidate changepoints, evenly spread over the <strong>first 80%</strong> of the history. Each can change the slope, but a sparsity-inducing prior (Laplace, scale <code>changepoint_prior_scale</code>, default 0.05) keeps most changes at or near zero. Larger values allow a wigglier trend.</p>
+<p>Let's fit Prophet to CO₂ up to January 1995 and look at the components:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_history = co2[:&quot;1995-01&quot;]
+co2_model = Prophet(weekly_seasonality=False, daily_seasonality=False).fit(to_prophet(co2_history))
+co2_fit = co2_model.predict(to_prophet(co2_history))
+co2_model.plot_components(co2_fit);</code></pre>
+<figure class="output-figure"><img src="img/08-2.png" alt="Figure 2 produced by the code above" width="886" height="590" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">residuals = co2_history.to_numpy() - co2_fit[&quot;yhat&quot;].to_numpy()
+last_changepoint = co2_model.changepoints.iloc[-1]
+
+fig, ax = plt.subplots(figsize=(12, 3.5))
+ax.plot(co2_history.index, residuals, lw=0.8)
+ax.axvline(last_changepoint, color=&quot;#d1495b&quot;, ls=&quot;--&quot;, label=f&quot;last allowed changepoint ({last_changepoint:%b %Y})&quot;)
+ax.axhline(0, color=&quot;k&quot;, lw=0.8)
+ax.set(title=&quot;Prophet residuals on CO₂ (in-sample)&quot;, ylabel=&quot;ppm&quot;)
+ax.legend(loc=&quot;lower left&quot;)
+print(f&quot;lag-1 autocorrelation of residuals: {pd.Series(residuals).autocorr(1):.2f}&quot;)</code></pre>
+<pre class="output">lag-1 autocorrelation of residuals: 0.64</pre>
+<figure class="output-figure"><img src="img/08-3.png" alt="Figure 3 produced by the code above" width="1013" height="334" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Two warning signs:</p>
+<ol>
+<li><strong>The residuals are strongly autocorrelated.</strong> When the fitted curve is too high one month, it's too high the next month too. That's information about the near future which Prophet doesn't use, because it has no autoregressive term.</li>
+<li><strong>After the last allowed changepoint, the trend can't bend.</strong> The final 20% of the history, here about seven years, is forced onto one slope. CO₂'s growth did shift in that window, including the well-known slowdown after the 1991 Pinatubo eruption, so the residuals drift in long runs, and the forecast starts from the wrong place.</li>
+</ol>
+<p>Let's see what that costs in the backtest, against chapter 04's baseline and chapter 07's airline model, on the same quarterly origins.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_origins = pd.date_range(&quot;1990-01-01&quot;, &quot;2000-12-01&quot;, freq=&quot;QS&quot;)
+
+def prophet_co2(history, horizon, hybrid=False, **settings):
+    model = Prophet(weekly_seasonality=False, daily_seasonality=False, uncertainty_samples=0, **settings)
+    model.fit(to_prophet(history))
+    dates = pd.date_range(history.index[0], periods=len(history) + horizon, freq=&quot;MS&quot;)
+    curve = model.predict(pd.DataFrame({&quot;ds&quot;: dates}))[&quot;yhat&quot;].to_numpy()
+    forecast = curve[len(history):]
+    if hybrid:                                   # model the memory Prophet leaves in its residuals
+        resid = history.to_numpy() - curve[:len(history)]
+        forecast = forecast + AutoReg(resid, lags=2, trend=&quot;n&quot;).fit().predict(start=len(resid), end=len(resid) + horizon - 1)
+    return forecast
+
+def seasonal_naive_drift(history, horizon, period=12):
+    growth = history.iloc[-period:].mean() - history.iloc[-2 * period:-period].mean()
+    last_year = np.tile(history.iloc[-period:].to_numpy(), int(np.ceil(horizon / period)))[:horizon]
+    return last_year + growth * np.ceil(np.arange(1, horizon + 1) / period)
+
+def airline(history, horizon):
+    return SARIMAX(history, order=(0, 1, 1), seasonal_order=(0, 1, 1, 12)).fit(disp=False).forecast(horizon).to_numpy()
+
+co2_models = {
+    &quot;baseline: seasonal naive + drift&quot;: seasonal_naive_drift,
+    &quot;SARIMA airline (ch. 07)&quot;: airline,
+    &quot;Prophet (defaults)&quot;: prophet_co2,
+    &quot;Prophet, changepoints over 95% of history&quot;: lambda h, H_: prophet_co2(h, H_, changepoint_range=0.95),
+    &quot;Prophet 95% + AR(2) on residuals&quot;: lambda h, H_: prophet_co2(h, H_, hybrid=True, changepoint_range=0.95),
+}
+co2_table = pd.DataFrame({name: tsutils.evaluate(tsutils.backtest(co2, f, co2_origins, 12))[&quot;MAE&quot;]
+                          for name, f in co2_models.items()})
+co2_table.loc[[1, 3, 6, 12]].T</code></pre>
+<pre class="output">h                                             1      3      6      12
+baseline: seasonal naive + drift           0.494  0.564  0.683  0.842
+SARIMA airline (ch. 07)                    0.218  0.310  0.437  0.643
+Prophet (defaults)                         0.747  0.828  0.917  1.063
+Prophet, changepoints over 95% of history  0.489  0.557  0.714  1.007
+Prophet 95% + AR(2) on residuals           0.327  0.514  0.707  1.007</pre>
+</div>
+
+<div class="md">
+<p><strong>With its defaults, Prophet loses to the simple baseline at every horizon</strong>, and to the airline model by a wide margin. The diagnosis above points to the fixes:</p>
+<ul>
+<li><strong>Let the trend bend later.</strong> <code>changepoint_range=0.95</code> allows changepoints up to near the end of the history. That removes most of the short-horizon gap to the baseline. It's the single most useful Prophet setting to know about.</li>
+<li><strong>Add the missing memory.</strong> Fitting an AR(2) to Prophet's residuals and adding its forecast (a <em>hybrid</em>) helps further at short horizons.</li>
+</ul>
+<p>Even repaired, Prophet doesn't reach the airline model or Holt-Winters on this series. CO₂ is exactly the kind of smooth, persistent series where dynamic models shine: they update their level every month, while Prophet re-draws one global curve.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-holidays-spring-festival-fireworks-in-beijing">4. Holidays: Spring Festival fireworks in Beijing</h2>
+<p>Prophet's most distinctive feature is <strong>holiday effects</strong>. Our data contain a spectacular one. On the eve of the Lunar New Year (Spring Festival), Beijing celebrated with city-wide <strong>fireworks</strong> from the evening past midnight. Look at the hourly readings on those nights:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">spring_festival = pd.to_datetime([&quot;2010-02-14&quot;, &quot;2011-02-03&quot;, &quot;2012-01-23&quot;,
+                                  &quot;2013-02-10&quot;, &quot;2014-01-31&quot;, &quot;2015-02-19&quot;])    # Lunar New Year&#x27;s Day
+
+hourly_pm = tsutils.load_beijing()[&quot;pm25&quot;]
+rows = []
+for new_year in spring_festival:
+    night = hourly_pm[new_year - pd.Timedelta(hours=6): new_year + pd.Timedelta(hours=6)]    # 18:00 on the eve to 06:00
+    around = y[new_year - pd.Timedelta(days=10): new_year + pd.Timedelta(days=10)]
+    rows.append({&quot;New Year&#x27;s Day&quot;: new_year.date(), &quot;peak hour that night&quot;: night.max(),
+                 &quot;daily mean on New Year&#x27;s Day&quot;: y[new_year], &quot;typical day ±10 days (median)&quot;: around.median()})
+pd.DataFrame(rows).set_index(&quot;New Year&#x27;s Day&quot;).round(0)</code></pre>
+<pre class="output">                peak hour that night  daily mean on New Year&#x27;s Day  \
+New Year&#x27;s Day                                                       
+2010-02-14                     980.0                         119.0   
+2011-02-03                     348.0                         110.0   
+2012-01-23                     994.0                         194.0   
+2013-02-10                     512.0                          60.0   
+2014-01-31                     469.0                         166.0   
+2015-02-19                     407.0                         189.0   
+
+                typical day ±10 days (median)  
+New Year&#x27;s Day                                 
+2010-02-14                               92.0  
+2011-02-03                               53.0  
+2012-01-23                               72.0  
+2013-02-10                               68.0  
+2014-01-31                               71.0  
+2015-02-19                              111.0</pre>
+</div>
+
+<div class="md">
+<p>The <strong>highest reading in the entire six-year dataset</strong>, 994 µg/m³, was recorded on Spring Festival night 2012. Because the fireworks peak around midnight, their effect lands mostly on the <strong>daily mean of New Year's Day</strong>.</p>
+<p>Holidays are given to Prophet as a data frame of dates. <code>lower_window</code> and <code>upper_window</code> extend each date to the days around it, and each offset gets its own effect. Holiday dates are known years in advance, so using them in a forecast is completely honest. (Prophet also offers <code>add_country_holidays(&quot;CN&quot;)</code>, which uses the <code>holidays</code> package. Listing the one festival we care about keeps the effect clear.)</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">holidays = pd.DataFrame({&quot;holiday&quot;: &quot;spring_festival&quot;, &quot;ds&quot;: spring_festival,
+                         &quot;lower_window&quot;: -1, &quot;upper_window&quot;: 1})          # eve, day, and day after
+
+train = y[:&quot;2013-12-31&quot;]
+pm_model = Prophet(holidays=holidays).fit(to_prophet(train, log=True))
+pm_fit = pm_model.predict(to_prophet(train, log=True))
+pm_model.plot_components(pm_fit);</code></pre>
+<figure class="output-figure"><img src="img/08-4.png" alt="Figure 4 produced by the code above" width="877" height="1190" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">effect = pm_fit.loc[pm_fit[&quot;spring_festival&quot;] != 0, [&quot;ds&quot;, &quot;spring_festival&quot;]].copy()
+effect[&quot;offset&quot;] = (effect[&quot;ds&quot;] - effect[&quot;ds&quot;].map(lambda d: spring_festival[np.abs(spring_festival - d).argmin()])).dt.days
+(effect.groupby(&quot;offset&quot;)[&quot;spring_festival&quot;].first().pipe(np.exp).sub(1).mul(100).round(0)
+ .rename(&quot;effect on PM2.5 (%)&quot;).rename_axis(&quot;days from New Year&#x27;s Day&quot;).to_frame())</code></pre>
+<pre class="output">                          effect on PM2.5 (%)
+days from New Year&#x27;s Day                     
+-1                                       15.0
+ 0                                       55.0
+ 1                                      -33.0</pre>
+</div>
+
+<div class="md">
+<p>Prophet estimates that <strong>New Year's Day runs roughly 50% above</strong> what trend and season alone would predict. The eve is a little elevated too. The day <em>after</em> comes out below normal, perhaps because the smoke clears, or perhaps because it's fitting noise: with only four festivals in the training data, each estimate rests on four days. That's an important caveat with holiday effects. They're estimated from very few occurrences, and Prophet's prior (<code>holidays_prior_scale</code>) is what stops them from being overfitted.</p>
+<p>Two more things in the components are worth a critical look:</p>
+<ul>
+<li>A <strong>weekly</strong> pattern of about ±6%, highest at the weekend. That's the same slight weekend excess chapter 01's Exercise 3 found, with the same caveat: a few smoggy weekends can produce it. Prophet fits weekly seasonality by default for daily data, whether or not the series has any.</li>
+<li>A very <strong>wiggly yearly</strong> curve. With the default Fourier order of 10 and only four noisy years, the yearly component bends to follow individual episodes, the over-flexibility section 2 warned about. Compare chapter 06's month-smoothed profile. A lower order (<code>yearly_seasonality=4</code>) would be more defensible.</li>
+</ul>
+<p>Defaults are assumptions, and it's worth checking them.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-the-pm2-5-backtest">5. The PM2.5 backtest</h2>
+<p>We refit Prophet at every origin, on the log scale with the Spring Festival holidays, and forecast 7 days. Then we test the <strong>hybrid</strong>: an AR(2) on Prophet's in-sample residuals, added to its forecast, much like chapter 06, but with Prophet supplying the seasonal curve. Both use the same Prophet fit, so we cache it per origin. Prophet refits take a little over two minutes in total here.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">prophet_cache = {}
+
+def fitted_prophet_curve(history, horizon):
+    &quot;&quot;&quot;In-sample fit and forecast of log PM2.5 from a Prophet refitted on `history` (cached per origin).&quot;&quot;&quot;
+    origin = history.index[-1]
+    if origin not in prophet_cache:
+        model = Prophet(holidays=holidays, uncertainty_samples=0).fit(to_prophet(history, log=True))
+        dates = pd.date_range(history.index[0], origin + pd.Timedelta(days=horizon), freq=&quot;D&quot;)
+        curve = model.predict(pd.DataFrame({&quot;ds&quot;: dates}))[&quot;yhat&quot;].to_numpy()
+        prophet_cache[origin] = (curve[:len(history)], curve[len(history):])
+    return prophet_cache[origin]
+
+def prophet_forecast(history, horizon):
+    return np.exp(fitted_prophet_curve(history, horizon)[1][:horizon])
+
+def prophet_ar_forecast(history, horizon):
+    in_sample, future = fitted_prophet_curve(history, horizon)
+    resid = np.log(history.to_numpy()) - in_sample
+    ar = AutoReg(resid, lags=2, trend=&quot;n&quot;).fit()
+    return np.exp(future[:horizon] + ar.predict(start=len(resid), end=len(resid) + horizon - 1))
+
+prophet_scores = {
+    &quot;Prophet (log, holidays)&quot;: tsutils.evaluate(tsutils.backtest(y, prophet_forecast, origins, H, actuals=actual)),
+    &quot;Prophet + AR(2) on residuals&quot;: tsutils.evaluate(tsutils.backtest(y, prophet_ar_forecast, origins, H, actuals=actual)),
+}
+for name, scores in prophet_scores.items():
+    tsutils.save_scores(name, scores)
+
+board = tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;)
+board[[&quot;climatology (median)&quot;, &quot;AR(2) on anomalies&quot;, &quot;SARIMAX, today&#x27;s weather&quot;,
+       &quot;Prophet (log, holidays)&quot;, &quot;Prophet + AR(2) on residuals&quot;]]</code></pre>
+<pre class="output">model  climatology (median)  AR(2) on anomalies  SARIMAX, today&#x27;s weather  \
+h                                                                           
+1                    56.079              46.803                    40.937   
+2                    56.561              55.419                    55.956   
+3                    56.771              56.264                    56.834   
+4                    57.133              56.533                    56.809   
+5                    57.099              56.587                    56.687   
+6                    57.132              56.491                    56.634   
+7                    57.068              56.407                    56.545   
+
+model  Prophet (log, holidays)  Prophet + AR(2) on residuals  
+h                                                             
+1                       55.545                        47.238  
+2                       56.246                        55.604  
+3                       56.543                        56.542  
+4                       56.845                        56.809  
+5                       56.804                        56.843  
+6                       56.813                        56.825  
+7                       56.785                        56.782</pre>
+</div>
+
+<div class="md">
+<p>This is exactly what the model structure predicts:</p>
+<ul>
+<li><strong>Prophet alone behaves like a slightly better climatology</strong>: nearly flat across horizons, a little ahead of the median climatology at short horizons because its trend tracks the recent level. It can't use the fact that today was smoggy, so it can't compete with AR(2) for tomorrow.</li>
+<li><strong>The hybrid recovers the memory.</strong> Prophet's curve plus an AR(2) on its residuals lands at the same level as chapter 06's profile + AR(2). Prophet provides a perfectly good seasonal profile, but the forecasting skill at short horizons comes from the autoregressive part.</li>
+<li><strong>The honest weather model from chapter 07 still leads for tomorrow</strong>, because it has information none of these models see.</li>
+</ul>
+<p>The residuals confirm the diagnosis:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">in_sample, _ = fitted_prophet_curve(y[:origins[-1]], H)
+prophet_resid = pd.Series(np.log(y[:origins[-1]].to_numpy()) - in_sample, index=y[:origins[-1]].index)
+tsutils.plot_acf_pacf(prophet_resid, lags=14, title=&quot;Prophet residuals (PM2.5):&quot;)</code></pre>
+<figure class="output-figure"><img src="img/08-5.png" alt="Figure 5 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>A lag-1 autocorrelation of about 0.5 and a PACF that cuts off after lag 2 is the same AR(2) fingerprint chapter 06 found in the anomalies. Prophet removed the seasonal pattern and left <strong>all of the day-to-day memory</strong> in its residuals.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-extra-regressors-and-prophet-s-own-cross-validation">6. Extra regressors, and Prophet's own cross-validation</h2>
+<p>Beyond trend, seasonality and holidays, Prophet accepts <strong>extra regressors</strong> with <code>add_regressor</code>: any column in the data frame, whose effect is estimated alongside everything else. The catch is the same as chapter 07's. <strong>Prophet needs the regressor's value on every future date it forecasts.</strong> That makes regressors that are <em>known in advance</em> the natural fit.</p>
+<p>Beijing offers a good one. The city's central heating, much of it coal-fired in these years, officially runs from <strong>15 November to 15 March</strong>. The dates are fixed years ahead, so a heating-season flag is a perfectly honest input for any horizon.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def heating_season(dates):
+    # 1 from 15 November to 15 March (Beijing&#x27;s official central-heating period), else 0
+    dates = pd.to_datetime(pd.Series(dates))
+    month_day = dates.dt.month * 100 + dates.dt.day
+    return ((month_day &gt;= 1115) | (month_day &lt;= 315)).astype(float).to_numpy()
+
+development = to_prophet(y[:tsutils.DEV_END], log=True)
+development[&quot;heating&quot;] = heating_season(development[&quot;ds&quot;])
+development.groupby(&quot;heating&quot;)[&quot;y&quot;].mean().pipe(np.exp).rename(&quot;geometric-mean PM2.5 (µg/m³)&quot;).to_frame()</code></pre>
+<pre class="output">         geometric-mean PM2.5 (µg/m³)
+heating                              
+0.0                            72.006
+1.0                            75.436</pre>
+</div>
+
+<div class="md">
+<p>Now fit two versions, identical except for the regressor, and compare them with <strong>Prophet's built-in cross-validation</strong>. <code>prophet.diagnostics.cross_validation</code> is a rolling-origin backtest, just like chapter 04's:</p>
+<ul>
+<li><code>initial</code>: how much history the first fit uses</li>
+<li><code>period</code>: how far apart the forecast origins (&quot;cutoffs&quot;) are</li>
+<li><code>horizon</code>: how far ahead each forecast reaches</li>
+</ul>
+<p>We start after four years of history (the end of 2013) and place a cutoff every 14 days through 2014, so, as always, only the development period is used. Prophet refits at every cutoff. <code>performance_metrics</code> then summarises the errors by horizon. Its errors are on whatever scale <code>y</code> is on, here log, so we also convert to µg/m³ ourselves.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from prophet.diagnostics import cross_validation
+from prophet.utilities import regressor_coefficients
+
+def prophet_cv(use_heating):
+    model = Prophet(holidays=holidays, uncertainty_samples=0)
+    if use_heating:
+        model.add_regressor(&quot;heating&quot;)
+    model.fit(development if use_heating else development.drop(columns=&quot;heating&quot;))
+    cv = cross_validation(model, initial=&quot;1460 days&quot;, period=&quot;14 days&quot;, horizon=&quot;7 days&quot;, disable_tqdm=True)
+    cv[&quot;days_ahead&quot;] = (cv[&quot;ds&quot;] - cv[&quot;cutoff&quot;]).dt.days
+    cv[&quot;abs_error&quot;] = np.abs(np.exp(cv[&quot;yhat&quot;]) - np.exp(cv[&quot;y&quot;]))
+    return model, cv
+
+base_model, base_cv = prophet_cv(use_heating=False)
+heat_model, heat_cv = prophet_cv(use_heating=True)
+print(f&quot;{base_cv[&#x27;cutoff&#x27;].nunique()} cutoffs, from {base_cv[&#x27;cutoff&#x27;].min():%d %b %Y} to {base_cv[&#x27;cutoff&#x27;].max():%d %b %Y}&quot;)
+
+pd.DataFrame({&quot;Prophet&quot;: base_cv.groupby(&quot;days_ahead&quot;)[&quot;abs_error&quot;].mean(),
+              &quot;Prophet + heating regressor&quot;: heat_cv.groupby(&quot;days_ahead&quot;)[&quot;abs_error&quot;].mean()}).round(1)</code></pre>
+<pre class="output">26 cutoffs, from 08 Jan 2014 to 24 Dec 2014
+            Prophet  Prophet + heating regressor
+days_ahead                                      
+1              50.2                         50.2
+2              47.3                         47.3
+3              62.2                         62.2
+4              55.2                         55.3
+5              60.5                         60.5
+6              55.7                         55.7
+7              77.2                         77.1</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">regressor_coefficients(heat_model)[[&quot;regressor&quot;, &quot;coef&quot;]]</code></pre>
+<pre class="output">  regressor   coef
+0   heating  0.166</pre>
+</div>
+
+<div class="md">
+<p>The raw comparison is already a hint. On the log scale, the typical level is only about 5% higher inside the heating season, chapter 01's finding again: winter differs mainly in its <em>extremes</em>, which a log-scale average damps. In the model, the regressor gets a modest positive coefficient (about +18%, holding trend and seasonality fixed). Yet the cross-validated errors are <strong>essentially identical</strong>, to within 0.1 µg/m³. <strong>The yearly seasonality already knows when winter is.</strong> The flag mostly re-describes the calendar that Prophet's Fourier terms were modelling anyway, so the model can shift weight between the two without forecasting any better.</p>
+<p>That's the general test for any extra input: <strong>does it carry information the model doesn't already have?</strong> Chapter 07's evening wind passed that test, because the calendar can't tell you tomorrow's wind. A heating-season flag mostly doesn't. (Its sharp edges could still matter for the exact switch-on date, which a smooth yearly curve blurs. That effect is too small to see in these averages.)</p>
+<p>(Prophet's CV numbers aren't directly comparable with our scoreboard. They use 26 cutoffs instead of 359, on different days. Use Prophet's tools for quick experiments, and <code>tsutils.backtest</code> for the course leaderboard.)</p>
+<hr />
+<h2 id="7-growth-with-a-ceiling-the-logistic-trend">7. Growth with a ceiling: the logistic trend</h2>
+<p>Prophet's default trend is piecewise <em>linear</em>, and a line continues forever. Many real quantities <strong>saturate</strong>: adoption of a product, cumulative cases in an outbreak, the share of households with a technology. For those, Prophet offers a <strong>logistic</strong> trend that levels off at a <strong>capacity</strong> (<code>cap</code>), which you must supply as a column. It can even change over time.</p>
+<p>Our datasets don't saturate, so let's simulate a classic S-shaped adoption curve with a known ceiling of 1,000 and give Prophet only its first 70 months, when growth still looks explosive.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">growth_rng = np.random.default_rng(0)
+months = pd.date_range(&quot;2010-01-01&quot;, periods=120, freq=&quot;MS&quot;)
+t = np.arange(120)
+adoption = 1000 / (1 + np.exp(-(t - 50) / 10)) * (1 + 0.05 * growth_rng.normal(size=120))
+seen, unseen = slice(0, 70), slice(70, 120)
+
+flat_seasons = dict(yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False, uncertainty_samples=0)
+history_df = pd.DataFrame({&quot;ds&quot;: months[seen], &quot;y&quot;: adoption[seen]})
+linear = Prophet(**flat_seasons).fit(history_df)
+logistic = Prophet(growth=&quot;logistic&quot;, **flat_seasons).fit(history_df.assign(cap=1000))
+
+future_df = pd.DataFrame({&quot;ds&quot;: months[unseen]})
+linear_fc = linear.predict(future_df)[&quot;yhat&quot;].to_numpy()
+logistic_fc = logistic.predict(future_df.assign(cap=1000))[&quot;yhat&quot;].to_numpy()
+
+fig, ax = plt.subplots()
+ax.plot(months, adoption, color=&quot;k&quot;, lw=1, label=&quot;actual (simulated)&quot;)
+ax.plot(months[unseen], linear_fc, label=&quot;linear trend&quot;)
+ax.plot(months[unseen], logistic_fc, label=&quot;logistic trend, cap = 1000&quot;)
+ax.axvline(months[70], color=&quot;0.5&quot;, ls=&quot;:&quot;)
+ax.axhline(1000, color=&quot;0.5&quot;, ls=&quot;--&quot;, lw=0.8)
+ax.set(title=&quot;Forecasting a saturating series&quot;, ylabel=&quot;users&quot;)
+ax.legend()
+print(f&quot;MAE over the unseen 50 months: linear {np.mean(np.abs(linear_fc - adoption[unseen])):.0f}, &quot;
+      f&quot;logistic {np.mean(np.abs(logistic_fc - adoption[unseen])):.0f}&quot;)</code></pre>
+<pre class="output">MAE over the unseen 50 months: linear 468, logistic 40</pre>
+<figure class="output-figure"><img src="img/08-6.png" alt="Figure 6 produced by the code above" width="1015" height="372" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The linear trend extrapolates the steep middle of the S-curve and ends up at about double the ceiling. The logistic trend bends and levels off near 1,000, and its error is roughly a tenth of the linear one.</p>
+<p>The catch is that <strong>the logistic model is only as good as the cap you give it.</strong> Here we knew the true ceiling. In practice the cap is a strong assumption, such as market size or population, and a wrong cap produces confidently wrong forecasts in the other direction. Use logistic growth when a genuine, knowable limit exists, and treat the cap as a scenario to vary, not a fact.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="8-when-is-prophet-the-right-tool">8. When is Prophet the right tool?</h2>
+<p>Prophet's reputation for losing benchmarks is deserved <em>on series like ours</em>: persistent (CO₂) or strongly autocorrelated (PM2.5), where the latest observation carries information that a calendar-driven curve ignores. Its strengths are real, but they lie elsewhere:</p>
+<table>
+<thead>
+<tr>
+<th>Prophet is a good fit when…</th>
+<th>Prefer dynamic models (ETS, ARIMA) when…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>there are <strong>several seasonal cycles</strong> (daily + weekly + yearly)</td>
+<td>there's one clean seasonal cycle</td>
+</tr>
+<tr>
+<td><strong>holidays and events</strong> drive large, known-in-advance effects</td>
+<td>calendar effects are minor</td>
+</tr>
+<tr>
+<td>data are <strong>irregular or have gaps</strong>, since no regular spacing is needed</td>
+<td>observations are regular and complete</td>
+</tr>
+<tr>
+<td>you need to forecast <strong>hundreds of series</strong> with little tuning and explain the parts to non-specialists</td>
+<td>a few important series justify careful modelling</td>
+</tr>
+<tr>
+<td>the horizon is <strong>long relative to the memory</strong> of the series</td>
+<td>short-horizon accuracy matters most</td>
+</tr>
+</tbody>
+</table>
+<p>Whatever the choice, the chapter's checks carry over:</p>
+<ol>
+<li><strong>Backtest against baselines.</strong> Prophet with its defaults lost to seasonal naive + drift on CO₂.</li>
+<li><strong>Check <code>changepoint_range</code></strong> whenever recent trend changes matter.</li>
+<li><strong>Look at the residual ACF.</strong> If it shows memory, a hybrid with an AR model on the residuals is cheap and effective.</li>
+</ol>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-our-fourier-features-are-prophet-s-fourier-features">Exercise 1: Our Fourier features are Prophet's Fourier features</h3>
+<p>Prophet exposes its feature builder as <code>Prophet.fourier_series(dates, period, series_order)</code>, where <code>dates</code> is a pandas Series. Check that it matches <code>fourier_features</code> for the dates in <code>wiggle</code>, with period 365.25 and order 3.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">ours = fourier_features(wiggle.index, 365.25, 3)
+theirs = Prophet.fourier_series(pd.Series(wiggle.index), 365.25, 3)
+print(&quot;identical:&quot;, np.allclose(ours, theirs))
+</code></pre>
+<p>Both measure time in days since 1970 and interleave <code>sin</code>, <code>cos</code> for each order. There's nothing mysterious inside Prophet's seasonality: it's linear regression on these columns, with a prior (<code>seasonality_prior_scale</code>) that shrinks the coefficients.</p>
+</details>
+<h3 id="exercise-2-how-flexible-should-the-trend-be">Exercise 2: How flexible should the trend be?</h3>
+<p>Fit Prophet to <code>co2_history</code> with <code>changepoint_prior_scale</code> set to 0.001, 0.05 (the default) and 0.5, keeping <code>changepoint_range=0.95</code>. Plot the three fitted <strong>trend</strong> components (the <code>trend</code> column of <code>predict</code>) on one chart. Which looks like overfitting, and which like underfitting?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">fig, ax = plt.subplots()
+for scale in [0.001, 0.05, 0.5]:
+    model = Prophet(weekly_seasonality=False, daily_seasonality=False, changepoint_range=0.95,
+                    changepoint_prior_scale=scale).fit(to_prophet(co2_history))
+    trend = model.predict(to_prophet(co2_history))[&quot;trend&quot;]
+    ax.plot(co2_history.index, trend, label=f&quot;changepoint_prior_scale = {scale}&quot;)
+ax.set(title=&quot;Prophet trend on CO₂ for different changepoint priors&quot;, ylabel=&quot;ppm&quot;)
+ax.legend();
+</code></pre>
+<p>At 0.001 the trend is almost a single straight line. It can't follow the curvature of 35 years of accelerating growth, which is underfitting. At 0.5 the trend bends freely and starts absorbing wiggles that belong to seasonality and noise, which is overfitting risk, and every extra bend near the end is extrapolated into the forecast. The default sits in between. Tune this setting with a backtest, not by eye.</p>
+</details>
+<h3 id="exercise-3-are-prophet-s-intervals-honest">Exercise 3: Are Prophet's intervals honest?</h3>
+<p>Prophet produces intervals with <code>interval_width=0.8</code> and <code>uncertainty_samples &gt; 0</code>. Using <strong>every seventh</strong> origin in <code>origins</code> (to keep the runtime down), fit Prophet on the log scale with holidays, compute 80% intervals for the next 7 days, exponentiate them, and measure the coverage by horizon.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">coverage_rows = []
+for origin_ in origins[::7]:
+    history_ = y[:origin_]
+    model = Prophet(holidays=holidays, interval_width=0.8, uncertainty_samples=300).fit(to_prophet(history_, log=True))
+    future = pd.DataFrame({&quot;ds&quot;: pd.date_range(origin_ + pd.Timedelta(days=1), periods=H, freq=&quot;D&quot;)})
+    band = model.predict(future)
+    target = actual.reindex(future[&quot;ds&quot;]).to_numpy()
+    inside = (target &gt;= np.exp(band[&quot;yhat_lower&quot;].to_numpy())) &amp; (target &lt;= np.exp(band[&quot;yhat_upper&quot;].to_numpy()))
+    coverage_rows.append(np.where(np.isnan(target), np.nan, inside))
+
+pd.Series(np.nanmean(coverage_rows, axis=0), index=pd.RangeIndex(1, H + 1, name=&quot;days ahead&quot;),
+          name=&quot;coverage of 80% interval&quot;).round(2)
+</code></pre>
+<p>Coverage averages roughly three in four, below the promised 80%, with individual horizons scattered between the mid-60s and mid-80s. Prophet's intervals combine noise from the fitted error variance with simulated future trend changes, but they assume <strong>independent</strong> errors. PM2.5's errors come in multi-day runs, so the intervals are too narrow. With only about 50 origins these estimates are noisy, which is why some horizons land above 80% by chance. Compare chapter 06's AR(2), whose intervals were close to 80% because the model includes the autocorrelation.</p>
+</details>
+<h3 id="exercise-4-multiple-seasonality-on-hourly-data">Exercise 4: Multiple seasonality on hourly data</h3>
+<p>Prophet's natural habitat is sub-daily data with several cycles. Fit it to <strong>hourly</strong> log PM2.5 for January–March 2014 (drop missing hours; Prophet doesn't need a regular grid), with daily and weekly seasonality and no yearly seasonality. Plot the components. Does the daily profile match what chapter 01 found?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">hourly_q1 = hourly_pm[&quot;2014-01&quot;:&quot;2014-03&quot;].dropna()
+hourly_model = Prophet(daily_seasonality=True, weekly_seasonality=True, yearly_seasonality=False,
+                       uncertainty_samples=0).fit(to_prophet(hourly_q1, log=True))
+hourly_model.plot_components(hourly_model.predict(to_prophet(hourly_q1, log=True)))
+
+one_day = pd.DataFrame({&quot;ds&quot;: pd.date_range(&quot;2014-01-06&quot;, periods=24, freq=&quot;h&quot;)})
+daily_cycle = np.exp(hourly_model.predict(one_day)[&quot;daily&quot;]) - 1
+print((100 * daily_cycle).round(0).set_axis(range(24)).to_string())
+</code></pre>
+<p>Yes. The daily component is highest in the late evening and around midnight, and lowest in mid-afternoon, the same cycle chapter 01 found with a simple group-by. The mechanism is the daytime mixing of the lower atmosphere and its collapse at night. Prophet fitted it together with the weekly cycle and a trend, straight from irregular hourly data. That flexibility is where Prophet earns its place.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Prophet models a series as <strong>trend + Fourier seasonality + holidays</strong>, a curve fitted to the calendar, with <strong>no autoregressive memory</strong>.</li>
+<li><strong>Fourier order</strong> sets seasonal flexibility, and <strong>changepoints</strong> let the trend bend. By default they stop at <strong>80% of the history</strong>, which made Prophet lose to a simple baseline on CO₂ until we set <code>changepoint_range=0.95</code>.</li>
+<li><strong>Holidays</strong> capture real, known-in-advance effects: Spring Festival fireworks lift New Year's Day PM2.5 by roughly half. Each is estimated from only a few occurrences.</li>
+<li>On PM2.5, Prophet alone is <strong>climatology-like</strong>. A <strong>hybrid</strong> with AR(2) on its residuals matches chapter 06's best memory-based model. Its intervals run narrow because they ignore autocorrelated errors.</li>
+<li><strong>Extra regressors</strong> must be known on the forecast dates <em>and</em> add information the model lacks. A heating-season flag didn't, because yearly seasonality already knew when winter was. A <strong>logistic trend</strong> handles saturation, but it's only as good as its cap.</li>
+<li>Prophet shines with <strong>multiple seasonalities, holidays, irregular data and many series</strong>. On persistent or strongly autocorrelated series, dynamic models usually win. Always <strong>backtest against baselines</strong> and <strong>inspect the residual ACF</strong>.</li>
+</ul>
+<p><strong>Next:</strong> <em>09 · Machine Learning for Forecasting</em>. We'll turn forecasting into a supervised-learning problem with lag and calendar features, use gradient boosting, and meet the leakage traps that come with it.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="07-arima-sarima-sarimax.html"><span class="lbl">Previous · 07</span><span class="t">ARIMA, SARIMA and SARIMAX</span></a>
+  <a class="next" rel="next" href="09-machine-learning.html"><span class="lbl">Next · 09</span><span class="t">Machine learning for forecasting</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 08 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

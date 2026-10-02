@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>07 · Choosing priors — Bayesian statistics course</title>
+<meta name="description" content="Eliciting a prior from an expert, improper and flat priors, Jeffreys priors, prior predictive checks and sensitivity analysis.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Bayesian statistics course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Bayesian statistics course · Chapter 07 of 09</span>
+  <h1>Choosing priors</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Treat the prior as a modelling decision that can be made well or badly. We
+turn an expert's statements into a prior, look at &quot;non-informative&quot; and improper
+priors and the trap that flat is not the same as uninformative, derive Jeffreys
+priors from the Fisher information, use prior predictive checks to catch absurd
+priors, and finish with a sensitivity analysis: the habit of showing how much the
+conclusion depends on the prior.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/07_priors.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="bayesian-statistics-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-where-priors-come-from">1. Where priors come from</a></li>
+    <li><a href="#2-turning-an-expert-s-statements-into-a-prior">2. Turning an expert's statements into a prior</a></li>
+    <li><a href="#3-flat-priors-and-improper-priors">3. Flat priors and improper priors</a></li>
+    <li><a href="#4-flat-is-not-the-same-as-uninformative">4. Flat is not the same as uninformative</a></li>
+    <li><a href="#5-jeffreys-priors">5. Jeffreys priors</a></li>
+    <li><a href="#6-prior-predictive-checks-and-weakly-informative-priors">6. Prior predictive checks and weakly informative priors</a></li>
+    <li><a href="#7-sensitivity-analysis">7. Sensitivity analysis</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-where-priors-come-from">1. Where priors come from</h2>
+<p>A prior summarises what is known about a parameter before the current data. In
+practice it comes from one or more of:</p>
+<ul>
+<li><strong>previous data</strong>: earlier studies, historical records, a pilot experiment;</li>
+<li><strong>expert knowledge</strong>: people who know the domain, asked carefully [4];</li>
+<li><strong>structure</strong>: physical limits (a rate is positive, a probability is in <span class="math inline">[0,1]</span>),
+plausible orders of magnitude;</li>
+<li><strong>convenience</strong>: a conjugate family, chosen because it is easy to update, with
+hyperparameters set to match the knowledge above.</li>
+</ul>
+<p>Two properties of the posterior make this less fraught than it first seems. With
+enough data the likelihood dominates any reasonable prior (chapters 04-06 showed the
+prior's weight shrinking like <span class="math inline">1/n</span>). And the prior is written down explicitly, so it
+can be criticised, which is more than can be said for many implicit choices in data
+analysis.</p>
+</div>
+
+<div class="md">
+<h2 id="2-turning-an-expert-s-statements-into-a-prior">2. Turning an expert's statements into a prior</h2>
+<p>A product manager says of a new feature: &quot;I'd guess about 20% of users will adopt it,
+and I'd be very surprised, maybe one chance in ten, if it were more than 40%.&quot; That is
+two statements: a <strong>mode</strong> of 0.2 and a <strong>90th percentile</strong> of 0.4. A beta prior has
+two parameters, so two statements pin it down.</p>
+<p>The mode of Beta<span class="math inline">(\alpha,\beta)</span> is <span class="math inline">(\alpha-1)/(\alpha+\beta-2)</span>. Setting it to 0.2 gives
+<span class="math inline">\beta = 4\alpha-3</span>, leaving one unknown, <span class="math inline">\alpha</span>, which we choose so that the 90th
+percentile is 0.4. That is a one-dimensional root-finding problem.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats, optimize, integrate
+
+plt.rcParams.update({&quot;figure.dpi&quot;: 120, &quot;figure.figsize&quot;: (7.5, 3.4), &quot;axes.grid&quot;: True,
+                     &quot;grid.alpha&quot;: 0.3, &quot;axes.spines.top&quot;: False, &quot;axes.spines.right&quot;: False})
+PRIOR, LIK, POST = &quot;#8a949e&quot;, &quot;#eb6834&quot;, &quot;#2a78d6&quot;
+rng = np.random.default_rng(7)
+
+def gap(a):
+    return stats.beta.ppf(0.9, a, 4 * a - 3) - 0.4
+
+a = optimize.brentq(gap, 1.01, 50)
+b = 4 * a - 3
+prior = stats.beta(a, b)
+print(f&quot;elicited prior: Beta({a:.2f}, {b:.2f})&quot;)
+print(f&quot;check: mode {(a - 1) / (a + b - 2):.3f}, P(θ &gt; 0.4) = {prior.sf(0.4):.3f}, mean {prior.mean():.3f}, &quot;
+      f&quot;worth about {a + b:.1f} observations&quot;)
+print(f&quot;central 95% of the prior: ({prior.ppf(0.025):.3f}, {prior.ppf(0.975):.3f})&quot;)</code></pre>
+<pre class="output">elicited prior: Beta(3.28, 10.12)
+check: mode 0.200, P(θ &gt; 0.4) = 0.100, mean 0.245, worth about 13.4 observations
+central 95% of the prior: (0.064, 0.497)</pre>
+</div>
+
+<div class="md">
+<p>Always <strong>feed the result back</strong> to the expert in their own terms: &quot;so you are saying
+there is a 2.5% chance adoption is below 3%, and the prior is worth about as much as
+watching a dozen users?&quot; If that sounds wrong to them, the prior is wrong, whatever
+the equations say.</p>
+</div>
+
+<div class="md">
+<h2 id="3-flat-priors-and-improper-priors">3. Flat priors and improper priors</h2>
+<p>When little is known, a natural idea is a <strong>flat</strong> prior, <span class="math inline">p(\theta)\propto 1</span>. For a
+probability this is Beta<span class="math inline">(1,1)</span>, a proper distribution. For a parameter with an
+unbounded range, such as a normal mean <span class="math inline">\mu\in\mathbb R</span>, a flat prior cannot integrate to
+one: <span class="math inline">\int_{-\infty}^{\infty}1\,\mathrm d\mu = \infty</span>. Such a prior is <strong>improper</strong>.</p>
+<p>Improper priors can still be used, as long as the <strong>posterior</strong> is proper, meaning
+likelihood times prior has a finite integral. Standard examples:</p>
+<ul>
+<li><strong>Normal mean</strong>, <span class="math inline">p(\mu)\propto1</span>: the posterior is Normal<span class="math inline">(\bar y,\sigma^2/n)</span>, the
+limit <span class="math inline">s_0\to\infty</span> of chapter 06. Proper for any <span class="math inline">n\ge1</span>.</li>
+<li><strong>Normal variance</strong>, <span class="math inline">p(\sigma^2)\propto1/\sigma^2</span>: the limit of InvGamma<span class="math inline">(\alpha,\beta)</span> as
+<span class="math inline">\alpha,\beta\to0</span>. Proper once <span class="math inline">n\ge2</span>.</li>
+<li><strong>Binomial</strong>, the Haldane prior <span class="math inline">p(\theta)\propto\theta^{-1}(1-\theta)^{-1}</span>, &quot;Beta(0,0)&quot;:
+the posterior is Beta<span class="math inline">(y, n-y)</span>, proper <strong>only if</strong> <span class="math inline">0&lt;y&lt;n</span>.</li>
+</ul>
+<p>The last case shows the danger. With <span class="math inline">y=0</span> successes the &quot;posterior&quot; is
+<span class="math inline">\theta^{-1}(1-\theta)^{n-1}</span>, whose integral diverges at <span class="math inline">\theta=0</span>. Nothing in the
+formula warns you; you have to check. The code integrates it from <span class="math inline">\varepsilon</span> to
+1 and lets <span class="math inline">\varepsilon</span> shrink: the integral keeps growing (like <span class="math inline">\log(1/\varepsilon)</span>)
+instead of settling.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">n = 20
+for eps in [1e-2, 1e-4, 1e-8, 1e-16]:
+    val = integrate.quad(lambda t: t**-1 * (1 - t) ** (n - 1), eps, 1, limit=200, points=[1e-3])[0]
+    print(f&quot;∫ from {eps:.0e} to 1 of θ^-1 (1-θ)^19 dθ = {val:6.2f}&quot;)</code></pre>
+<pre class="output">∫ from 1e-02 to 1 of θ^-1 (1-θ)^19 dθ =   1.24
+∫ from 1e-04 to 1 of θ^-1 (1-θ)^19 dθ =   5.66
+∫ from 1e-08 to 1 of θ^-1 (1-θ)^19 dθ =  14.87
+∫ from 1e-16 to 1 of θ^-1 (1-θ)^19 dθ =  33.29</pre>
+</div>
+
+<div class="md">
+<h2 id="4-flat-is-not-the-same-as-uninformative">4. Flat is not the same as uninformative</h2>
+<p>&quot;Flat&quot; depends on how the parameter is written. If <span class="math inline">\theta</span> is uniform on <span class="math inline">(0,1)</span>,
+the log-odds <span class="math inline">\phi = \log\frac{\theta}{1-\theta}</span> is not uniform: by the
+change-of-variables formula
+<span class="math display"> p_\phi(\phi) = p_\theta\big(\theta(\phi)\big)\left|\frac{\mathrm d\theta}{\mathrm d\phi}\right| = \frac{e^\phi}{(1+e^\phi)^2}, </span>
+the standard logistic density, which concentrates around 0. Conversely, a flat prior
+on the log-odds corresponds to <span class="math inline">p(\theta)\propto\theta^{-1}(1-\theta)^{-1}</span> on the
+probability scale: the Haldane prior, piled up at 0 and 1. &quot;I know nothing about
+<span class="math inline">\theta</span>&quot; and &quot;I know nothing about the log-odds of <span class="math inline">\theta</span>&quot; are different
+statements, and both cannot be expressed by a flat prior.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">theta = rng.random(200_000)
+phi = np.log(theta / (1 - theta))
+fig, ax = plt.subplots(1, 2, figsize=(10, 3))
+ax[0].hist(theta, bins=60, density=True, color=PRIOR)
+ax[0].set_title(&quot;flat prior on θ ...&quot;); ax[0].set_xlabel(&quot;θ&quot;)
+ax[1].hist(phi, bins=120, range=(-8, 8), density=True, color=PRIOR)
+g = np.linspace(-8, 8, 300)
+ax[1].plot(g, np.exp(g) / (1 + np.exp(g)) ** 2, color=POST, lw=2, label=&quot;logistic density&quot;)
+ax[1].set_title(&quot;... is not flat on the log-odds&quot;); ax[1].set_xlabel(&quot;φ = log(θ / (1 − θ))&quot;); ax[1].legend()
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/07-1.png" alt="Figure: flat prior on θ ...; ... is not flat on the log-odds" width="1187" height="347" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="5-jeffreys-priors">5. Jeffreys priors</h2>
+<p>Jeffreys proposed a rule that gives the same answer whichever parameterisation you
+start from [1]:
+<span class="math display"> \boxed{\;p(\theta)\propto\sqrt{I(\theta)}\;},\qquad
+   I(\theta) = -\,\mathbb E\!\left[\frac{\partial^2}{\partial\theta^2}\log f(y\mid\theta)\ \middle|\ \theta\right], </span>
+where <span class="math inline">I(\theta)</span> is the <strong>Fisher information</strong> of one observation, the expected
+version of the curvature we used for standard errors in chapter 03.</p>
+<p><strong>Why it is invariant.</strong> If <span class="math inline">\phi</span> is a smooth one-to-one function of <span class="math inline">\theta</span>, the
+chain rule gives <span class="math inline">I_\phi(\phi) = I_\theta(\theta)\,(\mathrm d\theta/\mathrm d\phi)^2</span>, so
+<span class="math inline">\sqrt{I_\phi(\phi)} = \sqrt{I_\theta(\theta)}\,|\mathrm d\theta/\mathrm d\phi|</span>. That is
+exactly the change-of-variables rule for densities: computing Jeffreys' prior for
+<span class="math inline">\theta</span> and transforming it gives Jeffreys' prior for <span class="math inline">\phi</span>.</p>
+<p><strong>Examples.</strong></p>
+<ul>
+<li><strong>Bernoulli.</strong> <span class="math inline">\log f = y\log\theta+(1-y)\log(1-\theta)</span>, so
+<span class="math inline">-\partial^2_\theta\log f = y/\theta^2+(1-y)/(1-\theta)^2</span> with expectation
+<span class="math inline">1/\theta+1/(1-\theta) = 1/(\theta(1-\theta))</span>. Jeffreys' prior is
+<span class="math inline">\theta^{-1/2}(1-\theta)^{-1/2}</span>: <strong>Beta(1/2, 1/2)</strong>, halfway between flat and Haldane.</li>
+<li><strong>Poisson.</strong> <span class="math inline">I(\lambda) = 1/\lambda</span>, so <span class="math inline">p(\lambda)\propto\lambda^{-1/2}</span> (improper).</li>
+<li><strong>Normal mean</strong> (<span class="math inline">\sigma</span> known): <span class="math inline">I(\mu) = 1/\sigma^2</span> is constant, so the flat prior.</li>
+<li><strong>Normal scale</strong> (<span class="math inline">\mu</span> known): <span class="math inline">p(\sigma)\propto1/\sigma</span>, equivalently <span class="math inline">p(\sigma^2)\propto1/\sigma^2</span>.</li>
+</ul>
+<p>Jeffreys priors often have good frequentist properties too. The 95% equal-tailed
+credible interval under Beta(1/2, 1/2) is a well-regarded interval for a binomial
+proportion [5]. The code computes its exact coverage with the same method as in
+chapter 03 and compares it with the Wald interval that failed there.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def coverage(theta, n, lo, hi):
+    ys = np.arange(n + 1)
+    inside = (lo &lt;= theta) &amp; (theta &lt;= hi)
+    return stats.binom.pmf(ys, n, theta)[inside].sum()
+
+n = 20
+ys = np.arange(n + 1)
+t_hat = ys / n
+wald = (t_hat - 1.96 * np.sqrt(t_hat * (1 - t_hat) / n), t_hat + 1.96 * np.sqrt(t_hat * (1 - t_hat) / n))
+jeff = (stats.beta.ppf(0.025, ys + 0.5, n - ys + 0.5), stats.beta.ppf(0.975, ys + 0.5, n - ys + 0.5))
+
+grid = np.linspace(0.005, 0.995, 991)
+plt.plot(grid, [coverage(t, n, *wald) for t in grid], color=LIK, lw=1, label=&quot;Wald confidence interval&quot;)
+plt.plot(grid, [coverage(t, n, *jeff) for t in grid], color=POST, lw=1.2, label=&quot;Jeffreys credible interval&quot;)
+plt.axhline(0.95, color=&quot;k&quot;, ls=&quot;--&quot;, lw=1); plt.ylim(0.5, 1.0)
+plt.xlabel(&quot;true θ&quot;); plt.ylabel(&quot;frequentist coverage, n = 20&quot;)
+plt.title(&quot;A Bayesian interval with Jeffreys&#x27; prior keeps its promise far better&quot;)
+plt.legend(); plt.show()
+print(f&quot;at θ = 0.05: Wald {coverage(0.05, n, *wald):.3f}, Jeffreys {coverage(0.05, n, *jeff):.3f}&quot;)</code></pre>
+<figure class="output-figure"><img src="img/07-2.png" alt="Figure: A Bayesian interval with Jeffreys&#x27; prior keeps its promise far better" width="784" height="417" loading="lazy"></figure>
+<pre class="output">at θ = 0.05: Wald 0.639, Jeffreys 0.984</pre>
+</div>
+
+<div class="md">
+<p>Jeffreys' rule is less attractive with several parameters, where it can give odd
+answers, and &quot;reference priors&quot; and related formal rules refine it [6].</p>
+</div>
+
+<div class="md">
+<h2 id="6-prior-predictive-checks-and-weakly-informative-priors">6. Prior predictive checks and weakly informative priors</h2>
+<p>A prior that looks harmless on the parameter can imply absurd data. The <strong>prior
+predictive</strong> distribution (chapter 04) makes this visible: simulate a parameter from
+the prior, then data from the likelihood, and ask whether the result looks like
+anything the real world could produce.</p>
+<p>Take the café complaints of chapter 05. A common &quot;vague&quot; choice for a Poisson rate is
+Gamma<span class="math inline">(0.001, 0.001)</span>: mean 1, variance 1000. The prior predictive for a day's
+complaints shows what it really believes: most of the time essentially zero
+complaints, and occasionally hundreds. A <strong>weakly informative</strong> prior such as
+Gamma<span class="math inline">(2, 0.5)</span> (mean 4, most mass below about 12) still lets the data speak but rules
+out the absurd [7].</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">for name, (a0, b0) in {&quot;&#x27;vague&#x27; Gamma(0.001, 0.001)&quot;: (0.001, 0.001),
+                        &quot;weakly informative Gamma(2, 0.5)&quot;: (2.0, 0.5)}.items():
+    lam = rng.gamma(a0, 1 / b0, size=100_000)
+    daily = rng.poisson(lam)
+    q = np.quantile(daily, [0.5, 0.9, 0.99, 0.999])
+    print(f&quot;{name:&lt;34} P(0 complaints) = {np.mean(daily == 0):.2f};  median, 90%, 99%, 99.9% quantiles: {q.astype(int)}&quot;)</code></pre>
+<pre class="output">&#x27;vague&#x27; Gamma(0.001, 0.001)        P(0 complaints) = 0.99;  median, 90%, 99%, 99.9% quantiles: [  0   0   0 267]
+weakly informative Gamma(2, 0.5)   P(0 complaints) = 0.11;  median, 90%, 99%, 99.9% quantiles: [ 3  9 15 21]</pre>
+</div>
+
+<div class="md">
+<h2 id="7-sensitivity-analysis">7. Sensitivity analysis</h2>
+<p>Different reasonable priors should be tried, and the conclusions reported alongside
+how much they move. Here are five priors for a proportion, updated with 3 successes
+out of 10 trials and with 60 out of 200 (the same 30% rate, twenty times the data).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">priors = {&quot;flat Beta(1,1)&quot;: (1, 1), &quot;Jeffreys Beta(½,½)&quot;: (0.5, 0.5), &quot;Beta(5,5)&quot;: (5, 5),
+          &quot;Beta(2,8)&quot;: (2, 8), &quot;Beta(20,20)&quot;: (20, 20)}
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.2), sharey=False)
+t = np.linspace(0.001, 0.999, 999)
+for a, (y, n) in zip(ax, [(3, 10), (60, 200)]):
+    print(f&quot;\n{y}/{n} observed:&quot;)
+    for name, (a0, b0) in priors.items():
+        post = stats.beta(a0 + y, b0 + n - y)
+        a.plot(t, post.pdf(t), lw=1.6, label=name)
+        lo, hi = post.ppf([0.025, 0.975])
+        print(f&quot;  {name:&lt;20} posterior mean {post.mean():.3f}, 95% interval ({lo:.3f}, {hi:.3f})&quot;)
+    a.axvline(y / n, color=&quot;k&quot;, ls=&quot;--&quot;, lw=1); a.set_xlabel(&quot;θ&quot;); a.set_title(f&quot;{y} of {n}&quot;)
+ax[0].legend(fontsize=8); ax[0].set_ylabel(&quot;posterior density&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<pre class="output">
+3/10 observed:
+  flat Beta(1,1)       posterior mean 0.333, 95% interval (0.109, 0.610)
+  Jeffreys Beta(½,½)   posterior mean 0.318, 95% interval (0.093, 0.606)
+  Beta(5,5)            posterior mean 0.400, 95% interval (0.203, 0.616)
+  Beta(2,8)            posterior mean 0.250, 95% interval (0.091, 0.456)
+  Beta(20,20)          posterior mean 0.460, 95% interval (0.325, 0.598)
+
+60/200 observed:
+  flat Beta(1,1)       posterior mean 0.302, 95% interval (0.241, 0.367)
+  Jeffreys Beta(½,½)   posterior mean 0.301, 95% interval (0.240, 0.366)
+  Beta(5,5)            posterior mean 0.310, 95% interval (0.249, 0.374)
+  Beta(2,8)            posterior mean 0.295, 95% interval (0.236, 0.359)
+  Beta(20,20)          posterior mean 0.333, 95% interval (0.275, 0.394)</pre>
+<figure class="output-figure"><img src="img/07-3.png" alt="Figure: … of …" width="1187" height="371" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>With 10 observations the choice of prior visibly changes the answer: the Beta(20, 20)
+prior, worth 40 observations, drags the estimate towards 0.5. With 200 observations
+all five posteriors nearly coincide. When the data are weak, say so and show the
+sensitivity; when they are strong, the prior is a detail.</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Elicit a gamma prior for the number of emails you receive per hour from two
+statements of your own (a typical value and an upper bound you would be surprised
+to exceed). Check its prior predictive distribution for a working day.</li>
+<li>Show that the posterior under the improper prior <span class="math inline">p(\sigma^2)\propto1/\sigma^2</span> with known
+mean <span class="math inline">\mu</span> is InvGamma<span class="math inline">\big(n/2,\ \tfrac12\sum_i(y_i-\mu)^2\big)</span>, and find the smallest <span class="math inline">n</span>
+for which it is proper.</li>
+<li>Derive Jeffreys' prior for the rate <span class="math inline">\lambda</span> of an exponential distribution. Is the
+resulting posterior proper after one observation?</li>
+<li>Verify numerically that transforming Jeffreys' Beta(1/2, 1/2) prior to the log-odds
+scale gives <span class="math inline">\sqrt{I_\phi(\phi)}</span> computed directly for the Bernoulli in log-odds form.</li>
+<li>Add the flat-prior Beta<span class="math inline">(y+1, n-y+1)</span> credible interval to the coverage plot. How
+does it compare with Jeffreys?</li>
+<li>For the A/B test of chapter 05, run a sensitivity analysis of <span class="math inline">P(\theta_B&gt;\theta_A)</span>
+over a range of shared beta priors. Is the conclusion robust?</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>H. Jeffreys. <em>An invariant form for the prior probability in estimation problems.</em> Proceedings of the Royal Society A, 186:453-461, 1946. <a href="https://doi.org/10.1098/rspa.1946.0056">doi:10.1098/rspa.1946.0056</a></li>
+<li>H. Jeffreys. <em>Theory of Probability</em>, 3rd ed. Oxford University Press, 1961.</li>
+<li>R. E. Kass, L. Wasserman. <em>The selection of prior distributions by formal rules.</em> Journal of the American Statistical Association, 91(435):1343-1370, 1996. <a href="https://doi.org/10.1080/01621459.1996.10477003">doi:10.1080/01621459.1996.10477003</a></li>
+<li>A. O'Hagan, C. E. Buck, A. Daneshkhah, J. R. Eiser, P. H. Garthwaite, D. J. Jenkinson, J. E. Oakley, T. Rakow. <em>Uncertain Judgements: Eliciting Experts' Probabilities.</em> Wiley, 2006.</li>
+<li>L. D. Brown, T. T. Cai, A. DasGupta. <em>Interval Estimation for a Binomial Proportion.</em> Statistical Science, 16(2):101-133, 2001. <a href="https://doi.org/10.1214/ss/1009213286">doi:10.1214/ss/1009213286</a></li>
+<li>J. M. Bernardo. <em>Reference posterior distributions for Bayesian inference.</em> Journal of the Royal Statistical Society B, 41(2):113-147, 1979.</li>
+<li>A. Gelman. <em>Prior distributions for variance parameters in hierarchical models.</em> Bayesian Analysis, 1(3):515-534, 2006. <a href="https://doi.org/10.1214/06-BA117A">doi:10.1214/06-BA117A</a></li>
+<li>J. Gabry, D. Simpson, A. Vehtari, M. Betancourt, A. Gelman. <em>Visualization in Bayesian workflow.</em> Journal of the Royal Statistical Society A, 182(2):389-402, 2019. <a href="https://doi.org/10.1111/rssa.12378">doi:10.1111/rssa.12378</a></li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="06-continuous-conjugate.html"><span class="lbl">Previous · 06</span><span class="t">Continuous data</span></a>
+  <a class="next" rel="next" href="08-linear-regression.html"><span class="lbl">Next · 08</span><span class="t">Bayesian linear regression</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 07 of the Bayesian statistics course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>06 · A Neural Network from Scratch — A Tour of Machine Learning</title>
+<meta name="description" content="Forward pass, backpropagation and gradient descent implemented in plain NumPy, trained on two interleaving moons.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 06 of 11</span>
+  <h1>A Neural Network from Scratch</h1>
+  <div class="intro prose">
+<p>Every later chapter in this course hands the training loop to Keras or scikit-learn.
+This chapter builds one <strong>from scratch in plain NumPy</strong> — forward pass, backward
+pass, gradient descent — so the framework calls in chapters 08-09 aren't a black box.</p>
+<p><strong>Objectives:</strong> implement a small feedforward network, derive and code
+backpropagation by hand, and train it with gradient descent on a toy classification
+problem.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/06_neural_network_from_scratch.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-from-one-neuron-to-a-network">1. From one neuron to a network</a></li>
+    <li><a href="#2-a-probability-output-and-the-cross-entropy-loss">2. A probability output and the cross-entropy loss</a></li>
+    <li><a href="#3-backpropagation-the-chain-rule-layer-by-layer">3. Backpropagation: the chain rule, layer by layer</a></li>
+    <li><a href="#4-gradient-descent-and-one-neuron-by-hand">4. Gradient descent, and one neuron by hand</a></li>
+    <li><a href="#5-the-problem">5. The problem</a></li>
+    <li><a href="#6-the-network-forward-pass">6. The network, forward pass</a></li>
+    <li><a href="#7-the-loss-and-backpropagation">7. The loss, and backpropagation</a></li>
+    <li><a href="#8-training-loop">8. Training loop</a></li>
+    <li><a href="#9-the-learned-decision-boundary">9. The learned decision boundary</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-from-one-neuron-to-a-network">1. From one neuron to a network</h2>
+<p>A single artificial <strong>neuron</strong> takes a list of numbers, weighs each one, adds a
+constant, and passes the result through a fixed function. With an input
+<span class="math inline">x \in \mathbb{R}^d</span> (here <span class="math inline">d = 2</span>: the two coordinates of a point), a weight vector
+<span class="math inline">w \in \mathbb{R}^d</span> and a bias <span class="math inline">b</span> (a single number):</p>
+<div class="math display">z = w^\top x + b = w_1 x_1 + \dots + w_d x_d + b, \qquad a = g(z).</div>
+<p><span class="math inline">z</span> is the <strong>pre-activation</strong>, a weighted vote of the inputs. <span class="math inline">g</span> is the <strong>activation
+function</strong>, and <span class="math inline">a</span> is the neuron's output. The points where <span class="math inline">z = 0</span> form a straight
+line in the plane (a hyperplane in higher dimensions), so one neuron on its own can
+only split the plane with a straight cut.</p>
+<p>Two activations appear in this chapter:</p>
+<ul>
+<li><strong>ReLU</strong>, <span class="math inline">\mathrm{ReLU}(z) = \max(0, z)</span>: it passes positive values and replaces
+negative ones by 0. Its derivative is 1 for <span class="math inline">z &gt; 0</span> and 0 for <span class="math inline">z &lt; 0</span>.</li>
+<li><strong>Sigmoid</strong>, <span class="math inline">\sigma(z) = \dfrac{1}{1+e^{-z}}</span>: it maps any real number into
+<span class="math inline">(0, 1)</span>, with <span class="math inline">\sigma(0) = 0.5</span>, <span class="math inline">\sigma(z) \to 1</span> as <span class="math inline">z \to +\infty</span> and
+<span class="math inline">\sigma(z) \to 0</span> as <span class="math inline">z \to -\infty</span>.</li>
+</ul>
+<p><strong>A layer is many neurons at once.</strong> Put <span class="math inline">h</span> neurons side by side, each with its own
+weights. Their weight vectors form the columns of a matrix <span class="math inline">W \in \mathbb{R}^{d\times h}</span>,
+and their biases form a row <span class="math inline">b \in \mathbb{R}^{1\times h}</span>. The code stores the <span class="math inline">n</span>
+points as the rows of a matrix <span class="math inline">X \in \mathbb{R}^{n\times d}</span>, so a single matrix
+product evaluates every neuron on every point:</p>
+<div class="math display">Z = XW + b ,</div>
+<p>with <span class="math inline">b</span> added to every row. Entry <span class="math inline">Z_{ik}</span> is neuron <span class="math inline">k</span>'s pre-activation on point <span class="math inline">i</span>.</p>
+<p><strong>The network in this chapter</strong> has a hidden layer of 8 ReLU neurons and one sigmoid
+output neuron:</p>
+<div class="math display">z_1 = X W_1 + b_1,\qquad a_1 = \mathrm{ReLU}(z_1),\qquad z_2 = a_1 W_2 + b_2,\qquad \hat y = \sigma(z_2).</div>
+<table>
+<thead>
+<tr>
+<th>symbol</th>
+<th>code</th>
+<th>shape</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">X</span></td>
+<td><code>X</code></td>
+<td><span class="math inline">n\times 2</span></td>
+<td>inputs, one point per row</td>
+</tr>
+<tr>
+<td><span class="math inline">W_1</span>, <span class="math inline">b_1</span></td>
+<td><code>W1</code>, <code>b1</code></td>
+<td><span class="math inline">2\times 8</span>, <span class="math inline">1\times 8</span></td>
+<td>hidden-layer weights and biases</td>
+</tr>
+<tr>
+<td><span class="math inline">z_1</span>, <span class="math inline">a_1</span></td>
+<td><code>z1</code>, <code>a1</code></td>
+<td><span class="math inline">n\times 8</span></td>
+<td>hidden pre-activations and outputs</td>
+</tr>
+<tr>
+<td><span class="math inline">W_2</span>, <span class="math inline">b_2</span></td>
+<td><code>W2</code>, <code>b2</code></td>
+<td><span class="math inline">8\times 1</span>, <span class="math inline">1\times 1</span></td>
+<td>output weights and bias</td>
+</tr>
+<tr>
+<td><span class="math inline">z_2</span>, <span class="math inline">\hat y</span></td>
+<td><code>z2</code>, <code>y_hat</code></td>
+<td><span class="math inline">n\times 1</span></td>
+<td>output pre-activation and probability</td>
+</tr>
+</tbody>
+</table>
+<p>In total there are <span class="math inline">2\cdot 8 + 8 + 8 + 1 = 33</span> numbers to learn.</p>
+<p><strong>Why the nonlinearity is essential.</strong> Remove the ReLU, so that <span class="math inline">a_1 = z_1</span>. Then</p>
+<div class="math display">z_2 = (XW_1 + b_1)W_2 + b_2 = X\,(W_1W_2) + (b_1W_2 + b_2) = X W&#x27; + b&#x27; .</div>
+<p><span class="math inline">W&#x27; = W_1W_2</span> is a <span class="math inline">2\times 1</span> matrix and <span class="math inline">b&#x27;</span> is one number: the two layers collapse
+into a single neuron, and the boundary is a straight line again. Any stack of linear
+layers is one linear layer in disguise. The ReLU breaks this. Each hidden unit is
+flat on one side of its own line and rises linearly on the other, and a weighted sum
+of 8 such bent pieces can form a curved boundary.</p>
+</div>
+
+<div class="md">
+<h2 id="2-a-probability-output-and-the-cross-entropy-loss">2. A probability output and the cross-entropy loss</h2>
+<p>The label <span class="math inline">y</span> is 0 or 1. The output <span class="math inline">\hat y = \sigma(z_2) \in (0,1)</span> is read as the
+network's estimate of the probability that <span class="math inline">y = 1</span>. To train the network we need a
+number that says how well such probabilities match the observed labels.</p>
+<p>Treat <span class="math inline">y</span> as a coin flip, a <strong>Bernoulli</strong> variable, that lands on 1 with probability
+<span class="math inline">\hat y</span>. The probability the model gives to the label actually observed is</p>
+<div class="math display">P(y \mid x) = \hat y^{\,y}\,(1-\hat y)^{1-y} .</div>
+<p>This is <span class="math inline">\hat y</span> when <span class="math inline">y = 1</span> and <span class="math inline">1-\hat y</span> when <span class="math inline">y = 0</span>, since any number to the power
+0 equals 1. If the <span class="math inline">n</span> training labels are independent, the probability of all of
+them together is the product <span class="math inline">\prod_i P(y_i \mid x_i)</span>, called the <strong>likelihood</strong>. A
+good model makes it large. Three small moves turn this into a loss: take the
+logarithm (a product becomes a sum, and the maximiser does not change because <span class="math inline">\log</span>
+is increasing), flip the sign so that we minimise, and divide by <span class="math inline">n</span> to get an
+average:</p>
+<div class="math display">L = -\frac1n \sum_{i=1}^n \big[\,y_i\log \hat y_i + (1-y_i)\log(1-\hat y_i)\,\big].</div>
+<p>This is the <strong>binary cross-entropy</strong>, <code>bce_loss</code> in the code. For one point with
+<span class="math inline">y = 1</span> the loss is <span class="math inline">-\log\hat y</span>: it is <span class="math inline">0.105</span> when <span class="math inline">\hat y = 0.9</span>, <span class="math inline">0.693</span> when
+<span class="math inline">\hat y = 0.5</span>, and <span class="math inline">4.6</span> when <span class="math inline">\hat y = 0.01</span>. Confident mistakes cost a lot, and the
+loss grows without bound as <span class="math inline">\hat y \to 0</span>.</p>
+</div>
+
+<div class="md">
+<h2 id="3-backpropagation-the-chain-rule-layer-by-layer">3. Backpropagation: the chain rule, layer by layer</h2>
+<p>To improve the weights we need the <strong>gradient</strong>: how <span class="math inline">L</span> changes when each weight
+changes slightly. The network is a chain of functions,
+<span class="math inline">X \to z_1 \to a_1 \to z_2 \to \hat y \to L</span>, and the <strong>chain rule</strong> says that the
+derivative of a chain is the product of the derivatives of its links.
+<strong>Backpropagation</strong> applies the chain rule from the loss backward, reusing each
+result for the layer below. Write <span class="math inline">\delta_2 = \partial L/\partial z_2</span> and
+<span class="math inline">\delta_1 = \partial L/\partial z_1</span>; in the code they are <code>dz2</code> and <code>dz1</code>.</p>
+<p><strong>Step 1: the output error.</strong> For one point the loss is
+<span class="math inline">\ell = -[\,y\log\hat y + (1-y)\log(1-\hat y)\,]</span>. Its derivative with respect to
+<span class="math inline">\hat y</span>, over a common denominator, is</p>
+<div class="math display">\frac{\partial \ell}{\partial \hat y} = -\frac{y}{\hat y} + \frac{1-y}{1-\hat y} = \frac{-y(1-\hat y) + (1-y)\hat y}{\hat y(1-\hat y)} = \frac{\hat y - y}{\hat y(1-\hat y)} .</div>
+<p>The sigmoid's derivative follows from <span class="math inline">\sigma(z) = (1+e^{-z})^{-1}</span>:</p>
+<div class="math display">\sigma&#x27;(z) = \frac{e^{-z}}{(1+e^{-z})^2} = \sigma(z)\big(1-\sigma(z)\big), \qquad\text{so}\qquad \frac{d\hat y}{dz_2} = \hat y\,(1-\hat y) .</div>
+<p>Multiply the two links:</p>
+<div class="math display">\frac{\partial \ell}{\partial z_2} = \frac{\hat y - y}{\hat y(1-\hat y)}\cdot \hat y(1-\hat y) = \hat y - y .</div>
+<p>The awkward fractions cancel exactly. The error signal at the output is &quot;prediction
+minus truth&quot;: positive when the model said too much, negative when it said too
+little, near zero when it is right. Because <span class="math inline">L</span> averages over <span class="math inline">n</span> points, row <span class="math inline">i</span> of
+<span class="math inline">\delta_2</span> is <span class="math inline">(\hat y_i - y_i)/n</span>. This is the first line of <code>backward</code>.</p>
+<p><strong>Step 2: the output weights.</strong> For point <span class="math inline">i</span>, <span class="math inline">z_{2,i} = \sum_k a_{1,ik}W_{2,k} + b_2</span>,
+so <span class="math inline">\partial z_{2,i}/\partial W_{2,k} = a_{1,ik}</span>. Adding the contributions of all
+points:</p>
+<div class="math display">\frac{\partial L}{\partial W_{2,k}} = \sum_i a_{1,ik}\,\delta_{2,i}
+\quad\Longrightarrow\quad
+\frac{\partial L}{\partial W_2} = a_1^\top \delta_2 ,\qquad
+\frac{\partial L}{\partial b_2} = \sum_i \delta_{2,i} .</div>
+<p>A weight's gradient is (the input flowing into that weight) times (the error at its
+output), summed over points. A hidden unit that was silent on a point
+(<span class="math inline">a_{1,ik} = 0</span>) takes no blame for it.</p>
+<p><strong>Step 3: back into the hidden layer.</strong> Hidden output <span class="math inline">a_{1,ik}</span> reaches <span class="math inline">z_{2,i}</span>
+through the weight <span class="math inline">W_{2,k}</span>, so <span class="math inline">\partial L/\partial a_{1,ik} = \delta_{2,i}W_{2,k}</span>, or
+in matrix form</p>
+<div class="math display">\frac{\partial L}{\partial a_1} = \delta_2 W_2^\top \qquad (n\times 8).</div>
+<p>Then pass through the ReLU, whose derivative is 1 where <span class="math inline">z_1 &gt; 0</span> and 0 elsewhere:</p>
+<div class="math display">\delta_1 = \frac{\partial L}{\partial z_1} = \big(\delta_2 W_2^\top\big) \odot \mathbf{1}[z_1 &gt; 0] .</div>
+<p>Here <span class="math inline">\odot</span> is entry-by-entry multiplication and <span class="math inline">\mathbf{1}[z_1 &gt; 0]</span> is a mask of
+zeros and ones, <code>(z1 &gt; 0)</code> in the code. Error flows back only through units that were
+active.</p>
+<p><strong>Step 4: the hidden weights.</strong> This is Step 2 again, one layer down, with <span class="math inline">X</span> as the
+input:</p>
+<div class="math display">\frac{\partial L}{\partial W_1} = X^\top \delta_1 \quad (2\times 8),\qquad
+\frac{\partial L}{\partial b_1} = \sum_i \delta_{1,i} \quad (1\times 8).</div>
+<p>Every gradient has the same shape as the parameter it belongs to, which is a useful
+check on the algebra.</p>
+</div>
+
+<div class="md">
+<h2 id="4-gradient-descent-and-one-neuron-by-hand">4. Gradient descent, and one neuron by hand</h2>
+<p>The gradient points in the direction in which <span class="math inline">L</span> grows fastest. <strong>Gradient
+descent</strong> takes a small step the opposite way, for every parameter <span class="math inline">\theta</span>:</p>
+<div class="math display">\theta \leftarrow \theta - \eta\,\frac{\partial L}{\partial \theta},</div>
+<p>where the <strong>learning rate</strong> <span class="math inline">\eta &gt; 0</span> sets the step size (<code>lr</code> in the code). Why this
+lowers the loss: writing <span class="math inline">g</span> for the gradient, a first-order Taylor expansion gives
+<span class="math inline">L(\theta - \eta g) \approx L(\theta) - \eta\,\lVert g\rVert^2</span>. The change is negative
+whenever <span class="math inline">g \neq 0</span> and <span class="math inline">\eta</span> is small enough for the approximation to hold.</p>
+<p><strong>Worked example: one sigmoid neuron with two inputs.</strong> Take the input <span class="math inline">x = (1, 2)</span>,
+label <span class="math inline">y = 1</span>, weights <span class="math inline">w = (0.5, -0.25)</span>, bias <span class="math inline">b = 0</span> and <span class="math inline">\eta = 0.5</span>. For one
+neuron the output shortcut is the same, <span class="math inline">\partial\ell/\partial z = \hat y - y</span>, and
+Step 2 gives <span class="math inline">\partial\ell/\partial w_j = (\hat y - y)\,x_j</span> and
+<span class="math inline">\partial\ell/\partial b = \hat y - y</span>.</p>
+<table>
+<thead>
+<tr>
+<th>step</th>
+<th>computation</th>
+<th>value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pre-activation</td>
+<td><span class="math inline">z = 0.5\cdot 1 + (-0.25)\cdot 2 + 0</span></td>
+<td><span class="math inline">0</span></td>
+</tr>
+<tr>
+<td>output</td>
+<td><span class="math inline">\hat y = \sigma(0)</span></td>
+<td><span class="math inline">0.5</span></td>
+</tr>
+<tr>
+<td>loss</td>
+<td><span class="math inline">-\log 0.5</span></td>
+<td><span class="math inline">0.693</span></td>
+</tr>
+<tr>
+<td>output error</td>
+<td><span class="math inline">\hat y - y = 0.5 - 1</span></td>
+<td><span class="math inline">-0.5</span></td>
+</tr>
+<tr>
+<td>gradient for <span class="math inline">w_1</span></td>
+<td><span class="math inline">-0.5 \cdot 1</span></td>
+<td><span class="math inline">-0.5</span></td>
+</tr>
+<tr>
+<td>gradient for <span class="math inline">w_2</span></td>
+<td><span class="math inline">-0.5 \cdot 2</span></td>
+<td><span class="math inline">-1.0</span></td>
+</tr>
+<tr>
+<td>gradient for <span class="math inline">b</span></td>
+<td><span class="math inline">-0.5</span></td>
+<td><span class="math inline">-0.5</span></td>
+</tr>
+<tr>
+<td>new <span class="math inline">w_1</span></td>
+<td><span class="math inline">0.5 - 0.5\cdot(-0.5)</span></td>
+<td><span class="math inline">0.75</span></td>
+</tr>
+<tr>
+<td>new <span class="math inline">w_2</span></td>
+<td><span class="math inline">-0.25 - 0.5\cdot(-1.0)</span></td>
+<td><span class="math inline">0.25</span></td>
+</tr>
+<tr>
+<td>new <span class="math inline">b</span></td>
+<td><span class="math inline">0 - 0.5\cdot(-0.5)</span></td>
+<td><span class="math inline">0.25</span></td>
+</tr>
+</tbody>
+</table>
+<p>With the new parameters, <span class="math inline">z = 0.75\cdot1 + 0.25\cdot2 + 0.25 = 1.5</span>, so
+<span class="math inline">\hat y = \sigma(1.5) \approx 0.818</span> and the loss is <span class="math inline">-\log 0.818 \approx 0.201</span>, down
+from <span class="math inline">0.693</span> after one step. The input <span class="math inline">x_2 = 2</span> is twice <span class="math inline">x_1 = 1</span>, so <span class="math inline">w_2</span> moved
+twice as far as <span class="math inline">w_1</span>: each weight is adjusted in proportion to the input that flowed
+through it.</p>
+<p><strong>In the code.</strong> <code>forward</code> computes <code>z1</code>, <code>a1</code>, <code>z2</code> and <code>y_hat</code> as in section 1.
+<code>backward</code> computes, in order, <code>dz2</code> <span class="math inline">= (\hat y - y)/n</span>, <code>dW2</code> <span class="math inline">= a_1^\top\delta_2</span>,
+<code>db2</code>, <code>da1</code> <span class="math inline">= \delta_2 W_2^\top</span>, <code>dz1</code> (with the ReLU mask), <code>dW1</code> <span class="math inline">= X^\top\delta_1</span>
+and <code>db1</code>: the four steps of section 3. The training loop repeats forward pass, loss,
+backward pass and the update of this section, with <code>lr = 0.5</code>, for 3000 passes over
+the whole training set.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.datasets import make_moons
+from sklearn.model_selection import train_test_split
+
+import mlutils
+mlutils.set_style()
+rng = np.random.default_rng(0)</code></pre>
+</div>
+
+<div class="md">
+<h2 id="5-the-problem">5. The problem</h2>
+<p><code>make_moons</code>: two interleaving crescents. Not linearly separable — no straight line
+separates the classes — which is exactly why we need a nonlinear model at all. A
+single-layer (linear) model provably cannot solve this; a network with even one
+hidden layer of nonlinear units can.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">X, y = make_moons(n_samples=400, noise=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+y_train_col, y_test_col = y_train.reshape(-1, 1), y_test.reshape(-1, 1)
+
+fig, ax = plt.subplots(figsize=(6, 4.5))
+for cls, color in zip([0, 1], [mlutils.BLUE, mlutils.ORANGE]):
+    sub = X[y == cls]
+    ax.scatter(sub[:, 0], sub[:, 1], color=color, label=f&quot;class {cls}&quot;, alpha=0.7)
+ax.set(title=&quot;Two interleaving moons — not linearly separable&quot;)
+ax.legend()</code></pre>
+<pre class="output">&lt;matplotlib.legend.Legend at 0x1aa7c1da900&gt;</pre>
+<figure class="output-figure"><img src="img/06-1.png" alt="Figure 1 produced by the code above" width="592" height="455" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="6-the-network-forward-pass">6. The network, forward pass</h2>
+<p>The network of section 1: one hidden layer of 8 ReLU units and a sigmoid output.</p>
+<div class="math display">z_1 = X W_1 + b_1, \quad a_1 = \mathrm{ReLU}(z_1)</div>
+<div class="math display">z_2 = a_1 W_2 + b_2, \quad \hat y = \sigma(z_2)</div>
+<p><span class="math inline">\hat y \in (0, 1)</span> is read as the model's estimated probability of class 1.
+Parameters start as small random values — starting them at exactly zero would make
+every hidden unit compute the same thing forever (a classic bug worth knowing about).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">n_in, n_hidden, n_out = 2, 8, 1
+
+W1 = rng.normal(size=(n_in, n_hidden)) * np.sqrt(2 / n_in)
+b1 = np.zeros((1, n_hidden))
+W2 = rng.normal(size=(n_hidden, n_out)) * np.sqrt(2 / n_hidden)
+b2 = np.zeros((1, n_out))
+
+def relu(z):
+    return np.maximum(0, z)
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def forward(X, W1, b1, W2, b2):
+    z1 = X @ W1 + b1
+    a1 = relu(z1)
+    z2 = a1 @ W2 + b2
+    y_hat = sigmoid(z2)
+    return z1, a1, z2, y_hat</code></pre>
+</div>
+
+<div class="md">
+<h2 id="7-the-loss-and-backpropagation">7. The loss, and backpropagation</h2>
+<p>The loss is the binary cross-entropy of section 2:</p>
+<div class="math display">L = -\frac{1}{n}\sum_i \big[y_i \log \hat y_i + (1-y_i)\log(1-\hat y_i)\big]</div>
+<p><code>backward</code> codes the four steps of section 3, starting from the output error
+<span class="math inline">\partial L/\partial z_2 = (\hat y - y)/n</span> and working down to the gradients of
+<code>W1</code> and <code>b1</code>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def backward(X, y, z1, a1, y_hat, W2):
+    n = len(X)
+    dz2 = (y_hat - y) / n                    # dL/dz2, the sigmoid+cross-entropy shortcut
+    dW2 = a1.T @ dz2
+    db2 = dz2.sum(axis=0, keepdims=True)
+
+    da1 = dz2 @ W2.T
+    dz1 = da1 * (z1 &gt; 0)                     # ReLU&#x27;(z1): 1 where z1&gt;0, else 0
+    dW1 = X.T @ dz1
+    db1 = dz1.sum(axis=0, keepdims=True)
+    return dW1, db1, dW2, db2
+
+def bce_loss(y, y_hat, eps=1e-9):
+    return -np.mean(y * np.log(y_hat + eps) + (1 - y) * np.log(1 - y_hat + eps))</code></pre>
+</div>
+
+<div class="md">
+<h2 id="8-training-loop">8. Training loop</h2>
+<p>Plain (full-batch) gradient descent: compute the loss and its gradient on the whole
+training set, take a step, repeat.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">lr = 0.5
+losses, test_accs = [], []
+for epoch in range(3000):
+    z1, a1, z2, y_hat = forward(X_train, W1, b1, W2, b2)
+    loss = bce_loss(y_train_col, y_hat)
+    dW1, db1, dW2, db2 = backward(X_train, y_train_col, z1, a1, y_hat, W2)
+    W1 -= lr * dW1; b1 -= lr * db1
+    W2 -= lr * dW2; b2 -= lr * db2
+
+    if epoch % 20 == 0:
+        losses.append((epoch, loss))
+        _, _, _, y_hat_test = forward(X_test, W1, b1, W2, b2)
+        test_accs.append(((y_hat_test &gt; 0.5).astype(int) == y_test_col).mean())
+
+print(f&quot;final training loss: {loss:.4f}&quot;)
+print(f&quot;final test accuracy: {test_accs[-1]:.3f}&quot;)</code></pre>
+<pre class="output">final training loss: 0.0674
+final test accuracy: 0.960</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+epochs, loss_vals = zip(*losses)
+axes[0].plot(epochs, loss_vals, color=mlutils.BLUE)
+axes[0].set(xlabel=&quot;epoch&quot;, ylabel=&quot;training loss&quot;, title=&quot;Loss over training&quot;)
+axes[1].plot(epochs, test_accs, color=mlutils.ORANGE)
+axes[1].set(xlabel=&quot;epoch&quot;, ylabel=&quot;test accuracy&quot;, title=&quot;Held-out accuracy over training&quot;)
+fig.tight_layout()</code></pre>
+<figure class="output-figure"><img src="img/06-2.png" alt="Figure 2 produced by the code above" width="1192" height="425" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="9-the-learned-decision-boundary">9. The learned decision boundary</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">xx, yy = np.meshgrid(np.linspace(X[:, 0].min() - 0.5, X[:, 0].max() + 0.5, 300),
+                      np.linspace(X[:, 1].min() - 0.5, X[:, 1].max() + 0.5, 300))
+grid = np.c_[xx.ravel(), yy.ravel()]
+_, _, _, y_hat_grid = forward(grid, W1, b1, W2, b2)
+Z = y_hat_grid.reshape(xx.shape)
+
+fig, ax = plt.subplots(figsize=(6.5, 5))
+ax.contourf(xx, yy, Z, levels=20, cmap=&quot;RdBu_r&quot;, alpha=0.6)
+for cls, color in zip([0, 1], [mlutils.BLUE, mlutils.ORANGE]):
+    sub = X[y == cls]
+    ax.scatter(sub[:, 0], sub[:, 1], color=color, edgecolor=&quot;white&quot;, linewidth=0.4, s=30)
+ax.set(title=&quot;A hand-written network&#x27;s learned boundary — curved, not a straight line&quot;)</code></pre>
+<pre class="output">[Text(0.5, 1.0, &quot;A hand-written network&#x27;s learned boundary — curved, not a straight line&quot;)]</pre>
+<figure class="output-figure"><img src="img/06-3.png" alt="Figure 3 produced by the code above" width="748" height="497" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The boundary bends around the two moons — something no linear model could produce,
+however it's trained. That curvature comes entirely from the ReLU nonlinearity
+between the two layers; remove it (make the hidden layer linear) and the whole
+network collapses back to an equivalent single linear model, boundary included.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-remove-the-nonlinearity">Exercise 1: Remove the nonlinearity</h3>
+<p>Change <code>relu(z1)</code> to just <code>z1</code> (identity — no nonlinearity) in <code>forward</code> and retrain.
+What does the decision boundary look like now, and why?</p>
+<details><summary>Solution</summary>
+<p>With a linear hidden layer, <span class="math inline">\hat y = \sigma((XW_1)W_2 + \ldots) = \sigma(X(W_1W_2) + \ldots)</span>
+— the composition of two linear layers is still linear, so the boundary is a straight
+line no matter how the network trains, and accuracy caps out well below the
+nonlinear version's.</p>
+</details>
+<h3 id="exercise-2-learning-rate-and-hidden-width">Exercise 2: Learning rate and hidden width</h3>
+<p>Try <code>n_hidden = 2</code> and <code>n_hidden = 32</code>, and try <code>lr = 0.05</code> and <code>lr = 2.0</code>. Which
+combination trains fastest without diverging? Relate a too-large learning rate here to
+chapter 02's gradient descent exercise.</p>
+<details><summary>Solution</summary>
+<p>Too few hidden units (2) can't represent the moons' curvature well and accuracy
+plateaus low; too high a learning rate makes the loss oscillate or diverge, exactly as
+in chapter 02's single-parameter example, just harder to visualise in higher
+dimensions.</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A feedforward network is two operations repeated: a linear map, then a nonlinear
+activation. Without the nonlinearity, stacking layers buys nothing.</li>
+<li>Backpropagation is the chain rule applied backward through the network's layers;
+for a sigmoid output with cross-entropy loss the output-layer gradient simplifies to
+<span class="math inline">\hat y - y</span>.</li>
+<li>Gradient descent on this network is the same algorithm as chapter 02's one-variable
+example, just with thousands of parameters instead of one — the mechanics don't
+change, only the dimensionality.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="05-kmeans-and-kmeans-plusplus.html"><span class="lbl">Previous · 05</span><span class="t">K-Means and K-Means++</span></a>
+  <a class="next" rel="next" href="07-transfer-learning.html"><span class="lbl">Next · 07</span><span class="t">Transfer Learning</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 06 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

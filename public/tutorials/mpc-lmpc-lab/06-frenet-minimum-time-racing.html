@@ -1,0 +1,2706 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>06 · Frenet Coordinates and Minimum-Time Racing — Advanced MPC and Learning MPC</title>
+<meta name="description" content="Curvilinear coordinates, a dynamic bicycle model in space rather than time, and a minimum-time speed planner with friction and acceleration limits.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Chapter 06 of 09</span>
+  <h1>Frenet Coordinates and Minimum-Time Racing</h1>
+  <div class="intro prose">
+<h2 id="geometry-first-then-spatial-dynamics-then-a-minimum-time-speed-planner">Geometry first, then spatial dynamics, then a minimum-time speed planner</h2>
+<p>A raceline is not simply “the center of the road driven as fast as possible.”</p>
+<p>The offline raceline problem is:</p>
+<ul>
+<li>choose a trajectory inside the track;</li>
+<li>obey the vehicle dynamics;</li>
+<li>obey tire-force limits;</li>
+<li>minimize the total lap time.</li>
+</ul>
+<p>It is formulated most naturally in <strong>Frenet coordinates</strong>, where progress along the track is the
+independent spatial variable.</p>
+<p>This notebook develops that mathematics carefully and then solves a reduced but fully executable
+subproblem:</p>
+<div class="math display">
+\boxed{
+\text{minimum-time speed planning on a closed centerline}
+}
+</div>
+<p>subject to:</p>
+<ul>
+<li>curvature-limited lateral acceleration;</li>
+<li>maximum speed;</li>
+<li>longitudinal acceleration limits;</li>
+<li>longitudinal braking limits.</li>
+</ul>
+<p>The reduced planner is deliberately <strong>not</strong> presented as the full tire-force raceline optimizer.
+The full problem is nonlinear and also optimizes the lateral offset and the vehicle dynamics.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/06_frenet_minimum_time_racing.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need the <code>advanced_mpc_lmpc</code> package: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#geometry-first-then-spatial-dynamics-then-a-minimum-time-speed-planner">Geometry first, then spatial dynamics, then a minimum-time speed planner</a></li>
+    <li><a href="#scope">Scope</a></li>
+    <li><a href="#learning-objectives">Learning objectives</a></li>
+    <li><a href="#table-of-contents">Table of Contents</a></li>
+    <li><a href="#part-i-what-is-the-racing-optimal-control-problem">Part I — What is the racing optimal-control problem?</a></li>
+    <li><a href="#i-1-raceline-versus-tracking">I.1 Raceline versus tracking</a></li>
+    <li><a href="#i-2-why-cartesian-coordinates-are-inconvenient-on-a-track">I.2 Why Cartesian coordinates are inconvenient on a track</a></li>
+    <li><a href="#part-ii-differential-geometry-of-the-centerline">Part II — Differential geometry of the centerline</a></li>
+    <li><a href="#ii-1-arc-length-parameterization">II.1 Arc-length parameterization</a></li>
+    <li><a href="#ii-2-normal-vector">II.2 Normal vector</a></li>
+    <li><a href="#ii-3-signed-curvature">II.3 Signed curvature</a></li>
+    <li><a href="#part-iii-build-a-synthetic-periodic-track">Part III — Build a synthetic periodic track</a></li>
+    <li><a href="#iii-1-why-use-a-synthetic-track-here">III.1 Why use a synthetic track here?</a></li>
+    <li><a href="#iii-2-radius-of-curvature">III.2 Radius of curvature</a></li>
+    <li><a href="#part-iv-frenet-position-map">Part IV — Frenet position map</a></li>
+    <li><a href="#iv-1-position-represented-by-s-e-y">IV.1 Position represented by <span class="math inline">(s,e_y)</span></a></li>
+    <li><a href="#iv-2-differentiate-the-frenet-position-map">IV.2 Differentiate the Frenet position map</a></li>
+    <li><a href="#iv-3-frenet-coordinate-singularity">IV.3 Frenet-coordinate singularity</a></li>
+    <li><a href="#part-v-vehicle-velocity-in-the-frenet-frame">Part V — Vehicle velocity in the Frenet frame</a></li>
+    <li><a href="#v-1-heading-error">V.1 Heading error</a></li>
+    <li><a href="#v-2-body-frame-velocity-components">V.2 Body-frame velocity components</a></li>
+    <li><a href="#v-3-derive-longitudinal-progress-dot-s">V.3 Derive longitudinal progress <span class="math inline">\dot s</span></a></li>
+    <li><a href="#v-4-derive-lateral-motion">V.4 Derive lateral motion</a></li>
+    <li><a href="#v-5-derive-heading-error-dynamics">V.5 Derive heading-error dynamics</a></li>
+    <li><a href="#part-vi-from-time-dynamics-to-spatial-dynamics">Part VI — From time dynamics to spatial dynamics</a></li>
+    <li><a href="#vi-1-chain-rule-transformation">VI.1 Chain-rule transformation</a></li>
+    <li><a href="#vi-2-why-dot-s-0-matters">VI.2 Why <span class="math inline">\dot s&gt;0</span> matters</a></li>
+    <li><a href="#vi-3-spatial-frenet-kinematics">VI.3 Spatial Frenet kinematics</a></li>
+    <li><a href="#part-vii-time-as-a-state-and-the-minimum-time-objective">Part VII — Time as a state and the minimum-time objective</a></li>
+    <li><a href="#vii-1-why-introduce-time-as-a-state">VII.1 Why introduce time as a state?</a></li>
+    <li><a href="#vii-2-the-six-state-spatial-vector">VII.2 The six-state spatial vector</a></li>
+    <li><a href="#part-viii-the-dynamic-bicycle-model">Part VIII — The dynamic bicycle model</a></li>
+    <li><a href="#viii-1-tire-slip-angles-and-lateral-forces">VIII.1 Tire slip angles and lateral forces</a></li>
+    <li><a href="#viii-2-vehicle-time-dynamics">VIII.2 Vehicle time dynamics</a></li>
+    <li><a href="#viii-3-the-full-raceline-cftoc">VIII.3 The full raceline CFTOC</a></li>
+    <li><a href="#part-ix-why-this-notebook-solves-a-reduced-problem">Part IX — Why this notebook solves a reduced problem</a></li>
+    <li><a href="#ix-1-centerline-speed-planning-assumptions">IX.1 Centerline speed-planning assumptions</a></li>
+    <li><a href="#part-x-spatial-longitudinal-dynamics">Part X — Spatial longitudinal dynamics</a></li>
+    <li><a href="#x-1-begin-in-time">X.1 Begin in time</a></li>
+    <li><a href="#x-2-introduce-squared-speed">X.2 Introduce squared speed</a></li>
+    <li><a href="#x-3-spatial-discretization">X.3 Spatial discretization</a></li>
+    <li><a href="#part-xi-curvature-limited-speed">Part XI — Curvature-limited speed</a></li>
+    <li><a href="#xi-1-lateral-acceleration">XI.1 Lateral acceleration</a></li>
+    <li><a href="#xi-2-speed-squared-cap">XI.2 Speed-squared cap</a></li>
+    <li><a href="#part-xii-minimum-time-objective-in-the-spatial-grid">Part XII — Minimum-time objective in the spatial grid</a></li>
+    <li><a href="#xii-1-time-across-one-segment">XII.1 Time across one segment</a></li>
+    <li><a href="#xii-2-exact-segment-time-formula">XII.2 Exact segment-time formula</a></li>
+    <li><a href="#xii-3-total-lap-time">XII.3 Total lap time</a></li>
+    <li><a href="#part-xiii-acceleration-and-braking-envelopes">Part XIII — Acceleration and braking envelopes</a></li>
+    <li><a href="#xiii-1-forward-acceleration-constraint">XIII.1 Forward acceleration constraint</a></li>
+    <li><a href="#xiii-2-backward-braking-constraint">XIII.2 Backward braking constraint</a></li>
+    <li><a href="#xiii-3-why-braking-information-moves-backward">XIII.3 Why braking information moves backward</a></li>
+    <li><a href="#part-xiv-why-the-local-curvature-cap-alone-is-infeasible">Part XIV — Why the local curvature cap alone is infeasible</a></li>
+    <li><a href="#xiv-1-naive-profile">XIV.1 Naive profile</a></li>
+    <li><a href="#part-xv-closed-lap-forward-backward-planner">Part XV — Closed-lap forward/backward planner</a></li>
+    <li><a href="#xv-1-algorithm">XV.1 Algorithm</a></li>
+    <li><a href="#xv-2-why-the-greatest-feasible-profile-is-minimum-time">XV.2 Why the greatest feasible profile is minimum-time</a></li>
+    <li><a href="#xv-3-active-constraints">XV.3 Active constraints</a></li>
+    <li><a href="#part-xvi-braking-preview-around-the-tightest-corner">Part XVI — Braking preview around the tightest corner</a></li>
+    <li><a href="#xvi-1-find-the-tightest-corner">XVI.1 Find the tightest corner</a></li>
+    <li><a href="#part-xvii-cumulative-lap-time">Part XVII — Cumulative lap time</a></li>
+    <li><a href="#xvii-1-time-as-a-spatial-state-in-the-reduced-model">XVII.1 Time as a spatial state in the reduced model</a></li>
+    <li><a href="#part-xviii-friction-sensitivity">Part XVIII — Friction sensitivity</a></li>
+    <li><a href="#xviii-1-friction-coefficient-changes-the-curvature-cap">XVIII.1 Friction coefficient changes the curvature cap</a></li>
+    <li><a href="#part-xix-acceleration-versus-braking-authority">Part XIX — Acceleration versus braking authority</a></li>
+    <li><a href="#xix-1-two-different-physical-roles">XIX.1 Two different physical roles</a></li>
+    <li><a href="#part-xx-spatial-grid-convergence">Part XX — Spatial-grid convergence</a></li>
+    <li><a href="#xx-1-why-discretization-density-matters">XX.1 Why discretization density matters</a></li>
+    <li><a href="#part-xxi-an-important-limitation-tire-force-coupling">Part XXI — An important limitation: tire-force coupling</a></li>
+    <li><a href="#xxi-1-separate-limits-can-be-optimistic">XXI.1 Separate limits can be optimistic</a></li>
+    <li><a href="#part-xxii-why-a-full-raceline-can-be-faster-than-centerline-speed-planning">Part XXII — Why a full raceline can be faster than centerline speed planning</a></li>
+    <li><a href="#xxii-1-the-centerline-is-not-generally-the-minimum-time-path">XXII.1 The centerline is not generally the minimum-time path</a></li>
+    <li><a href="#xxii-2-why-the-full-problem-is-nonlinear">XXII.2 Why the full problem is nonlinear</a></li>
+    <li><a href="#part-xxiii-from-offline-raceline-to-mpc-and-lmpc">Part XXIII — From offline raceline to MPC and LMPC</a></li>
+    <li><a href="#xxiii-1-the-standard-pipeline">XXIII.1 The standard pipeline</a></li>
+    <li><a href="#part-xxiv-conventions-worth-keeping-straight">Part XXIV — Conventions worth keeping straight</a></li>
+    <li><a href="#xxiv-1-mathematical-normal-versus-code-normal">XXIV.1 Mathematical normal versus code normal</a></li>
+    <li><a href="#xxiv-2-input-ordering">XXIV.2 Input ordering</a></li>
+    <li><a href="#xxiv-3-offline-raceline-versus-online-lmpc-racing">XXIV.3 Offline raceline versus online LMPC racing</a></li>
+    <li><a href="#part-xxv-common-pitfalls">Part XXV — Common pitfalls</a></li>
+    <li><a href="#xxv-1-pitfall-frenet-coordinates-mean-the-vehicle-is-constrained-to-the-centerline">XXV.1 Pitfall: Frenet coordinates mean the vehicle is constrained to the centerline</a></li>
+    <li><a href="#xxv-2-pitfall-curvature-alone-determines-the-optimal-speed">XXV.2 Pitfall: curvature alone determines the optimal speed</a></li>
+    <li><a href="#xxv-3-pitfall-brake-at-the-point-where-the-speed-cap-becomes-small">XXV.3 Pitfall: brake at the point where the speed cap becomes small</a></li>
+    <li><a href="#xxv-4-pitfall-2-delta-s-v-i-v-i-1-is-just-an-arbitrary-trapezoidal-rule">XXV.4 Pitfall: <span class="math inline">2\Delta s/(v_i+v_{i+1})</span> is just an arbitrary trapezoidal rule</a></li>
+    <li><a href="#xxv-5-pitfall-1-ke-y-is-just-a-numerical-denominator">XXV.5 Pitfall: <span class="math inline">1-Ke_y</span> is just a numerical denominator</a></li>
+    <li><a href="#xxv-6-pitfall-independent-longitudinal-and-lateral-acceleration-limits-are-the-same-as-tire-force-constraints">XXV.6 Pitfall: independent longitudinal and lateral acceleration limits are the same as tire-force constraints</a></li>
+    <li><a href="#xxv-7-pitfall-the-reduced-speed-planner-is-the-full-raceline-optimizer">XXV.7 Pitfall: the reduced speed planner is the full raceline optimizer</a></li>
+    <li><a href="#part-xxvi-check-your-understanding">Part XXVI — Check your understanding</a></li>
+    <li><a href="#part-xxvii-exercises">Part XXVII — Exercises</a></li>
+    <li><a href="#part-xxviii-references">Part XXVIII — References</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="scope">Scope</h2>
+<p>The notebook follows the standard spatial formulation of minimum-lap-time problems, in which arc
+length along the track replaces time as the independent variable. It derives:</p>
+<ul>
+<li>the track centerline <span class="math inline">\gamma(s)</span> and its curvature <span class="math inline">K(s)</span>;</li>
+<li>the Frenet variables <span class="math inline">(s,e_y,e_\psi)</span>;</li>
+<li>the track constraint <span class="math inline">|e_y|\le W(s)</span>;</li>
+<li>the spatial transformation</li>
+</ul>
+<div class="math display">
+\frac{dx}{ds}
+=
+\frac{\dot x}{\dot s};
+</div>
+<ul>
+<li>the six-state spatial formulation</li>
+</ul>
+<div class="math display">
+x=
+[v_x,v_y,r,e_\psi,t,e_y]^\top;
+</div>
+<ul>
+<li>longitudinal progress</li>
+</ul>
+<div class="math display">
+\dot s
+=
+\frac{
+v_x\cos e_\psi-v_y\sin e_\psi
+}{
+1-K(s)e_y
+};
+</div>
+<ul>
+<li>time as a state;</li>
+<li>minimum terminal time <span class="math inline">t(s_f)</span>;</li>
+<li>nonlinear CFTOC with tire-force and track constraints.</li>
+</ul>
+<p>The full raceline problem is a nonlinear program. It is usually solved by discretizing the spatial
+dynamics on a grid in <span class="math inline">s</span> (for example with Pyomo) and calling a nonlinear solver such as IPOPT.</p>
+<p>This notebook does not solve that full problem. It derives the underlying geometry and dynamics,
+writes out the dynamic bicycle model of a 1:10-scale RC car (BARC parameters) that notebook 07
+simulates, and implements a lightweight spatial speed planner, which needs only NumPy, along the
+fixed centerline of a synthetic closed track.</p>
+<p>For the full minimum-lap-time formulation, see G. Perantoni and D. J. N. Limebeer, “Optimal control
+for a Formula One car with variable parameters,” <em>Vehicle System Dynamics</em>, 52(5), 2014. For racing
+in Frenet coordinates with a dynamic bicycle model and Learning MPC, see U. Rosolia and F. Borrelli,
+“Learning How to Autonomously Race a Car: A Predictive Control Approach,” <em>IEEE Transactions on
+Control Systems Technology</em>, 28(6), 2020.</p>
+</div>
+
+<div class="md">
+<h2 id="learning-objectives">Learning objectives</h2>
+<p>After completing this notebook, you should be able to:</p>
+<ol>
+<li>define the Frenet tangent and normal frame along a centerline;</li>
+<li>derive signed curvature from a planar curve;</li>
+<li>derive the coordinate map</li>
+</ol>
+<div class="math display">
+p=\gamma(s)+e_y n(s);
+</div>
+<ol start="4">
+<li>explain why the factor</li>
+</ol>
+<div class="math display">
+1-K(s)e_y
+</div>
+<p>appears in Frenet kinematics;
+5. derive <span class="math inline">\dot s</span>, <span class="math inline">\dot e_y</span>, and <span class="math inline">\dot e_\psi</span>;
+6. convert time-domain dynamics to spatial dynamics;
+7. explain why <span class="math inline">\dot s&gt;0</span> is essential;
+8. formulate minimum lap time by making time a state;
+9. distinguish a full nonlinear raceline problem from a centerline speed-planning problem;
+10. derive</p>
+<div class="math display">
+\frac{d(v^2)}{ds}=2a;
+</div>
+<ol start="11">
+<li>derive the curvature speed limit</li>
+</ol>
+<div class="math display">
+v^2|K|\le\mu g;
+</div>
+<ol start="12">
+<li>derive the exact segment-time formula under constant longitudinal acceleration;</li>
+<li>derive the forward acceleration and backward braking envelopes;</li>
+<li>explain why braking must begin <strong>before</strong> a tight corner;</li>
+<li>compute a closed-lap minimum-time speed profile;</li>
+<li>quantify how friction and braking authority affect lap time;</li>
+<li>understand spatial-grid convergence;</li>
+<li>diagnose why separate longitudinal/lateral limits can be optimistic compared with a friction
+circle;</li>
+<li>connect the offline raceline concept to later MPC and Learning MPC.</li>
+</ol>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from pathlib import Path
+import sys
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+ROOT = Path.cwd().resolve()
+if ROOT.name == &quot;notebooks&quot;:
+    ROOT = ROOT.parent
+
+sys.path.insert(0, str(ROOT / &quot;src&quot;))
+
+from advanced_mpc_lmpc.racing import (
+    build_demo_track,
+    frenet_rates,
+    bicycle_lateral_forces,
+    bicycle_spatial_rhs,
+    lateral_speed_squared_cap,
+    segment_time_from_speed_squared,
+    periodic_minimum_time_speed_profile,
+    friction_circle_utilization,
+)
+
+np.set_printoptions(precision=6, suppress=True)
+
+plt.rcParams.update({
+    &quot;figure.figsize&quot;: (8, 5),
+    &quot;axes.grid&quot;: True,
+})
+</code></pre>
+</div>
+
+<div class="md">
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><strong><a href="#part-1">Part I — What is the racing optimal-control problem?</a></strong> — I.1 Raceline versus tracking · I.2 Why Cartesian coordinates are inconvenient on a track</li>
+<li><strong><a href="#part-2">Part II — Differential geometry of the centerline</a></strong> — II.1 Arc-length parameterization · II.2 Normal vector · II.3 Signed curvature</li>
+<li><strong><a href="#part-3">Part III — Build a synthetic periodic track</a></strong> — III.1 Why use a synthetic track here? · III.2 Radius of curvature</li>
+<li><strong><a href="#part-4">Part IV — Frenet position map</a></strong> — IV.1 Position represented by <span class="math inline">(s,e_y)</span> · IV.2 Differentiate the Frenet position map · IV.3 Frenet-coordinate singularity</li>
+<li><strong><a href="#part-5">Part V — Vehicle velocity in the Frenet frame</a></strong> — V.1 Heading error · V.2 Body-frame velocity components · V.3 Derive longitudinal progress <span class="math inline">\dot s</span> · V.4 Derive lateral motion · V.5 Derive heading-error dynamics</li>
+<li><strong><a href="#part-6">Part VI — From time dynamics to spatial dynamics</a></strong> — VI.1 Chain-rule transformation · VI.2 Why <span class="math inline">\dot s&gt;0</span> matters · VI.3 Spatial Frenet kinematics</li>
+<li><strong><a href="#part-7">Part VII — Time as a state and the minimum-time objective</a></strong> — VII.1 Why introduce time as a state? · VII.2 The six-state spatial vector</li>
+<li><strong><a href="#part-8">Part VIII — The dynamic bicycle model</a></strong> — VIII.1 Tire slip angles and lateral forces · VIII.2 Vehicle time dynamics · VIII.3 The full raceline CFTOC</li>
+<li><strong><a href="#part-9">Part IX — Why this notebook solves a reduced problem</a></strong> — IX.1 Centerline speed-planning assumptions</li>
+<li><strong><a href="#part-10">Part X — Spatial longitudinal dynamics</a></strong> — X.1 Begin in time · X.2 Introduce squared speed · X.3 Spatial discretization</li>
+<li><strong><a href="#part-11">Part XI — Curvature-limited speed</a></strong> — XI.1 Lateral acceleration · XI.2 Speed-squared cap</li>
+<li><strong><a href="#part-12">Part XII — Minimum-time objective in the spatial grid</a></strong> — XII.1 Time across one segment · XII.2 Exact segment-time formula · XII.3 Total lap time</li>
+<li><strong><a href="#part-13">Part XIII — Acceleration and braking envelopes</a></strong> — XIII.1 Forward acceleration constraint · XIII.2 Backward braking constraint · XIII.3 Why braking information moves backward</li>
+<li><strong><a href="#part-14">Part XIV — Why the local curvature cap alone is infeasible</a></strong> — XIV.1 Naive profile</li>
+<li><strong><a href="#part-15">Part XV — Closed-lap forward/backward planner</a></strong> — XV.1 Algorithm · XV.2 Why the greatest feasible profile is minimum-time · XV.3 Active constraints</li>
+<li><strong><a href="#part-16">Part XVI — Braking preview around the tightest corner</a></strong> — XVI.1 Find the tightest corner</li>
+<li><strong><a href="#part-17">Part XVII — Cumulative lap time</a></strong> — XVII.1 Time as a spatial state in the reduced model</li>
+<li><strong><a href="#part-18">Part XVIII — Friction sensitivity</a></strong> — XVIII.1 Friction coefficient changes the curvature cap</li>
+<li><strong><a href="#part-19">Part XIX — Acceleration versus braking authority</a></strong> — XIX.1 Two different physical roles</li>
+<li><strong><a href="#part-20">Part XX — Spatial-grid convergence</a></strong> — XX.1 Why discretization density matters</li>
+<li><strong><a href="#part-21">Part XXI — An important limitation: tire-force coupling</a></strong> — XXI.1 Separate limits can be optimistic</li>
+<li><strong><a href="#part-22">Part XXII — Why a full raceline can be faster than centerline speed planning</a></strong> — XXII.1 The centerline is not generally the minimum-time path · XXII.2 Why the full problem is nonlinear</li>
+<li><strong><a href="#part-23">Part XXIII — From offline raceline to MPC and LMPC</a></strong> — XXIII.1 The standard pipeline</li>
+<li><strong><a href="#part-24">Part XXIV — Conventions worth keeping straight</a></strong> — XXIV.1 Mathematical normal versus code normal · XXIV.2 Input ordering · XXIV.3 Offline raceline versus online LMPC racing</li>
+<li><strong><a href="#part-25">Part XXV — Common pitfalls</a></strong> — XXV.1 Pitfall: Frenet coordinates mean the vehicle is constrained to the centerline · XXV.2 Pitfall: curvature alone determines the optimal speed · XXV.3 Pitfall: brake at the point where the speed cap becomes small · XXV.4 Pitfall: <span class="math inline">2\Delta s/(v_i+v_{i+1})</span> is just an arbitrary trapezoidal rule · XXV.5 Pitfall: <span class="math inline">1-Ke_y</span> is just a numerical denominator · XXV.6 Pitfall: independent longitudinal and lateral acceleration limits are the same as tire-force constraints · XXV.7 Pitfall: the reduced speed planner is the full raceline optimizer</li>
+<li><strong><a href="#part-26">Part XXVI — Check your understanding</a></strong></li>
+<li><strong><a href="#part-27">Part XXVII — Exercises</a></strong></li>
+<li><strong><a href="#part-28">Part XXVIII — References</a></strong></li>
+</ul>
+</div>
+
+<div class="md">
+<p><a id="part-1"></a></p>
+<h2 id="part-i-what-is-the-racing-optimal-control-problem">Part I — What is the racing optimal-control problem?</h2>
+<h2 id="i-1-raceline-versus-tracking">I.1 Raceline versus tracking</h2>
+<p>Racing control is usually split into two tasks.</p>
+<h3 id="offline-raceline-computation">Offline raceline computation</h3>
+<p>Find a minimum-time trajectory satisfying vehicle, tire, and track constraints.</p>
+<h3 id="online-tracking">Online tracking</h3>
+<p>Once the raceline is known, use MPC or Learning MPC to track it.</p>
+<p>Symbolically,</p>
+<div class="math display">
+\boxed{
+\text{offline time-optimal trajectory}
+\longrightarrow
+\text{online tracking controller}
+}
+</div>
+<p>Notebook 06 focuses on the geometry and the offline minimum-time viewpoint.</p>
+<p>Later notebooks use the same Frenet concepts inside data-driven prediction and Learning MPC.</p>
+</div>
+
+<div class="md">
+<h2 id="i-2-why-cartesian-coordinates-are-inconvenient-on-a-track">I.2 Why Cartesian coordinates are inconvenient on a track</h2>
+<p>Suppose the track is described in Cartesian coordinates</p>
+<div class="math display">
+p=
+\begin{bmatrix}
+X\\Y
+\end{bmatrix}.
+</div>
+<p>The constraint “remain inside the road” then requires geometric relations between the vehicle
+position and two curved boundaries.</p>
+<p>If instead the road is parameterized by arc length <span class="math inline">s</span>, the same track constraint becomes</p>
+<div class="math display">
+\boxed{
+-W(s)\le e_y(s)\le W(s).
+}
+</div>
+<p>This is one of the main reasons Frenet coordinates are so useful for racing and path-following
+optimal control.</p>
+</div>
+
+<div class="md">
+<p><a id="part-2"></a></p>
+<h2 id="part-ii-differential-geometry-of-the-centerline">Part II — Differential geometry of the centerline</h2>
+<h2 id="ii-1-arc-length-parameterization">II.1 Arc-length parameterization</h2>
+<p>Let</p>
+<div class="math display">
+\gamma(s)
+=
+\begin{bmatrix}
+X_c(s)\\Y_c(s)
+\end{bmatrix}
+</div>
+<p>denote the track centerline.</p>
+<p>If <span class="math inline">s</span> is exact arc length, then</p>
+<div class="math display">
+\left\|
+\gamma&#x27;(s)
+\right\|_2=1.
+</div>
+<p>The unit tangent is</p>
+<div class="math display">
+\boxed{
+t(s)=\gamma&#x27;(s).
+}
+</div>
+<p>More generally, if a spline parameter is only approximately arc length,</p>
+<div class="math display">
+t(s)
+=
+\frac{\gamma&#x27;(s)}
+{\|\gamma&#x27;(s)\|_2}.
+</div>
+</div>
+
+<div class="md">
+<h2 id="ii-2-normal-vector">II.2 Normal vector</h2>
+<p>For</p>
+<div class="math display">
+t=
+\begin{bmatrix}
+t_x\\t_y
+\end{bmatrix},
+</div>
+<p>choose the left normal</p>
+<div class="math display">
+\boxed{
+n=
+\begin{bmatrix}
+-t_y\\t_x
+\end{bmatrix}.
+}
+</div>
+<p>Then</p>
+<div class="math display">
+t^\top n=0,
+\qquad
+\|n\|_2=1.
+</div>
+<p>Some implementations use the opposite (right) normal</p>
+<div class="math display">
+[t_y,-t_x]^\top
+</div>
+<p>and simultaneously subtract <span class="math inline">e_y</span> times that normal.</p>
+<p>Those two sign changes cancel, so the resulting Cartesian mapping is equivalent: in both conventions,
+<span class="math inline">e_y&gt;0</span> lies to the left of the direction of travel. In <code>racing.py</code>, <code>Track.normal()</code> returns the
+left normal <span class="math inline">n</span>.</p>
+</div>
+
+<div class="md">
+<h2 id="ii-3-signed-curvature">II.3 Signed curvature</h2>
+<p>For a planar curve parameterized by a generic parameter,</p>
+<div class="math display">
+\gamma(s)
+=
+\begin{bmatrix}
+X(s)\\Y(s)
+\end{bmatrix},
+</div>
+<p>the signed curvature is</p>
+<div class="math display">
+\boxed{
+K(s)
+=
+\frac{
+X&#x27;(s)Y&#x27;&#x27;(s)-Y&#x27;(s)X&#x27;&#x27;(s)
+}{
+\left(X&#x27;(s)^2+Y&#x27;(s)^2\right)^{3/2}
+}.
+}
+</div>
+<p>If <span class="math inline">s</span> is exact arc length, the Frenet–Serret relations are</p>
+<div class="math display">
+\boxed{
+t&#x27;(s)=K(s)n(s)
+}
+</div>
+<p>and</p>
+<div class="math display">
+\boxed{
+n&#x27;(s)=-K(s)t(s).
+}
+</div>
+<p>The sign of <span class="math inline">K</span> indicates the turning direction under the chosen orientation.</p>
+</div>
+
+<div class="md">
+<p><a id="part-3"></a></p>
+<h2 id="part-iii-build-a-synthetic-periodic-track">Part III — Build a synthetic periodic track</h2>
+<h2 id="iii-1-why-use-a-synthetic-track-here">III.1 Why use a synthetic track here?</h2>
+<p>Real track maps are usually given as measured centerline points and represented by a periodic cubic
+spline, from which tangent and curvature are computed.</p>
+<p>This notebook uses a smooth closed curve with a closed-form expression instead,</p>
+<div class="math display">
+X_c(\theta)=45\cos\theta+5\cos 2\theta,
+\qquad
+Y_c(\theta)=30\sin\theta+6\sin 3\theta,
+\qquad
+\theta\in[0,2\pi),
+</div>
+<p>driven counter-clockwise from <span class="math inline">(50,0)</span>. (The curve parameter is called <span class="math inline">\theta</span> because <span class="math inline">t</span> already
+denotes both time and the unit tangent.) Heading and curvature are evaluated from the exact
+derivatives of the curve, the arc length is integrated numerically on a dense parameter grid, and
+the centerline is then sampled uniformly in arc length. The track has two tight corners, two
+sweeping bends, and two slight reverse kinks on the long sides; its half-width is <span class="math inline">W=3</span> m.</p>
+<p>The purpose is to study:</p>
+<ul>
+<li>arc-length parameterization of a closed curve;</li>
+<li>tangent and normal vectors;</li>
+<li>curvature;</li>
+<li>track boundaries;</li>
+<li>spatial speed planning.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">track = build_demo_track(
+    n=240,
+    half_width=3.0,
+)
+
+print(f&quot;track length: {track.length:.3f} m&quot;)
+print(
+    &quot;curvature range:&quot;,
+    f&quot;[{track.curvature.min():.5f}, &quot;
+    f&quot;{track.curvature.max():.5f}] 1/m&quot;,
+)
+print(
+    &quot;maximum |curvature|:&quot;,
+    np.max(np.abs(track.curvature)),
+)
+</code></pre>
+<pre class="output">track length: 252.333 m
+curvature range: [-0.01255, 0.12943] 1/m
+maximum |curvature|: 0.1294303413979461</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">inner = track.to_global(-track.half_width)
+outer = track.to_global(track.half_width)
+
+plt.figure(figsize=(9, 6))
+plt.plot(track.xy[:, 0], track.xy[:, 1], label=&quot;centerline&quot;)
+plt.plot(inner[:, 0], inner[:, 1], label=&quot;track boundary&quot;)
+plt.plot(outer[:, 0], outer[:, 1], label=&quot;track boundary&quot;)
+plt.axis(&quot;equal&quot;)
+plt.xlabel(&quot;X [m]&quot;)
+plt.ylabel(&quot;Y [m]&quot;)
+plt.title(&quot;Synthetic closed track represented in Frenet coordinates&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-1.png" alt="Figure: Synthetic closed track represented in Frenet coordinates" width="776" height="547" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-the-track-figure">How to read the track figure</h3>
+<p>The center curve is</p>
+<div class="math display">
+\gamma(s).
+</div>
+<p>The two outer curves are obtained from</p>
+<div class="math display">
+\gamma(s)\pm W(s)n(s).
+</div>
+<p>A vehicle position represented by <span class="math inline">(s,e_y)</span> lies on the normal line through <span class="math inline">\gamma(s)</span>.</p>
+<p>The road constraint is therefore simply</p>
+<div class="math display">
+|e_y|\le W.
+</div>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+plt.plot(track.s, track.curvature)
+plt.axhline(0.0, linewidth=1)
+plt.xlabel(&quot;arc length s [m]&quot;)
+plt.ylabel(r&quot;curvature $K(s)$ [1/m]&quot;)
+plt.title(&quot;Centerline curvature along the lap&quot;)
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-2.png" alt="Figure: Centerline curvature along the lap" width="702" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="iii-2-radius-of-curvature">III.2 Radius of curvature</h2>
+<p>Where <span class="math inline">K(s)\neq0</span>, the local signed radius is</p>
+<div class="math display">
+R(s)=\frac{1}{K(s)}.
+</div>
+<p>For speed limits, the magnitude matters:</p>
+<div class="math display">
+|R(s)|=\frac{1}{|K(s)|}.
+</div>
+<p>Large <span class="math inline">|K|</span> means a tight corner.
+Small <span class="math inline">|K|</span> means a nearly straight segment.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">idx_tight = int(np.argmax(np.abs(track.curvature)))
+
+print(&quot;tightest sampled point:&quot;)
+print(f&quot;  s = {track.s[idx_tight]:.3f} m&quot;)
+print(f&quot;  K = {track.curvature[idx_tight]:.6f} 1/m&quot;)
+print(
+    &quot;  radius magnitude =&quot;,
+    1.0 / abs(track.curvature[idx_tight]),
+    &quot;m&quot;,
+)
+</code></pre>
+<pre class="output">tightest sampled point:
+  s = 99.882 m
+  K = 0.129430 1/m
+  radius magnitude = 7.726163658375924 m</pre>
+</div>
+
+<div class="md">
+<p><a id="part-4"></a></p>
+<h2 id="part-iv-frenet-position-map">Part IV — Frenet position map</h2>
+<h2 id="iv-1-position-represented-by-s-e-y">IV.1 Position represented by <span class="math inline">(s,e_y)</span></h2>
+<p>With the left normal of Part II, a point at arc length <span class="math inline">s</span> and lateral offset <span class="math inline">e_y</span> is</p>
+<div class="math display">
+\boxed{
+p
+=
+\gamma(s)
++
+e_y n(s).
+}
+</div>
+<p>The track centerline corresponds to</p>
+<div class="math display">
+e_y=0.
+</div>
+<p>The two road edges correspond to</p>
+<div class="math display">
+e_y=-W(s),
+\qquad
+e_y=+W(s).
+</div>
+</div>
+
+<div class="md">
+<h2 id="iv-2-differentiate-the-frenet-position-map">IV.2 Differentiate the Frenet position map</h2>
+<p>Start from</p>
+<div class="math display">
+p(t)
+=
+\gamma(s(t))
++
+e_y(t)n(s(t)).
+</div>
+<p>Differentiate with respect to time:</p>
+<div class="math display">
+\dot p
+=
+\gamma&#x27;(s)\dot s
++
+\dot e_y n
++
+e_y n&#x27;(s)\dot s.
+</div>
+<p>Using</p>
+<div class="math display">
+\gamma&#x27;(s)=t,
+\qquad
+n&#x27;(s)=-K(s)t,
+</div>
+<p>gives</p>
+<div class="math display">
+\dot p
+=
+t\dot s
++
+n\dot e_y
+-
+K e_y t\dot s.
+</div>
+<p>Hence</p>
+<div class="math display">
+\boxed{
+\dot p
+=
+(1-Ke_y)\dot s\,t
++
+\dot e_y\,n.
+}
+</div>
+<p>This equation explains the important geometric factor</p>
+<div class="math display">
+\boxed{
+1-Ke_y.
+}
+</div>
+</div>
+
+<div class="md">
+<h2 id="iv-3-frenet-coordinate-singularity">IV.3 Frenet-coordinate singularity</h2>
+<p>The map becomes locally singular when</p>
+<div class="math display">
+1-K(s)e_y=0.
+</div>
+<p>Geometrically, this occurs when the lateral offset reaches the local center of curvature.</p>
+<p>A practical Frenet corridor should stay away from that condition.</p>
+<p>A simple conservative check is</p>
+<div class="math display">
+\boxed{
+1-|K(s)|W(s)&gt;0
+}
+</div>
+<p>for every point on the track.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">frenet_margin = 1.0 - np.abs(track.curvature) * track.half_width
+
+print(
+    &quot;minimum conservative Frenet-coordinate margin:&quot;,
+    np.min(frenet_margin),
+)
+
+plt.figure()
+plt.plot(track.s, frenet_margin)
+plt.axhline(0.0, linewidth=1)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(r&quot;$1-|K(s)|W(s)$&quot;)
+plt.title(&quot;Distance from the Frenet-coordinate singularity&quot;)
+plt.show()
+</code></pre>
+<pre class="output">minimum conservative Frenet-coordinate margin: 0.6117089758061617</pre>
+<figure class="output-figure"><img src="img/06-3.png" alt="Figure: Distance from the Frenet-coordinate singularity" width="695" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>For this synthetic track, the minimum margin is positive: the complete road corridor stays safely
+on the regular side of the Frenet map.</p>
+<p>That is a geometry check—not a dynamic safety guarantee.</p>
+</div>
+
+<div class="md">
+<p><a id="part-5"></a></p>
+<h2 id="part-v-vehicle-velocity-in-the-frenet-frame">Part V — Vehicle velocity in the Frenet frame</h2>
+<h2 id="v-1-heading-error">V.1 Heading error</h2>
+<p>Let</p>
+<ul>
+<li><span class="math inline">\psi</span> be the vehicle yaw angle;</li>
+<li><span class="math inline">\psi_c(s)</span> be the centerline tangent angle.</li>
+</ul>
+<p>Define</p>
+<div class="math display">
+\boxed{
+e_\psi
+=
+\psi-\psi_c(s).
+}
+</div>
+<p>Thus <span class="math inline">e_\psi=0</span> means the vehicle is aligned with the local track tangent.</p>
+</div>
+
+<div class="md">
+<h2 id="v-2-body-frame-velocity-components">V.2 Body-frame velocity components</h2>
+<p>Let</p>
+<div class="math display">
+v_x
+</div>
+<p>be the longitudinal vehicle velocity and</p>
+<div class="math display">
+v_y
+</div>
+<p>the lateral vehicle velocity in the vehicle body frame.</p>
+<p>Relative to the track tangent/normal frame, the velocity components are</p>
+<div class="math display">
+\boxed{
+v_t
+=
+v_x\cos e_\psi
+-
+v_y\sin e_\psi
+}
+</div>
+<p>and</p>
+<div class="math display">
+\boxed{
+v_n
+=
+v_x\sin e_\psi
++
+v_y\cos e_\psi.
+}
+</div>
+<p>The first is progress along the tangent direction.
+The second is motion across the road.</p>
+</div>
+
+<div class="md">
+<h2 id="v-3-derive-longitudinal-progress-dot-s">V.3 Derive longitudinal progress <span class="math inline">\dot s</span></h2>
+<p>From the differentiated Frenet position map,</p>
+<div class="math display">
+\dot p
+=
+(1-Ke_y)\dot s\,t+\dot e_y\,n.
+</div>
+<p>Equate the tangent component with <span class="math inline">v_t</span>:</p>
+<div class="math display">
+(1-Ke_y)\dot s
+=
+v_x\cos e_\psi-v_y\sin e_\psi.
+</div>
+<p>Therefore</p>
+<div class="math display">
+\boxed{
+\dot s
+=
+\frac{
+v_x\cos e_\psi-v_y\sin e_\psi
+}{
+1-K(s)e_y
+}.
+}
+</div>
+<p>This progress relation is the central equation of Frenet-frame racing models: it converts the
+body-frame velocity into progress along the track.</p>
+</div>
+
+<div class="md">
+<h2 id="v-4-derive-lateral-motion">V.4 Derive lateral motion</h2>
+<p>Equating the normal component gives</p>
+<div class="math display">
+\boxed{
+\dot e_y
+=
+v_x\sin e_\psi
++
+v_y\cos e_\psi.
+}
+</div>
+<p>If</p>
+<div class="math display">
+e_\psi=0
+\quad\text{and}\quad
+v_y=0,
+</div>
+<p>then</p>
+<div class="math display">
+\dot e_y=0,
+</div>
+<p>as expected for perfect centerline alignment.</p>
+</div>
+
+<div class="md">
+<h2 id="v-5-derive-heading-error-dynamics">V.5 Derive heading-error dynamics</h2>
+<p>The centerline tangent rotates with curvature:</p>
+<div class="math display">
+\frac{d\psi_c}{ds}=K(s).
+</div>
+<p>Hence</p>
+<div class="math display">
+\dot\psi_c
+=
+K(s)\dot s.
+</div>
+<p>If the vehicle yaw rate is <span class="math inline">r=\dot\psi</span>, then</p>
+<div class="math display">
+\boxed{
+\dot e_\psi
+=
+r-K(s)\dot s.
+}
+</div>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">rates = frenet_rates(
+    vx=12.0,
+    vy=0.4,
+    yaw_rate=0.15,
+    epsi=0.05,
+    kappa=0.02,
+    ey=0.5,
+)
+
+for key, value in rates.items():
+    print(f&quot;{key:22s}: {value:.8f}&quot;)
+</code></pre>
+<pre class="output">sdot                  : 12.08587016
+eydot                 : 0.99925014
+epsidot               : -0.09171740
+dt_ds                 : 0.08274125
+dey_ds                : 0.08267920
+depsi_ds              : -0.00758881
+denominator           : 0.99000000
+tangential_velocity   : 11.96501146</pre>
+</div>
+
+<div class="md">
+<p><a id="part-6"></a></p>
+<h2 id="part-vi-from-time-dynamics-to-spatial-dynamics">Part VI — From time dynamics to spatial dynamics</h2>
+<h2 id="vi-1-chain-rule-transformation">VI.1 Chain-rule transformation</h2>
+<p>Suppose a time-domain state component obeys</p>
+<div class="math display">
+\dot\xi=f_\xi(x,u).
+</div>
+<p>If</p>
+<div class="math display">
+\dot s&gt;0,
+</div>
+<p>then <span class="math inline">s</span> can be used as the independent variable:</p>
+<div class="math display">
+\boxed{
+\frac{d\xi}{ds}
+=
+\frac{\dot\xi}{\dot s}.
+}
+</div>
+<p>This is the fundamental transformation behind spatial (arc-length-based) raceline formulations.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-2-why-dot-s-0-matters">VI.2 Why <span class="math inline">\dot s&gt;0</span> matters</h2>
+<p>If</p>
+<div class="math display">
+\dot s=0,
+</div>
+<p>then</p>
+<div class="math display">
+\frac{d\xi}{ds}
+=
+\frac{\dot\xi}{\dot s}
+</div>
+<p>is undefined.</p>
+<p>If <span class="math inline">\dot s&lt;0</span>, the vehicle is moving backward relative to the chosen track orientation, which
+breaks the ordinary forward-progress racing interpretation.</p>
+<p>Spatial formulations therefore require longitudinal progress to remain positive along the whole
+lap.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-3-spatial-frenet-kinematics">VI.3 Spatial Frenet kinematics</h2>
+<p>Divide the time-domain expressions by <span class="math inline">\dot s</span>.</p>
+<p>For lateral deviation,</p>
+<div class="math display">
+\boxed{
+\frac{de_y}{ds}
+=
+\frac{
+(1-Ke_y)
+\left(
+v_x\sin e_\psi+v_y\cos e_\psi
+\right)
+}{
+v_x\cos e_\psi-v_y\sin e_\psi
+}.
+}
+</div>
+<p>For heading error,</p>
+<div class="math display">
+\boxed{
+\frac{de_\psi}{ds}
+=
+\frac{r}{\dot s}
+-
+K(s).
+}
+</div>
+<p>For elapsed time,</p>
+<div class="math display">
+\boxed{
+\frac{dt}{ds}
+=
+\frac{1}{\dot s}
+=
+\frac{
+1-K(s)e_y
+}{
+v_x\cos e_\psi-v_y\sin e_\psi
+}.
+}
+</div>
+</div>
+
+<div class="md">
+<p><a id="part-7"></a></p>
+<h2 id="part-vii-time-as-a-state-and-the-minimum-time-objective">Part VII — Time as a state and the minimum-time objective</h2>
+<h2 id="vii-1-why-introduce-time-as-a-state">VII.1 Why introduce time as a state?</h2>
+<p>In the spatial formulation, <span class="math inline">s</span> is no longer a state that evolves in time.
+It is the independent variable.</p>
+<p>To recover lap time, introduce</p>
+<div class="math display">
+t=t(s)
+</div>
+<p>with</p>
+<div class="math display">
+t&#x27;(s)=\frac{dt}{ds}.
+</div>
+<p>Then total lap time is simply</p>
+<div class="math display">
+\boxed{
+T_{\mathrm{lap}}
+=
+t(s_f)-t(0).
+}
+</div>
+<p>If <span class="math inline">t(0)=0</span>,</p>
+<div class="math display">
+\boxed{
+T_{\mathrm{lap}}=t(s_f).
+}
+</div>
+</div>
+
+<div class="md">
+<h2 id="vii-2-the-six-state-spatial-vector">VII.2 The six-state spatial vector</h2>
+<p>The full spatial raceline problem uses</p>
+<div class="math display">
+\boxed{
+x(s)
+=
+\begin{bmatrix}
+v_x&amp;
+v_y&amp;
+r&amp;
+e_\psi&amp;
+t&amp;
+e_y
+\end{bmatrix}^{\!\top}.
+}
+</div>
+<p>The semantic inputs are</p>
+<div class="math display">
+\boxed{
+a_x,\qquad \delta
+}
+</div>
+<p>for longitudinal acceleration and steering angle.</p>
+<p>A detail worth keeping explicit: the order of the two inputs is only a convention.</p>
+<ul>
+<li>raceline formulations often write the input vector as <span class="math inline">[a_x,\delta]^\top</span>;</li>
+<li>the racing code in this repository (<code>racing.py</code>, used again in notebook 07) stores
+<span class="math inline">u=[\delta,a]^\top</span>: steering first and acceleration second.</li>
+</ul>
+<p>This notebook therefore uses the <strong>names</strong> <span class="math inline">a_x</span> and <span class="math inline">\delta</span> instead of relying on an ambiguous
+integer ordering.</p>
+</div>
+
+<div class="md">
+<p><a id="part-8"></a></p>
+<h2 id="part-viii-the-dynamic-bicycle-model">Part VIII — The dynamic bicycle model</h2>
+<h2 id="viii-1-tire-slip-angles-and-lateral-forces">VIII.1 Tire slip angles and lateral forces</h2>
+<p>Notebook 07 simulates a dynamic bicycle model of a 1:10-scale RC car with the parameters of the BARC
+platform: mass <span class="math inline">m=1.98\ \mathrm{kg}</span>, distances <span class="math inline">l_f=l_r=0.125\ \mathrm{m}</span> from the center of
+gravity to the front and rear axles, and yaw inertia <span class="math inline">I_z=0.024\ \mathrm{kg\,m^2}</span>. The model is
+implemented in <code>racing.py</code>.</p>
+<p>Its front and rear slip-angle expressions are</p>
+<div class="math display">
+\boxed{
+\alpha_f
+=
+\delta
+-
+\operatorname{atan2}
+\left(
+v_y+l_fr,
+v_x
+\right)
+}
+</div>
+<p>and</p>
+<div class="math display">
+\boxed{
+\alpha_r
+=
+-
+\operatorname{atan2}
+\left(
+v_y-l_rr,
+v_x
+\right).
+}
+</div>
+<p>Each axle's lateral force then follows a smooth saturating law of the form</p>
+<div class="math display">
+F_y
+=
+D\sin
+\left(
+C\arctan(B\alpha)
+\right).
+</div>
+<p>This is the simplified Pacejka “magic formula,” with stiffness factor <span class="math inline">B</span>, shape factor <span class="math inline">C</span> and
+peak force <span class="math inline">D</span>. The BARC parameters are <span class="math inline">B=1</span>, <span class="math inline">C=1.25</span> and <span class="math inline">D=0.8\,mg/2</span>: each axle carries half
+of the weight (because <span class="math inline">l_f=l_r</span>) and can deliver a peak lateral force of <span class="math inline">0.8</span> times its normal
+load.</p>
+</div>
+
+<div class="md">
+<h2 id="viii-2-vehicle-time-dynamics">VIII.2 Vehicle time dynamics</h2>
+<p>With these forces, the body-frame velocities and the yaw rate evolve as</p>
+<div class="math display">
+\boxed{
+\dot v_x
+=
+a_x
+-
+\frac{F_{y,f}}{m}\sin\delta
++
+rv_y
+}
+</div>
+<div class="math display">
+\boxed{
+\dot v_y
+=
+\frac{
+F_{y,f}\cos\delta+F_{y,r}
+}{m}
+-
+rv_x
+}
+</div>
+<p>and</p>
+<div class="math display">
+\boxed{
+\dot r
+=
+\frac{
+l_fF_{y,f}\cos\delta-l_rF_{y,r}
+}{
+I_z
+}.
+}
+</div>
+<p>The spatial derivatives are then obtained from</p>
+<div class="math display">
+v_x&#x27;=\frac{\dot v_x}{\dot s},
+\qquad
+v_y&#x27;=\frac{\dot v_y}{\dot s},
+\qquad
+r&#x27;=\frac{\dot r}{\dot s}.
+</div>
+<p><code>bicycle_spatial_rhs</code> evaluates these spatial derivatives, together with <span class="math inline">de_\psi/ds</span>,
+<span class="math inline">dt/ds=1/\dot s</span> and <span class="math inline">de_y/ds</span>, for the state <span class="math inline">[v_x,v_y,r,e_\psi,t,e_y]</span>. The two cells below
+evaluate the tire forces and this right-hand side at an example state.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">example_force = bicycle_lateral_forces(
+    vx=10.0,
+    vy=0.25,
+    yaw_rate=0.2,
+    delta=0.08,
+)
+
+for key, value in example_force.items():
+    print(f&quot;{key:10s}: {value:.8f}&quot;)
+</code></pre>
+<pre class="output">alpha_f   : 0.05250693
+alpha_r   : -0.02249620
+Fyf       : 0.50910915
+Fyr       : -0.21841526</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">state_example = np.array([
+    10.0,   # vx
+    0.25,   # vy
+    0.20,   # yaw rate r
+    0.04,   # heading error epsi
+    0.00,   # elapsed time
+    0.30,   # lateral deviation ey
+])
+
+rhs_spatial = bicycle_spatial_rhs(
+    state_example,
+    ax=1.0,
+    delta=0.08,
+    kappa=0.03,
+)
+
+labels = [
+    &quot;dvx/ds&quot;,
+    &quot;dvy/ds&quot;,
+    &quot;dr/ds&quot;,
+    &quot;depsi/ds&quot;,
+    &quot;dt/ds&quot;,
+    &quot;dey/ds&quot;,
+]
+
+for label, value in zip(labels, rhs_spatial):
+    print(f&quot;{label:10s}: {value:.8f}&quot;)
+</code></pre>
+<pre class="output">dvx/ds    : 0.10220261
+dvy/ds    : -0.18406337
+dr/ds     : 0.37534374
+depsi/ds  : -0.01014427
+dt/ds     : 0.09927866
+dey/ds    : 0.06450069</pre>
+</div>
+
+<div class="md">
+<h2 id="viii-3-the-full-raceline-cftoc">VIII.3 The full raceline CFTOC</h2>
+<p>The full minimum-time raceline problem can be summarized as</p>
+<div class="math display">
+\boxed{
+\min t(s_f)
+}
+</div>
+<p>subject to:</p>
+<ul>
+<li>the spatial vehicle dynamics;</li>
+<li>tire-force constraints;</li>
+<li>track boundaries</li>
+</ul>
+<div class="math display">
+-W(s)\le e_y(s)\le W(s);
+</div>
+<ul>
+<li>initial conditions;</li>
+<li>terminal/periodic conditions.</li>
+</ul>
+<p>This is a nonlinear optimal-control problem.</p>
+<p>It is usually solved by direct transcription: the spatial DAE is discretized on a grid in <span class="math inline">s</span>
+(for example with Pyomo) and the resulting NLP is solved with a nonlinear solver such as IPOPT.
+Perantoni and Limebeer (2014) solve a problem of this type for a Formula One car.</p>
+</div>
+
+<div class="md">
+<p><a id="part-9"></a></p>
+<h2 id="part-ix-why-this-notebook-solves-a-reduced-problem">Part IX — Why this notebook solves a reduced problem</h2>
+<h2 id="ix-1-centerline-speed-planning-assumptions">IX.1 Centerline speed-planning assumptions</h2>
+<p>To get an executable problem that isolates the minimum-time spatial reasoning, assume:</p>
+<div class="math display">
+e_y=0,
+\qquad
+e_\psi=0,
+\qquad
+v_y=0,
+</div>
+<p>and denote</p>
+<div class="math display">
+v_x=v.
+</div>
+<p>Then</p>
+<div class="math display">
+\dot s=v.
+</div>
+<p>We optimize only the speed around the fixed centerline.</p>
+<p>What disappears from the decision problem:</p>
+<ul>
+<li>lateral offset;</li>
+<li>steering;</li>
+<li>yaw dynamics;</li>
+<li>tire slip;</li>
+<li>combined tire-force allocation.</li>
+</ul>
+<p>What remains:</p>
+<ul>
+<li>track curvature;</li>
+<li>lateral speed limit;</li>
+<li>acceleration/braking;</li>
+<li>total time.</li>
+</ul>
+</div>
+
+<div class="md">
+<p><a id="part-10"></a></p>
+<h2 id="part-x-spatial-longitudinal-dynamics">Part X — Spatial longitudinal dynamics</h2>
+<h2 id="x-1-begin-in-time">X.1 Begin in time</h2>
+<p>The reduced longitudinal dynamics are</p>
+<div class="math display">
+\dot v=a,
+</div>
+<p>and</p>
+<div class="math display">
+\dot s=v.
+</div>
+<p>Therefore</p>
+<div class="math display">
+\frac{dv}{ds}
+=
+\frac{\dot v}{\dot s}
+=
+\frac{a}{v}.
+</div>
+<p>The division by <span class="math inline">v</span> is inconvenient.</p>
+</div>
+
+<div class="md">
+<h2 id="x-2-introduce-squared-speed">X.2 Introduce squared speed</h2>
+<p>Define</p>
+<div class="math display">
+\boxed{
+z=v^2.
+}
+</div>
+<p>Differentiate with respect to <span class="math inline">s</span>:</p>
+<div class="math display">
+\frac{dz}{ds}
+=
+2v\frac{dv}{ds}.
+</div>
+<p>Substitute</p>
+<div class="math display">
+\frac{dv}{ds}=\frac{a}{v}
+</div>
+<p>to obtain</p>
+<div class="math display">
+\boxed{
+\frac{dz}{ds}=2a.
+}
+</div>
+<p>This is one of the key transformations in spatial speed planning:</p>
+<blockquote>
+<p>nonlinear speed dynamics in <span class="math inline">v</span> become affine dynamics in squared speed <span class="math inline">z=v^2</span>.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<h2 id="x-3-spatial-discretization">X.3 Spatial discretization</h2>
+<p>For segment length <span class="math inline">\Delta s_i</span> and piecewise-constant acceleration <span class="math inline">a_i</span>,</p>
+<div class="math display">
+\boxed{
+z_{i+1}
+=
+z_i
++
+2\Delta s_i a_i.
+}
+</div>
+<p>Hence</p>
+<div class="math display">
+\boxed{
+a_i
+=
+\frac{
+z_{i+1}-z_i
+}{
+2\Delta s_i
+}.
+}
+</div>
+<p>Acceleration constraints become linear difference inequalities in <span class="math inline">z</span>.</p>
+</div>
+
+<div class="md">
+<p><a id="part-11"></a></p>
+<h2 id="part-xi-curvature-limited-speed">Part XI — Curvature-limited speed</h2>
+<h2 id="xi-1-lateral-acceleration">XI.1 Lateral acceleration</h2>
+<p>For motion along a path of curvature <span class="math inline">K</span>,</p>
+<div class="math display">
+a_{\mathrm{lat}}
+=
+v^2K.
+</div>
+<p>In magnitude,</p>
+<div class="math display">
+|a_{\mathrm{lat}}|
+=
+v^2|K|.
+</div>
+<p>Impose the reduced friction condition</p>
+<div class="math display">
+|a_{\mathrm{lat}}|
+\le
+\mu g.
+</div>
+<p>Then</p>
+<div class="math display">
+\boxed{
+v^2|K|
+\le
+\mu g.
+}
+</div>
+</div>
+
+<div class="md">
+<h2 id="xi-2-speed-squared-cap">XI.2 Speed-squared cap</h2>
+<p>Because</p>
+<div class="math display">
+z=v^2,
+</div>
+<p>the lateral limit becomes</p>
+<div class="math display">
+\boxed{
+z(s)
+\le
+\frac{\mu g}{|K(s)|}
+}
+</div>
+<p>when <span class="math inline">K\neq0</span>.</p>
+<p>With an independent top-speed limit,</p>
+<div class="math display">
+v\le v_{\max},
+</div>
+<p>we obtain</p>
+<div class="math display">
+\boxed{
+z_{\max}(s)
+=
+\min
+\left(
+v_{\max}^2,
+\frac{\mu g}{|K(s)|}
+\right).
+}
+</div>
+<p>On a straight segment with <span class="math inline">K=0</span>, only the top-speed limit remains.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">mu = 1.0
+g = 9.81
+vmax = 35.0
+
+z_cap = lateral_speed_squared_cap(
+    track.curvature,
+    mu=mu,
+    g=g,
+    vmax=vmax,
+)
+
+v_cap = np.sqrt(z_cap)
+
+plt.figure()
+plt.plot(track.s, v_cap)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(&quot;local speed cap [m/s]&quot;)
+plt.title(&quot;Local curvature/top-speed limit before longitudinal dynamics&quot;)
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-4.png" alt="Figure: Local curvature/top-speed limit before longitudinal dynamics" width="686" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The local cap answers only:</p>
+<blockquote>
+<p>How fast could the vehicle travel <strong>at this location</strong> if longitudinal acceleration history were
+ignored?</p>
+</blockquote>
+<p>It does not yet answer whether the vehicle can accelerate or brake quickly enough to move between
+those local limits.</p>
+</div>
+
+<div class="md">
+<p><a id="part-12"></a></p>
+<h2 id="part-xii-minimum-time-objective-in-the-spatial-grid">Part XII — Minimum-time objective in the spatial grid</h2>
+<h2 id="xii-1-time-across-one-segment">XII.1 Time across one segment</h2>
+<p>Because</p>
+<div class="math display">
+dt=\frac{ds}{v},
+</div>
+<p>segment time is</p>
+<div class="math display">
+\Delta t_i
+=
+\int_{s_i}^{s_{i+1}}
+\frac{ds}{v(s)}.
+</div>
+<p>If acceleration is constant over the segment, then <span class="math inline">z=v^2</span> is linear in <span class="math inline">s</span> and the integral can be
+evaluated exactly.</p>
+</div>
+
+<div class="md">
+<h2 id="xii-2-exact-segment-time-formula">XII.2 Exact segment-time formula</h2>
+<p>Using</p>
+<div class="math display">
+z_{i+1}-z_i=2a_i\Delta s_i
+</div>
+<p>and</p>
+<div class="math display">
+v_i=\sqrt{z_i},
+\qquad
+v_{i+1}=\sqrt{z_{i+1}},
+</div>
+<p>constant acceleration gives</p>
+<div class="math display">
+v_{i+1}-v_i
+=
+a_i\Delta t_i.
+</div>
+<p>Also,</p>
+<div class="math display">
+v_{i+1}^2-v_i^2
+=
+(v_{i+1}-v_i)(v_{i+1}+v_i)
+=
+2a_i\Delta s_i.
+</div>
+<p>Therefore</p>
+<div class="math display">
+\boxed{
+\Delta t_i
+=
+\frac{
+2\Delta s_i
+}{
+v_i+v_{i+1}
+}.
+}
+</div>
+<p>This formula is exact for the piecewise-constant-acceleration segment model.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">v0_demo = 10.0
+v1_demo = 14.0
+ds_demo = 30.0
+
+z0_demo = v0_demo**2
+z1_demo = v1_demo**2
+
+a_demo = (z1_demo - z0_demo) / (2.0 * ds_demo)
+
+dt_velocity = (v1_demo - v0_demo) / a_demo
+dt_spatial = segment_time_from_speed_squared(
+    z0_demo,
+    z1_demo,
+    ds_demo,
+)
+
+print(&quot;constant acceleration:&quot;, a_demo)
+print(&quot;time from v1=v0+a dt:&quot;, dt_velocity)
+print(&quot;time from spatial formula:&quot;, dt_spatial)
+</code></pre>
+<pre class="output">constant acceleration: 1.6
+time from v1=v0+a dt: 2.5
+time from spatial formula: 2.5</pre>
+</div>
+
+<div class="md">
+<h2 id="xii-3-total-lap-time">XII.3 Total lap time</h2>
+<p>For a periodic spatial grid,</p>
+<div class="math display">
+\boxed{
+T
+=
+\sum_i
+\frac{
+2\Delta s_i
+}{
+\sqrt{z_i}
++
+\sqrt{z_{i+1}}
+}.
+}
+</div>
+<p>The index wraps around at the finish line.</p>
+<p>For positive speeds, this objective decreases when a feasible speed-squared value increases.</p>
+<p>That monotonicity is the reason the reduced optimum is the <strong>largest dynamically feasible speed
+profile</strong> under the imposed caps.</p>
+</div>
+
+<div class="md">
+<p><a id="part-13"></a></p>
+<h2 id="part-xiii-acceleration-and-braking-envelopes">Part XIII — Acceleration and braking envelopes</h2>
+<h2 id="xiii-1-forward-acceleration-constraint">XIII.1 Forward acceleration constraint</h2>
+<p>From</p>
+<div class="math display">
+a_i
+=
+\frac{
+z_{i+1}-z_i
+}{
+2\Delta s_i
+}
+</div>
+<p>and</p>
+<div class="math display">
+a_i\le a_{\max},
+</div>
+<p>we obtain</p>
+<div class="math display">
+\boxed{
+z_{i+1}
+\le
+z_i
++
+2\Delta s_i a_{\max}.
+}
+</div>
+<p>A forward pass propagates this upper bound around the track.</p>
+</div>
+
+<div class="md">
+<h2 id="xiii-2-backward-braking-constraint">XIII.2 Backward braking constraint</h2>
+<p>Let</p>
+<div class="math display">
+a_{\min}&lt;0.
+</div>
+<p>From</p>
+<div class="math display">
+a_i\ge a_{\min},
+</div>
+<p>we get</p>
+<div class="math display">
+z_{i+1}-z_i
+\ge
+2\Delta s_i a_{\min}.
+</div>
+<p>Rearrange:</p>
+<div class="math display">
+\boxed{
+z_i
+\le
+z_{i+1}
+-
+2\Delta s_i a_{\min}.
+}
+</div>
+<p>Because <span class="math inline">a_{\min}</span> is negative, the right-hand side tells us the <strong>largest speed we may have before
+the next point if we still want enough braking authority to reach it</strong>.</p>
+<p>This constraint naturally propagates backward from a corner.</p>
+</div>
+
+<div class="md">
+<h2 id="xiii-3-why-braking-information-moves-backward">XIII.3 Why braking information moves backward</h2>
+<p>Suppose a tight corner requires a small <span class="math inline">z_{i+1}</span>.</p>
+<p>The inequality</p>
+<div class="math display">
+z_i
+\le
+z_{i+1}
+-
+2\Delta s_i a_{\min}
+</div>
+<p>limits the speed one segment earlier.</p>
+<p>That newly reduced <span class="math inline">z_i</span> then limits <span class="math inline">z_{i-1}</span>.</p>
+<p>Repeating the operation moves the corner's braking requirement upstream.</p>
+<p>This is the mathematical statement behind the driving intuition:</p>
+<div class="math display">
+\boxed{
+\text{brake before the corner, not after entering it.}
+}
+</div>
+</div>
+
+<div class="md">
+<p><a id="part-14"></a></p>
+<h2 id="part-xiv-why-the-local-curvature-cap-alone-is-infeasible">Part XIV — Why the local curvature cap alone is infeasible</h2>
+<h2 id="xiv-1-naive-profile">XIV.1 Naive profile</h2>
+<p>A tempting but wrong planner is</p>
+<div class="math display">
+z_i=z_{\max,i}.
+</div>
+<p>It respects the lateral speed limit at every point.</p>
+<p>But it may jump too quickly between neighboring curvature caps, requiring impossible longitudinal
+acceleration or braking.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">z_naive = z_cap.copy()
+
+a_naive = (
+    np.roll(z_naive, -1) - z_naive
+) / (
+    2.0 * track.ds
+)
+
+violations_naive = np.sum(
+    (a_naive &gt; 3.0 + 1e-8)
+    |
+    (a_naive &lt; -6.0 - 1e-8)
+)
+
+print(&quot;maximum naive acceleration:&quot;, np.max(a_naive))
+print(&quot;minimum naive acceleration:&quot;, np.min(a_naive))
+print(
+    &quot;segments violating longitudinal bounds:&quot;,
+    violations_naive,
+    &quot;out of&quot;,
+    len(a_naive),
+)
+</code></pre>
+<pre class="output">maximum naive acceleration: 204.7706638105116
+minimum naive acceleration: -204.7706638105116
+segments violating longitudinal bounds: 142 out of 240</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+plt.plot(track.s, a_naive, label=&quot;acceleration implied by local speed cap&quot;)
+plt.axhline(3.0, linestyle=&quot;--&quot;, label=r&quot;$a_{\max}$&quot;)
+plt.axhline(-6.0, linestyle=&quot;--&quot;, label=r&quot;$a_{\min}$&quot;)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(r&quot;implied $a_x$ [m/s$^2$]&quot;)
+plt.title(&quot;Local curvature limits alone are dynamically inconsistent&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-5.png" alt="Figure: Local curvature limits alone are dynamically inconsistent" width="714" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>This figure is intentionally extreme.</p>
+<p>The curvature cap can change sharply from one spatial sample to the next.
+Following it exactly would require unrealistically large acceleration changes.</p>
+<p>The longitudinal dynamics must smooth that profile through forward and backward reachability.</p>
+</div>
+
+<div class="md">
+<p><a id="part-15"></a></p>
+<h2 id="part-xv-closed-lap-forward-backward-planner">Part XV — Closed-lap forward/backward planner</h2>
+<h2 id="xv-1-algorithm">XV.1 Algorithm</h2>
+<p>Initialize with the local cap</p>
+<div class="math display">
+z_i^{(0)}=z_{\max,i}.
+</div>
+<p>Then repeatedly apply:</p>
+<h3 id="forward-pass">Forward pass</h3>
+<div class="math display">
+z_{i+1}
+\leftarrow
+\min
+\left(
+z_{i+1},
+z_i+2\Delta s_i a_{\max}
+\right).
+</div>
+<h3 id="backward-pass">Backward pass</h3>
+<div class="math display">
+z_i
+\leftarrow
+\min
+\left(
+z_i,
+z_{i+1}-2\Delta s_i a_{\min}
+\right).
+</div>
+<p>Because the track is closed, indices are circular. Each iteration is one full forward sweep
+followed by one full backward sweep around the loop, and the iterations stop when a sweep changes
+nothing (to a tolerance of <span class="math inline">10^{-9}</span>); <code>periodic_minimum_time_speed_profile</code> reports how many were
+needed.</p>
+<p>The algorithm only decreases values, so it converges to the greatest fixed point satisfying all
+these upper-envelope constraints.</p>
+</div>
+
+<div class="md">
+<h2 id="xv-2-why-the-greatest-feasible-profile-is-minimum-time">XV.2 Why the greatest feasible profile is minimum-time</h2>
+<p>For every segment,</p>
+<div class="math display">
+\Delta t_i
+=
+\frac{
+2\Delta s_i
+}{
+\sqrt{z_i}+\sqrt{z_{i+1}}
+}.
+</div>
+<p>For positive <span class="math inline">z_i</span>,</p>
+<div class="math display">
+\frac{\partial \Delta t_i}{\partial z_i}&lt;0.
+</div>
+<p>Thus, if one feasible profile is componentwise larger than another, it cannot have a larger lap
+time.</p>
+<p>The envelope algorithm computes the largest profile compatible with:</p>
+<ul>
+<li>local speed caps;</li>
+<li>forward acceleration;</li>
+<li>backward braking.</li>
+</ul>
+<p>Therefore it is the time-minimizing profile for this <strong>reduced decoupled model</strong>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">speed_solution = periodic_minimum_time_speed_profile(
+    track,
+    mu=1.0,
+    vmax=35.0,
+    amin=-6.0,
+    amax=3.0,
+)
+
+print(&quot;planner success:&quot;, speed_solution[&quot;success&quot;])
+print(
+    &quot;forward/backward fixed-point iterations:&quot;,
+    speed_solution[&quot;iterations&quot;],
+)
+print(
+    &quot;lap time:&quot;,
+    speed_solution[&quot;time&quot;],
+    &quot;s&quot;,
+)
+print(
+    &quot;speed range:&quot;,
+    speed_solution[&quot;v&quot;].min(),
+    &quot;to&quot;,
+    speed_solution[&quot;v&quot;].max(),
+    &quot;m/s&quot;,
+)
+print(
+    &quot;acceleration range:&quot;,
+    speed_solution[&quot;a&quot;].min(),
+    &quot;to&quot;,
+    speed_solution[&quot;a&quot;].max(),
+    &quot;m/s^2&quot;,
+)
+</code></pre>
+<pre class="output">planner success: True
+forward/backward fixed-point iterations: 3
+lap time: 17.09393800550383 s
+speed range: 8.705955748145508 to 20.91357453979142 m/s
+acceleration range: -6.0 to 3.0000000000000133 m/s^2</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+plt.plot(track.s, np.sqrt(speed_solution[&quot;zmax&quot;]),
+         label=&quot;local curvature/top-speed cap&quot;)
+plt.plot(track.s, speed_solution[&quot;v&quot;],
+         label=&quot;dynamically feasible minimum-time speed&quot;)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(&quot;speed [m/s]&quot;)
+plt.title(&quot;Local speed limit versus dynamically reachable lap-speed profile&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-6.png" alt="Figure: Local speed limit versus dynamically reachable lap-speed profile" width="686" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-the-speed-figure">How to read the speed figure</h3>
+<p>The upper curve represents the speed that local curvature alone would permit.</p>
+<p>The optimized curve may lie below it for two different reasons:</p>
+<ul>
+<li><strong>before a tight corner:</strong> braking must start early;</li>
+<li><strong>after a tight corner:</strong> acceleration is finite, so speed recovers gradually.</li>
+</ul>
+<p>Where the two curves coincide, the local curvature/top-speed constraint is active.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+plt.plot(track.s, speed_solution[&quot;a&quot;], label=&quot;longitudinal acceleration&quot;)
+plt.axhline(3.0, linestyle=&quot;--&quot;, label=r&quot;$a_{\max}$&quot;)
+plt.axhline(-6.0, linestyle=&quot;--&quot;, label=r&quot;$a_{\min}$&quot;)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(r&quot;$a_x$ [m/s$^2$]&quot;)
+plt.title(&quot;Optimal longitudinal acceleration in the reduced spatial model&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-7.png" alt="Figure: Optimal longitudinal acceleration in the reduced spatial model" width="696" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="xv-3-active-constraints">XV.3 Active constraints</h2>
+<p>The optimal profile frequently contains three kinds of segments:</p>
+<ol>
+<li>maximum acceleration;</li>
+<li>maximum braking;</li>
+<li>local curvature/top-speed saturation.</li>
+</ol>
+<p>This is a common structure in time-optimal path-parameterization problems.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">a = speed_solution[&quot;a&quot;]
+z = speed_solution[&quot;z&quot;]
+cap = speed_solution[&quot;zmax&quot;]
+
+active_accel = np.isclose(a, 3.0, atol=1e-6)
+active_brake = np.isclose(a, -6.0, atol=1e-6)
+active_cap = np.isclose(z, cap, atol=1e-6)
+
+print(&quot;segments at max acceleration:&quot;, int(active_accel.sum()))
+print(&quot;segments at max braking:&quot;, int(active_brake.sum()))
+print(&quot;points at local speed cap:&quot;, int(active_cap.sum()))
+</code></pre>
+<pre class="output">segments at max acceleration: 140
+segments at max braking: 55
+points at local speed cap: 45</pre>
+</div>
+
+<div class="md">
+<p><a id="part-16"></a></p>
+<h2 id="part-xvi-braking-preview-around-the-tightest-corner">Part XVI — Braking preview around the tightest corner</h2>
+<h2 id="xvi-1-find-the-tightest-corner">XVI.1 Find the tightest corner</h2>
+<p>Let</p>
+<div class="math display">
+i_c
+=
+\arg\max_i |K_i|.
+</div>
+<p>The local curvature cap becomes smallest near that point.</p>
+<p>We inspect a spatial window around the corner and compare:</p>
+<ul>
+<li>curvature;</li>
+<li>local speed cap;</li>
+<li>feasible speed;</li>
+<li>longitudinal acceleration.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">corner = int(np.argmax(np.abs(track.curvature)))
+
+window = 35
+indices = (
+    np.arange(
+        corner - window,
+        corner + window + 1,
+    )
+    % len(track.s)
+)
+
+distance_to_corner = np.zeros(len(indices))
+
+for j, idx in enumerate(indices):
+    # Signed index-based local coordinate is enough for this explanatory plot
+    distance_to_corner[j] = (j - window) * np.mean(track.ds)
+
+plt.figure()
+plt.plot(
+    distance_to_corner,
+    np.sqrt(speed_solution[&quot;zmax&quot;])[indices],
+    label=&quot;local cap&quot;,
+)
+plt.plot(
+    distance_to_corner,
+    speed_solution[&quot;v&quot;][indices],
+    label=&quot;feasible speed&quot;,
+)
+plt.axvline(0.0, linestyle=&quot;--&quot;, label=&quot;tightest sampled corner&quot;)
+plt.xlabel(&quot;approx. distance relative to corner [m]&quot;)
+plt.ylabel(&quot;speed [m/s]&quot;)
+plt.title(&quot;Braking begins upstream of the tight corner&quot;)
+plt.legend()
+plt.show()
+
+plt.figure()
+plt.plot(
+    distance_to_corner,
+    speed_solution[&quot;a&quot;][indices],
+    label=&quot;longitudinal acceleration&quot;,
+)
+plt.axhline(0.0, linewidth=1)
+plt.axvline(0.0, linestyle=&quot;--&quot;, label=&quot;tightest sampled corner&quot;)
+plt.xlabel(&quot;approx. distance relative to corner [m]&quot;)
+plt.ylabel(r&quot;$a_x$ [m/s$^2$]&quot;)
+plt.title(&quot;Acceleration profile around the tightest corner&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-8.png" alt="Figure: Braking begins upstream of the tight corner; Acceleration profile around the tightest corner" width="691" height="470" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/06-9.png" alt="Figure: Braking begins upstream of the tight corner; Acceleration profile around the tightest corner" width="701" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The optimizer is not “reacting” to curvature only at the current position.</p>
+<p>The backward envelope propagates future corner constraints into present speed decisions.</p>
+<p>That is a deterministic form of preview.</p>
+</div>
+
+<div class="md">
+<p><a id="part-17"></a></p>
+<h2 id="part-xvii-cumulative-lap-time">Part XVII — Cumulative lap time</h2>
+<h2 id="xvii-1-time-as-a-spatial-state-in-the-reduced-model">XVII.1 Time as a spatial state in the reduced model</h2>
+<p>The full spatial formulation of Part VII contains <span class="math inline">t(s)</span> explicitly as a state.</p>
+<p>Our reduced planner can reconstruct the same quantity by accumulating segment times:</p>
+<div class="math display">
+t_{i+1}
+=
+t_i
++
+\Delta t_i.
+</div>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">cumulative_time = np.r_[
+    0.0,
+    np.cumsum(speed_solution[&quot;segment_time&quot;]),
+]
+
+s_closed = np.r_[
+    track.s,
+    track.length,
+]
+
+plt.figure()
+plt.plot(s_closed, cumulative_time)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(&quot;elapsed time t(s) [s]&quot;)
+plt.title(&quot;Elapsed time as a spatial state&quot;)
+plt.show()
+
+print(
+    &quot;terminal elapsed time:&quot;,
+    cumulative_time[-1],
+    &quot;s&quot;,
+)
+</code></pre>
+<figure class="output-figure"><img src="img/06-10.png" alt="Figure: Elapsed time as a spatial state" width="700" height="470" loading="lazy"></figure>
+<pre class="output">terminal elapsed time: 17.09393800550383 s</pre>
+</div>
+
+<div class="md">
+<p><a id="part-18"></a></p>
+<h2 id="part-xviii-friction-sensitivity">Part XVIII — Friction sensitivity</h2>
+<h2 id="xviii-1-friction-coefficient-changes-the-curvature-cap">XVIII.1 Friction coefficient changes the curvature cap</h2>
+<p>The local bound is</p>
+<div class="math display">
+z
+\le
+\frac{\mu g}{|K|}.
+</div>
+<p>Therefore decreasing <span class="math inline">\mu</span> lowers the speed cap in curved regions.</p>
+<p>It also changes how much speed must be removed before corners and how much can be carried through
+them.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">mu_values = [0.6, 0.8, 1.0, 1.2]
+mu_solutions = {}
+
+for mu_value in mu_values:
+    mu_solutions[mu_value] = periodic_minimum_time_speed_profile(
+        track,
+        mu=mu_value,
+        vmax=35.0,
+        amin=-6.0,
+        amax=3.0,
+    )
+
+    print(
+        f&quot;mu={mu_value:.1f}: &quot;
+        f&quot;lap time={mu_solutions[mu_value][&#x27;time&#x27;]:.4f} s&quot;
+    )
+</code></pre>
+<pre class="output">mu=0.6: lap time=20.1416 s
+mu=0.8: lap time=18.3589 s
+mu=1.0: lap time=17.0939 s
+mu=1.2: lap time=16.1251 s</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+
+for mu_value in mu_values:
+    plt.plot(
+        track.s,
+        mu_solutions[mu_value][&quot;v&quot;],
+        label=rf&quot;$\mu={mu_value}$&quot;,
+    )
+
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(&quot;speed [m/s]&quot;)
+plt.title(&quot;Friction coefficient changes the feasible racing-speed profile&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-11.png" alt="Figure: Friction coefficient changes the feasible racing-speed profile" width="687" height="470" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">lap_times_mu = np.array([
+    mu_solutions[mu_value][&quot;time&quot;]
+    for mu_value in mu_values
+])
+
+plt.figure()
+plt.plot(mu_values, lap_times_mu, &quot;-o&quot;)
+plt.xlabel(r&quot;friction coefficient $\mu$&quot;)
+plt.ylabel(&quot;lap time [s]&quot;)
+plt.title(&quot;Reduced-model lap time versus friction&quot;)
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-12.png" alt="Figure: Reduced-model lap time versus friction" width="700" height="474" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Under this reduced model, higher friction cannot make the optimum worse because it relaxes the
+local lateral speed constraints.</p>
+<p>That monotonic conclusion follows from feasible-set inclusion.</p>
+<p>A full tire model is more complicated, but the basic intuition remains: tire-force capability
+strongly shapes minimum-time behavior.</p>
+</div>
+
+<div class="md">
+<p><a id="part-19"></a></p>
+<h2 id="part-xix-acceleration-versus-braking-authority">Part XIX — Acceleration versus braking authority</h2>
+<h2 id="xix-1-two-different-physical-roles">XIX.1 Two different physical roles</h2>
+<p>Acceleration authority determines how rapidly speed can be regained after a slow corner.</p>
+<p>Braking authority determines how late braking can begin before a slow corner.</p>
+<p>They therefore affect different spatial regions of the optimal profile.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">cases = [
+    (&quot;baseline&quot;, -6.0, 3.0),
+    (&quot;weaker braking&quot;, -3.5, 3.0),
+    (&quot;weaker acceleration&quot;, -6.0, 1.5),
+]
+
+case_solutions = {}
+
+for name, amin, amax in cases:
+    case_solutions[name] = periodic_minimum_time_speed_profile(
+        track,
+        mu=1.0,
+        vmax=35.0,
+        amin=amin,
+        amax=amax,
+    )
+
+    print(
+        f&quot;{name:20s}: &quot;
+        f&quot;lap time={case_solutions[name][&#x27;time&#x27;]:.4f} s&quot;
+    )
+</code></pre>
+<pre class="output">baseline            : lap time=17.0939 s
+weaker braking      : lap time=17.7318 s
+weaker acceleration : lap time=18.7482 s</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+
+for name, _, _ in cases:
+    plt.plot(
+        track.s,
+        case_solutions[name][&quot;v&quot;],
+        label=name,
+    )
+
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(&quot;speed [m/s]&quot;)
+plt.title(&quot;Acceleration and braking limits shape different parts of the lap&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-13.png" alt="Figure: Acceleration and braking limits shape different parts of the lap" width="687" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Weak braking pushes deceleration farther upstream.</p>
+<p>Weak acceleration makes the post-corner recovery slower.</p>
+<p>In a full vehicle model, these effects are additionally coupled to tire loading, steering, power,
+and aerodynamic forces.</p>
+</div>
+
+<div class="md">
+<p><a id="part-20"></a></p>
+<h2 id="part-xx-spatial-grid-convergence">Part XX — Spatial-grid convergence</h2>
+<h2 id="xx-1-why-discretization-density-matters">XX.1 Why discretization density matters</h2>
+<p>The continuous problem lives on</p>
+<div class="math display">
+s\in[0,s_f].
+</div>
+<p>A numerical optimizer or planner uses finitely many spatial nodes.</p>
+<p>A grid that is too coarse can:</p>
+<ul>
+<li>miss curvature peaks;</li>
+<li>approximate braking zones poorly;</li>
+<li>bias lap time.</li>
+</ul>
+<p>We therefore check whether the reduced solution stabilizes as the grid is refined.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">grid_sizes = [60, 120, 240, 480]
+
+grid_times = []
+
+for n_grid in grid_sizes:
+    track_grid = build_demo_track(
+        n=n_grid,
+        half_width=3.0,
+    )
+
+    sol_grid = periodic_minimum_time_speed_profile(
+        track_grid,
+        mu=1.0,
+        vmax=35.0,
+        amin=-6.0,
+        amax=3.0,
+    )
+
+    grid_times.append(sol_grid[&quot;time&quot;])
+
+    print(
+        f&quot;N={n_grid:3d}: &quot;
+        f&quot;lap time={sol_grid[&#x27;time&#x27;]:.8f} s&quot;
+    )
+</code></pre>
+<pre class="output">N= 60: lap time=16.93827668 s
+N=120: lap time=17.07213924 s
+N=240: lap time=17.09393801 s
+N=480: lap time=17.10620213 s</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+plt.plot(grid_sizes, grid_times, &quot;-o&quot;)
+plt.xlabel(&quot;spatial grid points&quot;)
+plt.ylabel(&quot;computed lap time [s]&quot;)
+plt.title(&quot;Spatial-grid convergence of the reduced planner&quot;)
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-14.png" alt="Figure: Spatial-grid convergence of the reduced planner" width="729" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The values approach a limiting numerical result.</p>
+<p>In this run the computed lap time increases with the number of grid points, and the increments
+shrink. A coarse grid can step over the apex of a tight corner: it underestimates the peak
+curvature, allows a higher minimum corner speed, and therefore returns an optimistic lap time.</p>
+<p>The convergence is not required to be monotone in general, because both the curvature
+representation and the piecewise spatial dynamics are changing with the grid.</p>
+</div>
+
+<div class="md">
+<p><a id="part-21"></a></p>
+<h2 id="part-xxi-an-important-limitation-tire-force-coupling">Part XXI — An important limitation: tire-force coupling</h2>
+<h2 id="xxi-1-separate-limits-can-be-optimistic">XXI.1 Separate limits can be optimistic</h2>
+<p>Our reduced planner imposes:</p>
+<div class="math display">
+|a_x|\le a_{x,\max}
+</div>
+<p>and separately</p>
+<div class="math display">
+|a_y|
+=
+v^2|K|
+\le
+\mu g.
+</div>
+<p>But a physical tire has a limited <strong>combined</strong> force capability.</p>
+<p>A simple approximation is the friction circle:</p>
+<div class="math display">
+\boxed{
+a_x^2+a_y^2
+\le
+(\mu g)^2.
+}
+</div>
+<p>With</p>
+<div class="math display">
+a_y=zK,
+</div>
+<p>this becomes</p>
+<div class="math display">
+\boxed{
+a_x^2+(zK)^2
+\le
+(\mu g)^2.
+}
+</div>
+<p>This coupling is an extension beyond the reduced planner and explains why a full tire-force
+raceline problem is more difficult.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">friction_usage = friction_circle_utilization(
+    speed_solution[&quot;z&quot;],
+    speed_solution[&quot;a&quot;],
+    track.curvature,
+    mu=1.0,
+)
+
+print(
+    &quot;maximum simple friction-circle utilization:&quot;,
+    np.max(friction_usage),
+)
+print(
+    &quot;segments above 100% in this diagnostic:&quot;,
+    int(np.sum(friction_usage &gt; 1.0 + 1e-8)),
+)
+</code></pre>
+<pre class="output">maximum simple friction-circle utilization: 1.1708172711379095
+segments above 100% in this diagnostic: 66</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+plt.plot(
+    track.s,
+    friction_usage,
+    label=&quot;combined acceleration utilization&quot;,
+)
+plt.axhline(
+    1.0,
+    linestyle=&quot;--&quot;,
+    label=&quot;simple friction-circle limit&quot;,
+)
+plt.xlabel(&quot;s [m]&quot;)
+plt.ylabel(&quot;dimensionless utilization&quot;)
+plt.title(&quot;Diagnostic: decoupled planner can overuse combined tire capability&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/06-15.png" alt="Figure: Diagnostic: decoupled planner can overuse combined tire capability" width="691" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-interpret-this-diagnostic">How to interpret this diagnostic</h3>
+<p>A value</p>
+<div class="math display">
+\text{utilization}=1
+</div>
+<p>corresponds to the boundary of the simple combined-acceleration circle.</p>
+<p>A value greater than one does <strong>not</strong> mean the notebook code is numerically wrong.</p>
+<p>It means the <strong>reduced model</strong> allowed a combination of longitudinal and lateral acceleration that
+the additional friction-circle model would forbid.</p>
+<p>This is why full raceline formulations impose tire-force constraints rather than only an
+independent curvature speed cap.</p>
+</div>
+
+<div class="md">
+<p><a id="part-22"></a></p>
+<h2 id="part-xxii-why-a-full-raceline-can-be-faster-than-centerline-speed-planning">Part XXII — Why a full raceline can be faster than centerline speed planning</h2>
+<h2 id="xxii-1-the-centerline-is-not-generally-the-minimum-time-path">XXII.1 The centerline is not generally the minimum-time path</h2>
+<p>Our executable planner fixes</p>
+<div class="math display">
+e_y(s)=0.
+</div>
+<p>The full raceline problem optimizes</p>
+<div class="math display">
+e_y(s)
+</div>
+<p>inside</p>
+<div class="math display">
+-W(s)\le e_y(s)\le W(s).
+</div>
+<p>A racing trajectory can use the available width to:</p>
+<ul>
+<li>approach the outside of a corner;</li>
+<li>cut toward the inside;</li>
+<li>exit toward the outside.</li>
+</ul>
+<p>This can reduce the effective curvature experienced by the vehicle and permit a higher speed
+through the turn.</p>
+<p>Therefore</p>
+<div class="math display">
+\boxed{
+\text{centerline minimum-time speed planning}
+\neq
+\text{full minimum-time raceline optimization}.
+}
+</div>
+</div>
+
+<div class="md">
+<h2 id="xxii-2-why-the-full-problem-is-nonlinear">XXII.2 Why the full problem is nonlinear</h2>
+<p>The complete problem contains several nonlinearities:</p>
+<ul>
+<li>trigonometric Frenet geometry;</li>
+<li>denominator</li>
+</ul>
+<div class="math display">
+1-Ke_y;
+</div>
+<ul>
+<li>nonlinear tire-force laws;</li>
+<li>steering-dependent force projections;</li>
+<li>the minimum-time term</li>
+</ul>
+<div class="math display">
+t&#x27;=\frac{1}{\dot s};
+</div>
+<ul>
+<li>possibly combined tire-force constraints.</li>
+</ul>
+<p>That is why the full raceline is computed by solving a nonlinear program rather than a QP.</p>
+</div>
+
+<div class="md">
+<p><a id="part-23"></a></p>
+<h2 id="part-xxiii-from-offline-raceline-to-mpc-and-lmpc">Part XXIII — From offline raceline to MPC and LMPC</h2>
+<h2 id="xxiii-1-the-standard-pipeline">XXIII.1 The standard pipeline</h2>
+<p>Once the raceline is computed offline, one can store reference profiles such as</p>
+<div class="math display">
+e_y^\star(s),
+\quad
+v_x^\star(s),
+\quad
+e_\psi^\star(s),
+\quad
+u^\star(s).
+</div>
+<p>An online MPC can then track those profiles while reacting to deviations.</p>
+<p>Learning MPC adds another layer:</p>
+<ul>
+<li>successful laps become safe-set data;</li>
+<li>lap performance provides cost-to-go data;</li>
+<li>local dynamics may also be learned from stored transitions.</li>
+</ul>
+<p>This is the bridge from Notebook 06 to the later racing notebooks.</p>
+</div>
+
+<div class="md">
+<p><a id="part-24"></a></p>
+<h2 id="part-xxiv-conventions-worth-keeping-straight">Part XXIV — Conventions worth keeping straight</h2>
+<h2 id="xxiv-1-mathematical-normal-versus-code-normal">XXIV.1 Mathematical normal versus code normal</h2>
+<p>This notebook uses</p>
+<div class="math display">
+n=
+[-t_y,t_x]^\top,
+\qquad
+p=\gamma+e_yn.
+</div>
+<p>Some implementations use</p>
+<div class="math display">
+n_{\mathrm{code}}
+=
+[t_y,-t_x]^\top
+=
+-n
+</div>
+<p>and</p>
+<div class="math display">
+p=\gamma-e_y n_{\mathrm{code}}.
+</div>
+<p>These produce the same mapping. <code>Track.normal()</code> in <code>racing.py</code> returns the left normal <span class="math inline">n</span>.</p>
+<hr />
+<h2 id="xxiv-2-input-ordering">XXIV.2 Input ordering</h2>
+<p>Raceline formulations often describe the inputs as</p>
+<div class="math display">
+[a_x,\delta]^\top.
+</div>
+<p>The racing code in this repository (<code>bicycle_dynamics</code>, and the data-collection laps of notebook 07)
+reads</p>
+<div class="math display">
+\delta=u_0,
+\qquad
+a=u_1.
+</div>
+<p>Use variable names when moving between the two conventions.</p>
+<hr />
+<h2 id="xxiv-3-offline-raceline-versus-online-lmpc-racing">XXIV.3 Offline raceline versus online LMPC racing</h2>
+<p>An offline raceline is computed by solving one nonlinear trajectory-optimization problem for the
+whole lap.</p>
+<p>Learning MPC racing (Rosolia and Borrelli, 2020) instead repeatedly solves short-horizon problems
+online and learns from previous laps; notebook 07 builds the learned prediction models such a
+controller needs.</p>
+<p>They are related but not interchangeable.</p>
+</div>
+
+<div class="md">
+<p><a id="part-25"></a></p>
+<h2 id="part-xxv-common-pitfalls">Part XXV — Common pitfalls</h2>
+<h2 id="xxv-1-pitfall-frenet-coordinates-mean-the-vehicle-is-constrained-to-the-centerline">XXV.1 Pitfall: Frenet coordinates mean the vehicle is constrained to the centerline</h2>
+<p>No.</p>
+<p>Frenet coordinates explicitly retain the lateral deviation <span class="math inline">e_y</span>.
+Only the <strong>reduced executable planner in this notebook</strong> sets <span class="math inline">e_y=0</span>.</p>
+<hr />
+<h2 id="xxv-2-pitfall-curvature-alone-determines-the-optimal-speed">XXV.2 Pitfall: curvature alone determines the optimal speed</h2>
+<p>No.</p>
+<p>Curvature gives a local lateral limit.</p>
+<p>Acceleration and braking constraints couple different locations along the track.</p>
+<hr />
+<h2 id="xxv-3-pitfall-brake-at-the-point-where-the-speed-cap-becomes-small">XXV.3 Pitfall: brake at the point where the speed cap becomes small</h2>
+<p>Too late.</p>
+<p>The braking constraint propagates the corner requirement backward.</p>
+<hr />
+<h2 id="xxv-4-pitfall-2-delta-s-v-i-v-i-1-is-just-an-arbitrary-trapezoidal-rule">XXV.4 Pitfall: <span class="math inline">2\Delta s/(v_i+v_{i+1})</span> is just an arbitrary trapezoidal rule</h2>
+<p>For the piecewise constant-acceleration segment model, it is the exact segment time.</p>
+<hr />
+<h2 id="xxv-5-pitfall-1-ke-y-is-just-a-numerical-denominator">XXV.5 Pitfall: <span class="math inline">1-Ke_y</span> is just a numerical denominator</h2>
+<p>It comes directly from differentiating the offset curve</p>
+<div class="math display">
+p=\gamma+e_yn.
+</div>
+<p>It has a geometric meaning and a genuine singularity.</p>
+<hr />
+<h2 id="xxv-6-pitfall-independent-longitudinal-and-lateral-acceleration-limits-are-the-same-as-tire-force-constraints">XXV.6 Pitfall: independent longitudinal and lateral acceleration limits are the same as tire-force constraints</h2>
+<p>No.</p>
+<p>A combined force limit couples the two.</p>
+<p>The friction-circle diagnostic demonstrates the difference.</p>
+<hr />
+<h2 id="xxv-7-pitfall-the-reduced-speed-planner-is-the-full-raceline-optimizer">XXV.7 Pitfall: the reduced speed planner is the full raceline optimizer</h2>
+<p>No.</p>
+<p>It fixes the geometric path and optimizes only speed.</p>
+</div>
+
+<div class="md">
+<p><a id="part-26"></a></p>
+<h2 id="part-xxvi-check-your-understanding">Part XXVI — Check your understanding</h2>
+<p>Try to answer each question before opening its answer.</p>
+<p><strong>1. Why use Frenet coordinates for racing?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Because progress along the track becomes <span class="math inline">s</span>, lateral road constraints become direct bounds on
+<span class="math inline">e_y</span>, and track geometry is summarized through curvature <span class="math inline">K(s)</span>.</p>
+</details>
+<p><strong>2. Derive the factor <span class="math inline">1-Ke_y</span>.</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Differentiate <span class="math inline">p=\gamma(s)+e_y n(s)</span> and use
+<span class="math inline">\gamma&#x27;=t</span> and <span class="math inline">n&#x27;=-Kt</span>:</p>
+<div class="math display">
+\dot p=(1-Ke_y)\dot s\,t+\dot e_y\,n.
+</div>
+</details>
+<p><strong>3. Derive <span class="math inline">\dot s</span>.</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The vehicle's tangential velocity relative to the track is
+<span class="math inline">v_x\cos e_\psi-v_y\sin e_\psi</span>.
+Equating tangent components gives</p>
+<div class="math display">
+\dot s=
+\frac{v_x\cos e_\psi-v_y\sin e_\psi}{1-Ke_y}.
+</div>
+</details>
+<p><strong>4. Why must <span class="math inline">\dot s&gt;0</span>?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The spatial transformation divides every time derivative by <span class="math inline">\dot s</span>.
+Zero progress makes the transformation singular, and negative progress reverses the assumed track
+parameterization direction.</p>
+</details>
+<p><strong>5. Why is time included as a state?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Because <span class="math inline">s</span> is the independent variable. The differential state
+<span class="math inline">t&#x27;(s)=1/\dot s</span> accumulates elapsed time, and minimizing <span class="math inline">t(s_f)</span> minimizes lap time.</p>
+</details>
+<p><strong>6. Why introduce <span class="math inline">z=v^2</span>?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>It turns</p>
+<div class="math display">
+\frac{dv}{ds}=\frac{a}{v}
+</div>
+<p>into</p>
+<div class="math display">
+\frac{dz}{ds}=2a,
+</div>
+<p>which is affine in longitudinal acceleration.</p>
+</details>
+<p><strong>7. Where does the curvature speed limit come from?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Centripetal/lateral acceleration is
+<span class="math inline">|a_y|=v^2|K|</span>.
+Imposing <span class="math inline">|a_y|\le\mu g</span> gives
+<span class="math inline">v^2\le\mu g/|K|</span>.</p>
+</details>
+<p><strong>8. Why is a forward pass needed?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>To enforce that speed cannot increase faster than permitted by maximum longitudinal acceleration.</p>
+</details>
+<p><strong>9. Why is a backward pass needed?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>To propagate future low-speed corner requirements upstream according to finite braking authority.</p>
+</details>
+<p><strong>10. Why is the largest feasible <span class="math inline">z</span> profile minimum-time?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Every segment-time term decreases as either endpoint speed increases, so a componentwise larger
+feasible speed profile cannot be slower.</p>
+</details>
+<p><strong>11. What is missing from the executable planner?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Optimized lateral offset, steering, lateral/yaw dynamics, nonlinear tire forces, and combined
+tire-force constraints.</p>
+</details>
+<p><strong>12. Why can a full raceline be faster than the centerline solution?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>It can use track width to reduce effective path curvature through corners and therefore carry more
+speed while remaining within the road corridor.</p>
+</details>
+<p><strong>13. What does a friction-circle utilization above one mean in this notebook?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The decoupled reduced model allowed simultaneous longitudinal and lateral accelerations that a
+simple combined-friction model would forbid.</p>
+</details>
+<p><strong>14. How does this notebook connect to Learning MPC?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The offline raceline provides reference geometry/performance, while repeated online laps can later
+supply safe-set, terminal-value, and local-model data for LMPC.</p>
+</details>
+</div>
+
+<div class="md">
+<p><a id="part-27"></a></p>
+<h2 id="part-xxvii-exercises">Part XXVII — Exercises</h2>
+<h3 id="exercise-1-frenet-map-derivative">Exercise 1 — Frenet-map derivative</h3>
+<p>Starting from</p>
+<div class="math display">
+p=\gamma(s)+e_yn(s),
+</div>
+<p>derive</p>
+<div class="math display">
+\dot p=(1-Ke_y)\dot s\,t+\dot e_y\,n.
+</div>
+<hr />
+<h3 id="exercise-2-progress-rate">Exercise 2 — Progress rate</h3>
+<p>Resolve the body-frame velocity into tangent and normal components and derive <span class="math inline">\dot s</span> and
+<span class="math inline">\dot e_y</span>.</p>
+<hr />
+<h3 id="exercise-3-heading-error-dynamics">Exercise 3 — Heading-error dynamics</h3>
+<p>Given</p>
+<div class="math display">
+e_\psi=\psi-\psi_c(s)
+</div>
+<p>and</p>
+<div class="math display">
+\frac{d\psi_c}{ds}=K(s),
+</div>
+<p>derive</p>
+<div class="math display">
+\dot e_\psi=r-K\dot s.
+</div>
+<hr />
+<h3 id="exercise-4-spatial-derivatives">Exercise 4 — Spatial derivatives</h3>
+<p>Derive explicit formulas for</p>
+<div class="math display">
+\frac{de_y}{ds},
+\qquad
+\frac{de_\psi}{ds},
+\qquad
+\frac{dt}{ds}.
+</div>
+<hr />
+<h3 id="exercise-5-coordinate-regularity">Exercise 5 — Coordinate regularity</h3>
+<p>For a constant-curvature turn of radius <span class="math inline">R</span>, determine the lateral offset at which the Frenet map
+becomes singular.</p>
+<p>Interpret the answer geometrically.</p>
+<hr />
+<h3 id="exercise-6-squared-speed-dynamics">Exercise 6 — Squared-speed dynamics</h3>
+<p>Show that</p>
+<div class="math display">
+z=v^2
+</div>
+<p>leads to</p>
+<div class="math display">
+z_{i+1}=z_i+2\Delta s_i a_i.
+</div>
+<hr />
+<h3 id="exercise-7-exact-segment-time">Exercise 7 — Exact segment time</h3>
+<p>Derive</p>
+<div class="math display">
+\Delta t_i
+=
+\frac{2\Delta s_i}{v_i+v_{i+1}}
+</div>
+<p>for constant longitudinal acceleration.</p>
+<hr />
+<h3 id="exercise-8-braking-distance-in-spatial-form">Exercise 8 — Braking distance in spatial form</h3>
+<p>Starting from a current squared speed <span class="math inline">z_0</span> and constant braking <span class="math inline">a_{\min}&lt;0</span>, derive the spatial
+distance required to reach a target squared speed <span class="math inline">z_f</span>.</p>
+<hr />
+<h3 id="exercise-9-friction-sweep">Exercise 9 — Friction sweep</h3>
+<p>Repeat the lap calculation for several values of <span class="math inline">\mu</span>.</p>
+<p>Explain which portions of the track change most.</p>
+<hr />
+<h3 id="exercise-10-braking-sweep">Exercise 10 — Braking sweep</h3>
+<p>Change <span class="math inline">a_{\min}</span> while keeping <span class="math inline">a_{\max}</span> fixed.</p>
+<p>Identify how far upstream the braking zone moves.</p>
+<hr />
+<h3 id="exercise-11-grid-convergence">Exercise 11 — Grid convergence</h3>
+<p>Use at least four spatial resolutions and estimate the numerical discretization error in lap time.</p>
+<hr />
+<h3 id="exercise-12-combined-tire-force-constraint">Exercise 12 — Combined tire-force constraint</h3>
+<p>Replace the decoupled condition with</p>
+<div class="math display">
+a_x^2+(zK)^2\le(\mu g)^2.
+</div>
+<p>Explain why the simple independent forward/backward envelopes no longer have constant bounds.</p>
+<hr />
+<h3 id="exercise-13-full-raceline-variables">Exercise 13 — Full raceline variables</h3>
+<p>Starting from the six-state spatial model of Part VII, list all states, inputs, and constraints
+required for the full nonlinear raceline CFTOC.</p>
+<hr />
+<h3 id="exercise-14-offline-online-architecture">Exercise 14 — Offline/online architecture</h3>
+<p>Propose how the offline raceline could be used as a reference by an online MPC, and which deviations
+the online controller would have to regulate.</p>
+</div>
+
+<div class="md">
+<p><a id="part-28"></a></p>
+<h2 id="part-xxviii-references">Part XXVIII — References</h2>
+<p>The notebook derives the standard elements of spatial minimum-time racing formulations:</p>
+<ul>
+<li>centerline geometry and curvature;</li>
+<li>Frenet coordinates <span class="math inline">(s,e_y,e_\psi)</span>;</li>
+<li>the progress relation <span class="math inline">\dot s</span>;</li>
+<li>time as a spatial state;</li>
+<li>the six-state racing formulation;</li>
+<li>the nonlinear minimum-time CFTOC;</li>
+<li>tire-force and track-boundary constraints;</li>
+<li>the offline-raceline-to-MPC/LMPC workflow.</li>
+</ul>
+<p>The dynamic bicycle model of Part VIII uses the parameters of a 1:10-scale RC car (the BARC
+platform), the kind of vehicle used in the Learning MPC racing experiments of Rosolia and Borrelli
+(2020).</p>
+<p>The <strong>closed-lap forward/backward centerline speed planner</strong>, the argument based on <span class="math inline">z=v^2</span>, the grid
+convergence study, and the friction-circle utilization diagnostic make the spatial minimum-time ideas
+executable without a nonlinear programming solver.</p>
+<ul>
+<li>G. Perantoni and D. J. N. Limebeer, “Optimal control for a Formula One car with variable
+parameters,” <em>Vehicle System Dynamics</em>, 52(5), 2014, 653–678.</li>
+<li>U. Rosolia and F. Borrelli, “Learning How to Autonomously Race a Car: A Predictive Control
+Approach,” <em>IEEE Transactions on Control Systems Technology</em>, 28(6), 2020.</li>
+<li>U. Rosolia, A. Carvalho, and F. Borrelli, “Autonomous Racing using Learning Model Predictive
+Control,” <em>American Control Conference (ACC)</em>, 2017.</li>
+<li>R. Rajamani, <em>Vehicle Dynamics and Control</em>, 2nd ed., Springer, 2012.</li>
+<li>H. B. Pacejka, <em>Tire and Vehicle Dynamics</em>, 3rd ed., Butterworth-Heinemann, 2012.</li>
+<li>F. Borrelli, A. Bemporad, and M. Morari,
+<em>Predictive Control for Linear and Hybrid Systems</em>, Cambridge University Press, 2017.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="05-learning-mpc-double-integrator.html"><span class="lbl">Previous · 05</span><span class="t">Learning MPC on a Repeated Task</span></a>
+  <a class="next" rel="next" href="07-data-driven-local-models-for-racing.html"><span class="lbl">Next · 07</span><span class="t">Data-Driven Local Models for Racing</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 06 of the Advanced MPC and Learning MPC by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

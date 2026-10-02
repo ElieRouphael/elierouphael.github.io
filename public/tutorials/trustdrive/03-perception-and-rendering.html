@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>03 · Perception and image rendering — TrustDrive course</title>
+<meta name="description" content="Pinhole projection, the ground-plane homography, blur and noise models, and a synthetic lane camera.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 03 of 09</span>
+  <h1>Perception and image rendering</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Replace direct access to the state with a <em>camera</em>. We derive the pinhole
+projection, use it to render small synthetic road images, and model the ways the
+real world degrades them. This gives a controllable, perfectly-labelled stand-in
+for a perception sensor - and, crucially, a way to leave its operating domain on
+demand.</p>
+<p>Why <em>synthetic</em> images? Because we get exact ground truth for free, we can dial any
+degradation continuously, and we need no dataset. The point of the course is not
+computer vision accuracy but the <em>trustworthy use</em> of a perception estimate in a
+control loop, so a transparent renderer is the right tool.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/03_perception_and_rendering.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-pinhole-camera">1. The pinhole camera</a></li>
+    <li><a href="#2-the-road-is-a-plane-forward-camera-geometry">2. The road is a plane: forward-camera geometry</a></li>
+    <li><a href="#3-modelling-the-degradations">3. Modelling the degradations</a></li>
+    <li><a href="#4-cheap-pixel-features-for-the-odd-monitor">4. Cheap pixel features for the ODD monitor</a></li>
+    <li><a href="#5-why-out-of-distribution-curvature-is-invisible-in-the-pixels">5. Why out-of-distribution curvature is invisible in the pixels</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-the-pinhole-camera">1. The pinhole camera</h2>
+<p>A pinhole camera projects a 3D point onto the image plane by a perspective
+division. Let a point have coordinates <span class="math inline">(X_c, Y_c, Z_c)</span> in the camera frame, with
+<span class="math inline">Z_c</span> along the optical axis. By <strong>similar triangles</strong> the point at depth <span class="math inline">Z_c</span>
+scales to the image plane at focal length <span class="math inline">f</span>:</p>
+<div class="math display"> u = f\,\frac{X_c}{Z_c} + c_x, \qquad v = f\,\frac{Y_c}{Z_c} + c_y, </div>
+<p>where <span class="math inline">(c_x, c_y)</span> is the principal point. In homogeneous coordinates this is linear
+[1,2]:</p>
+<div class="math display"> Z_c\begin{bmatrix}u\\ v\\ 1\end{bmatrix}
+   = K\begin{bmatrix}X_c\\ Y_c\\ Z_c\end{bmatrix},\qquad
+   K=\begin{bmatrix} f &amp; 0 &amp; c_x\\ 0 &amp; f &amp; c_y\\ 0 &amp; 0 &amp; 1\end{bmatrix}. </div>
+<p>The nonlinearity that matters is the division by <span class="math inline">Z_c</span>: near things are large, far
+things shrink, and parallel lines converge.</p>
+</div>
+
+<div class="md">
+<h2 id="2-the-road-is-a-plane-forward-camera-geometry">2. The road is a plane: forward-camera geometry</h2>
+<p>For lane keeping the scene of interest is the <strong>ground plane</strong>. Mount the camera at
+height <span class="math inline">h</span> above the road with its optical axis pointing forward along the road, so
+that in camera coordinates a ground point at longitudinal distance <span class="math inline">s</span> ahead and
+lateral offset <span class="math inline">y</span> has <span class="math inline">Z_c = s</span> (depth), <span class="math inline">X_c = y</span> (right), and <span class="math inline">Y_c = h</span> (the road
+is <span class="math inline">h</span> below the camera). Substituting into the pinhole equations:</p>
+<div class="math display"> \boxed{\;u = c_x + f\,\frac{y}{s},\qquad v = c_y + f\,\frac{h}{s}\;} </div>
+<p>Two consequences are worth noting. As <span class="math inline">s\to\infty</span> the projection tends to
+<span class="math inline">(c_x, c_y)</span> regardless of <span class="math inline">y</span>: <strong>all lane lines converge to a single vanishing
+point on the horizon</strong> at row <span class="math inline">v=c_y</span>. And because the road is planar, the whole
+road-to-image map is a <span class="math inline">3\times 3</span> <strong>homography</strong> [1] - a fact lane-detection
+systems exploit to &quot;flatten&quot; the road into a bird's-eye view.</p>
+<p>The lane centreline, in the vehicle frame, is well approximated to second order in
+look-ahead by a parabola (a clothoid segment linearised in <span class="math inline">s</span>) [4,5]:</p>
+<div class="math display"> y_{road}(s) = -e_y - e_\psi\,s + \tfrac12\,\kappa\,s^2, </div>
+<p>the three terms being the lateral offset, the drift due to heading error, and the
+road curvature. Lane markings sit at <span class="math inline">y_{road}(s)\pm w/2</span>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+
+Himg = Wimg = 64
+FOCAL, CAM_H, HORIZON = 55.0, 1.25, 0.34*Himg     # focal [px], camera height [m], horizon row
+
+def project(s, y):
+    return Wimg/2 + FOCAL*y/s, HORIZON + FOCAL*CAM_H/s
+
+def gaussian_blur(img, sigma):
+    if sigma &lt;= 1e-3: return img
+    r = max(1, int(round(3*sigma))); xk = np.arange(-r, r+1)
+    k = np.exp(-0.5*(xk/sigma)**2); k /= k.sum()
+    out = np.apply_along_axis(lambda m: np.convolve(m, k, &#x27;same&#x27;), 0, img)
+    return np.apply_along_axis(lambda m: np.convolve(m, k, &#x27;same&#x27;), 1, out)
+
+def render(e_y, e_psi, kappa, brightness=1.0, blur=0.0, occ=0.0, noise=0.02, seed=0):
+    rng = np.random.default_rng(seed)
+    img = np.full((Himg, Wimg), 0.15, np.float32)     # dark asphalt
+    s = np.linspace(3, 45, 400)
+    yc = -e_y - e_psi*s + 0.5*kappa*s**2
+    fade = np.clip(1 - (s-3)/42, .2, 1)               # far markings dimmer
+    for off, dashed in ((-1.75, False), (1.75, False), (0.0, True)):
+        u, v = project(s, yc + off)
+        for i in range(len(s)):
+            if dashed and int(s[i]) % 3 == 0: continue
+            rr, cc = int(round(v[i])), int(round(u[i]))
+            if 0 &lt;= rr &lt; Himg and 0 &lt;= cc &lt; Wimg:
+                for dc in (-1, 0, 1):
+                    if 0 &lt;= cc+dc &lt; Wimg: img[rr, cc+dc] = max(img[rr, cc+dc], 0.9*fade[i])
+    img = img * brightness
+    if occ &gt; 0:
+        top = int(HORIZON); img[top:top+int(occ*(Himg-top))] = 0.05
+    img = gaussian_blur(img, blur)
+    return np.clip(img + rng.normal(0, noise, img.shape), 0, 1)
+
+# a clean straight lane, with the horizon and vanishing point marked
+img = render(0.0, 0.0, 0.0, noise=0.0)
+plt.figure(figsize=(4.2, 4.2))
+plt.imshow(img, cmap=&quot;gray&quot;, vmin=0, vmax=1)
+plt.axhline(HORIZON, color=&quot;#0e7c8b&quot;, lw=1.2)
+plt.scatter([Wimg/2], [HORIZON], color=&quot;#d1495b&quot;, s=40, zorder=3)
+plt.annotate(&quot;vanishing point&quot;, (Wimg/2, HORIZON), color=&quot;#d1495b&quot;,
+             textcoords=&quot;offset points&quot;, xytext=(-40, 8))
+plt.annotate(&quot;horizon  $v=c_y$&quot;, (2, HORIZON), color=&quot;#0e7c8b&quot;,
+             textcoords=&quot;offset points&quot;, xytext=(0, -10))
+plt.title(&quot;Perspective projection of a straight lane&quot;); plt.axis(&quot;off&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/03-1.png" alt="Figure: Perspective projection of a straight lane" width="427" height="450" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="3-modelling-the-degradations">3. Modelling the degradations</h2>
+<p>Each condition the ODD monitor watches corresponds to a physical or measurement
+process [2,3]:</p>
+<ul>
+<li><strong>Defocus / atmospheric blur</strong> is a convolution with a <strong>point-spread function
+(PSF)</strong>. A Gaussian PSF of standard deviation <span class="math inline">\sigma</span> is the standard
+approximation, <span class="math inline">I_{blur} = I * g_\sigma</span>. It is <em>separable</em>, so we apply a 1-D
+kernel along rows then columns.</li>
+<li><strong>Illumination</strong> acts as a multiplicative gain <span class="math inline">I \mapsto b\,I</span> (ignoring gamma).</li>
+<li><strong>Occlusion</strong> removes a region of the image (missing data), here a band of the far
+road.</li>
+<li><strong>Sensor noise</strong> is additive; read noise is well modelled as Gaussian
+<span class="math inline">\mathcal N(0,\sigma_n^2)</span>, shot noise as Poisson [6]. We use additive Gaussian.</li>
+</ul>
+<p>Below: the Gaussian PSF kernel and its effect on the rendered lane.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">sigma = 2.0
+r = int(round(3*sigma)); ax_ = np.arange(-r, r+1)
+k1 = np.exp(-0.5*(ax_/sigma)**2); k1 /= k1.sum()
+psf = np.outer(k1, k1)                              # 2-D separable Gaussian PSF
+
+fig, ax = plt.subplots(1, 3, figsize=(11, 3.4))
+ax[0].imshow(psf, cmap=&quot;magma&quot;); ax[0].set_title(&quot;Gaussian PSF ($\\sigma=2$ px)&quot;); ax[0].axis(&quot;off&quot;)
+ax[1].imshow(render(0.3, 0.02, 0.012, noise=0.0), cmap=&quot;gray&quot;, vmin=0, vmax=1)
+ax[1].set_title(&quot;sharp&quot;); ax[1].axis(&quot;off&quot;)
+ax[2].imshow(render(0.3, 0.02, 0.012, blur=sigma, noise=0.0), cmap=&quot;gray&quot;, vmin=0, vmax=1)
+ax[2].set_title(&quot;blurred = image $*$ PSF&quot;); ax[2].axis(&quot;off&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/03-2.png" alt="Figure: Gaussian PSF ( =2 px); sharp; blurred = image * PSF" width="1141" height="368" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># The four regimes used throughout the course
+panels = [(&quot;clear (in ODD)&quot;,      dict(kappa=0.012)),
+          (&quot;fog + blur&quot;,          dict(kappa=0.012, brightness=0.6, blur=2.6, noise=0.03)),
+          (&quot;partial occlusion&quot;,   dict(kappa=0.012, occ=0.45)),
+          (&quot;OOD curvature&quot;,       dict(kappa=0.05))]
+fig, ax = plt.subplots(1, 4, figsize=(12, 3.2))
+for a, (name, kw) in zip(ax, panels):
+    a.imshow(render(0.3, 0.02, **kw), cmap=&quot;gray&quot;, vmin=0, vmax=1)
+    a.set_title(name); a.axis(&quot;off&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/03-3.png" alt="Figure 3 produced by the code above" width="1308" height="354" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="4-cheap-pixel-features-for-the-odd-monitor">4. Cheap pixel features for the ODD monitor</h2>
+<p>The operational-design-domain monitor (notebook 06) does not have the true
+conditions; it must estimate them from the image. Two very cheap statistics suffice
+as proxies:</p>
+<ul>
+<li><strong>Brightness</strong> = mean intensity, tracking the illumination gain.</li>
+<li><strong>Sharpness</strong> = mean squared image gradient (a Tenengrad-style focus measure),
+which falls as blur rises because convolution with the PSF attenuates high
+spatial frequencies [3].</li>
+</ul>
+<p>Both are monotone in their degradation, so a simple threshold on them detects
+&quot;outside the ODD&quot; from pixels alone.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def brightness_feat(img): return float(img.mean())
+def sharpness_feat(img):
+    gx = np.diff(img, axis=1); gy = np.diff(img, axis=0)
+    return float(np.mean(gx**2) + np.mean(gy**2))
+
+blurs = np.linspace(0, 3.5, 30)
+sh = [sharpness_feat(render(0.3, 0.02, 0.012, blur=b, noise=0.0)) for b in blurs]
+brs = np.linspace(0.2, 1.0, 30)
+br = [brightness_feat(render(0.3, 0.02, 0.012, brightness=b, noise=0.0)) for b in brs]
+
+fig, ax = plt.subplots(1, 2, figsize=(9, 3.2))
+ax[0].plot(blurs, sh, color=&quot;#8e44ad&quot;); ax[0].axvline(1.6, ls=&quot;:&quot;, color=&quot;r&quot;, label=&quot;ODD blur limit&quot;)
+ax[0].set(xlabel=&quot;blur $\\sigma$ [px]&quot;, ylabel=&quot;sharpness&quot;, title=&quot;Sharpness falls with blur&quot;); ax[0].legend(); ax[0].grid(alpha=.3)
+ax[1].plot(brs, br, color=&quot;#c68a12&quot;); ax[1].axvline(0.45, ls=&quot;:&quot;, color=&quot;r&quot;, label=&quot;ODD brightness limit&quot;)
+ax[1].set(xlabel=&quot;illumination gain $b$&quot;, ylabel=&quot;mean intensity&quot;, title=&quot;Brightness tracks illumination&quot;); ax[1].legend(); ax[1].grid(alpha=.3)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/03-4.png" alt="Figure 4 produced by the code above" width="979" height="340" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="5-why-out-of-distribution-curvature-is-invisible-in-the-pixels">5. Why out-of-distribution curvature is invisible in the pixels</h2>
+<p>Blur, darkness and occlusion are <em>visible</em> degradations: they change the image
+statistics, so a pixel-level monitor can flag them. An <strong>out-of-distribution
+curvature is different</strong>. A sharper-than-trained curve still renders as a perfectly
+clean, well-exposed, in-focus lane - its brightness and sharpness are essentially
+those of an in-domain curve. Nothing local in the pixels says &quot;you have never seen
+this geometry.&quot;</p>
+<p>This is the crux of the whole course. The novelty lives in the <em>regime</em>, not in the
+image quality, so no amount of pixel-level confidence or image-feature monitoring
+will catch it. Detecting it requires comparing the perception output against a
+<em>model of the dynamics</em> - the innovation / NIS test of notebook 05.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">in_odd  = render(0.3, 0.02, 0.012, noise=0.0)   # trained curvature
+ood     = render(0.3, 0.02, 0.050, noise=0.0)   # out-of-distribution curvature, still a clean image
+print(&quot;                 sharpness   brightness&quot;)
+print(&quot;in-ODD curve : %10.4f %11.3f&quot; % (sharpness_feat(in_odd),  brightness_feat(in_odd)))
+print(&quot;OOD curve    : %10.4f %11.3f&quot; % (sharpness_feat(ood),     brightness_feat(ood)))
+print()
+print(&quot;Pixel statistics are nearly identical - the images look equally valid.&quot;)
+
+fig, ax = plt.subplots(1, 2, figsize=(6.2, 3.2))
+ax[0].imshow(in_odd, cmap=&quot;gray&quot;, vmin=0, vmax=1); ax[0].set_title(&quot;in-ODD curve&quot;); ax[0].axis(&quot;off&quot;)
+ax[1].imshow(ood,    cmap=&quot;gray&quot;, vmin=0, vmax=1); ax[1].set_title(&quot;OOD curve&quot;); ax[1].axis(&quot;off&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/03-5.png" alt="Figure: in-ODD curve; OOD curve" width="665" height="356" loading="lazy"></figure>
+<pre class="output">                 sharpness   brightness
+in-ODD curve :     0.0250       0.182
+OOD curve    :     0.0292       0.187
+
+Pixel statistics are nearly identical - the images look equally valid.</pre>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Derive the vanishing-point row <span class="math inline">v=c_y</span> by taking <span class="math inline">s\to\infty</span> in the projection.
+Where does the lateral offset <span class="math inline">e_y</span> go in that limit, and why?</li>
+<li>The bird's-eye (&quot;inverse perspective&quot;) view undoes the homography. Using
+<span class="math inline">u=c_x+f y/s,\ v=c_y+f h/s</span>, solve for <span class="math inline">(s, y)</span> given <span class="math inline">(u, v)</span> and map the clear
+image back to a top-down road. What happens to noise near the horizon?</li>
+<li>Replace the Gaussian PSF with a uniform disc (defocus) kernel of the same radius.
+How does the sharpness-vs-blur curve change?</li>
+<li>Add a <em>gamma</em> nonlinearity <span class="math inline">I\mapsto I^{\gamma}</span> to the illumination model and
+check whether mean intensity is still a good brightness proxy.</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>R. Hartley, A. Zisserman. <em>Multiple View Geometry in Computer Vision,</em> 2nd ed. Cambridge University Press, 2004. (Pinhole model, planar homography, vanishing points.)</li>
+<li>R. Szeliski. <em>Computer Vision: Algorithms and Applications,</em> 2nd ed. Springer, 2022. (Image formation, blur, noise.)</li>
+<li>R. C. Gonzalez, R. E. Woods. <em>Digital Image Processing,</em> 4th ed. Pearson, 2018. (Point-spread functions, convolution, focus measures, noise models.)</li>
+<li>E. D. Dickmanns, B. D. Mysliwetz. <em>Recursive 3-D road and relative ego-state recognition.</em> IEEE Transactions on Pattern Analysis and Machine Intelligence, 14(2):199-213, 1992. <a href="https://doi.org/10.1109/34.126801">doi:10.1109/34.126801</a> (Clothoid lane model.)</li>
+<li>J. C. McCall, M. M. Trivedi. <em>Video-based lane estimation and tracking for driver assistance.</em> IEEE Transactions on Intelligent Transportation Systems, 7(1):20-37, 2006. <a href="https://doi.org/10.1109/TITS.2006.869595">doi:10.1109/TITS.2006.869595</a> (The <span class="math inline">y=a+bs+cs^2</span> lane model.)</li>
+<li>G. E. Healey, R. Kondepudy. <em>Radiometric CCD camera calibration and noise estimation.</em> IEEE Transactions on Pattern Analysis and Machine Intelligence, 16(3):267-276, 1994. <a href="https://doi.org/10.1109/34.276126">doi:10.1109/34.276126</a> (Sensor noise model.)</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="02-lqr-control.html"><span class="lbl">Previous · 02</span><span class="t">LQR lane keeping</span></a>
+  <a class="next" rel="next" href="04-uncertainty-ensembles.html"><span class="lbl">Next · 04</span><span class="t">Uncertainty and ensembles</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 03 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

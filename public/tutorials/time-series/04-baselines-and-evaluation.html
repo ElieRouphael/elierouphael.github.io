@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>04 · Baselines and Honest Evaluation — Time-series course</title>
+<meta name="description" content="Six baselines, MAE, RMSE and MASE (and why not MAPE), the rolling-origin backtest, leakage, and prediction intervals checked against outcomes.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 04 of 11</span>
+  <h1>Baselines and Honest Evaluation</h1>
+  <div class="intro prose">
+<p>&quot;Our model achieves an MAE of 48&quot; means nothing on its own. Is 48 good? Compared with what? This chapter builds the machinery that answers that question for the rest of the course:</p>
+<ol>
+<li><strong>Baselines</strong>: simple forecasts that take one line of code. Any real model has to beat them, or it isn't worth its complexity.</li>
+<li><strong>Metrics</strong> that measure the right thing and can be compared across horizons and series.</li>
+<li><strong>A backtest</strong> that imitates real forecasting: the model only ever sees the past.</li>
+</ol>
+<p>Nothing here is glamorous, but it's what separates forecasting from wishful thinking. A surprising number of published models fail to beat the baselines in this chapter.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>implement the standard baseline forecasts, including naive, seasonal naive, drift and climatology</li>
+<li>choose between MAE, RMSE and MASE, and explain why MAPE misleads on data like ours</li>
+<li>explain which point forecast each metric rewards</li>
+<li>run a <strong>rolling-origin backtest</strong> and read error as a function of horizon</li>
+<li>recognise <strong>leakage</strong> and build honest <strong>prediction intervals</strong> from past errors</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/04_baselines_and_evaluation.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-forecasting-task-for-the-rest-of-the-course">1. The forecasting task for the rest of the course</a></li>
+    <li><a href="#2-six-baselines">2. Six baselines</a></li>
+    <li><a href="#3-metrics">3. Metrics</a></li>
+    <li><a href="#4-the-rolling-origin-backtest">4. The rolling-origin backtest</a></li>
+    <li><a href="#5-results-which-baseline-wins-and-when">5. Results: which baseline wins, and when?</a></li>
+    <li><a href="#6-leakage-when-the-backtest-peeks-at-the-future">6. Leakage: when the backtest peeks at the future</a></li>
+    <li><a href="#7-honest-uncertainty-prediction-intervals-from-past-errors">7. Honest uncertainty: prediction intervals from past errors</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 1)</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-the-forecasting-task-for-the-rest-of-the-course">1. The forecasting task for the rest of the course</h2>
+<p>From here on, every model answers the same question:</p>
+<blockquote>
+<p><strong>Given daily mean PM2.5 up to and including today, forecast each of the next 7 days.</strong></p>
+</blockquote>
+<p>Daily means are what air-quality warnings are based on, and chapter 03 showed they are mean-reverting with a half-life of about a day. The horizons span &quot;tomorrow&quot;, where recent data should help a lot, to &quot;next week&quot;, where it probably won't.</p>
+<p>We split the six years into three roles:</p>
+<table>
+<thead>
+<tr>
+<th>Period</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2010–2013</td>
+<td><strong>history</strong>: always available for fitting</td>
+</tr>
+<tr>
+<td>2014</td>
+<td><strong>development</strong>: backtests for comparing and tuning models, in chapters 04–10</td>
+</tr>
+<tr>
+<td>2015</td>
+<td><strong>locked test year</strong>: touched <strong>once</strong>, in the capstone (chapter 11)</td>
+</tr>
+</tbody>
+</table>
+<p>Why lock a whole year away? Every time you look at test results and change something, the test set leaks a little into your decisions. After enough rounds, a good test score says more about your persistence than about your model. Keeping 2015 untouched means the capstone gives an honest estimate of how the final models would do on genuinely new data. And 2015 is the year the level dropped (chapter 03), so it's a realistic stress test.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">daily = tsutils.load_daily_pm25()
+y = daily[&quot;pm25&quot;]            # gap-free: what models learn from
+actual = daily[&quot;actual&quot;]     # NaN on days with &lt; 18 hourly readings: never scored
+
+print(f&quot;{len(y):,} days, {actual.isna().sum()} too thin to score &quot;
+      f&quot;({actual[&#x27;2014&#x27;].isna().sum()} of them in 2014)&quot;)
+daily.head()</code></pre>
+<pre class="output">2,191 days, 91 too thin to score (2 of them in 2014)
+             pm25  actual
+timestamp                
+2010-01-01  144.3     NaN
+2010-01-02  144.3   144.3
+2010-01-03   78.4    78.4
+2010-01-04   29.3    29.3
+2010-01-05   43.5    43.5</pre>
+</div>
+
+<div class="md">
+<p><code>tsutils.load_daily_pm25()</code> repeats chapter 01's recipe: interpolate short hourly gaps, average to days, and flag days with fewer than 18 readings. Those thin days are interpolated so models get an unbroken history, but their <code>actual</code> is <code>NaN</code>, so <strong>no forecast is ever scored against an interpolated value</strong>.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-six-baselines">2. Six baselines</h2>
+<p>A forecaster here is any function that takes the history up to today and returns the next <code>horizon</code> values. Each baseline encodes one simple belief about the future.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def mean_forecast(history, horizon):
+    &quot;&quot;&quot;The future looks like the long-run average.&quot;&quot;&quot;
+    return np.full(horizon, history.mean())
+
+def naive_forecast(history, horizon):
+    &quot;&quot;&quot;The future looks like today.&quot;&quot;&quot;
+    return np.full(horizon, history.iloc[-1])
+
+def seasonal_naive_forecast(history, horizon, period=7):
+    &quot;&quot;&quot;The future repeats the last cycle (here: same weekday last week).&quot;&quot;&quot;
+    last_cycle = history.iloc[-period:].to_numpy()
+    return np.tile(last_cycle, int(np.ceil(horizon / period)))[:horizon]
+
+def drift_forecast(history, horizon):
+    &quot;&quot;&quot;Continue the straight line from the first observation to the last.&quot;&quot;&quot;
+    slope = (history.iloc[-1] - history.iloc[0]) / (len(history) - 1)
+    return history.iloc[-1] + slope * np.arange(1, horizon + 1)
+
+def moving_average_forecast(history, horizon, window=7):
+    &quot;&quot;&quot;The future looks like the recent average.&quot;&quot;&quot;
+    return np.full(horizon, history.iloc[-window:].mean())
+
+def climatology_forecast(history, horizon, window=15, stat=&quot;median&quot;):
+    &quot;&quot;&quot;The future looks like a typical day at this time of year.
+
+    For each target date, summarise every past value within `window` days
+    of the same day of the year (wrapping around New Year).
+    &quot;&quot;&quot;
+    targets = pd.date_range(history.index[-1] + pd.Timedelta(days=1), periods=horizon, freq=&quot;D&quot;)
+    doy = history.index.dayofyear.to_numpy()
+    values = history.to_numpy()
+    summarise = np.median if stat == &quot;median&quot; else np.mean
+    out = []
+    for target_doy in targets.dayofyear:
+        distance = np.abs(doy - target_doy)
+        distance = np.minimum(distance, 365 - distance)
+        out.append(summarise(values[distance &lt;= window]))
+    return np.array(out)</code></pre>
+</div>
+
+<div class="md">
+<p>Let's see all six from a single forecast origin: 20 February 2014, in the middle of a bad winter episode.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">baselines = {
+    &quot;mean&quot;: mean_forecast,
+    &quot;naive&quot;: naive_forecast,
+    &quot;seasonal naive (7)&quot;: seasonal_naive_forecast,
+    &quot;drift&quot;: drift_forecast,
+    &quot;moving average (7)&quot;: moving_average_forecast,
+    &quot;climatology&quot;: climatology_forecast,
+}
+
+origin = pd.Timestamp(&quot;2014-02-20&quot;)
+history = y[:origin]
+future = actual[origin + pd.Timedelta(days=1): origin + pd.Timedelta(days=7)]
+
+ax = y[origin - pd.Timedelta(days=30): origin].plot(color=&quot;k&quot;, label=&quot;history&quot;)
+future.plot(ax=ax, color=&quot;k&quot;, ls=&quot;--&quot;, marker=&quot;o&quot;, label=&quot;what happened&quot;)
+for name, forecaster in baselines.items():
+    pd.Series(forecaster(history, 7), index=future.index).plot(ax=ax, marker=&quot;.&quot;, label=name)
+ax.set(title=f&quot;Seven-day forecasts from {origin:%d %b %Y}&quot;, ylabel=&quot;PM2.5 (µg/m³)&quot;)
+ax.legend(ncol=2, fontsize=8);</code></pre>
+<figure class="output-figure"><img src="img/04-1.png" alt="Figure 1 produced by the code above" width="1006" height="446" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>One origin tells us almost nothing. Any method can get lucky or unlucky on one week. We need to repeat this for <strong>hundreds of origins</strong> and average. First, though, we need to decide <em>how</em> to score a forecast.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-metrics">3. Metrics</h2>
+<p>For forecasts <span class="math inline">\hat y_t</span> of actuals <span class="math inline">y_t</span>, with errors <span class="math inline">e_t = \hat y_t - y_t</span>:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Formula</th>
+<th>Units</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MAE</strong></td>
+<td><span class="math inline">\frac{1}{n}\sum \lvert e_t\rvert</span></td>
+<td>µg/m³</td>
+<td>easy to explain: &quot;typically off by X&quot;</td>
+</tr>
+<tr>
+<td><strong>RMSE</strong></td>
+<td><span class="math inline">\sqrt{\frac{1}{n}\sum e_t^2}</span></td>
+<td>µg/m³</td>
+<td>punishes large misses much more</td>
+</tr>
+<tr>
+<td><strong>Bias</strong></td>
+<td><span class="math inline">\frac{1}{n}\sum e_t</span></td>
+<td>µg/m³</td>
+<td>systematic over- (+) or under- (−) forecasting</td>
+</tr>
+<tr>
+<td><strong>MASE</strong></td>
+<td><span class="math inline">\text{MAE} \,/\, \text{MAE of in-sample one-step naive}</span></td>
+<td>none</td>
+<td>&lt; 1 beats one-step naive on the training data</td>
+</tr>
+<tr>
+<td>MAPE</td>
+<td><span class="math inline">\frac{100}{n}\sum \lvert e_t / y_t\rvert</span></td>
+<td>%</td>
+<td>popular, but see below</td>
+</tr>
+</tbody>
+</table>
+<p><strong>MASE</strong> (Hyndman &amp; Koehler, 2006) is the one to use when comparing across series with different scales, because it divides out the units. Its denominator is a <em>one-step</em> naive error, so multi-step forecasts will usually score above 1. That's expected. It isn't failure.</p>
+<h3 id="why-not-mape">Why not MAPE?</h3>
+<p>MAPE divides by the actual value, so days with <strong>very little pollution</strong> carry enormous weight. A forecast of 30 µg/m³ on a day that turns out to be 3 µg/m³ is a 900% error, while missing a 400 µg/m³ smog day by 200 is only 50%. For public health, the second miss is far worse. We'll check this on real forecasts in section 5.</p>
+<h3 id="each-metric-rewards-a-different-forecast">Each metric rewards a different forecast</h3>
+<p>This is subtle but important:</p>
+<ul>
+<li><strong>MAE</strong> is minimised by forecasting the <strong>median</strong> of what might happen.</li>
+<li><strong>RMSE</strong> is minimised by forecasting the <strong>mean</strong>.</li>
+</ul>
+<p>PM2.5 is right-skewed, with occasional huge episodes, so its mean sits well above its median. The best forecast therefore <em>depends on the metric you'll be judged by</em>. Decide the metric first, then build the forecast for it. We'll see this with two versions of climatology, one using the median and one using the mean.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-the-rolling-origin-backtest">4. The rolling-origin backtest</h2>
+<p>A single train/test split gives one noisy number. Instead we <strong>roll the forecast origin</strong> forward one day at a time through 2014. At each origin the forecaster sees only the data up to that day, forecasts the next 7 days, and we record every forecast next to what actually happened.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, ax = plt.subplots(figsize=(12, 3))
+for row, start in enumerate(range(0, 50, 10)):
+    ax.barh(row, 30 + start, left=0, color=&quot;#1f6feb&quot;, alpha=0.7)
+    ax.barh(row, 7, left=30 + start, color=&quot;#d1495b&quot;, alpha=0.8)
+ax.set(yticks=range(5), yticklabels=[f&quot;origin {i + 1}&quot; for i in range(5)],
+       xlabel=&quot;time →&quot;, title=&quot;Rolling origin: the history grows, the model never sees past its origin&quot;)
+ax.invert_yaxis()
+ax.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=&quot;#1f6feb&quot;, alpha=0.7),
+                   plt.Rectangle((0, 0), 1, 1, color=&quot;#d1495b&quot;, alpha=0.8)],
+          labels=[&quot;history available&quot;, &quot;7-day forecast window&quot;], loc=&quot;lower right&quot;);</code></pre>
+<figure class="output-figure"><img src="img/04-2.png" alt="Figure 2 produced by the code above" width="1013" height="315" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def backtest(y, forecaster, origins, horizon, actuals=None):
+    &quot;&quot;&quot;For each origin, forecast `horizon` steps from the history up to that origin.&quot;&quot;&quot;
+    actuals = y if actuals is None else actuals
+    rows = []
+    for origin in origins:
+        pos = y.index.get_loc(origin)
+        forecast = np.asarray(forecaster(y.iloc[: pos + 1], horizon), dtype=float)
+        dates = y.index[pos + 1 : pos + 1 + horizon]
+        rows.append(pd.DataFrame({
+            &quot;origin&quot;: origin,
+            &quot;h&quot;: np.arange(1, len(dates) + 1),
+            &quot;date&quot;: dates,
+            &quot;forecast&quot;: forecast[: len(dates)],
+            &quot;actual&quot;: actuals.reindex(dates).to_numpy(),
+        }))
+    return pd.concat(rows, ignore_index=True)
+
+origins = tsutils.BACKTEST_ORIGINS
+print(f&quot;{len(origins)} origins, {origins[0]:%d %b %Y} → {origins[-1]:%d %b %Y}; horizon {tsutils.HORIZON} days&quot;)
+
+bt_naive = backtest(y, naive_forecast, origins, tsutils.HORIZON, actuals=actual)
+bt_naive.head(9)</code></pre>
+<pre class="output">359 origins, 31 Dec 2013 → 24 Dec 2014; horizon 7 days
+      origin  h       date  forecast  actual
+0 2013-12-31  1 2014-01-01      49.3    58.4
+1 2013-12-31  2 2014-01-02      49.3   167.6
+2 2013-12-31  3 2014-01-03      49.3    54.5
+3 2013-12-31  4 2014-01-04      49.3   154.9
+4 2013-12-31  5 2014-01-05      49.3   101.4
+5 2013-12-31  6 2014-01-06      49.3   154.6
+6 2013-12-31  7 2014-01-07      49.3   112.9
+7 2014-01-01  1 2014-01-02      58.4   167.6
+8 2014-01-01  2 2014-01-03      58.4    54.5</pre>
+</div>
+
+<div class="md">
+<p>The first origin is 31 December 2013, so every target date falls inside 2014, and the last origin is chosen so its 7-day window ends on 31 December. The same function lives in <code>tsutils.backtest</code>, and the standard origins in <code>tsutils.BACKTEST_ORIGINS</code>. Let's confirm the notebook version and the library version agree:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pd.testing.assert_frame_equal(
+    bt_naive,
+    tsutils.backtest(y, tsutils.naive_forecast, origins, tsutils.HORIZON, actuals=actual))
+print(&quot;identical&quot;)</code></pre>
+<pre class="output">identical</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-results-which-baseline-wins-and-when">5. Results: which baseline wins, and when?</h2>
+<p>Now we run every baseline through the same backtest. We add the mean-based climatology from section 3, and score everything with <code>tsutils.evaluate</code>, which gives MAE, RMSE and bias per step ahead and skips unscorable days.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">all_baselines = baselines | {
+    &quot;climatology (mean)&quot;: lambda h, H: climatology_forecast(h, H, stat=&quot;mean&quot;),
+}
+all_baselines[&quot;climatology (median)&quot;] = all_baselines.pop(&quot;climatology&quot;)
+
+backtests = {name: backtest(y, f, origins, tsutils.HORIZON, actuals=actual)
+             for name, f in all_baselines.items()}
+scores = {name: tsutils.evaluate(bt) for name, bt in backtests.items()}
+
+mae_by_h = pd.DataFrame({name: s[&quot;MAE&quot;] for name, s in scores.items()})
+mae_by_h</code></pre>
+<pre class="output">   mean  naive  seasonal naive (7)  drift  moving average (7)  \
+h                                                               
+1  58.9   51.1                76.8   51.1                59.0   
+2  59.1   72.2                76.7   72.3                63.6   
+3  59.3   81.3                77.0   81.3                64.6   
+4  59.4   81.6                77.4   81.7                64.4   
+5  59.4   76.3                77.2   76.4                64.3   
+6  59.6   75.1                77.2   75.2                64.7   
+7  59.7   76.9                76.9   77.1                64.5   
+
+   climatology (mean)  climatology (median)  
+h                                            
+1                57.2                  56.1  
+2                57.5                  56.6  
+3                57.8                  56.8  
+4                57.9                  57.1  
+5                57.9                  57.1  
+6                58.1                  57.1  
+7                58.2                  57.1</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharex=True)
+for metric, ax in zip([&quot;MAE&quot;, &quot;RMSE&quot;], axes):
+    for name, s in scores.items():
+        ax.plot(s.index, s[metric], marker=&quot;o&quot;, label=name)
+    ax.set(title=f&quot;{metric} by forecast horizon (2014 backtest)&quot;, xlabel=&quot;days ahead&quot;, ylabel=&quot;µg/m³&quot;)
+axes[0].legend(fontsize=8);</code></pre>
+<figure class="output-figure"><img src="img/04-3.png" alt="Figure 3 produced by the code above" width="1074" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>This is the most important figure in the chapter. Things to notice:</p>
+<ul>
+<li><strong>Naive wins for tomorrow, then collapses.</strong> &quot;Tomorrow looks like today&quot; is the best of these forecasts one day ahead. From day 2 it's among the worst, because it confidently repeats a smog peak that has usually cleared by then. That's the one-day half-life from chapter 03, seen from the forecaster's side.</li>
+<li><strong>Climatology wins from day 2 onwards.</strong> Once today's information has faded, the best guess is &quot;a typical day for this time of year&quot;. Its error is almost flat across horizons, because it ignores the most recent data entirely.</li>
+<li><strong>Seasonal naive (7) and drift are poor.</strong> PM2.5 has no weekly cycle (chapter 01) and no straight-line trend, so baselines that assume them do badly. Drift sits almost exactly on top of naive: over four years of history, the start-to-end slope is close to zero. A baseline is only strong if its assumption matches the data.</li>
+<li><strong>The metric picks the winner.</strong> On MAE the <em>median</em> climatology beats the mean version. On RMSE the ranking flips, just as section 3 predicted.</li>
+</ul>
+<p>So the targets for every later model are <strong>beat naive at 1 day, beat climatology beyond that</strong>. A model that manages both has learned how quickly today's conditions fade, which is exactly what the ARMA models in chapter 06 are designed to do.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">train = y[: origins[0]]
+mase_scale = np.mean(np.abs(np.diff(train.to_numpy())))    # in-sample one-step naive MAE
+
+summary = pd.DataFrame({
+    &quot;MAE (all h)&quot;: {n: s[&quot;MAE&quot;].mean() for n, s in scores.items()},
+    &quot;RMSE (all h)&quot;: {n: np.sqrt((s[&quot;RMSE&quot;] ** 2).mean()) for n, s in scores.items()},
+    &quot;MASE&quot;: {n: s[&quot;MAE&quot;].mean() / mase_scale for n, s in scores.items()},
+    &quot;bias&quot;: {n: s[&quot;bias&quot;].mean() for n, s in scores.items()},
+})
+summary[&quot;skill vs naive&quot;] = 1 - summary[&quot;MAE (all h)&quot;] / summary.loc[&quot;naive&quot;, &quot;MAE (all h)&quot;]
+summary.sort_values(&quot;MAE (all h)&quot;).style.format(
+    {&quot;MAE (all h)&quot;: &quot;{:.1f}&quot;, &quot;RMSE (all h)&quot;: &quot;{:.1f}&quot;, &quot;MASE&quot;: &quot;{:.2f}&quot;, &quot;bias&quot;: &quot;{:+.1f}&quot;, &quot;skill vs naive&quot;: &quot;{:+.0%}&quot;})</code></pre>
+<pre class="output">                      MAE (all h)  RMSE (all h)  MASE   bias  skill vs naive
+climatology (median)         56.8          82.9  1.14  -17.5            +23%
+climatology (mean)           57.8          78.2  1.16   +1.7            +21%
+mean                         59.3          80.9  1.19   +2.4            +19%
+moving average (7)           63.6          87.0  1.28   -0.2            +14%
+naive                        73.5         103.0  1.48   -0.3             +0%
+drift                        73.6         103.2  1.48   -0.4             -0%
+seasonal naive (7)           77.0         109.3  1.55   -0.0             -5%</pre>
+</div>
+
+<div class="md">
+<p>Two more things are worth reading from this table:</p>
+<ul>
+<li><strong>Every MASE is above 1.</strong> A one-step naive forecast <em>within</em> the training data is a tough yardstick for 7-day-ahead forecasts. This will be true of every model in the course, and it's fine.</li>
+<li><strong>The median climatology has a negative bias.</strong> It forecasts <em>below</em> the actual value on average, and that's exactly what it should do. The median of a right-skewed distribution sits below its mean. A negative bias is the price of minimising MAE, not a bug.</li>
+</ul>
+<h3 id="mape-on-the-same-forecasts">MAPE on the same forecasts</h3>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">naive_rows = backtests[&quot;naive&quot;].dropna(subset=[&quot;actual&quot;])
+ape = 100 * (naive_rows[&quot;forecast&quot;] - naive_rows[&quot;actual&quot;]).abs() / naive_rows[&quot;actual&quot;]
+clean_days = naive_rows[&quot;actual&quot;] &lt; 20
+
+print(f&quot;naive MAPE: {ape.mean():.0f}%   (median APE {ape.median():.0f}%, worst {ape.max():,.0f}%)&quot;)
+print(f&quot;days with actual &lt; 20 µg/m³: {clean_days.mean():.0%} of forecasts, &quot;
+      f&quot;but {ape[clean_days].sum() / ape.sum():.0%} of total MAPE&quot;)</code></pre>
+<pre class="output">naive MAPE: 149%   (median APE 64%, worst 5,466%)
+days with actual &lt; 20 µg/m³: 7% of forecasts, but 36% of total MAPE</pre>
+</div>
+
+<div class="md">
+<p>A small share of clean-air days dominates the metric. Optimising MAPE would push a model towards forecasting <em>low</em> values, at the expense of the smog days that matter. We'll use MAE as the headline metric and report RMSE alongside, because large misses are what hurt.</p>
+<h3 id="saving-the-scoreboard">Saving the scoreboard</h3>
+<p>Every later chapter adds its models to one results file, which the capstone reads to build the final leaderboard.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">for name, s in scores.items():
+    tsutils.save_scores(name, s)
+
+tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;).round(1)</code></pre>
+<pre class="output">model  climatology (mean)  climatology (median)  drift  mean  \
+h                                                              
+1                    57.2                  56.1   51.1  58.9   
+2                    57.5                  56.6   72.3  59.1   
+3                    57.8                  56.8   81.3  59.3   
+4                    57.9                  57.1   81.7  59.4   
+5                    57.9                  57.1   76.4  59.4   
+6                    58.1                  57.1   75.2  59.6   
+7                    58.2                  57.1   77.1  59.7   
+
+model  moving average (7)  naive  seasonal naive (7)  
+h                                                     
+1                    59.0   51.1                76.8  
+2                    63.6   72.2                76.7  
+3                    64.6   81.3                77.0  
+4                    64.4   81.6                77.4  
+5                    64.3   76.3                77.2  
+6                    64.7   75.1                77.2  
+7                    64.5   76.9                76.9</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-leakage-when-the-backtest-peeks-at-the-future">6. Leakage: when the backtest peeks at the future</h2>
+<p><strong>Leakage</strong> is any path by which information from after the forecast origin reaches the forecast. Our <code>backtest</code> prevents the obvious path by only passing <code>y</code> up to the origin. Leaks can still come in through anything computed <em>outside</em> the forecaster.</p>
+<p>Here is a realistic one. Suppose you computed &quot;typical PM2.5 for each day of the year&quot; <strong>once</strong>, from all of 2010–2014, and then used that table inside the backtest. It looks harmless: it's just a seasonal profile. But when forecasting a day in 2014, the table already contains that very day.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">leaky_source = y[:&quot;2014&quot;]            # includes the year we&#x27;re evaluating on!
+
+def leaky_climatology(history, horizon, window=15):
+    &quot;&quot;&quot;Same recipe as climatology_forecast, but the profile comes from leaky_source.&quot;&quot;&quot;
+    targets = pd.date_range(history.index[-1] + pd.Timedelta(days=1), periods=horizon, freq=&quot;D&quot;)
+    doy, values = leaky_source.index.dayofyear.to_numpy(), leaky_source.to_numpy()
+    out = []
+    for target_doy in targets.dayofyear:
+        distance = np.abs(doy - target_doy)
+        distance = np.minimum(distance, 365 - distance)
+        out.append(np.median(values[distance &lt;= window]))
+    return np.array(out)
+
+leaky = tsutils.evaluate(backtest(y, leaky_climatology, origins, tsutils.HORIZON, actuals=actual))
+honest = scores[&quot;climatology (median)&quot;]
+print(f&quot;honest climatology MAE: {honest[&#x27;MAE&#x27;].mean():.1f}&quot;)
+print(f&quot;leaky  climatology MAE: {leaky[&#x27;MAE&#x27;].mean():.1f}&quot;)</code></pre>
+<pre class="output">honest climatology MAE: 56.8
+leaky  climatology MAE: 55.9</pre>
+</div>
+
+<div class="md">
+<p>The leak makes climatology look almost 2% better. That sounds small, but it's about as large as the gap between the median and mean climatologies above, which was enough to decide a winner. Leaks rarely announce themselves with spectacular scores. More often they quietly hand an advantage to whichever model happens to contain one, and flip conclusions you thought were solid.</p>
+<p>Common sources to watch for in later chapters:</p>
+<ul>
+<li><strong>Preprocessing on the full series</strong>: interpolation, scaling, or smoothing computed before the split (chapter 01's caveat).</li>
+<li><strong>Features that use the future</strong>: centred rolling windows, &quot;daily totals&quot; that include later hours.</li>
+<li><strong>Tuning on the evaluation period</strong>: choosing a setting because it scored best on 2014, then reporting its 2014 score (Exercise 4).</li>
+<li><strong>Random train/test splits</strong>: shuffling rows lets a model train on Thursday and be &quot;tested&quot; on the Wednesday before it (chapter 09).</li>
+</ul>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-honest-uncertainty-prediction-intervals-from-past-errors">7. Honest uncertainty: prediction intervals from past errors</h2>
+<p>A point forecast hides how uncertain we are. A simple, assumption-light way to build an interval is to <strong>use the model's own past errors</strong>:</p>
+<ol>
+<li>Run the backtest on an <strong>earlier</strong> period (2013) and collect the errors at each horizon.</li>
+<li>Take their 10th and 90th percentiles. Adding those to a new forecast gives an <strong>80% interval</strong>.</li>
+<li><strong>Check</strong> it on a later period (2014): about 80% of actuals should land inside.</li>
+</ol>
+<p>PM2.5 errors scale with the level, since a bad day can miss by hundreds, so we work with <strong>log ratios</strong> <span class="math inline">\log(y / \hat y)</span>. That makes the interval multiplicative, and it can never dip below zero.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">calibration_origins = pd.date_range(&quot;2012-12-31&quot;, &quot;2013-12-24&quot;, freq=&quot;D&quot;)
+
+def interval_factors(forecaster, lower=0.10, upper=0.90):
+    &quot;&quot;&quot;Per-horizon multiplicative interval factors, learned from 2013 errors.&quot;&quot;&quot;
+    cal = backtest(y, forecaster, calibration_origins, tsutils.HORIZON, actuals=actual).dropna(subset=[&quot;actual&quot;])
+    log_ratio = np.log(cal[&quot;actual&quot;] / cal[&quot;forecast&quot;])
+    return log_ratio.groupby(cal[&quot;h&quot;]).quantile([lower, upper]).unstack().pipe(np.exp)
+
+coverage = {}
+for name in [&quot;naive&quot;, &quot;climatology (median)&quot;]:
+    factors = interval_factors(all_baselines[name])
+    rows = backtests[name].dropna(subset=[&quot;actual&quot;]).join(factors, on=&quot;h&quot;)
+    inside = (rows[&quot;actual&quot;] &gt;= rows[&quot;forecast&quot;] * rows[0.10]) &amp; (rows[&quot;actual&quot;] &lt;= rows[&quot;forecast&quot;] * rows[0.90])
+    coverage[name] = inside.groupby(rows[&quot;h&quot;]).mean()
+
+pd.DataFrame(coverage).style.format(&quot;{:.0%}&quot;)</code></pre>
+<pre class="output">   naive  climatology (median)
+h
+1    77%                   81%
+2    80%                   80%
+3    75%                   80%
+4    74%                   79%
+5    78%                   80%
+6    78%                   80%
+7    76%                   80%</pre>
+</div>
+
+<div class="md">
+<p>Climatology's intervals hit the 80% target almost exactly at every horizon, even though they were learned only from 2013. Naive's run a little short, at 74–80%: its errors depend on how much PM2.5 changes from day to day, and 2014's swings were somewhat larger than 2013's. Intervals calibrated on one period inherit that period's volatility, which is why checking coverage on <em>different</em> data matters. Let's draw them for one stretch of 2014:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">factors = interval_factors(climatology_forecast)
+one_day = backtests[&quot;climatology (median)&quot;].query(&quot;h == 3&quot;).set_index(&quot;date&quot;).loc[&quot;2014-10&quot;:&quot;2014-12&quot;]
+lo, hi = one_day[&quot;forecast&quot;] * factors.loc[3, 0.10], one_day[&quot;forecast&quot;] * factors.loc[3, 0.90]
+
+ax = one_day[&quot;actual&quot;].plot(color=&quot;k&quot;, lw=1, label=&quot;actual&quot;)
+one_day[&quot;forecast&quot;].plot(ax=ax, label=&quot;climatology, 3 days ahead&quot;)
+ax.fill_between(one_day.index, lo, hi, alpha=0.2, label=&quot;80% interval&quot;)
+ax.set(title=&quot;Three-day-ahead climatology forecast with an 80% interval&quot;, ylabel=&quot;µg/m³&quot;)
+ax.legend(loc=&quot;upper left&quot;);</code></pre>
+<figure class="output-figure"><img src="img/04-4.png" alt="Figure 4 produced by the code above" width="1006" height="445" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The interval is <strong>wide</strong>, often spanning 20 to 250 µg/m³, and that's honest. It says that climatology knows the season, but not whether next Tuesday will be clear or smoggy. A better model should earn a <strong>narrower</strong> interval with the same 80% coverage. That's as important a target as a lower MAE.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-a-series-where-seasonal-naive-shines">Exercise 1: A series where seasonal naive shines</h3>
+<p>Load the monthly Mauna Loa CO₂ series (as in chapter 03). Backtest <code>naive</code>, a 12-month <strong>seasonal naive</strong>, and <code>drift</code> with monthly origins from January 1990 to December 2000 and a 12-month horizon, using <code>tsutils.backtest</code> and <code>tsutils.evaluate</code>. Then build a <strong>seasonal naive with drift</strong>: repeat last year's values, plus one year's growth for each year ahead, where the growth is the mean of the last 12 months minus the mean of the 12 before. Which baseline wins at 1, 6 and 12 months ahead?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">co2 = sm.datasets.co2.load_pandas().data[&quot;co2&quot;].resample(&quot;MS&quot;).mean().interpolate()
+co2_origins = pd.date_range(&quot;1990-01-01&quot;, &quot;2000-12-01&quot;, freq=&quot;MS&quot;)
+
+def seasonal_naive_drift(history, horizon, period=12):
+    growth = history.iloc[-period:].mean() - history.iloc[-2 * period:-period].mean()
+    years_ahead = np.ceil(np.arange(1, horizon + 1) / period)
+    return seasonal_naive_forecast(history, horizon, period) + growth * years_ahead
+
+co2_models = {
+    &quot;naive&quot;: naive_forecast,
+    &quot;seasonal naive (12)&quot;: lambda h, H: seasonal_naive_forecast(h, H, period=12),
+    &quot;drift&quot;: drift_forecast,
+    &quot;seasonal naive + drift&quot;: seasonal_naive_drift,
+}
+pd.DataFrame({name: tsutils.evaluate(tsutils.backtest(co2, f, co2_origins, 12))[&quot;MAE&quot;]
+              for name, f in co2_models.items()}).loc[[1, 6, 12]]
+</code></pre>
+<p>Plain naive and drift suffer badly at 6 months, where they ignore half a seasonal wave. Seasonal naive is steady but always a year's growth behind. Seasonal naive + drift wins at 1 and 6 months. <strong>At exactly 12 months, though, plain drift catches up and even wins.</strong> A 12-month-ahead target falls in the same calendar month as the origin, so ignoring seasonality costs nothing there, and drift's long-run slope is a steadier growth estimate than one year's change. That's a good reason to always read errors <strong>by horizon</strong>, since an average over horizons would hide it. For CO₂, a model has to beat a <strong>seasonal</strong> baseline, which is a much higher bar than for PM2.5. The right baseline depends on the structure you found in chapters 02–03.</p>
+</details>
+<h3 id="exercise-2-damped-persistence">Exercise 2: Damped persistence</h3>
+<p>Chapter 03 estimated a lag-1 autocorrelation of <span class="math inline">\phi \approx 0.53</span> for daily PM2.5. Build a forecast that starts at today's value and <strong>decays towards climatology</strong> at that rate:</p>
+<div class="math display">\hat y_{t+h} = c_{t+h} + \phi^h\,(y_t - c_{t+h}),</div>
+<p>where <span class="math inline">c</span> is the mean climatology. Backtest it. Does it beat naive at <span class="math inline">h = 1</span>? Does it beat climatology later?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">phi = 0.53
+
+def damped_persistence(history, horizon):
+    clim = climatology_forecast(history, horizon, stat=&quot;mean&quot;)
+    return clim + phi ** np.arange(1, horizon + 1) * (history.iloc[-1] - clim)
+
+damped = tsutils.evaluate(backtest(y, damped_persistence, origins, 7, actuals=actual))
+pd.DataFrame({&quot;damped&quot;: damped[&quot;MAE&quot;], &quot;naive&quot;: scores[&quot;naive&quot;][&quot;MAE&quot;],
+              &quot;climatology (median)&quot;: scores[&quot;climatology (median)&quot;][&quot;MAE&quot;]})
+</code></pre>
+<p>It clearly beats naive at one day ahead and is close to climatology beyond that. It starts where naive is strong and ends where climatology is strong. It trails the <em>median</em> climatology slightly at long horizons because it decays towards the <em>mean</em>, which MAE doesn't reward. Two numbers, <span class="math inline">\phi</span> and a seasonal profile, capture most of what's forecastable here. This is essentially an AR(1) model around a seasonal mean, which chapter 06 fits properly.</p>
+</details>
+<h3 id="exercise-3-combining-forecasts">Exercise 3: Combining forecasts</h3>
+<p>Average the naive and median-climatology forecasts, 50/50. Backtest the combination. Where does it beat both of its ingredients, and where does it lose? How does it compare with Exercise 2?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def naive_climatology_combo(history, horizon):
+    return 0.5 * naive_forecast(history, horizon) + 0.5 * climatology_forecast(history, horizon)
+
+combo = tsutils.evaluate(backtest(y, naive_climatology_combo, origins, 7, actuals=actual))
+pd.DataFrame({&quot;combo&quot;: combo[&quot;MAE&quot;], &quot;naive&quot;: scores[&quot;naive&quot;][&quot;MAE&quot;],
+              &quot;climatology (median)&quot;: scores[&quot;climatology (median)&quot;][&quot;MAE&quot;]})
+</code></pre>
+<p>At one day ahead the combination beats both ingredients. Averaging forecasts whose errors are only partly correlated often does, which is one of the most dependable results in forecasting. At longer horizons it's dragged down by the naive half, which no longer carries information. A fixed 50/50 weight is too crude: the weight on &quot;today&quot; should <strong>shrink with the horizon</strong>, and that's exactly what Exercise 2's <span class="math inline">\phi^h</span> does.</p>
+</details>
+<h3 id="exercise-4-tune-on-one-year-report-on-the-next">Exercise 4: Tune on one year, report on the next</h3>
+<p>Climatology has a setting: the <code>window</code> (in days) around each date of the year. Try <code>window</code> values of 3, 7, 15, 30, 45, 60 and 90.</p>
+<ol>
+<li>Choose the best window using a backtest on <strong>2013</strong> (<code>calibration_origins</code>), then report that window's 2014 MAE.</li>
+<li>Compare with the window that <em>would</em> have been best if you'd chosen it by looking at 2014 directly.</li>
+</ol>
+<details><summary>Solution</summary>
+<pre><code class="language-python">windows = [3, 7, 15, 30, 45, 60, 90]
+tuning = pd.DataFrame({
+    period: {w: tsutils.evaluate(backtest(y, lambda h, H, w=w: climatology_forecast(h, H, window=w),
+                                          period_origins, 7, actuals=actual))[&quot;MAE&quot;].mean()
+             for w in windows}
+    for period, period_origins in [(&quot;2013 (tuning)&quot;, calibration_origins), (&quot;2014 (reporting)&quot;, origins)]
+})
+chosen = tuning[&quot;2013 (tuning)&quot;].idxmin()
+print(f&quot;chosen on 2013: window={chosen} -&gt; 2014 MAE {tuning.loc[chosen, '2014 (reporting)']:.2f}&quot;)
+print(f&quot;best in hindsight on 2014: window={tuning['2014 (reporting)'].idxmin()} &quot;
+      f&quot;-&gt; {tuning['2014 (reporting)'].min():.2f}&quot;)
+tuning
+</code></pre>
+<p>The window chosen on 2013 does almost as well in 2014 as the best-in-hindsight choice. Here the gap, the optimism you'd have reported by tuning on the test data, is tiny, because this setting barely matters. With flexible models and dozens of settings the gap grows quickly, and this two-period discipline is what keeps it honest. It's also why 2015 stays locked.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A model's score only means something <strong>next to a baseline</strong>. Naive, seasonal naive, drift and climatology each encode one belief about the future.</li>
+<li>The <strong>rolling-origin backtest</strong> is the standard evaluation: many origins, the model sees only the past, and error is read <strong>by horizon</strong>.</li>
+<li><strong>MAE</strong> rewards forecasting the median, <strong>RMSE</strong> the mean. Pick the metric first. <strong>MAPE</strong> is dominated by small actuals, so avoid it for data like PM2.5. <strong>MASE</strong> makes errors comparable across series.</li>
+<li>For daily PM2.5: <strong>naive wins at 1 day, climatology from 2 days</strong>. Every later model has to beat both, and the scoreboard is saved in <code>results/</code>.</li>
+<li><strong>Leakage</strong> is usually subtle. Compute everything from data available at the origin, and <strong>tune on a different period from the one you report</strong>.</li>
+<li>Intervals built from past errors are simple and honest, but <strong>check their coverage</strong> on data they weren't calibrated on.</li>
+</ul>
+<p><strong>Next:</strong> <em>05 · Exponential Smoothing</em>. Our first real forecasting models: weighted averages that let recent days count more, with weights learned from the data.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="03-stationarity.html"><span class="lbl">Previous · 03</span><span class="t">Stationarity</span></a>
+  <a class="next" rel="next" href="05-exponential-smoothing.html"><span class="lbl">Next · 05</span><span class="t">Exponential smoothing</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 04 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

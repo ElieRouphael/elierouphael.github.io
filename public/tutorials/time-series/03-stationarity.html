@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>03 · Stationarity — Time-series course</title>
+<meta name="description" content="Random walks vs. mean reversion, half-lives, ADF and KPSS and their blind spots, test power by simulation, differencing vs. detrending.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 03 of 11</span>
+  <h1>Stationarity</h1>
+  <div class="intro prose">
+<p>Every forecast rests on the same assumption: <strong>the past is a guide to the future</strong>. If the rules that generate a series keep changing, averages computed from history estimate a moving target, and a model fitted to yesterday describes a world that's gone. <em>Stationarity</em> is the formal version of &quot;the rules don't change&quot;. Most classical models, including the ARMA family in chapters 06–07, require it.</p>
+<p>This chapter is careful about what stationarity does and does <em>not</em> mean, because the idea is easy to get wrong. In particular, <strong>a series can be strongly autocorrelated and still be perfectly stationary</strong>.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>state the definition of (weak) stationarity and recognise the common ways it fails</li>
+<li>explain the difference between a <strong>random walk</strong> and a <strong>mean-reverting</strong> process, and measure how quickly shocks fade</li>
+<li>run and interpret the <strong>ADF</strong> and <strong>KPSS</strong> tests together, and know what each is blind to</li>
+<li>understand from simulation how <strong>reliable</strong> these tests are</li>
+<li>choose the right transformation (<strong>differencing</strong>, <strong>detrending</strong>, <strong>seasonal differencing</strong>) and spot <strong>over-differencing</strong></li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/03_stationarity.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-what-stationarity-means">1. What stationarity means</a></li>
+    <li><a href="#2-a-gallery-of-processes">2. A gallery of processes</a></li>
+    <li><a href="#3-the-ensemble-view-why-a-random-walk-isn-t-stationary">3. The ensemble view: why a random walk isn't stationary</a></li>
+    <li><a href="#4-persistence-how-long-do-shocks-last">4. Persistence: how long do shocks last?</a></li>
+    <li><a href="#5-look-before-you-test">5. Look before you test</a></li>
+    <li><a href="#6-formal-tests-adf-and-kpss">6. Formal tests: ADF and KPSS</a></li>
+    <li><a href="#7-how-reliable-is-the-adf-test">7. How reliable is the ADF test?</a></li>
+    <li><a href="#8-making-a-series-stationary">8. Making a series stationary</a></li>
+    <li><a href="#9-beijing-what-kind-of-series-is-pm2-5">9. Beijing: what kind of series is PM2.5?</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from scipy.signal import lfilter
+from statsmodels.tsa.stattools import acf
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 3)</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-what-stationarity-means">1. What stationarity means</h2>
+<p>A series <span class="math inline">y_t</span> is <strong>(weakly) stationary</strong> if three things stay fixed over time:</p>
+<ol>
+<li><strong>Mean:</strong> <span class="math inline">\;E[y_t] = \mu</span> for every <span class="math inline">t</span></li>
+<li><strong>Variance:</strong> <span class="math inline">\;\operatorname{Var}(y_t) = \sigma^2</span> for every <span class="math inline">t</span></li>
+<li><strong>Autocovariance depends only on the lag:</strong> <span class="math inline">\;\operatorname{Cov}(y_t, y_{t+k}) = \gamma_k</span>, the same for every <span class="math inline">t</span></li>
+</ol>
+<p>Condition 3 is the one people misread. It does <strong>not</strong> say that <span class="math inline">y_t</span> must be uncorrelated with its past. It says the <em>strength</em> of that relationship, how much today resembles yesterday, must be the same in 2010 as in 2015. Autocorrelation is allowed. Autocorrelation that changes over time is not.</p>
+<p>(There's also <em>strict</em> stationarity, which requires the entire joint distribution to be time-invariant. In practice &quot;stationary&quot; almost always means the weak version above.)</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-a-gallery-of-processes">2. A gallery of processes</h2>
+<p>We'll generate six series from the <strong>same random shocks</strong> <span class="math inline">\varepsilon_t \sim N(0, 1)</span>, so any difference between them comes from structure alone.</p>
+<table>
+<thead>
+<tr>
+<th>Series</th>
+<th>Recipe</th>
+<th>Stationary?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>White noise</td>
+<td><span class="math inline">y_t = \varepsilon_t</span></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>AR(1), <span class="math inline">\phi = 0.7</span></td>
+<td><span class="math inline">y_t = 0.7\,y_{t-1} + \varepsilon_t</span></td>
+<td>✅ autocorrelated, but it keeps returning to 0</td>
+</tr>
+<tr>
+<td>Random walk</td>
+<td><span class="math inline">y_t = y_{t-1} + \varepsilon_t</span></td>
+<td>❌ variance grows without limit</td>
+</tr>
+<tr>
+<td>Trend + noise</td>
+<td><span class="math inline">y_t = 0.05\,t + \varepsilon_t</span></td>
+<td>❌ mean changes; <strong>trend-stationary</strong></td>
+</tr>
+<tr>
+<td>Variance shift</td>
+<td><span class="math inline">y_t = \sigma_t\,\varepsilon_t</span>, <span class="math inline">\sigma_t</span> jumps from 1 to 3</td>
+<td>❌ variance changes</td>
+</tr>
+<tr>
+<td>Seasonal</td>
+<td><span class="math inline">y_t = 5\sin(2\pi t/12) + \varepsilon_t</span></td>
+<td>❌ mean depends on the time of year</td>
+</tr>
+</tbody>
+</table>
+<p><code>scipy.signal.lfilter</code> applies a recursion like <span class="math inline">y_t = \phi y_{t-1} + \varepsilon_t</span> to a whole array at once, which is much faster than a Python loop. We'll lean on it for the simulations later.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ar1(shocks, phi):
+    &quot;&quot;&quot;y_t = phi * y_{t-1} + shock_t, starting from 0 (works along the last axis).&quot;&quot;&quot;
+    return lfilter([1], [1, -phi], shocks, axis=-1)
+
+rng = np.random.default_rng(3)
+n = 500
+t = np.arange(n)
+eps = rng.normal(size=n)
+
+gallery = pd.DataFrame({
+    &quot;white noise&quot;: eps,
+    &quot;AR(1), φ=0.7&quot;: ar1(eps, 0.7),
+    &quot;random walk&quot;: ar1(eps, 1.0),
+    &quot;trend + noise&quot;: 0.05 * t + eps,
+    &quot;variance shift&quot;: eps * np.where(t &lt; n // 2, 1, 3),
+    &quot;seasonal&quot;: 5 * np.sin(2 * np.pi * t / 12) + eps,
+})
+
+axes = gallery.plot(subplots=True, layout=(3, 2), figsize=(13, 8), legend=False, lw=0.8)
+for ax, name in zip(axes.flat, gallery.columns):
+    ax.set_title(name)
+plt.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/03-1.png" alt="Figure 1 produced by the code above" width="1290" height="790" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Look at the random walk. With nothing but zero-mean shocks, it wanders far from zero, and a single path can easily <em>look</em> as if it has a trend. That's one of the most important things to internalise in time-series work: <strong>random walks produce convincing fake trends</strong>. The AR(1) uses exactly the same shocks, but its <span class="math inline">\phi = 0.7</span> pulls it back towards zero every step, so it never gets far.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-the-ensemble-view-why-a-random-walk-isn-t-stationary">3. The ensemble view: why a random walk isn't stationary</h2>
+<p>A single path can mislead, so let's simulate <strong>a thousand</strong> of each and look at the spread across paths at every point in time. For a random walk started at 0, <span class="math inline">y_t</span> is the sum of <span class="math inline">t</span> independent shocks, so <span class="math inline">\operatorname{Var}(y_t) = t\,\sigma^2</span>: the variance grows linearly and never settles. For an AR(1) with <span class="math inline">|\phi| &lt; 1</span>, the variance settles at <span class="math inline">\sigma^2 / (1 - \phi^2)</span>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">paths_shocks = rng.normal(size=(1000, n))
+walks = ar1(paths_shocks, 1.0)
+ar_paths = ar1(paths_shocks, 0.7)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharey=True)
+for ax, paths, title in [(axes[0], walks, &quot;1,000 random walks&quot;),
+                         (axes[1], ar_paths, &quot;1,000 AR(1) paths, φ = 0.7&quot;)]:
+    ax.plot(t, paths[:40].T, lw=0.5, alpha=0.5)
+    ax.fill_between(t, *np.percentile(paths, [5, 95], axis=0), alpha=0.15, label=&quot;middle 90%&quot;)
+    ax.set(title=title, xlabel=&quot;t&quot;)
+    ax.legend(loc=&quot;upper left&quot;)
+fig.tight_layout()
+
+checkpoints = [10, 100, 499]
+pd.DataFrame({
+    &quot;random walk: variance&quot;: walks[:, checkpoints].var(axis=0),
+    &quot;theory (t + 1)&quot;: [c + 1 for c in checkpoints],
+    &quot;AR(1): variance&quot;: ar_paths[:, checkpoints].var(axis=0),
+    &quot;theory 1/(1-φ²)&quot;: 1 / (1 - 0.7**2),
+}, index=pd.Index(checkpoints, name=&quot;t&quot;))</code></pre>
+<pre class="output">     random walk: variance  theory (t + 1)  AR(1): variance  theory 1/(1-φ²)
+t                                                                           
+10                  12.088              11            2.149            1.961
+100                108.185             101            1.974            1.961
+499                492.914             500            1.855            1.961</pre>
+<figure class="output-figure"><img src="img/03-2.png" alt="Figure 2 produced by the code above" width="1290" height="390" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The simulated variances match the theory. (The random walk's variance is <span class="math inline">t + 1</span> here because our arrays start counting at <span class="math inline">t = 0</span> with one shock already added.) The random walk's funnel keeps widening, and <strong>uncertainty about where it will be grows with the horizon, forever</strong>. That's exactly what forecast intervals for non-stationary series look like later in the course.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-persistence-how-long-do-shocks-last">4. Persistence: how long do shocks last?</h2>
+<p>In an AR(1), a shock of size 1 today is still worth <span class="math inline">\phi^k</span> after <span class="math inline">k</span> steps. That gives a useful summary, the <strong>half-life</strong>: the number of steps until a shock has lost half its effect,</p>
+<div class="math display">h = \frac{\ln 0.5}{\ln \phi}.</div>
+<p>At <span class="math inline">\phi = 1</span> the shock never fades. That's what a <strong>unit root</strong> means: <span class="math inline">\phi</span> sits exactly at 1, and the series has no mean to return to.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">steps = np.arange(0, 61)
+fig, ax = plt.subplots()
+for phi in [0.5, 0.9, 0.99, 1.0]:
+    label = f&quot;φ = {phi}&quot; + (f&quot;  (half-life {np.log(0.5) / np.log(phi):.1f} steps)&quot; if phi &lt; 1 else &quot;  (never fades)&quot;)
+    ax.plot(steps, phi ** steps, label=label)
+ax.set(title=&quot;Effect of a single shock over time&quot;, xlabel=&quot;steps after the shock&quot;, ylabel=&quot;remaining effect&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/03-3.png" alt="Figure 3 produced by the code above" width="1001" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Notice how different <span class="math inline">\phi = 0.99</span> and <span class="math inline">\phi = 1</span> are <em>in principle</em> (one reverts eventually, the other never does) and how similar they look over any short window. Keep that picture in mind for section 6.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-look-before-you-test">5. Look before you test</h2>
+<p>Rolling statistics are the quickest check. If the rolling mean or rolling standard deviation clearly drifts, the series is not stationary. It's a screening tool rather than proof, because a stationary series with strong autocorrelation also produces a wobbly rolling mean.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">window = 50
+fig, axes = plt.subplots(2, 3, figsize=(13, 5.5), sharex=True)
+for ax, name in zip(axes.flat, [&quot;white noise&quot;, &quot;random walk&quot;, &quot;variance shift&quot;,
+                                &quot;AR(1), φ=0.7&quot;, &quot;trend + noise&quot;, &quot;seasonal&quot;]):
+    s = gallery[name]
+    ax.plot(s, lw=0.4, color=&quot;0.7&quot;)
+    ax.plot(s.rolling(window).mean(), label=&quot;rolling mean&quot;)
+    ax.plot(s.rolling(window).std(), label=&quot;rolling std&quot;)
+    ax.set_title(name)
+axes[0, 0].legend(loc=&quot;upper left&quot;)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/03-4.png" alt="Figure 4 produced by the code above" width="1289" height="540" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The rolling mean exposes the random walk and the trend. The rolling standard deviation exposes the variance shift. The seasonal series is subtler: a 50-step window averages over about four cycles, so the seasonal swing cancels out and both lines look flat. <strong>A window that spans whole seasonal cycles hides seasonality</strong>, so use a decomposition (chapter 02) for that.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-formal-tests-adf-and-kpss">6. Formal tests: ADF and KPSS</h2>
+<p>The two standard tests ask <em>opposite</em> questions, which is exactly why you should use them together.</p>
+<p><strong>Augmented Dickey–Fuller (ADF).</strong> It fits</p>
+<div class="math display">\Delta y_t = \alpha + \beta t + \gamma\, y_{t-1} + \sum_{j=1}^{p} \delta_j\, \Delta y_{t-j} + \varepsilon_t</div>
+<p>and tests whether <span class="math inline">\gamma = 0</span>, which is the same as <span class="math inline">\phi = 1</span>. The lagged differences soak up short-term autocorrelation, and statsmodels picks <span class="math inline">p</span> automatically.</p>
+<ul>
+<li><strong>Null hypothesis:</strong> the series has a <strong>unit root</strong> (non-stationary).</li>
+<li>A small p-value rejects the unit root: evidence <em>for</em> stationarity.</li>
+</ul>
+<p><strong>KPSS.</strong> It asks whether the series' deviations from a constant (or a trend) accumulate into something that wanders.</p>
+<ul>
+<li><strong>Null hypothesis:</strong> the series <strong>is stationary</strong>.</li>
+<li>A small p-value rejects stationarity: evidence <em>against</em> it.</li>
+</ul>
+<p>Both take a <code>regression</code> argument that sets the kind of stationarity being tested. <code>&quot;c&quot;</code> means stationary around a constant mean, and <code>&quot;ct&quot;</code> means stationary around a <strong>linear trend</strong>. Choosing the wrong one gives confidently wrong answers, as you'll see below.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>KPSS: don't reject</strong></th>
+<th><strong>KPSS: reject</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ADF: reject</strong></td>
+<td>✅ stationary</td>
+<td>⚠️ conflict: often fast mean reversion around a drifting level</td>
+</tr>
+<tr>
+<td><strong>ADF: don't reject</strong></td>
+<td>❓ inconclusive: often too little data</td>
+<td>❌ unit root</td>
+</tr>
+</tbody>
+</table>
+<p><code>tsutils.stationarity_tests</code> runs both and reads the table for you. It builds on <code>tsutils.adf_pvalue</code> and <code>tsutils.kpss_pvalue</code>, thin wrappers around statsmodels' <code>adfuller</code> and <code>kpss</code> that return just the p-value and work across statsmodels versions. One quirk to know: KPSS p-values come from a lookup table, so statsmodels <strong>clips them to the range 0.01–0.10</strong>. A reported 0.10 means &quot;0.10 or larger&quot;.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">report = pd.concat({
+    &quot;constant (c)&quot;: gallery.apply(tsutils.stationarity_tests, regression=&quot;c&quot;).T,
+    &quot;trend (ct)&quot;: gallery.apply(tsutils.stationarity_tests, regression=&quot;ct&quot;).T,
+}, axis=1)
+report</code></pre>
+<pre class="output">               constant (c)                    trend (ct)         \
+                      ADF p KPSS p     verdict      ADF p KPSS p   
+white noise             0.0    0.1  stationary        0.0    0.1   
+AR(1), φ=0.7            0.0    0.1  stationary        0.0    0.1   
+random walk           0.918   0.01   unit root      0.122  0.035   
+trend + noise         0.961   0.01   unit root        0.0    0.1   
+variance shift          0.0    0.1  stationary        0.0    0.1   
+seasonal                0.0    0.1  stationary        0.0    0.1   
+
+                                  
+                         verdict  
+white noise     trend-stationary  
+AR(1), φ=0.7    trend-stationary  
+random walk            unit root  
+trend + noise   trend-stationary  
+variance shift  trend-stationary  
+seasonal        trend-stationary</pre>
+</div>
+
+<div class="md">
+<p>Read the table row by row, and compare each verdict with the answer in section 2:</p>
+<ul>
+<li><strong>White noise and AR(1)</strong> are correctly called stationary. Autocorrelation doesn't fool the tests. (Under <code>&quot;ct&quot;</code> they come out &quot;trend-stationary&quot;, which is also correct: a flat line is a trend with slope zero.)</li>
+<li><strong>Random walk:</strong> correctly called a unit root.</li>
+<li><strong>Trend + noise:</strong> with <code>&quot;c&quot;</code> it's called a <strong>unit root</strong>, which is wrong. The tests were asked about a constant mean, and a series with a trend certainly doesn't have one. With <code>&quot;ct&quot;</code> it's correctly identified as <strong>trend-stationary</strong>. If you can see a trend, test with <code>&quot;ct&quot;</code>.</li>
+<li><strong>Variance shift and seasonal:</strong> both come out <strong>stationary</strong>, and both are wrong. ADF and KPSS are tests about <em>persistence</em>, meaning whether shocks accumulate. They were never designed to detect a change in variance or a deterministic seasonal pattern. The rolling standard deviation and the decomposition from chapter 02 catch what these tests can't.</li>
+</ul>
+<blockquote>
+<p><strong>The main lesson:</strong> a test result is an answer to one narrow question. Plots, decompositions and domain knowledge answer the rest.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-how-reliable-is-the-adf-test">7. How reliable is the ADF test?</h2>
+<p>A test has two error rates worth knowing:</p>
+<ul>
+<li><strong>Size:</strong> how often it <em>wrongly</em> rejects when the null is true. With <span class="math inline">\alpha = 0.05</span> this should be about 5%.</li>
+<li><strong>Power:</strong> how often it <em>correctly</em> rejects when the null is false. We want this high.</li>
+</ul>
+<p>We can measure both by simulation. We generate many AR(1) series with a known <span class="math inline">\phi</span>, run ADF on each, and record how often it rejects the unit root. At <span class="math inline">\phi = 1</span> that rate is the size, and for <span class="math inline">\phi &lt; 1</span> it's the power.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def adf_rejection_rate(phi, n, reps=200, alpha=0.05, burn_in=100, seed=0):
+    &quot;&quot;&quot;Share of simulated AR(1) series (length n) for which ADF rejects a unit root.&quot;&quot;&quot;
+    shocks = np.random.default_rng(seed).normal(size=(reps, n + burn_in))
+    series = ar1(shocks, phi)[:, burn_in:]          # drop the start-up period
+    return np.mean([tsutils.adf_pvalue(s) &lt; alpha for s in series])
+
+phis = [1.0, 0.99, 0.95, 0.9, 0.8]
+lengths = [100, 250, 500]
+power = pd.DataFrame(
+    [[adf_rejection_rate(phi, n_obs) for n_obs in lengths] for phi in phis],
+    index=pd.Index(phis, name=&quot;true φ&quot;),
+    columns=pd.Index(lengths, name=&quot;series length&quot;),
+)
+power.style.format(&quot;{:.0%}&quot;).background_gradient(cmap=&quot;Blues&quot;, vmin=0, vmax=1)</code></pre>
+<pre class="output">series length  100   250   500
+true φ
+1.000000        5%    5%    5%
+0.990000        7%    6%   12%
+0.950000       16%   45%   94%
+0.900000       40%   96%  100%
+0.800000       87%  100%  100%</pre>
+</div>
+
+<div class="md">
+<p>The first row is the test's <strong>size</strong>. It sits close to the promised 5%, so the test is honest about false alarms. The other rows show its <strong>power</strong>, which is where the trouble is:</p>
+<ul>
+<li>At <span class="math inline">\phi = 0.95</span>, a perfectly stationary series with a half-life of about 13 steps, ADF with 100 observations <strong>usually fails to notice</strong>. With 500 it almost always does.</li>
+<li>At <span class="math inline">\phi = 0.99</span> it is nearly powerless at any of these lengths.</li>
+</ul>
+<p>So &quot;ADF did not reject&quot; is <strong>weak evidence</strong>. It often just means &quot;not enough data to tell a slowly reverting series from a random walk&quot;. That's the whole reason to pair it with KPSS, whose null is the opposite, and not to treat either p-value as a verdict on its own.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="8-making-a-series-stationary">8. Making a series stationary</h2>
+<p>The right transformation depends on <strong>why</strong> the series is non-stationary. Using the wrong one creates new problems.</p>
+<h3 id="8a-differencing-removes-a-unit-root">8a. Differencing removes a unit root</h3>
+<p>The <strong>first difference</strong> is <span class="math inline">\Delta y_t = y_t - y_{t-1}</span> (in pandas, <code>s.diff()</code>). For a random walk, <span class="math inline">\Delta y_t = \varepsilon_t</span>: differencing gives back exactly the white-noise shocks.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">walk = gallery[&quot;random walk&quot;]
+pd.DataFrame({
+    &quot;random walk&quot;: tsutils.stationarity_tests(walk),
+    &quot;differenced&quot;: tsutils.stationarity_tests(walk.diff()),
+}).T</code></pre>
+<pre class="output">             ADF p KPSS p     verdict
+random walk  0.918   0.01   unit root
+differenced    0.0    0.1  stationary</pre>
+</div>
+
+<div class="md">
+<h3 id="8b-detrend-a-trend-stationary-series-don-t-difference-it">8b. Detrend a trend-stationary series; don't difference it</h3>
+<p>What if we difference the <em>trend + noise</em> series instead? <span class="math inline">\Delta y_t = 0.05 + \varepsilon_t - \varepsilon_{t-1}</span>. It's stationary, but we've injected an artificial pattern: each shock now appears twice, once with a plus sign and once with a minus. That gives a lag-1 autocorrelation of exactly <span class="math inline">-0.5</span> in theory. This is <strong>over-differencing</strong>, and it's the classic sign that you've differenced a series that didn't need it.</p>
+<p>The better tool is <strong>detrending</strong>: fit the trend and subtract it.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">trendy = gallery[&quot;trend + noise&quot;]
+slope, intercept = np.polyfit(t, trendy, deg=1)
+detrended = trendy - (intercept + slope * t)
+differenced = trendy.diff().dropna()
+
+pd.DataFrame({
+    &quot;lag-1 autocorrelation&quot;: [detrended.autocorr(1), differenced.autocorr(1)],
+    &quot;variance&quot;: [detrended.var(), differenced.var()],
+}, index=[&quot;detrended&quot;, &quot;differenced&quot;])</code></pre>
+<pre class="output">             lag-1 autocorrelation  variance
+detrended                   -0.029     1.002
+differenced                 -0.522     2.055</pre>
+</div>
+
+<div class="md">
+<p>Detrending recovers noise with no autocorrelation and the original variance (≈ 1). Differencing produces a lag-1 autocorrelation near −0.5 and <strong>doubles</strong> the variance, adding noise instead of removing it.</p>
+<blockquote>
+<p><strong>Rule of thumb:</strong> a strongly negative lag-1 autocorrelation (around −0.5 or below) after differencing suggests you've over-differenced.</p>
+</blockquote>
+<h3 id="8c-seasonal-differencing">8c. Seasonal differencing</h3>
+<p>A <strong>seasonal difference</strong> subtracts the value one full cycle ago, <span class="math inline">y_t - y_{t-m}</span> (<code>s.diff(m)</code>). It removes a stable seasonal pattern, and it removes a unit root at the seasonal lag. Let's apply the options to the Mauna Loa CO₂ series from chapter 02.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2 = sm.datasets.co2.load_pandas().data[&quot;co2&quot;].resample(&quot;MS&quot;).mean().interpolate()
+
+versions = {
+    &quot;original&quot;: co2,
+    &quot;first difference&quot;: co2.diff(),
+    &quot;seasonal difference (12)&quot;: co2.diff(12),
+    &quot;both&quot;: co2.diff(12).diff(),
+}
+
+fig, axes = plt.subplots(2, 2, figsize=(13, 6))
+for ax, (name, s) in zip(axes.flat, versions.items()):
+    s.plot(ax=ax, lw=0.8, title=name)
+fig.tight_layout()
+
+pd.DataFrame({name: tsutils.stationarity_tests(s) for name, s in versions.items()}).T</code></pre>
+<pre class="output">                          ADF p KPSS p  \
+original                  0.999   0.01   
+first difference            0.0    0.1   
+seasonal difference (12)    0.0   0.01   
+both                        0.0    0.1   
+
+                                                                  verdict  
+original                                                        unit root  
+first difference                                               stationary  
+seasonal difference (12)  conflict: fast mean reversion, but level drifts  
+both                                                           stationary</pre>
+<figure class="output-figure"><img src="img/03-5.png" alt="Figure 5 produced by the code above" width="1290" height="590" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>There's a lot in this table:</p>
+<ul>
+<li><strong>Original:</strong> a unit root, as expected for a series that trends upward for 40 years.</li>
+<li><strong>First difference:</strong> the tests say <em>stationary</em>, but the plot plainly shows the seasonal wave is still there. It's the same blind spot as in section 6.</li>
+<li><strong>Seasonal difference:</strong> the seasonal pattern is gone, but KPSS still objects. <span class="math inline">y_t - y_{t-12}</span> is the <strong>year-on-year growth</strong>, and the plot shows CO₂'s growth rate itself creeping upward over the decades. The <em>rise is accelerating</em>. (The spikes in growth line up with strong El Niño years such as 1972–73, 1987–88 and 1997–98, when warmer tropics release extra CO₂.)</li>
+<li><strong>Both:</strong> stationary by every measure.</li>
+</ul>
+<p>So CO₂ needs <strong>one regular difference and one seasonal difference</strong>. When we reach SARIMA in chapter 07, those are exactly its <span class="math inline">d = 1</span> and <span class="math inline">D = 1</span>.</p>
+<h3 id="8d-logs-for-level-dependent-variance">8d. Logs for level-dependent variance</h3>
+<p>If the size of the fluctuations grows <strong>with the level</strong>, as in chapter 02's multiplicative series, take logs <em>before</em> differencing. <span class="math inline">\Delta \log y_t</span> is approximately the <strong>percentage change</strong>, a very natural scale for prices, populations and pollution. A log can't fix variance that jumps for reasons unrelated to the level, like the <em>variance shift</em> series. That needs a model of changing volatility, which is beyond this course.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="9-beijing-what-kind-of-series-is-pm2-5">9. Beijing: what kind of series is PM2.5?</h2>
+<p>Now the running dataset. We'll use daily means on the log scale (chapter 01 showed the heavy upper tail) and require at least 18 hourly readings per day.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pm = tsutils.load_beijing()[&quot;pm25&quot;].interpolate(method=&quot;time&quot;, limit=3, limit_area=&quot;inside&quot;)
+daily = pm.resample(&quot;D&quot;).agg([&quot;mean&quot;, &quot;count&quot;])
+log_pm = np.log(daily[&quot;mean&quot;].where(daily[&quot;count&quot;] &gt;= 18)).interpolate(limit_direction=&quot;both&quot;)
+
+log_pm.plot(lw=0.5, title=&quot;Daily mean PM2.5 (log scale)&quot;, ylabel=&quot;log µg/m³&quot;)
+tsutils.stationarity_tests(log_pm)</code></pre>
+<pre class="output">ADF p                                                  0.0
+KPSS p                                                0.01
+verdict    conflict: fast mean reversion, but level drifts
+dtype: object</pre>
+<figure class="output-figure"><img src="img/03-6.png" alt="Figure 6 produced by the code above" width="988" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p><strong>A conflict.</strong> ADF firmly rejects a unit root, while KPSS rejects stationarity. Both can be right at once, because they're sensitive to different features. Let's look at each in turn.</p>
+<p><strong>How fast does the series revert?</strong> The autocorrelation function is the correlation of the series with itself at each lag. It drops to nearly zero within about three days.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pd.Series(acf(log_pm, nlags=7)[1:], index=pd.RangeIndex(1, 8, name=&quot;lag (days)&quot;), name=&quot;autocorrelation&quot;)</code></pre>
+<pre class="output">lag (days)
+1    0.527
+2    0.167
+3    0.032
+4   -0.003
+5    0.013
+6    0.031
+7    0.034
+Name: autocorrelation, dtype: float64</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">phi = log_pm.autocorr(1)
+print(f&quot;lag-1 autocorrelation φ ≈ {phi:.2f}  -&gt;  half-life ≈ {np.log(0.5) / np.log(phi):.1f} days&quot;)</code></pre>
+<pre class="output">lag-1 autocorrelation φ ≈ 0.53  -&gt;  half-life ≈ 1.1 days</pre>
+</div>
+
+<div class="md">
+<p>That's a strongly <strong>mean-reverting</strong> series. A pollution anomaly loses half its effect in about a day. This is what ADF is detecting.</p>
+<p><strong>Is the level itself constant?</strong> Compare yearly means:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">yearly = log_pm.groupby(log_pm.index.year).mean()
+ax = np.exp(yearly).plot(marker=&quot;o&quot;, title=&quot;Geometric-mean PM2.5 by year&quot;, ylabel=&quot;µg/m³&quot;)
+ax.set_xlabel(&quot;year&quot;);</code></pre>
+<figure class="output-figure"><img src="img/03-7.png" alt="Figure 7 produced by the code above" width="997" height="392" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pd.DataFrame({
+    &quot;all years, constant (c)&quot;: tsutils.stationarity_tests(log_pm, regression=&quot;c&quot;),
+    &quot;all years, trend (ct)&quot;: tsutils.stationarity_tests(log_pm, regression=&quot;ct&quot;),
+    &quot;2010–2014 only, constant (c)&quot;: tsutils.stationarity_tests(log_pm[:&quot;2014&quot;], regression=&quot;c&quot;),
+}).T</code></pre>
+<pre class="output">                             ADF p KPSS p  \
+all years, constant (c)        0.0   0.01   
+all years, trend (ct)          0.0  0.068   
+2010–2014 only, constant (c)   0.0    0.1   
+
+                                                                      verdict  
+all years, constant (c)       conflict: fast mean reversion, but level drifts  
+all years, trend (ct)                                        trend-stationary  
+2010–2014 only, constant (c)                                       stationary</pre>
+</div>
+
+<div class="md">
+<p>From 2010 to 2014 the level wobbles between about 65 and 80 µg/m³ with no clear direction. Then <strong>2015 drops well below that range</strong>. That downward shift at the end is what KPSS objects to. Allow for a trend, or leave out 2015, and the conflict disappears.</p>
+<p>So the diagnosis is <strong>fast mean reversion around a slowly drifting level</strong>. Two practical consequences follow:</p>
+<ol>
+<li><strong>Don't difference this series.</strong> It doesn't have a unit root, and differencing would over-difference it (Exercise 1). The drifting level should be <em>modelled</em>, with a trend term or by giving recent data more weight, not differenced away.</li>
+<li><strong>Expect a short forecasting horizon.</strong> With a half-life of about a day, today's conditions say a lot about tomorrow and very little about next week. Beyond a few days, any sensible forecast falls back towards the typical level for the season. This will show up clearly in the forecasting chapters.</li>
+</ol>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-over-differencing-for-real">Exercise 1: Over-differencing, for real</h3>
+<p>Difference <code>log_pm</code> once. Compute the lag-1 autocorrelation of the differenced series and run <code>tsutils.stationarity_tests</code> on it. Compare with the undifferenced series. What does the sign of the lag-1 autocorrelation tell you?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">diffed = log_pm.diff().dropna()
+print(f&quot;lag-1 autocorrelation: original {log_pm.autocorr(1):.2f}, differenced {diffed.autocorr(1):.2f}&quot;)
+print(f&quot;variance: original {log_pm.var():.3f}, differenced {diffed.var():.3f}&quot;)
+tsutils.stationarity_tests(diffed)
+</code></pre>
+<p>The differenced series passes both tests, but its lag-1 autocorrelation turns <strong>negative</strong>, and its variance barely falls: with a half-life of a day, most of each day's value is fresh news anyway. The negative sign is the over-differencing signature from section 8b. It's weaker than −0.5 because the original isn't white noise around a trend, but it points the same way. Passing the tests doesn't make a transformation <em>right</em>.</p>
+</details>
+<h3 id="exercise-2-check-the-test-s-size-yourself">Exercise 2: Check the test's size yourself</h3>
+<p>Simulate 500 random walks of length 200 and run <code>tsutils.adf_pvalue</code> on each. What share of them does ADF (wrongly) call stationary at <span class="math inline">\alpha = 0.05</span>? Now do the same for KPSS on 500 series of white noise. Does each test's false-alarm rate match its promise?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">sim = np.random.default_rng(11).normal(size=(500, 200))
+adf_false = np.mean([tsutils.adf_pvalue(w) &lt; 0.05 for w in ar1(sim, 1.0)])
+kpss_false = np.mean([tsutils.kpss_pvalue(w) &lt; 0.05 for w in sim])
+
+print(f&quot;ADF false alarms on random walks: {adf_false:.1%}&quot;)
+print(f&quot;KPSS false alarms on white noise: {kpss_false:.1%}&quot;)
+</code></pre>
+<p>Both should come out near 5%, with some simulation noise. The tests are honest about false alarms. Their weakness is <strong>power</strong> (section 7), not size.</p>
+</details>
+<h3 id="exercise-3-random-walk-with-drift">Exercise 3: Random walk with drift</h3>
+<p>Simulate <span class="math inline">y_t = 0.2 + y_{t-1} + \varepsilon_t</span> for 500 steps: a random walk that also trends upward. Run the tests with <code>regression=&quot;c&quot;</code> and with <code>&quot;ct&quot;</code>. Can the <code>&quot;ct&quot;</code> setting tell this apart from the <em>trend + noise</em> series? What transformation makes it stationary?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">drift_walk = pd.Series(ar1(0.2 + rng.normal(size=500), 1.0))
+drift_walk.plot(title=&quot;random walk with drift&quot;)
+pd.DataFrame({
+    &quot;c&quot;: tsutils.stationarity_tests(drift_walk, regression=&quot;c&quot;),
+    &quot;ct&quot;: tsutils.stationarity_tests(drift_walk, regression=&quot;ct&quot;),
+    &quot;differenced&quot;: tsutils.stationarity_tests(drift_walk.diff()),
+}).T
+</code></pre>
+<p>Even with <code>&quot;ct&quot;</code>, the tests should still find a unit root (rerun with other seeds to check it isn't luck). The trend here is made of accumulated shocks, not a fixed line, so detrending can't remove the wandering. Differencing gives <span class="math inline">0.2 + \varepsilon_t</span>, which is stationary. <strong>Trend-stationary</strong> and <strong>difference-stationary</strong> series can look alike on a plot, and the tests with <code>&quot;ct&quot;</code> are how you tell them apart.</p>
+</details>
+<h3 id="exercise-4-spurious-correlation">Exercise 4: Spurious correlation</h3>
+<p>Generate 1,000 <em>pairs</em> of <strong>independent</strong> random walks (length 200) and record the correlation within each pair. Then do the same for their first differences. Plot both distributions. Why does this matter whenever you relate one time series to another, say PM2.5 and temperature?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">pairs = ar1(np.random.default_rng(5).normal(size=(1000, 2, 200)), 1.0)
+level_corr = [np.corrcoef(a, b)[0, 1] for a, b in pairs]
+diff_corr = [np.corrcoef(np.diff(a), np.diff(b))[0, 1] for a, b in pairs]
+
+ax = pd.DataFrame({&quot;levels&quot;: level_corr, &quot;differences&quot;: diff_corr}).plot.hist(
+    bins=40, alpha=0.6, title=&quot;Correlation between independent series&quot;)
+ax.set_xlabel(&quot;correlation&quot;)
+print(f&quot;share of level pairs with |corr| &gt; 0.5: {np.mean(np.abs(level_corr) &gt; 0.5):.0%}&quot;)
+</code></pre>
+<p>The walks are independent by construction, yet their <em>levels</em> often correlate strongly, positively or negatively, because two wandering series are bound to share some stretches of up and down. Their <em>differences</em> correlate close to zero, as they should. This is <strong>spurious correlation</strong>. Before reading anything into a correlation between two series, make sure both are stationary (or model them properly), or you may be measuring coincidence.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li><strong>Stationary</strong> means constant mean, constant variance, and autocorrelation that depends only on the lag. <strong>Autocorrelation itself is allowed.</strong></li>
+<li>A <strong>random walk</strong> (<span class="math inline">\phi = 1</span>) never forgets a shock, and its variance grows without limit. It also produces convincing fake trends. A <strong>mean-reverting</strong> process forgets at a rate summarised by its <strong>half-life</strong>.</li>
+<li><strong>ADF</strong> (null: unit root) and <strong>KPSS</strong> (null: stationary) ask opposite questions, so use them together. Pick <code>regression=&quot;ct&quot;</code> when there's a visible trend.</li>
+<li>Both tests are <strong>blind to variance changes and deterministic seasonality</strong>, and ADF has <strong>low power</strong> near <span class="math inline">\phi = 1</span>. Always plot.</li>
+<li><strong>Difference</strong> a unit root, <strong>detrend</strong> a trend-stationary series, <strong>seasonally difference</strong> a seasonal series, and take <strong>logs</strong> when variance grows with the level. A lag-1 autocorrelation near −0.5 after differencing means you've over-differenced.</li>
+<li>Daily PM2.5 is <strong>mean-reverting (half-life ≈ 1 day) around a slowly drifting level</strong>. Don't difference it. Expect short-horizon forecasts to be the useful ones.</li>
+</ul>
+<p><strong>Next:</strong> <em>04 · Baselines and Honest Evaluation</em>. Before building any real model, we'll set up the yardsticks: simple forecasts every model must beat, error metrics that can be compared across series, and a backtest that never lets the model see the future.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="02-anatomy-of-a-time-series.html"><span class="lbl">Previous · 02</span><span class="t">Anatomy of a time series</span></a>
+  <a class="next" rel="next" href="04-baselines-and-evaluation.html"><span class="lbl">Next · 04</span><span class="t">Baselines and honest evaluation</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 03 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

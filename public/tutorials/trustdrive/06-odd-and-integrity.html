@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>06 · Operational design domain and the integrity score — TrustDrive course</title>
+<meta name="description" content="The operational design domain as set membership, three detectors, their fusion into an integrity score, ROC and detection delay.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 06 of 09</span>
+  <h1>Operational design domain and the integrity score</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Turn the three trust signals - epistemic uncertainty (notebook 04), the
+model-based NIS (notebook 05), and operating-domain membership - into a single,
+decision-relevant <strong>integrity score</strong> <span class="math inline">I\in[0,1]</span>. We treat the signals as
+complementary <em>detectors</em>, fuse them with a rule that is safe by construction, and
+measure the result with ROC and detection-delay analysis.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/06_odd_and_integrity.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-odd-as-set-membership-under-uncertainty">1. The ODD as set membership under uncertainty</a></li>
+    <li><a href="#2-three-detectors-three-soft-scores">2. Three detectors, three soft scores</a></li>
+    <li><a href="#3-fusing-the-detectors">3. Fusing the detectors</a></li>
+    <li><a href="#4-does-fusion-actually-help-roc-and-detection-delay">4. Does fusion actually help? ROC and detection delay</a></li>
+    <li><a href="#5-where-this-goes-next">5. Where this goes next</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-the-odd-as-set-membership-under-uncertainty">1. The ODD as set membership under uncertainty</h2>
+<p>The <strong>operational design domain (ODD)</strong> is the set of conditions a system was
+designed and validated for [1,2]. Formally it is a set <span class="math inline">\mathcal D</span> in condition
+space, and monitoring is a membership test <span class="math inline">c_k\in\mathcal D</span>:</p>
+<div class="math display"> \mathcal D=\{\,c:\ |\kappa|&lt;\kappa_{\max},\ b&gt;b_{\min},\ \sigma_{blur}&lt;\sigma_{\max},\ o&lt;o_{\max}\,\}. </div>
+<p>Leaving <span class="math inline">\mathcal D</span> is a form of <strong>novelty / anomaly detection</strong> [9]: the input is
+unlike the design population. Two subtleties matter. First, the conditions <span class="math inline">c_k</span> are
+not known exactly - they are <em>estimated</em> from the image (the pixel features of
+notebook 03), so the test must cope with <strong>uncertain measurements</strong> [3]. Second, a
+hard indicator <span class="math inline">\mathbb 1[c\in\mathcal D]</span> chatters at the boundary; we prefer a
+<em>soft</em> margin. For each guard define a signed normalised margin (positive = inside)
+and pass the worst one through a logistic:</p>
+<div class="math display"> m_j(c)=1-\frac{|c_j|}{c_{j,\max}}\ \text{(etc.)},\qquad
+   s_{ODD}(c)=\sigma_L\!\big(\beta\,\min_j m_j\big),\quad \sigma_L(z)=\frac{1}{1+e^{-z}}. </div>
+</div>
+
+<div class="md">
+<h2 id="2-three-detectors-three-soft-scores">2. Three detectors, three soft scores</h2>
+<p>Each signal is a <em>detector</em> of untrustworthiness, mapped monotonically to a trust
+score in <span class="math inline">[0,1]</span> (1 = trustworthy):</p>
+<div class="math display"> s_{unc}=\exp\!\Big(-\frac{\mathrm{tr}\,\Sigma^{AI}}{\sigma_{ref}}\Big),\qquad
+   s_{NIS}=\exp\!\Big(-\frac{(\mathrm{NIS}-\chi^2_{m,1-\alpha})^+}{c}\Big),\qquad
+   s_{ODD}=\sigma_L\!\big(\beta\min_j m_j\big). </div>
+<p>The shapes are deliberate. <span class="math inline">s_{unc}</span> and <span class="math inline">s_{NIS}</span> use exponential decays so a
+score behaves like a soft likelihood that falls off as the statistic worsens;
+<span class="math inline">s_{NIS}</span> only reacts to the <em>excess</em> above its chi-squared threshold, so a
+consistent filter scores <span class="math inline">\approx 1</span>. Each detector is sensitive to a <em>different</em>
+failure mode, which is the whole reason to fuse them.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+CHI2 = 9.210
+sigmaL = lambda z: 1/(1 + np.exp(-z))
+
+def s_unc(trace, ref=0.02): return np.exp(-trace/ref)
+def s_nis(nis, scale=6.0):   return np.exp(-np.maximum(0, nis - CHI2)/scale)
+def s_odd(margin):           return sigmaL(6*margin)
+
+fig, ax = plt.subplots(1, 3, figsize=(11, 3))
+tr = np.linspace(0, 0.08, 200); ax[0].plot(tr, s_unc(tr), color=&quot;#8e44ad&quot;)
+ax[0].set(xlabel=&quot;uncertainty trace $\\mathrm{tr}\\,\\Sigma^{AI}$&quot;, ylabel=&quot;$s_{unc}$&quot;, title=&quot;uncertainty score&quot;)
+ni = np.linspace(0, 30, 200);  ax[1].plot(ni, s_nis(ni), color=&quot;#e67e22&quot;)
+ax[1].axvline(CHI2, ls=&quot;:&quot;, color=&quot;r&quot;); ax[1].set(xlabel=&quot;NIS&quot;, title=&quot;consistency score $s_{NIS}$&quot;)
+mg = np.linspace(-1, 1, 200);  ax[2].plot(mg, s_odd(mg), color=&quot;#2e7d32&quot;)
+ax[2].axvline(0, ls=&quot;:&quot;, color=&quot;r&quot;); ax[2].set(xlabel=&quot;worst ODD margin&quot;, title=&quot;domain score $s_{ODD}$&quot;)
+for a in ax: a.grid(alpha=.3)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/06-1.png" alt="Figure 1 produced by the code above" width="1199" height="319" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="3-fusing-the-detectors">3. Fusing the detectors</h2>
+<p>How should three trust scores combine into one? Read each <span class="math inline">s_i</span> as a soft estimate
+of <span class="math inline">P(\text{trustworthy}\mid \text{signal}_i)</span>. Under a <strong>naive-Bayes</strong> assumption
+(signals conditionally independent given trust), the combined posterior evidence
+<em>multiplies</em> - the log-scores add. This is the <strong>product rule</strong> for combining
+classifiers [4,5]:</p>
+<div class="math display"> \boxed{\;I_{raw}=s_{unc}\cdot s_{NIS}\cdot s_{ODD}\;} </div>
+<p>The product implements a logical <strong>AND / independent veto</strong>: <em>every</em> detector must be
+happy for <span class="math inline">I</span> to be high, and any one collapsing to <span class="math inline">0</span> vetoes trust. That is the
+safe choice - a fail-operational system should distrust the perception if <em>any</em>
+credible signal says so. Contrast the average <span class="math inline">\tfrac13\sum_i s_i</span>, which lets two
+happy detectors <em>mask</em> one that has detected a real fault. We finally low-pass the
+score to avoid chatter, a first-order recursion (EMA) with smoothing <span class="math inline">\beta</span>:</p>
+<div class="math display"> I_k=(1-\beta)\,I_{k-1}+\beta\,I_{raw,k}. </div>
+<p>(The independence assumption is only approximate - blur, say, raises both <span class="math inline">s_{unc}</span>
+and <span class="math inline">s_{ODD}</span> - so the product is a conservative, well-behaved heuristic rather than
+an exact posterior.)</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Product vs average: the weakest-link (veto) property
+a = np.linspace(0, 1, 200); b = np.linspace(0, 1, 200); Aa, Bb = np.meshgrid(a, b)
+fig, ax = plt.subplots(1, 2, figsize=(9, 3.8))
+for axi, (Z, name) in zip(ax, [(Aa*Bb, &quot;product  $s_1 s_2$&quot;), ((Aa+Bb)/2, &quot;average  $(s_1+s_2)/2$&quot;)]):
+    im = axi.contourf(Aa, Bb, Z, levels=np.linspace(0, 1, 11), cmap=&quot;RdYlGn&quot;)
+    axi.contour(Aa, Bb, Z, levels=[0.5], colors=&quot;k&quot;, linewidths=1.5)
+    axi.plot(0.1, 0.9, &#x27;ko&#x27;); axi.annotate(&quot;one detector\nvetoes&quot;, (0.1, 0.9), xytext=(0.25, 0.75),
+              textcoords=&quot;axes fraction&quot;, fontsize=8)
+    axi.set(xlabel=&quot;$s_1$&quot;, ylabel=&quot;$s_2$&quot;, title=name); axi.set_aspect(&quot;equal&quot;)
+fig.colorbar(im, ax=ax, shrink=.8, label=&quot;fused score&quot;)
+plt.show()
+print(&quot;At (s1, s2) = (0.1, 0.9):  product = %.2f (veto) ,  average = %.2f (would pass)&quot; % (0.1*0.9, (0.1+0.9)/2))</code></pre>
+<figure class="output-figure"><img src="img/06-2.png" alt="Figure 2 produced by the code above" width="801" height="371" loading="lazy"></figure>
+<pre class="output">At (s1, s2) = (0.1, 0.9):  product = 0.09 (veto) ,  average = 0.50 (would pass)</pre>
+</div>
+
+<div class="md">
+<h2 id="4-does-fusion-actually-help-roc-and-detection-delay">4. Does fusion actually help? ROC and detection delay</h2>
+<p>To evaluate detectors we need ground truth. We build a scenario with <strong>two
+different faults</strong>, and label each instant &quot;untrustworthy&quot; when a fault is present:</p>
+<ul>
+<li>a <strong>blur</strong> episode (heavy defocus): raises the perception uncertainty, and is
+visible in the pixel features, so <span class="math inline">s_{unc}</span> and <span class="math inline">s_{ODD}</span> should catch it - but the
+filter's <span class="math inline">R</span> grows honestly with the noise, so the <strong>NIS stays quiet</strong>;</li>
+<li>an <strong>unmonitored perception bias</strong> (a sensor glitch / novel object, with the
+conditions looking perfectly normal): invisible to the uncertainty and domain
+monitors, but it makes the innovation inconsistent, so <strong>only the NIS catches it</strong>.</li>
+</ul>
+<p>No single detector covers both. We compare them with a <strong>ROC curve</strong> (true- vs
+false-positive rate as the alarm threshold sweeps) [6] and with <strong>detection delay</strong>
+(time from fault onset to first alarm) [7].</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def build_scenario(N=800, Ts=0.05, seed=0):
+    r = np.random.default_rng(seed)
+    L, V = 2.7, 15.0
+    A = np.array([[1, V*Ts], [0, 1.]]); C = np.eye(2); Qk = np.diag([1e-4, 1e-4])
+    x = np.zeros(2); xhat = np.zeros(2); P = np.diag([0.05, 0.02])
+    base = np.array([0.02, 0.01])
+    S = {k: [] for k in (&quot;s_unc&quot;, &quot;s_nis&quot;, &quot;s_odd&quot;, &quot;I&quot;, &quot;label&quot;)}
+    def ramp(t, a, b, lo, hi): return lo if t&lt;=a else hi if t&gt;=b else lo+(hi-lo)*(t-a)/(b-a)
+    Iprev = 1.0
+    for k in range(N):
+        t = k*Ts
+        blur = ramp(t, 8, 11, 0, 2.6) if t &lt; 14 else ramp(t, 16, 18, 2.6, 0)   # blur fault 8..18
+        bright = 1 - 0.4*blur/2.6
+        bias_on = 24 &lt;= t &lt; 32                                                  # unmonitored bias fault
+        srep = base*(1 + 2.5*blur)*(1 + 1.5*max(0, 1 - bright))                 # honest noise level
+        x = A @ x + r.multivariate_normal([0, 0], Qk)                           # true dynamics (u = 0)
+        bias = np.array([0.20, 0.05]) if bias_on else np.zeros(2)
+        y = C @ x + bias + r.normal(0, srep)
+        # Kalman filter with honest claimed R = diag(srep^2)
+        xp = A @ xhat; Pp = A @ P @ A.T + Qk
+        nu = y - xp; Sn = Pp + np.diag(srep**2); nis = float(nu @ np.linalg.solve(Sn, nu))
+        Kg = Pp @ np.linalg.inv(Sn); xhat = xp + Kg @ nu; P = (np.eye(2) - Kg) @ Pp
+        # measured (noisy) pixel conditions for the ODD monitor
+        blur_m = max(0, blur + r.normal(0, 0.15)); bright_m = np.clip(bright + r.normal(0, 0.05), 0, 1)
+        margin = min((bright_m - 0.45)/0.55, 1 - blur_m/1.6)                    # pixel-only ODD guards
+        su, sn, so = s_unc((srep**2).sum()), s_nis(nis), s_odd(margin)
+        Iraw = su*sn*so; Iprev = 0.6*Iprev + 0.4*Iraw
+        for key, val in zip((&quot;s_unc&quot;,&quot;s_nis&quot;,&quot;s_odd&quot;,&quot;I&quot;), (su, sn, so, Iprev)): S[key].append(val)
+        S[&quot;label&quot;].append((blur &gt; 1.6) or bias_on)                             # ground-truth &quot;untrustworthy&quot;
+    return {k: np.array(v) for k, v in S.items()}, Ts
+
+def roc(score, label):
+    thr = np.r_[np.inf, np.sort(np.unique(score))[::-1], -np.inf]
+    P, Ng = label.sum(), (~label).sum()
+    tpr = np.array([((score &gt;= t) &amp; label).sum()/max(P, 1) for t in thr])
+    fpr = np.array([((score &gt;= t) &amp; ~label).sum()/max(Ng, 1) for t in thr])
+    auc = float(np.sum(np.diff(fpr) * (tpr[:-1] + tpr[1:]) / 2.0))   # trapezoid (numpy-version safe)
+    return fpr, tpr, auc
+
+sc, Ts = build_scenario()
+label = sc[&quot;label&quot;].astype(bool)
+detectors = {&quot;uncertainty (1-s_unc)&quot;: 1 - sc[&quot;s_unc&quot;], &quot;NIS (1-s_nis)&quot;: 1 - sc[&quot;s_nis&quot;],
+             &quot;ODD (1-s_odd)&quot;: 1 - sc[&quot;s_odd&quot;], &quot;fused (1-I)&quot;: 1 - sc[&quot;I&quot;]}
+colors = {&quot;uncertainty (1-s_unc)&quot;: &quot;#8e44ad&quot;, &quot;NIS (1-s_nis)&quot;: &quot;#e67e22&quot;,
+          &quot;ODD (1-s_odd)&quot;: &quot;#2e7d32&quot;, &quot;fused (1-I)&quot;: &quot;#111&quot;}
+
+plt.figure(figsize=(4.8, 4.6)); plt.plot([0,1],[0,1],&#x27;k--&#x27;,lw=.7)
+for name, score in detectors.items():
+    fpr, tpr, auc = roc(score, label)
+    plt.plot(fpr, tpr, color=colors[name], lw=(2.2 if &quot;fused&quot; in name else 1.3),
+             label=&quot;%s  AUC=%.2f&quot; % (name, auc))
+plt.xlabel(&quot;false-positive rate&quot;); plt.ylabel(&quot;true-positive rate&quot;)
+plt.title(&quot;Fusion dominates each single detector&quot;); plt.legend(fontsize=8, loc=&quot;lower right&quot;)
+plt.grid(alpha=.3); plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/06-3.png" alt="Figure: Fusion dominates each single detector" width="517" height="494" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Detection delay: threshold at the 90th percentile of each detector&#x27;s nominal score,
+# and require a SUSTAINED alarm (5 consecutive samples) so a lone spike does not count.
+def alarm_threshold(score, label, target_fpr=0.10):
+    return max(np.quantile(score[~label], 1 - target_fpr), 1e-3)
+
+def first_delay(score, thr, window, hold=5):
+    idx = np.where(window)[0]; onset = idx[0]
+    fired = (score &gt;= thr)
+    for i in idx:
+        if i + hold &lt;= len(score) and fired[i:i+hold].all():
+            return (i - onset)*Ts
+    return None
+
+blur_win = sc[&quot;label&quot;] &amp; (np.arange(len(label))*Ts &lt; 20)     # the blur-fault interval
+bias_win = sc[&quot;label&quot;] &amp; (np.arange(len(label))*Ts &gt;= 20)    # the bias-fault interval
+print(&quot;detector            blur-fault delay    bias-fault delay&quot;)
+for name, score in detectors.items():
+    thr = alarm_threshold(score, label)
+    db = first_delay(score, thr, blur_win); dbi = first_delay(score, thr, bias_win)
+    fmt = lambda d: (&quot;%.2f s&quot; % d) if d is not None else &quot;  MISSED&quot;
+    print(&quot;%-18s  %14s    %14s&quot; % (name.split(&#x27; &#x27;)[0], fmt(db), fmt(dbi)))</code></pre>
+<pre class="output">detector            blur-fault delay    bias-fault delay
+uncertainty                 0.00 s            MISSED
+NIS                         MISSED            1.75 s
+ODD                         0.00 s            MISSED
+fused                       0.00 s            0.30 s</pre>
+</div>
+
+<div class="md">
+<p>The ROC and the delay table make the argument quantitatively: the uncertainty and
+ODD monitors catch the blur fault but <strong>miss</strong> the unmonitored bias; the NIS catches
+the bias but is (correctly) quiet during the honest-noise blur; and the fused score
+catches <em>both</em>, with the highest AUC. This is exactly why the deployed system
+(notebook 08) fuses all three rather than trusting any single signal - and why the
+model-based NIS is indispensable for the failures the condition monitors cannot see.</p>
+</div>
+
+<div class="md">
+<h2 id="5-where-this-goes-next">5. Where this goes next</h2>
+<p>The integrity score is the single number the controller acts on. In notebook 07 it
+sets the <strong>authority</strong> shared between automation and driver, <span class="math inline">\lambda=\Phi(I,W)</span>, and
+contracts the operating envelope, <span class="math inline">v_{ref}=v_{nom}(0.4+0.6\,I)</span>. Because <span class="math inline">I</span> is
+smooth and vetoed by the weakest detector, that hand-off is graceful rather than a
+hard switch.</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Replace the product with a <strong>noisy-OR</strong> on the alarms, <span class="math inline">1-\prod_i(1-a_i)</span>, and
+compare its ROC to the product-of-trust rule. When would you prefer each?</li>
+<li>Add a third fault type - low brightness at night - and check which detectors
+cover it. Does the fused AUC stay highest?</li>
+<li>The independence assumption is false when blur raises both <span class="math inline">s_{unc}</span> and
+<span class="math inline">s_{ODD}</span>. Estimate their correlation on the scenario; does double-counting make
+the product <em>too</em> conservative?</li>
+<li>Tune the EMA <span class="math inline">\beta</span>: plot detection delay vs false-alarm rate as <span class="math inline">\beta</span> varies.
+This is the responsiveness-vs-robustness trade you will meet again with CUSUM
+(notebook 09).</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>SAE International. <em>Taxonomy and Definitions for Terms Related to Driving Automation Systems for On-Road Motor Vehicles.</em> Standard J3016_202104, 2021. (Operational design domain.)</li>
+<li>P. Koopman, F. Fratrik. <em>How Many Operational Design Domains, Objects, and Events?</em> SafeAI Workshop, AAAI, 2019.</li>
+<li>T. Charmet, V. Berge-Cherfaoui, J. Guzman, A. Armand. <em>Operational Design Domain Monitoring with Uncertain Measurements.</em> IEEE ITSC, 2024. <a href="https://doi.org/10.1109/ITSC58415.2024.10919733">doi:10.1109/ITSC58415.2024.10919733</a></li>
+<li>J. Kittler, M. Hatef, R. P. W. Duin, J. Matas. <em>On Combining Classifiers.</em> IEEE Transactions on Pattern Analysis and Machine Intelligence, 20(3):226-239, 1998. <a href="https://doi.org/10.1109/34.667881">doi:10.1109/34.667881</a> (Product vs sum fusion rules.)</li>
+<li>D. L. Hall, J. Llinas. <em>An Introduction to Multisensor Data Fusion.</em> Proceedings of the IEEE, 85(1):6-23, 1997. <a href="https://doi.org/10.1109/5.554205">doi:10.1109/5.554205</a></li>
+<li>T. Fawcett. <em>An Introduction to ROC Analysis.</em> Pattern Recognition Letters, 27(8):861-874, 2006. <a href="https://doi.org/10.1016/j.patrec.2005.10.010">doi:10.1016/j.patrec.2005.10.010</a></li>
+<li>M. Basseville, I. V. Nikiforov. <em>Detection of Abrupt Changes: Theory and Application.</em> Prentice Hall, 1993. (Detection delay and change detection.)</li>
+<li>P. Antonante, H. Nilsen, L. Carlone. <em>Monitoring of Perception Systems: Deterministic, Probabilistic, and Learning-based Fault Detection and Identification.</em> Artificial Intelligence, 2022. <a href="https://arxiv.org/abs/2205.10906">arXiv:2205.10906</a></li>
+<li>V. Chandola, A. Banerjee, V. Kumar. <em>Anomaly Detection: A Survey.</em> ACM Computing Surveys, 41(3):1-58, 2009. <a href="https://doi.org/10.1145/1541880.1541882">doi:10.1145/1541880.1541882</a></li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="05-kalman-and-nis.html"><span class="lbl">Previous · 05</span><span class="t">Kalman filter and NIS</span></a>
+  <a class="next" rel="next" href="07-shared-control.html"><span class="lbl">Next · 07</span><span class="t">Shared control</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 06 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

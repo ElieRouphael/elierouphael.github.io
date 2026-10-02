@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>04 · Few-Shot Identification of a New System — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Freezing the pretrained backbone and estimating only a 2-number context by MAP, with a Laplace approximation for its uncertainty, from as little as two seconds of a new system&#x27;s data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 04 of 09</span>
+  <h1>Few-Shot Identification of a New System</h1>
+  <div class="intro prose">
+<p>Chapter 03 packaged 20 long recordings into a two-dimensional family: an average system <span class="math inline">\bar\eta</span>,
+two directions <span class="math inline">U</span>, and a noise level <span class="math inline">\hat\sigma</span>. This chapter puts that backbone to work on a
+<em>brand new</em> system, seen through only a couple of seconds of data.</p>
+<hr />
+<h2 id="1-from-four-numbers-to-two">1. From four numbers to two</h2>
+<p>For a new system we freeze <span class="math inline">\bar\eta</span> and <span class="math inline">U</span> and estimate only the context <span class="math inline">z</span>. The pretraining
+distribution <span class="math inline">z\sim\mathcal N(0,I)</span> is a natural prior, which gives the maximum-a-posteriori estimate</p>
+<div class="math display">
+\hat z = \arg\min_z \ \frac{1}{\hat\sigma^2}\sum_t \big(y_t - \hat q_t(\bar\eta + Uz;\,u)\big)^2 + \|z\|^2 .
+</div>
+<p>The Laplace approximation also gives an uncertainty. With <span class="math inline">S = \partial \hat q/\partial z</span> the output
+sensitivity at <span class="math inline">\hat z</span>,</p>
+<div class="math display">
+\operatorname{Cov}(z \mid \text{data}) \approx \big(\hat\sigma^{-2} S^\top S + I\big)^{-1}.
+</div>
+<p>Two things improve at once: there are fewer unknowns, and the prior keeps them in the region where
+systems of this kind actually live.</p>
+<hr />
+<h2 id="2-estimating-the-context">2. Estimating the context</h2>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/04_few_shot_identification_of_a_new_system.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-from-four-numbers-to-two">1. From four numbers to two</a></li>
+    <li><a href="#2-estimating-the-context">2. Estimating the context</a></li>
+    <li><a href="#3-two-seconds-of-data-thirty-seconds-of-prediction">3. Two seconds of data, thirty seconds of prediction</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
+from scipy.optimize import least_squares
+
+import dynutils
+from dynutils import sample_system, simulate, multisine, predict, fit_from_scratch, rmse
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR = dynutils.COLOR
+family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def adapt(family, y, u):
+    # MAP estimate of the context, its Laplace covariance, and the RMS output misfit.
+    residual = lambda z: np.r_[(predict(family.decode(z), u) - y) / family.sigma, z]
+    sol = least_squares(residual, np.zeros(family.U.shape[1]))
+    S = sol.jac[:-len(sol.x)] * family.sigma
+    cov = np.linalg.inv(S.T @ S / family.sigma**2 + np.eye(len(sol.x)))
+    misfit = rmse(predict(family.decode(sol.x), u), y)
+    return sol.x, cov, misfit
+
+
+def ellipse(ax, mean, cov, color, label=None, n_std=2.0):
+    vals, vecs = np.linalg.eigh(cov)
+    angle = np.degrees(np.arctan2(vecs[1, -1], vecs[0, -1]))
+    ax.add_patch(Ellipse(mean, *(2 * n_std * np.sqrt(vals[::-1])), angle=angle,
+                         fill=False, color=color, lw=2, label=label))</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-two-seconds-of-data-thirty-seconds-of-prediction">3. Two seconds of data, thirty seconds of prediction</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">new = sample_system(rng)
+u_short = multisine(20, rng)                           # 2 seconds of data
+_, y_short = simulate(new, u_short, rng)
+z_hat, z_cov, _ = adapt(family, y_short, u_short)
+eta_scratch = fit_from_scratch(y_short, u_short)
+
+u_val = multisine(300, rng, n=6)                       # a new input the model has never seen
+q_val, _ = simulate(new, u_val, rng, noise=False)
+models = {&quot;no adaptation (average system)&quot;: (family.mean, COLOR[&quot;none&quot;]),
+          &quot;from scratch (4 coefficients)&quot;: (eta_scratch, COLOR[&quot;scratch&quot;]),
+          &quot;pretrained + adapted context (2 numbers)&quot;: (family.decode(z_hat), COLOR[&quot;context&quot;])}
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8), gridspec_kw=dict(width_ratios=[1, 2.4]))
+ax1.scatter(*family.z_train.T, s=14, color=COLOR[&quot;none&quot;], label=&quot;training systems&quot;)
+ellipse(ax1, z_hat, z_cov, COLOR[&quot;context&quot;], &quot;posterior (2σ)&quot;)
+ax1.plot(*z_hat, &quot;o&quot;, color=COLOR[&quot;context&quot;])
+ax1.plot(*family.project(new[&quot;eta&quot;]), &quot;*&quot;, ms=14, color=COLOR[&quot;truth&quot;], label=&quot;true system&quot;)
+ax1.set(xlabel=&quot;z₁&quot;, ylabel=&quot;z₂&quot;, title=&quot;Context estimate from 2 s&quot;); ax1.legend(fontsize=8)
+tv = dynutils.DT * np.arange(301)
+example_rmse = {name: rmse(predict(eta, u_val), q_val) for name, (eta, _) in models.items()}
+for name, r in example_rmse.items():
+    print(f&quot;{name:&gt;42s}: RMSE = {r:.4f}&quot;)
+ax2.plot(tv, q_val, color=COLOR[&quot;truth&quot;], lw=2.5, label=&quot;true response&quot;)
+for name, (eta, col) in models.items():
+    ax2.plot(tv, predict(eta, u_val), color=col, lw=1.6, label=f&quot;{name}: RMSE {example_rmse[name]:.3f}&quot;)
+ax2.set(xlabel=&quot;time [s]&quot;, ylabel=&quot;position&quot;, ylim=(-0.6, 0.6), title=&quot;Predicting 30 s of a new input&quot;)
+ax2.legend(fontsize=8, loc=&quot;lower left&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<pre class="output">            no adaptation (average system): RMSE = 0.0563
+             from scratch (4 coefficients): RMSE = 0.1580
+  pretrained + adapted context (2 numbers): RMSE = 0.0140</pre>
+<figure class="output-figure"><img src="img/04-1.png" alt="Figure 1 produced by the code above" width="1308" height="407" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>With only two seconds of data (a third of an oscillation period), fitting four coefficients from
+scratch overfits badly. It explains the short experiment, but the coefficients it finds describe a
+different, barely damped oscillator, and its predictions drift far from reality. Adapting two
+pretrained context values gives a model that predicts 30 seconds of unseen behaviour well. The
+posterior ellipse shows how certain the estimate is, and it contains the true system.</p>
+<p>One example proves little, so the next chapter evaluates this systematically over many new systems
+and many data budgets.</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-a-worse-prior">Exercise 1: A worse prior</h3>
+<p>Repeat the two-second adaptation but replace the MAP objective's prior term <code>z</code> by <code>3 * z</code> in
+<code>adapt</code>'s residual (a much tighter prior, as if the family were believed to vary less than it does).
+How does the estimate and its posterior ellipse change?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def adapt_tight(family, y, u, tightness=3.0):
+    residual = lambda z: np.r_[(predict(family.decode(z), u) - y) / family.sigma, tightness * z]
+    sol = least_squares(residual, np.zeros(family.U.shape[1]))
+    S = sol.jac[:-len(sol.x)] * family.sigma
+    cov = np.linalg.inv(S.T @ S / family.sigma**2 + tightness**2 * np.eye(len(sol.x)))
+    return sol.x, cov
+
+z_tight, cov_tight = adapt_tight(family, y_short, u_short)
+</code></pre>
+<p>The tighter prior pulls the estimate towards the average system (<code>z</code> closer to the origin) and
+shrinks the posterior ellipse, but for the wrong reason: it is now more confident without having
+seen more data. With too little data to overrule a strong prior, the estimate is biased towards
+<span class="math inline">\bar\eta</span> rather than towards the true system.</p>
+</details>
+<h3 id="exercise-2-does-from-scratch-ever-catch-up-on-this-short-an-experiment">Exercise 2: Does from-scratch ever catch up on this short an experiment?</h3>
+<p>Repeat the comparison above for 20 different new systems using the same 2-second experiment length,
+and report the mean RMSE of &quot;from scratch&quot; and &quot;pretrained + context&quot;. Does the ranking ever flip?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">errs = {&quot;scratch&quot;: [], &quot;context&quot;: []}
+for _ in range(20):
+    s = sample_system(rng); u = multisine(20, rng); _, y = simulate(s, u, rng)
+    u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
+    errs[&quot;scratch&quot;].append(rmse(predict(fit_from_scratch(y, u), u_val), q_val))
+    errs[&quot;context&quot;].append(rmse(predict(family.decode(adapt(family, y, u)[0]), u_val), q_val))
+{k: np.mean(v) for k, v in errs.items()}
+</code></pre>
+<p>Pretrained + context wins on essentially every draw at this budget; from scratch occasionally gets
+close when the random 2-second input happens to be unusually informative, but it never wins by much,
+and chapter 05 shows exactly how this gap closes as the budget grows.</p>
+</details></div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="03-what-many-systems-have-in-common.html"><span class="lbl">Previous · 03</span><span class="t">What Many Systems Have in Common</span></a>
+  <a class="next" rel="next" href="05-when-is-pretraining-worth-it.html"><span class="lbl">Next · 05</span><span class="t">When Is Pretraining Worth It?</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 04 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

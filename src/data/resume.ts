@@ -27,6 +27,8 @@ export const education: ResumeEntry[] = [
     body:
       `
       <i>Thesis:</i> Towards Stochastic Realization Theory for Linear Switched Models <br/>
+      <i>Advisors:</i> Prof. Lotfi Belkoura & Dr. Mihály Petreczky (CNRS) <br/>
+      <i>Defense:</i> October 24, 2025 <br/>
       <i>Focus:</i> Stochastic hybrid system identification, minimal realizations, learning with uncertainty.
       `,
   },
@@ -48,18 +50,21 @@ export const experience: ResumeEntry[] = [
   {
     title: 'Postdoctoral Researcher',
     year: 'Nov 2025 - Present',
-    org: 'LabCom I-TireLab',
+    org: 'LabCom I-TireLab - GIPSA-lab (Grenoble INP - UGA) / LIAS (Univ. Poitiers) / MICHELIN',
     body:
-      'Working, with MICHELIN, on real-time prediction of slippery scenarios using hybrid modeling and machine learning, with the goal of improving vehicle safety. Developing digital-twin-based methods for tire-road interaction modeling and dynamics prediction.',
+      `Working under the supervision of Prof. Guillaume Mercère and Prof. John-Jairo Martinez-Molina on real-time prediction of slippery road scenarios using hybrid modeling and machine learning, with the goal of improving vehicle safety.<br/>
+      - Developing physics-informed and data-driven models for tire-road interaction and vehicle dynamics.<br/>
+      - Combining Kalman filtering with data-based parameter estimation for real-time state and parameter estimation.<br/>
+      - Building digital-twin-based methods for tire-road interaction modeling and dynamics prediction.`,
   },
   {
     title: 'PhD Researcher',
     year: 'Sep 2021 - Oct 2025',
     org: 'University of Lille - CRIStAL Laboratory',
     body:
-      `- Developed a theoretical framework for stochastic realization of linear switched systems.<br/>
-      - Designed system identification algorithms accounting for dynamical switching.<br/>
-      - Worked with SZTAKI (Budapest) on deep time series modeling with generalization guarantees.<br/>`,
+      `- Developed stochastic realization results for generalized linear switched systems with inputs, including deterministic/stochastic decompositions and innovation-form representations.<br/>
+      - Designed system identification and realization algorithms accounting for dynamical switching, with numerical validation procedures.<br/>
+      - Worked with SZTAKI (Budapest) on deep state-space and time series modeling with generalization guarantees.<br/>`,
   },
   {
     title: 'ATER - Teaching and Research Associate',
@@ -91,31 +96,59 @@ export const experience: ResumeEntry[] = [
   },
 ];
 
-export const certifications: ResumeEntry[] = [
+export interface Certificate {
+  name: string;
+  /** Public verification page (Coursera, Credly, ...). Without it the name shows as plain text. */
+  url?: string;
+}
+
+export interface CertificationGroup {
+  issuer: string;
+  items: Certificate[];
+}
+
+const coursera = (id: string) => `https://www.coursera.org/account/accomplishments/verify/${id}`;
+
+export const certifications: CertificationGroup[] = [
   {
-    title: 'IBM Certificates',
-    body:
-      'Introduction to DevOps; Deep Learning with Keras; Data Engineering; Machine Learning with Python; Python for AI & Development; Python Project for Data Engineering.',
+    issuer: 'University of Michigan',
+    items: [{ name: 'AI for Design and Optimization', url: coursera('2D5GB3BJHFXB') }],
   },
   {
-    title: 'UCSC',
-    body: 'Bayesian Statistics.',
+    issuer: 'University of California, Santa Cruz',
+    items: [{ name: 'Bayesian Statistics: From Concept to Data Analysis', url: coursera('I8P28MSPF616') }],
   },
   {
-    title: 'DeepLearning.ai',
-    body: 'Neural Networks and Deep Learning.',
+    issuer: 'DeepLearning.AI',
+    items: [{ name: 'Neural Networks and Deep Learning', url: coursera('KYURTYL99Z7T') }],
   },
   {
-    title: 'EECI Course',
-    body: 'Sparsity &Big Data in Control/ML.',
+    issuer: 'IBM',
+    items: [
+      { name: 'Deep Learning and Reinforcement Learning', url: coursera('GK0MYMKMM3KI') },
+      { name: 'Specialized Models: Time Series and Survival Analysis', url: coursera('0K0FGSEZE355') },
+      { name: 'Deep Learning with Keras and TensorFlow', url: coursera('NZJNT91GKH20') },
+      { name: 'Introduction to Relational Databases (RDBMS)', url: coursera('DIAYZGXY5KQL') },
+      { name: 'Introduction to DevOps', url: coursera('DF3EN2ZKCRY2') },
+      { name: 'Introduction to Deep Learning & Neural Networks with Keras', url: coursera('TBF14TQEYMQV') },
+      { name: 'Python Project for Data Engineering', url: coursera('K38NIHNO4DWG') },
+      { name: 'Python for Data Science, AI & Development', url: coursera('0XZF5ESFE0GM') },
+      { name: 'Introduction to Data Engineering', url: coursera('X209C9OT9Q9T') },
+      { name: 'Machine Learning with Python', url: coursera('SSK9CKVWJ3BS') },
+      { name: 'Generative AI and LLMs: Architecture and Data Preparation', url: coursera('3Z6BM3POGK2Z') },
+    ],
   },
   {
-    title: 'Spring School',
-    body: 'Closed-loop and nonlinear system ID and Deep Learning.',
+    issuer: 'EECI Course',
+    items: [{ name: 'Sparsity & Big Data in Control/ML' }],
   },
   {
-    title: 'ACES Summer School',
-    body: '60h in modern control theory.',
+    issuer: 'Spring School',
+    items: [{ name: 'Closed-loop and nonlinear system ID and Deep Learning' }],
+  },
+  {
+    issuer: 'ACES Summer School',
+    items: [{ name: '60h in modern control theory' }],
   },
 ];
 
@@ -142,37 +175,14 @@ export const projects: ResumeEntry[] = [
   },
 ];
 
-export const publications: ResumeEntry[] = [
-  {
-    title:
-      'Rouphael, E., et al. Minimal covariance realization and system identification algorithm for a class of stochastic linear switched systems with i.i.d. switching.',
-    org: 'IEEE CDC 2024.',
-  },
-  {
-    title:
-      'Rouphael, E., et al. Toward Stochastic Realization Theory for Generalized Linear Switched Systems With Inputs: Decomposition Into Stochastic and Deterministic Components and Existence and Uniqueness of Innovation Form.',
-    org: 'IEEE L-CSS, 2024.',
-  },
-  {
-    title:
-      'Rouphael, E., et al. Variable frequency monitoring of power grid: a modified observer approach.',
-    org: 'IFAC-PapersOnLine, 2023.',
-  },
-  {
-    title:
-      'Rouphael, E., et al. On minimal LPV state-space representations in innovation form: an algebraic characterization.',
-    org: 'IEEE CDC 2022.',
-  },
-];
-
 export const technicalSkills: ResumeEntry[] = [
   {
     title: 'Programming',
-    body: 'Python, MATLAB, C/C++, SQL, R.',
+    body: 'Python, MATLAB/Simulink, C/C++, SQL, R, Git.',
   },
   {
     title: 'Libraries',
-    body: 'PyTorch, TensorFlow, Keras, Scikit-learn, Pandas, NumPy.',
+    body: 'PyTorch, TensorFlow, Keras, JAX, Scikit-learn, Pandas, NumPy.',
   },
   {
     title: 'Teaching (labs, projects)',
@@ -180,12 +190,12 @@ export const technicalSkills: ResumeEntry[] = [
   },
   {
     title: 'Statistical Tools',
-    body: 'Time series statistics, probabilistic modeling, Bayesian inference.',
+    body: 'Time series statistics, probabilistic modeling, Bayesian inference, Kalman filtering.',
   },
   {
     title: 'Expertise',
     body:
-      'System Identification, Hybrid Systems, Time Series Forecasting, Uncertainty Modeling, Deep Learning.',
+      'System Identification, Hybrid & Switched Systems, State-Space Modeling, Time Series Forecasting, Uncertainty Modeling, Deep Learning.',
   },
 ];
 
@@ -193,11 +203,21 @@ export const references: ResumeEntry[] = [
   {
     title: 'Prof. Lotfi Belkoura',
     org: 'Professor of System Identification, University of Lille',
-    body: 'Email: lotfi.belkoura@univ-lille.fr<br/>Phone: +33 (0)3 20 33 77 86',
+    body: 'Email: lotfi.belkoura@univ-lille.fr',
   },
   {
     title: 'Dr. Mihaly Petreczky',
     org: 'HDR, CNRS Researcher, Centrale Lille',
-    body: 'Email: mihaly.petreczky@centralelille.fr<br/>Phone: +33 (0)6 98 62 37 34',
+    body: 'Email: mihaly.petreczky@centralelille.fr',
+  },
+  {
+    title: 'Prof. Guillaume Mercère',
+    org: 'Professor, LIAS, University of Poitiers',
+    body: 'Email: guillaume.mercere@univ-poitiers.fr',
+  },
+  {
+    title: 'Prof. John-Jairo Martinez-Molina',
+    org: 'Professor, GIPSA-lab, Grenoble',
+    body: 'Email: john-jairo.martinez-molina@grenoble-inp.fr',
   },
 ];

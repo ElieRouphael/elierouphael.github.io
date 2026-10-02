@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>05 · When Is Pretraining Worth It? — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="A data-budget study over 40 fresh systems per budget, comparing no adaptation, from-scratch fitting, the pretrained context and the true coefficients as the experiment length grows from 1.5 to 25 seconds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 05 of 09</span>
+  <h1>When Is Pretraining Worth It?</h1>
+  <div class="intro prose">
+<p>Chapter 04 showed one example where a pretrained context beat from-scratch identification on two
+seconds of data. This chapter replaces the anecdote with a systematic study: for several experiment
+lengths, we draw many new systems, run one random experiment on each, and compare four ways of
+predicting a fresh 30-second input.</p>
+<hr />
+<h2 id="1-four-methods-five-data-budgets">1. Four methods, five data budgets</h2>
+<ul>
+<li><strong>no adaptation</strong>: always predict with the average system <span class="math inline">\bar\eta</span>;</li>
+<li><strong>from scratch</strong>: fit all four coefficients (chapter 02);</li>
+<li><strong>pretrained + context</strong>: adapt <span class="math inline">z</span> (chapter 04), using <em>the same</em> data;</li>
+<li><strong>reference</strong>: the true coefficients <span class="math inline">\eta</span> plugged into the learner's model. This is not zero
+error, because the model lacks the quintic term and the bias.</li>
+</ul>
+<p>Error is the RMSE of the predicted disturbance-free response to a fresh 30 s input, for 40 new
+systems per budget.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/05_when_is_pretraining_worth_it.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-four-methods-five-data-budgets">1. Four methods, five data budgets</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+
+import dynutils
+from dynutils import sample_system, simulate, multisine, predict, fit_from_scratch, adapt, rmse
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR = dynutils.COLOR
+family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">budgets = [15, 30, 60, 120, 250]                        # samples; x 0.1 s
+methods = [&quot;none&quot;, &quot;scratch&quot;, &quot;context&quot;, &quot;reference&quot;]
+budget_err = {m: np.zeros((len(budgets), 40)) for m in methods}
+for i, T in enumerate(budgets):
+    for n in range(40):
+        s = sample_system(rng); u = multisine(T, rng); _, y = simulate(s, u, rng)
+        u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
+        etas = dict(none=family.mean, scratch=fit_from_scratch(y, u),
+                    context=family.decode(adapt(family, y, u)[0]), reference=s[&quot;eta&quot;])
+        for m in methods:
+            budget_err[m][i, n] = rmse(predict(etas[m], u_val), q_val)
+
+labels = dict(none=&quot;no adaptation&quot;, scratch=&quot;from scratch&quot;, context=&quot;pretrained + context&quot;,
+              reference=&quot;reference (true η)&quot;)
+seconds = dynutils.DT * np.array(budgets)
+fig, ax = plt.subplots(figsize=(9.5, 4))
+for m in methods:
+    med = np.median(budget_err[m], axis=1)
+    lo, hi = np.percentile(budget_err[m], [25, 75], axis=1)
+    ls = &quot;--&quot; if m == &quot;reference&quot; else &quot;-&quot;
+    ax.plot(seconds, med, ls, marker=&quot;o&quot;, color=COLOR[m], label=labels[m])
+    ax.fill_between(seconds, lo, hi, color=COLOR[m], alpha=0.12)
+ax.set(xscale=&quot;log&quot;, yscale=&quot;log&quot;, xlabel=&quot;length of the experiment on the new system [s]&quot;,
+       ylabel=&quot;prediction RMSE (median, IQR)&quot;, xticks=seconds, xticklabels=[f&quot;{x:g}&quot; for x in seconds],
+       title=&quot;Pretraining matters most when data is scarce&quot;)
+ax.xaxis.set_minor_locator(plt.NullLocator())
+ax.legend(loc=&quot;upper left&quot;, bbox_to_anchor=(1.01, 1)); plt.tight_layout(); plt.show()
+
+for i, T in enumerate(budgets):
+    ratio = np.median(budget_err[&quot;scratch&quot;][i]) / np.median(budget_err[&quot;context&quot;][i])
+    print(f&quot;{T*dynutils.DT:5.1f} s: from-scratch error is {ratio:4.1f}x the pretrained error&quot;)</code></pre>
+<figure class="output-figure"><img src="img/05-1.png" alt="Figure 1 produced by the code above" width="1033" height="429" loading="lazy"></figure>
+<pre class="output">  1.5 s: from-scratch error is  5.9x the pretrained error
+  3.0 s: from-scratch error is  2.1x the pretrained error
+  6.0 s: from-scratch error is  1.6x the pretrained error
+ 12.0 s: from-scratch error is  1.8x the pretrained error
+ 25.0 s: from-scratch error is  1.1x the pretrained error</pre>
+</div>
+
+<div class="md">
+<p>The pattern is the central message of few-shot learning:</p>
+<ul>
+<li><strong>Scarce data (a few seconds):</strong> from scratch is worse than doing nothing, because it overfits.
+The pretrained model is already useful.</li>
+<li><strong>More data:</strong> from scratch improves steadily and the gap narrows. Pretraining buys data
+efficiency, not a better final model.</li>
+<li><strong>All learned models stay above the reference.</strong> The remaining error comes from the imperfect
+pretraining (e.g. the poorly identified <span class="math inline">\alpha</span>) and the rank-2 restriction. Neither can be
+fixed by collecting more data on the new system; only a better model class can.</li>
+</ul>
+<p>So far every experiment has been random. Can we do better by <em>choosing</em> the experiment?</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-where-exactly-does-from-scratch-catch-up">Exercise 1: Where exactly does from-scratch catch up?</h3>
+<p>Using the <code>budget_err</code> arrays above, find the smallest budget at which the median from-scratch error
+drops below the median pretrained-context error (if it does within the budgets tried).</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">med_scratch = np.median(budget_err[&quot;scratch&quot;], axis=1)
+med_context = np.median(budget_err[&quot;context&quot;], axis=1)
+crossing = [T for T, s, c in zip(budgets, med_scratch, med_context) if s &lt; c]
+crossing[:1] if crossing else &quot;no crossing within the tried budgets&quot;
+</code></pre>
+<p>Within the budgets tried (up to 25 s) from scratch does not fully close the gap on the median, even
+though its <em>rate of improvement</em> is faster; the two curves are converging but the crossing, if any,
+lies beyond 25 s.</p>
+</details>
+<h3 id="exercise-2-restricting-the-family-to-one-dimension">Exercise 2: Restricting the family to one dimension</h3>
+<p>Refit <code>family</code> with <code>rank=1</code> (reuse <code>train_fits</code>/<code>train_data</code> from chapter 03's recipe via
+<code>dynutils.build_family(rng, rank=1)</code> on a fresh <code>rng</code>) and repeat the comparison at the shortest
+budget only. How much worse does a one-number context do compared with the two-number one?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">rank1_family, *_ = dynutils.build_family(np.random.default_rng(dynutils.SEED), rank=1)
+T = budgets[0]
+errs = []
+for n in range(40):
+    s = sample_system(rng); u = multisine(T, rng); _, y = simulate(s, u, rng)
+    u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
+    z1, _, _ = adapt(rank1_family, y, u)
+    errs.append(rmse(predict(rank1_family.decode(z1), u_val), q_val))
+np.median(errs), np.median(budget_err[&quot;context&quot;][0])
+</code></pre>
+<p>A single number cannot represent the second family direction at all, so systems whose true context
+lies mostly along <span class="math inline">z_2</span> are systematically mispredicted; the one-dimensional context is
+noticeably worse on the shortest budget, even though it is <em>more</em> certain about the number it does
+estimate.</p>
+</details></div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="04-few-shot-identification-of-a-new-system.html"><span class="lbl">Previous · 04</span><span class="t">Few-Shot Identification of a New System</span></a>
+  <a class="next" rel="next" href="06-choosing-the-best-experiment.html"><span class="lbl">Next · 06</span><span class="t">Choosing the Best Experiment</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 05 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

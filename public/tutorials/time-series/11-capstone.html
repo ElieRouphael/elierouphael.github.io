@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>11 · Capstone: The Final Test — Time-series course</title>
+<meta name="description" content="Finalists fixed in advance, the locked 2015 year opened once, skill scores, a smog-alert forecast, and the same methods on temperature.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 11 of 11</span>
+  <h1>Capstone: The Final Test</h1>
+  <div class="intro prose">
+<p>For ten chapters, one year has been off limits. Every model was built, compared and tuned on data up to the end of <strong>2014</strong>, and <strong>2015</strong> stayed locked away (chapter 04). This chapter opens it, <strong>once</strong>.</p>
+<p>That single rule is what makes the result trustworthy. Every decision in the course was made without seeing 2015, so how the models do on it is the closest thing we have to how they'd do on genuinely new data.</p>
+<p><strong>What this chapter does</strong></p>
+<ol>
+<li><strong>Commits to the finalists</strong> and every decision rule <em>before</em> touching 2015.</li>
+<li>Runs each finalist through the same rolling-origin backtest, now over 2015.</li>
+<li>Compares 2015 with 2014: did the rankings hold, and what changed?</li>
+<li>Looks at the results the way a user would: skill against baselines, forecasts against reality, and a smog-alert version of the problem.</li>
+<li>Shows the same methods on a series that <em>is</em> predictable, as a reminder of what's in the data and what's in the model.</li>
+<li>Sums up the course.</li>
+</ol>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/11_capstone.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-rules-fixed-before-opening-2015">1. The rules, fixed before opening 2015</a></li>
+    <li><a href="#2-the-finalists">2. The finalists</a></li>
+    <li><a href="#3-opening-2015">3. Opening 2015</a></li>
+    <li><a href="#4-2015-against-2014-did-the-conclusions-hold">4. 2015 against 2014: did the conclusions hold?</a></li>
+    <li><a href="#5-looking-at-it-the-way-a-user-would">5. Looking at it the way a user would</a></li>
+    <li><a href="#6-the-same-methods-on-a-predictable-series">6. The same methods on a predictable series</a></li>
+    <li><a href="#7-what-the-course-has-shown">7. What the course has shown</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#where-to-go-next">Where to go next</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import logging
+import os
+import warnings
+
+os.environ.setdefault(&quot;TF_CPP_MIN_LOG_LEVEL&quot;, &quot;3&quot;)
+os.environ.setdefault(&quot;TF_ENABLE_ONEDNN_OPTS&quot;, &quot;0&quot;)
+logging.getLogger(&quot;prophet.plot&quot;).disabled = True
+warnings.filterwarnings(&quot;ignore&quot;, message=&quot;IProgress not found&quot;)
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import keras
+from keras import layers
+from prophet import Prophet
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from threadpoolctl import threadpool_limits
+
+import tsutils
+
+logging.getLogger(&quot;cmdstanpy&quot;).disabled = True
+logging.getLogger(&quot;tensorflow&quot;).setLevel(logging.ERROR)
+threadpool_limits(1)
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 1)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+weather = tsutils.load_daily_weather()
+H = tsutils.HORIZON
+DEV, TEST = tsutils.BACKTEST_ORIGINS, tsutils.TEST_ORIGINS
+print(f&quot;development origins: {DEV[0]:%d %b %Y} → {DEV[-1]:%d %b %Y}&quot;)
+print(f&quot;test origins:        {TEST[0]:%d %b %Y} → {TEST[-1]:%d %b %Y}&quot;)</code></pre>
+<pre class="output">development origins: 31 Dec 2013 → 24 Dec 2014
+test origins:        31 Dec 2014 → 24 Dec 2015</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-the-rules-fixed-before-opening-2015">1. The rules, fixed before opening 2015</h2>
+<p><strong>The finalists</strong> are the best of each family on the 2014 scoreboard, plus the two baselines every model has had to beat:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Finalist</th>
+<th>Chapter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>baselines</td>
+<td>naive; climatology (median)</td>
+<td>04</td>
+</tr>
+<tr>
+<td>exponential smoothing</td>
+<td>SES on log PM2.5, α chosen per horizon</td>
+<td>05</td>
+</tr>
+<tr>
+<td>ARMA</td>
+<td>seasonal profile + AR(2) on anomalies</td>
+<td>06</td>
+</tr>
+<tr>
+<td>regression with ARMA errors</td>
+<td>SARIMAX with today's weather</td>
+<td>07</td>
+</tr>
+<tr>
+<td>curve fitting</td>
+<td>Prophet + AR(2) on its residuals</td>
+<td>08</td>
+</tr>
+<tr>
+<td>machine learning</td>
+<td>ridge, direct; gradient boosting, direct</td>
+<td>09</td>
+</tr>
+<tr>
+<td>deep learning</td>
+<td>SimpleRNN, 5-seed ensemble (ahead of the LSTM on 2014)</td>
+<td>10</td>
+</tr>
+<tr>
+<td><strong>combination</strong></td>
+<td>the <strong>average</strong> of ridge, SARIMAX and AR(2)</td>
+<td>new</td>
+</tr>
+</tbody>
+</table>
+<p>The <strong>combination</strong> is declared here, in advance. Averaging a few good but different forecasts is one of the most reliable ideas in forecasting (chapter 04, Exercise 3), and committing to it <em>before</em> seeing the test data is what makes it fair.</p>
+<p><strong>Every recipe is unchanged</strong> from its chapter: the same features, the same refit schedule (daily, monthly or quarterly) and the same settings. The only thing that moves is the calendar. Settings that were tuned on the previous year (SES's α per horizon; the smog-alert threshold in section 5) are re-tuned on <strong>2014</strong>, the year before the test, by exactly the rule used before.</p>
+<p><strong>The lead model</strong>, used for the forecast plot and the smog-alert test in section 5, is the one with the best 2014 day-1 score: <strong>gradient boosting</strong>. It's fixed here, so we can't pick whichever looks best on 2015 afterwards.</p>
+<p><strong>The oracle</strong> (SARIMAX with the actual future weather, chapter 07) is run too, but only to show the ceiling. It stays off the leaderboard.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-the-finalists">2. The finalists</h2>
+<p>Each forecaster takes the history up to an origin and returns 7 forecasts, exactly as in chapters 04–10. The code is condensed from those chapters. Where a model is refitted on a schedule, the schedule is keyed to each origin's month or quarter, so the same code runs on any year.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def anomalies(series, profile):
+    return np.log(series) - profile.reindex(series.index.dayofyear).to_numpy()
+
+def targets_after(origin, horizon=H):
+    return pd.date_range(origin + pd.Timedelta(days=1), periods=horizon, freq=&quot;D&quot;)
+
+# --- chapter 05: SES on log PM2.5, one alpha per horizon (tuned on the previous year) ---
+log_values = np.log(y.to_numpy())
+
+def ses_levels(values, alpha):
+    levels, level = np.empty(len(values)), values[0]
+    for t, v in enumerate(values):
+        level = alpha * v + (1 - alpha) * level
+        levels[t] = level
+    return pd.Series(np.exp(levels), index=y.index)
+
+def ses_per_horizon(tuning_origins):
+    alphas = np.round(np.arange(0.01, 1.0, 0.02), 2)
+    levels = {a: ses_levels(log_values, a) for a in alphas}
+    tuning = pd.DataFrame({a: tsutils.evaluate(tsutils.backtest(
+        y, lambda h, s, lv=levels[a]: np.full(s, lv[h.index[-1]]), tuning_origins, H, actuals=actual))[&quot;MAE&quot;]
+        for a in alphas}).T
+    best = tuning.idxmin()
+    return lambda history, horizon: np.array([levels[best[h]][history.index[-1]] for h in range(1, horizon + 1)])
+
+# --- chapter 06: seasonal profile + AR(2) on log anomalies, refitted daily ---
+def ar2_on_anomalies(history, horizon):
+    profile = tsutils.log_climatology_profile(history)
+    fit = ARIMA(anomalies(history, profile).to_numpy(), order=(2, 0, 0), trend=&quot;c&quot;).fit()
+    return np.exp(fit.forecast(horizon) + profile.reindex(targets_after(history.index[-1], horizon).dayofyear).to_numpy())</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># --- chapter 07: SARIMAX with today&#x27;s weather (lag 1), refitted monthly; oracle variant for the ceiling ---
+same_day = [&quot;dew_point&quot;, &quot;humidity&quot;, &quot;pressure&quot;, &quot;temp&quot;, &quot;precip&quot;, &quot;nw_share&quot;, &quot;calm_share&quot;, &quot;wind&quot;]
+
+def weather_forecaster(features, lag, future):
+    lagged = weather[features].shift(lag)
+    cache = {}
+    def forecast(history, horizon):
+        origin = history.index[-1]
+        month = (origin.year, origin.month)
+        if month not in cache:
+            profile = tsutils.log_climatology_profile(history)
+            X = lagged.loc[history.index].iloc[lag:]
+            mean, std = X.mean(), X.std()
+            fit = SARIMAX(anomalies(history, profile).iloc[lag:].to_numpy(), exog=((X - mean) / std).to_numpy(),
+                          order=(2, 0, 0), trend=&quot;c&quot;).fit(disp=False)
+            cache[month] = (profile, mean, std, fit)
+        profile, mean, std, fit = cache[month]
+        X_hist = ((lagged.loc[history.index].iloc[lag:] - mean) / std).to_numpy()
+        updated = fit.apply(anomalies(history, profile).iloc[lag:].to_numpy(), exog=X_hist)
+        targets = targets_after(origin, horizon)
+        X_future = lagged.loc[targets].copy()
+        if future == &quot;mean&quot;:
+            X_future.loc[(targets - pd.Timedelta(days=lag)) &gt; origin] = mean.to_numpy()
+        seasonal = profile.reindex(targets.dayofyear).to_numpy()
+        return np.exp(updated.forecast(horizon, exog=((X_future - mean) / std).to_numpy()) + seasonal)
+    return forecast
+
+# --- chapter 08: Prophet (log, Spring Festival) + AR(2) on its residuals, refitted daily ---
+festival = pd.DataFrame({&quot;holiday&quot;: &quot;spring_festival&quot;, &quot;ds&quot;: tsutils.SPRING_FESTIVAL,
+                         &quot;lower_window&quot;: -1, &quot;upper_window&quot;: 1})
+
+def prophet_ar(history, horizon):
+    frame = pd.DataFrame({&quot;ds&quot;: history.index, &quot;y&quot;: np.log(history.to_numpy())})
+    model = Prophet(holidays=festival, uncertainty_samples=0).fit(frame)
+    dates = pd.date_range(history.index[0], history.index[-1] + pd.Timedelta(days=horizon), freq=&quot;D&quot;)
+    curve = model.predict(pd.DataFrame({&quot;ds&quot;: dates}))[&quot;yhat&quot;].to_numpy()
+    resid = frame[&quot;y&quot;].to_numpy() - curve[:len(history)]
+    ar = AutoReg(resid, lags=2, trend=&quot;n&quot;).fit()
+    return np.exp(curve[len(history):][:horizon] + ar.predict(start=len(resid), end=len(resid) + horizon - 1))</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># --- chapter 09: direct ridge / gradient boosting, refitted monthly ---
+def direct_ml(make_model, origins):
+    forecasts, log_actual = {}, np.log(actual)
+    for h in range(1, H + 1):
+        X = tsutils.ml_features(y, weather, h)
+        target = log_actual.shift(-h)
+        complete = X.notna().all(axis=1) &amp; target.notna()
+        for _, month_origins in pd.Series(origins, index=origins).groupby([origins.year, origins.month]):
+            usable = complete &amp; (X.index &lt;= month_origins.iloc[0] - pd.Timedelta(days=h))
+            model = make_model().fit(X[usable], target[usable])
+            forecasts.update({(o, h): p for o, p in zip(month_origins, np.exp(model.predict(X.loc[month_origins.to_numpy()])))})
+    return forecasts
+
+ridge = lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0))
+boosting = lambda: HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05, max_leaf_nodes=15,
+                                                 min_samples_leaf=20, random_state=0)
+
+# --- chapter 10: SimpleRNN on 28-day windows, 5 seeds, refitted quarterly ---
+L = 28
+rnn_inputs = pd.concat([np.log(y).rename(&quot;log_pm25&quot;), weather[tsutils.KNOWN_TODAY_WEATHER]], axis=1)
+doy = rnn_inputs.index.dayofyear.to_numpy()
+rnn_inputs[&quot;season_sin&quot;], rnn_inputs[&quot;season_cos&quot;] = np.sin(2 * np.pi * doy / 365.25), np.cos(2 * np.pi * doy / 365.25)
+rnn_values, rnn_targets = rnn_inputs.to_numpy(float), np.log(actual).to_numpy()
+
+def simple_rnn_ensemble(origins, seeds=(0, 1, 2, 3, 4)):
+    forecasts = {}
+    for _, quarter_origins in pd.Series(origins, index=origins).groupby([origins.year, origins.quarter]):
+        last_end = rnn_inputs.index.get_loc(quarter_origins.iloc[0]) - H
+        ends = np.arange(L - 1, last_end + 1)
+        X = np.stack([rnn_values[p - L + 1: p + 1] for p in ends])
+        Y = np.stack([rnn_targets[p + 1: p + 1 + H] for p in ends])
+        keep = ~np.isnan(Y).any(axis=1)
+        X, Y = X[keep], Y[keep]
+        flat = X.reshape(-1, X.shape[-1])
+        x_mean, x_std, y_mean, y_std = flat.mean(0), flat.std(0) + 1e-9, Y.mean(), Y.std()
+        Xs, Ys, n_val = (X - x_mean) / x_std, (Y - y_mean) / y_std, int(len(X) * 0.2)
+        X_pred = np.stack([rnn_values[p - L + 1: p + 1] for p in rnn_inputs.index.get_indexer(quarter_origins.to_numpy())])
+        members = []
+        for seed in seeds:
+            keras.utils.set_random_seed(seed)
+            inp = keras.Input(X.shape[1:])
+            model = keras.Model(inp, layers.Dense(H)(layers.Dropout(0.2)(layers.SimpleRNN(32)(inp))))
+            model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=&quot;mae&quot;)
+            model.fit(Xs[:-n_val], Ys[:-n_val], validation_data=(Xs[-n_val:], Ys[-n_val:]), epochs=300, batch_size=32,
+                      verbose=0, callbacks=[keras.callbacks.EarlyStopping(patience=15, restore_best_weights=True)])
+            members.append(model(((X_pred - x_mean) / x_std).astype(&quot;float32&quot;), training=False).numpy())
+        forecast = np.exp(np.mean(members, axis=0) * y_std + y_mean)
+        for origin, row in zip(quarter_origins, forecast):
+            forecasts.update({(origin, h): row[h - 1] for h in range(1, H + 1)})
+    return forecasts
+
+def from_table(forecasts):
+    return lambda history, horizon: np.array([forecasts[(history.index[-1], k)] for k in range(1, horizon + 1)])</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-opening-2015">3. Opening 2015</h2>
+<p>One run for each finalist, over every 2015 origin. This takes a few minutes: Prophet and AR(2) refit every day, and the SimpleRNN trains 20 networks.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def run_all(origins, tuning_origins):
+    runs = {
+        &quot;naive&quot;: tsutils.naive_forecast,
+        &quot;climatology (median)&quot;: tsutils.climatology_forecast,
+        &quot;SES (log), α per horizon&quot;: ses_per_horizon(tuning_origins),
+        &quot;AR(2) on anomalies&quot;: ar2_on_anomalies,
+        &quot;SARIMAX, today&#x27;s weather&quot;: weather_forecaster(tsutils.KNOWN_TODAY_WEATHER, lag=1, future=&quot;mean&quot;),
+        &quot;Prophet + AR(2) on residuals&quot;: prophet_ar,
+        &quot;Ridge, direct&quot;: from_table(direct_ml(ridge, origins)),
+        &quot;Gradient boosting, direct&quot;: from_table(direct_ml(boosting, origins)),
+        &quot;SimpleRNN, 5-seed ensemble&quot;: from_table(simple_rnn_ensemble(origins)),
+    }
+    return {name: tsutils.backtest(y, f, origins, H, actuals=actual) for name, f in runs.items()}
+
+test_runs = run_all(TEST, tuning_origins=DEV)
+
+members = [&quot;Ridge, direct&quot;, &quot;SARIMAX, today&#x27;s weather&quot;, &quot;AR(2) on anomalies&quot;]
+combo = test_runs[members[0]].copy()
+combo[&quot;forecast&quot;] = np.mean([test_runs[m][&quot;forecast&quot;].to_numpy() for m in members], axis=0)
+test_runs[&quot;Combination (ridge + SARIMAX + AR(2))&quot;] = combo
+
+oracle = tsutils.backtest(y, weather_forecaster(same_day, lag=0, future=&quot;oracle&quot;), TEST, H, actuals=actual)
+
+test_scores = {name: tsutils.evaluate(bt) for name, bt in test_runs.items()}
+test_mae = pd.DataFrame({name: s[&quot;MAE&quot;] for name, s in test_scores.items()}).T
+test_mae[&quot;mean (1–7)&quot;] = test_mae.mean(axis=1)
+test_mae.sort_values(1).round(1)</code></pre>
+<pre class="output">h                                         1     2     3     4     5     6  \
+Ridge, direct                          34.0  46.6  49.4  49.4  49.9  50.3   
+Gradient boosting, direct              35.0  49.8  52.8  52.3  51.1  52.1   
+Combination (ridge + SARIMAX + AR(2))  36.0  49.0  51.3  51.2  51.7  51.9   
+SimpleRNN, 5-seed ensemble             36.4  49.6  51.9  52.1  52.9  53.3   
+SARIMAX, today&#x27;s weather               36.8  50.5  52.6  52.7  53.0  53.1   
+AR(2) on anomalies                     40.6  50.5  52.4  52.2  52.7  52.8   
+Prophet + AR(2) on residuals           41.5  50.4  51.3  51.1  51.5  51.7   
+naive                                  42.5  61.2  67.8  70.2  69.4  69.0   
+SES (log), α per horizon               42.5  50.5  50.5  50.3  50.7  50.7   
+climatology (median)                   53.4  54.1  54.2  54.0  54.3  54.4   
+
+h                                         7  mean (1–7)  
+Ridge, direct                          49.9        47.1  
+Gradient boosting, direct              52.9        49.4  
+Combination (ridge + SARIMAX + AR(2))  51.7        49.0  
+SimpleRNN, 5-seed ensemble             53.6        50.0  
+SARIMAX, today&#x27;s weather               53.1        50.2  
+AR(2) on anomalies                     52.8        50.6  
+Prophet + AR(2) on residuals           51.6        49.9  
+naive                                  69.7        64.3  
+SES (log), α per horizon               50.7        49.4  
+climatology (median)                   54.4        54.1</pre>
+</div>
+
+<div class="md">
+<p>The locked year's verdict:</p>
+<ul>
+<li><strong>Ridge regression (chapter 09) is the best honest model on 2015</strong>, at day 1 and at every horizon.</li>
+<li><strong>At day 1 there's a clear leading group</strong>: ridge, gradient boosting, the combination, the SimpleRNN and SARIMAX, all within about 3 µg/m³ of each other. Every one of them uses <strong>today's weather</strong>. The memory-only hybrids (AR(2), Prophet + AR(2)) come next. Naive and SES tie, and climatology is last.</li>
+<li><strong>From day 3 on, errors bunch together</strong> around 50–53 µg/m³, with ridge still slightly ahead. SES with a per-horizon α is a surprisingly strong runner-up there: its long average adapted to 2015's lower level. Gradient boosting falls back into the pack, just as it did in 2014 (chapter 09's overfitting).</li>
+<li><strong>The pre-declared combination didn't beat ridge.</strong> It averaged ridge with two models that use the <em>same</em> information (memory and weather) less effectively. Combinations help most when their members are similarly accurate and make <em>different</em> errors. We report the result anyway, because it was promised in advance.</li>
+<li><strong>Every model's error is lower than in 2014.</strong> That's not because the models improved, but because 2015 was a cleaner year overall (median daily PM2.5 about 58 µg/m³, against 73 in 2014), and errors scale with the level. Section 5's skill scores make the fairer comparison.</li>
+</ul>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-2015-against-2014-did-the-conclusions-hold">4. 2015 against 2014: did the conclusions hold?</h2>
+<p>The combination wasn't run on 2014 in the earlier chapters, so we compute its 2014 score from the saved per-model forecasts in the same way. Everything else comes from the scoreboard.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">dev_board = tsutils.load_scores().pivot(index=&quot;model&quot;, columns=&quot;h&quot;, values=&quot;MAE&quot;)
+dev_combo = [tsutils.backtest(y, f, DEV, H, actuals=actual) for f in
+             [from_table(direct_ml(ridge, DEV)), weather_forecaster(tsutils.KNOWN_TODAY_WEATHER, lag=1, future=&quot;mean&quot;),
+              ar2_on_anomalies]]
+dev_combo_bt = dev_combo[0].copy()
+dev_combo_bt[&quot;forecast&quot;] = np.mean([bt[&quot;forecast&quot;].to_numpy() for bt in dev_combo], axis=0)
+dev_board.loc[&quot;Combination (ridge + SARIMAX + AR(2))&quot;] = tsutils.evaluate(dev_combo_bt)[&quot;MAE&quot;]
+
+compare = pd.DataFrame({
+    &quot;2014 day 1&quot;: dev_board[1], &quot;2015 day 1&quot;: test_mae[1],
+    &quot;2014 days 3–7&quot;: dev_board[[3, 4, 5, 6, 7]].mean(axis=1), &quot;2015 days 3–7&quot;: test_mae[[3, 4, 5, 6, 7]].mean(axis=1),
+}).loc[test_mae.index]
+compare[&quot;rank 2014 (day 1)&quot;] = compare[&quot;2014 day 1&quot;].rank().astype(int)
+compare[&quot;rank 2015 (day 1)&quot;] = compare[&quot;2015 day 1&quot;].rank().astype(int)
+compare.sort_values(&quot;2015 day 1&quot;).round(1)</code></pre>
+<pre class="output">                                       2014 day 1  2015 day 1  2014 days 3–7  \
+Ridge, direct                                40.2        34.0           56.2   
+Gradient boosting, direct                    39.9        35.0           58.1   
+Combination (ridge + SARIMAX + AR(2))        41.4        36.0           56.3   
+SimpleRNN, 5-seed ensemble                   42.4        36.4           57.0   
+SARIMAX, today&#x27;s weather                     40.9        36.8           56.7   
+AR(2) on anomalies                           46.8        40.6           56.5   
+Prophet + AR(2) on residuals                 47.2        41.5           56.8   
+naive                                        51.1        42.5           78.2   
+SES (log), α per horizon                     52.1        42.5           56.3   
+climatology (median)                         56.1        53.4           57.0   
+
+                                       2015 days 3–7  rank 2014 (day 1)  \
+Ridge, direct                                   49.8                  2   
+Gradient boosting, direct                       52.2                  1   
+Combination (ridge + SARIMAX + AR(2))           51.6                  4   
+SimpleRNN, 5-seed ensemble                      52.8                  5   
+SARIMAX, today&#x27;s weather                        52.9                  3   
+AR(2) on anomalies                              52.6                  6   
+Prophet + AR(2) on residuals                    51.5                  7   
+naive                                           69.2                  8   
+SES (log), α per horizon                        50.6                  9   
+climatology (median)                            54.3                 10   
+
+                                       rank 2015 (day 1)  
+Ridge, direct                                          1  
+Gradient boosting, direct                              2  
+Combination (ridge + SARIMAX + AR(2))                  3  
+SimpleRNN, 5-seed ensemble                             4  
+SARIMAX, today&#x27;s weather                               5  
+AR(2) on anomalies                                     6  
+Prophet + AR(2) on residuals                           7  
+naive                                                  8  
+SES (log), α per horizon                               9  
+climatology (median)                                  10</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">bias = pd.DataFrame({name: s[&quot;bias&quot;] for name, s in test_scores.items()}).T[[1, 3, 7]]
+bias.columns = [f&quot;bias, day {h}&quot; for h in bias.columns]
+bias.round(1)</code></pre>
+<pre class="output">                                       bias, day 1  bias, day 3  bias, day 7
+naive                                         -1.5         -2.3         -1.7
+climatology (median)                          -4.0         -4.4         -4.2
+SES (log), α per horizon                      -1.7        -24.1        -24.3
+AR(2) on anomalies                           -10.2         -9.3         -9.5
+SARIMAX, today&#x27;s weather                      -7.3         -9.9         -8.5
+Prophet + AR(2) on residuals                 -17.3        -21.3        -21.5
+Ridge, direct                                 -6.7        -14.9        -13.6
+Gradient boosting, direct                     -4.0        -16.9        -12.8
+SimpleRNN, 5-seed ensemble                    -1.1         -5.6         -4.6
+Combination (ridge + SARIMAX + AR(2))         -8.1        -11.4        -10.5</pre>
+</div>
+
+<div class="md">
+<ul>
+<li><strong>The rankings largely held.</strong> The same five weather-aware models lead at day 1, in nearly the same order (ridge and boosting swap first and second), and the bottom of the table is the same. That's a good sign for the whole evaluation design: conclusions drawn on 2014 transferred to data no decision was based on.</li>
+<li><strong>Every model forecasts too low on average in 2015.</strong> Part of that is by design: log-scale models make median-type forecasts, which sit below the mean of right-skewed data (chapter 04). The rest comes from the year's end. November and December 2015 were extreme, with December averaging about 162 µg/m³, roughly double the year's average, and nobody's forecasts kept up with the worst episodes. SES and Prophet show the largest shortfall at long horizons: their long-run averages were anchored on a cleaner year just as the winter smog arrived.</li>
+<li>One might have expected the reverse: models trained on the dirtier years 2010–2014 <em>over</em>-forecasting the cleaner 2015. Whatever effect that had is swamped by the winter extremes. It's a reminder that &quot;the test year is different&quot; can play out in unexpected ways.</li>
+</ul>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-looking-at-it-the-way-a-user-would">5. Looking at it the way a user would</h2>
+<h3 id="skill-how-much-better-than-a-typical-day-for-the-season">Skill: how much better than &quot;a typical day for the season&quot;?</h3>
+<p>A <strong>skill score</strong> answers the question a user actually asks, &quot;how much does this model beat the obvious forecast?&quot;:</p>
+<div class="math display">\text{skill} = 1 - \frac{\text{MAE}_\text{model}}{\text{MAE}_\text{climatology}}</div>
+<p>0% means no better than climatology, and 100% would be perfect.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">skill = 1 - test_mae.drop(columns=&quot;mean (1–7)&quot;).div(test_mae.loc[&quot;climatology (median)&quot;].drop(&quot;mean (1–7)&quot;), axis=1)
+oracle_skill = 1 - tsutils.evaluate(oracle)[&quot;MAE&quot;] / test_mae.loc[&quot;climatology (median)&quot;].drop(&quot;mean (1–7)&quot;)
+skill.loc[&quot;ORACLE: perfect weather (not achievable)&quot;] = oracle_skill
+skill.drop(index=&quot;climatology (median)&quot;).sort_values(1, ascending=False).style.format(&quot;{:+.0%}&quot;).background_gradient(
+    cmap=&quot;RdYlGn&quot;, vmin=-0.4, vmax=0.4)</code></pre>
+<pre class="output">h                                            1     2     3     4     5     6     7
+ORACLE: perfect weather (not achievable)  +44%  +29%  +20%  +14%  +10%   +7%   +5%
+Ridge, direct                             +36%  +14%   +9%   +9%   +8%   +8%   +8%
+Gradient boosting, direct                 +34%   +8%   +3%   +3%   +6%   +4%   +3%
+Combination (ridge + SARIMAX + AR(2))     +33%   +9%   +5%   +5%   +5%   +5%   +5%
+SimpleRNN, 5-seed ensemble                +32%   +8%   +4%   +3%   +3%   +2%   +1%
+SARIMAX, today&#x27;s weather                  +31%   +7%   +3%   +2%   +2%   +2%   +2%
+AR(2) on anomalies                        +24%   +7%   +3%   +3%   +3%   +3%   +3%
+Prophet + AR(2) on residuals              +22%   +7%   +5%   +5%   +5%   +5%   +5%
+naive                                     +20%  -13%  -25%  -30%  -28%  -27%  -28%
+SES (log), α per horizon                  +20%   +7%   +7%   +7%   +7%   +7%   +7%</pre>
+</div>
+
+<div class="md">
+<ul>
+<li>For <strong>tomorrow</strong>, ridge is about <strong>36% better than climatology</strong>. From day 2 its advantage shrinks quickly: about 14% at day 2 and 8–9% beyond. That's the one-day half-life (chapter 03) seen in the final exam.</li>
+<li><strong>Naive</strong> has real skill for tomorrow (+20%) but is far <em>worse</em> than climatology from day 2. The best simple strategy flips from &quot;same as today&quot; to &quot;typical for the season&quot; after one day (chapter 04).</li>
+<li><strong>The oracle with perfect weather</strong> shows how much room remains at short horizons: about 44% skill for tomorrow and 29% at day 2. By day 5–7 even the oracle adds little, and ridge actually beats it at days 6–7. The oracle is a ceiling for its own model structure (AR(2) with same-day weather), not for every conceivable model, and ridge's longer-memory features serve it better that far out.</li>
+</ul>
+<h3 id="the-journey-through-the-course">The journey through the course</h3>
+<p>Each chapter added one idea. Here's the best <strong>honest</strong> day-1 forecast available after each chapter, all measured on the same untouched 2015:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">journey = pd.Series({
+    &quot;04 · naive&quot;: test_mae.loc[&quot;naive&quot;, 1],
+    &quot;05 · SES, α per horizon&quot;: test_mae.loc[&quot;SES (log), α per horizon&quot;, 1],
+    &quot;06 · AR(2) on anomalies&quot;: test_mae.loc[&quot;AR(2) on anomalies&quot;, 1],
+    &quot;07 · SARIMAX, today&#x27;s weather&quot;: test_mae.loc[&quot;SARIMAX, today&#x27;s weather&quot;, 1],
+    &quot;08 · Prophet + AR(2)&quot;: test_mae.loc[&quot;Prophet + AR(2) on residuals&quot;, 1],
+    &quot;09 · ridge / boosting&quot;: test_mae.loc[[&quot;Ridge, direct&quot;, &quot;Gradient boosting, direct&quot;], 1].min(),
+    &quot;10 · SimpleRNN ensemble&quot;: test_mae.loc[&quot;SimpleRNN, 5-seed ensemble&quot;, 1],
+    &quot;11 · combination&quot;: test_mae.loc[&quot;Combination (ridge + SARIMAX + AR(2))&quot;, 1],
+})
+best_so_far = journey.cummin()
+
+fig, ax = plt.subplots(figsize=(12, 4))
+ax.bar(range(len(journey)), journey, color=tsutils.PALETTE[4], alpha=0.35, label=&quot;this chapter&#x27;s model&quot;)
+ax.plot(range(len(journey)), best_so_far, marker=&quot;o&quot;, color=tsutils.PALETTE[1], label=&quot;best so far&quot;)
+ax.axhline(test_mae.loc[&quot;climatology (median)&quot;, 1], color=&quot;k&quot;, ls=&quot;--&quot;, lw=1, label=&quot;climatology&quot;)
+ax.set_xticks(range(len(journey)), journey.index, rotation=25, ha=&quot;right&quot;)
+ax.set(title=&quot;Day-1 forecast error on 2015, chapter by chapter&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+ax.legend()
+print(f&quot;from naive to the best honest model: {1 - best_so_far.iloc[-1] / journey.iloc[0]:.0%} lower error&quot;)</code></pre>
+<pre class="output">from naive to the best honest model: 20% lower error</pre>
+<figure class="output-figure"><img src="img/11-1.png" alt="Figure 1 produced by the code above" width="997" height="463" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="the-forecasts-against-reality">The forecasts against reality</h3>
+<p>December 2015 was an extraordinary month in Beijing: the city issued its first-ever <strong>red alerts</strong> for air pollution. Here is the lead model's day-1 forecast through the last quarter of 2015, with the naive forecast for comparison.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">LEAD = &quot;Gradient boosting, direct&quot;          # fixed in section 1 from its 2014 score
+day1 = test_runs[LEAD].query(&quot;h == 1&quot;).set_index(&quot;date&quot;)
+naive1 = test_runs[&quot;naive&quot;].query(&quot;h == 1&quot;).set_index(&quot;date&quot;)
+
+window = slice(&quot;2015-10-01&quot;, &quot;2015-12-31&quot;)
+ax = day1.loc[window, &quot;actual&quot;].plot(color=&quot;k&quot;, lw=1.5, label=&quot;actual&quot;)
+day1.loc[window, &quot;forecast&quot;].plot(ax=ax, color=tsutils.PALETTE[0], label=f&quot;{LEAD}, 1 day ahead&quot;)
+naive1.loc[window, &quot;forecast&quot;].plot(ax=ax, color=tsutils.PALETTE[3], ls=&quot;:&quot;, label=&quot;naive (yesterday)&quot;)
+ax.set(title=&quot;Day-1 forecasts, autumn–winter 2015&quot;, ylabel=&quot;PM2.5 (µg/m³)&quot;)
+ax.legend(loc=&quot;upper left&quot;);</code></pre>
+<figure class="output-figure"><img src="img/11-2.png" alt="Figure 2 produced by the code above" width="1006" height="445" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Two things stand out:</p>
+<ul>
+<li><strong>Naive is always a day late.</strong> It's the actual series shifted by one day, so it forecasts smog on the day the smog clears.</li>
+<li><strong>The model often catches clean-ups on the day they happen.</strong> On 1 December, after a day near 460 µg/m³, it forecast about 180, where naive said 460, and the air did in fact clear. The evening wind announces those clean-ups (chapter 07). What the model can't do is see <strong>build-ups</strong> coming. Peaks such as the end of November are under-forecast, because an episode starts with stagnant air settling in gradually, and the model's median-type forecasts are cautious on the high side.</li>
+</ul>
+<h3 id="a-smog-alert-forecast">A smog-alert forecast</h3>
+<p>Users rarely need the exact number. They need to know <strong>&quot;will tomorrow be a heavy-pollution day?&quot;</strong> We use 150 µg/m³, the daily PM2.5 level at which China's air-quality index enters its <em>heavily polluted</em> band.</p>
+<p>The alert rule is <strong>&quot;warn if tomorrow's forecast is at least <span class="math inline">c</span>&quot;</strong>. Median-type forecasts run low on the worst days, so the best <span class="math inline">c</span> can sit below 150. We choose <span class="math inline">c</span> on <strong>2014</strong> to maximise the <em>critical success index</em>, <span class="math inline">\text{CSI} = \frac{\text{hits}}{\text{hits} + \text{misses} + \text{false alarms}}</span>, a standard score for rare-event forecasts that ignores the easy &quot;correct no-alert&quot; days. Then we apply it unchanged to 2015. The comparison is the <strong>persistence</strong> rule: &quot;warn if today was a heavy-pollution day&quot;.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">HEAVY = 150        # µg/m³, daily mean
+
+def alert_scores(warn_signal, observed, level):
+    &quot;&quot;&quot;Hits, misses and false alarms for &#x27;warn when warn_signal &gt;= level&#x27; against heavy days.&quot;&quot;&quot;
+    warn, event = warn_signal &gt;= level, observed &gt;= HEAVY
+    hits, misses, false_alarms = (warn &amp; event).sum(), (~warn &amp; event).sum(), (warn &amp; ~event).sum()
+    return {&quot;heavy days&quot;: int(event.sum()), &quot;alerts issued&quot;: int(warn.sum()),
+            &quot;hit rate&quot;: hits / max(event.sum(), 1), &quot;false-alarm share&quot;: false_alarms / max(warn.sum(), 1),
+            &quot;CSI&quot;: hits / max(hits + misses + false_alarms, 1)}
+
+def day1(bt):
+    frame = bt.query(&quot;h == 1&quot;).dropna(subset=[&quot;actual&quot;])
+    return frame, frame[&quot;forecast&quot;].to_numpy(), frame[&quot;actual&quot;].to_numpy()
+
+# choose the alert level on 2014, using the lead model&#x27;s 2014 forecasts (same recipe)
+_, f14, a14 = day1(tsutils.backtest(y, from_table(direct_ml(boosting, DEV)), DEV, H, actuals=actual))
+csi_2014 = {level: alert_scores(f14, a14, level)[&quot;CSI&quot;] for level in range(80, 205, 5)}
+alert_level = max(csi_2014, key=csi_2014.get)
+print(f&quot;alert level chosen on 2014: forecast ≥ {alert_level} µg/m³ (CSI {csi_2014[alert_level]:.2f} on 2014)&quot;)
+
+# apply it, unchanged, to 2015
+frame15, f15, a15 = day1(test_runs[LEAD])
+today15 = y.reindex(frame15[&quot;origin&quot;]).to_numpy()
+pd.DataFrame({f&quot;{LEAD}: warn if forecast ≥ {alert_level}&quot;: alert_scores(f15, a15, alert_level),
+              &quot;persistence: warn if today ≥ 150&quot;: alert_scores(today15, a15, HEAVY)}).T.style.format(
+    {&quot;heavy days&quot;: &quot;{:.0f}&quot;, &quot;alerts issued&quot;: &quot;{:.0f}&quot;, &quot;hit rate&quot;: &quot;{:.0%}&quot;, &quot;false-alarm share&quot;: &quot;{:.0%}&quot;, &quot;CSI&quot;: &quot;{:.2f}&quot;})</code></pre>
+<pre class="output">alert level chosen on 2014: forecast ≥ 110 µg/m³ (CSI 0.48 on 2014)
+                                                   heavy days  alerts issued  hit rate  false-alarm share   CSI
+Gradient boosting, direct: warn if forecast ≥ 110          51             59       65%                44%  0.43
+persistence: warn if today ≥ 150                           51             50       53%                46%  0.36</pre>
+</div>
+
+<div class="md">
+<p>The alert level chosen on 2014 is <strong>below</strong> 150 µg/m³. Median-type forecasts run low on the worst days, so the model has to be asked to warn a little earlier. Applied unchanged to 2015:</p>
+<ul>
+<li>The lead model <strong>flagged about two out of three heavy-pollution days the evening before</strong> (hit rate 65%). About 44% of its alerts turned out to be false alarms.</li>
+<li>Persistence, &quot;warn if today was heavy&quot;, caught about half (53%), with a similar false-alarm share, and by construction it can never warn about the <em>first</em> day of an episode.</li>
+<li>The CSI, 0.43 against 0.36, summarises the gain.</li>
+</ul>
+<p>For a user, this is the most concrete result in the course: a warning system built only from local measurements, honestly tested on a year it never saw, that catches most heavy-pollution days a day in advance. The misses are typically the onsets of new episodes, the build-ups the plot above showed the model is slow to see. Reducing them would take a weather forecast.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-the-same-methods-on-a-predictable-series">6. The same methods on a predictable series</h2>
+<p>It's worth ending the results with a reminder of where the difficulty comes from. Here's the same city and the same file, but a different column: <strong>daily mean temperature</strong>, forecast 1–7 days ahead over 2015 with the same backtest. Temperature follows the calendar closely (chapter 02 found a seasonal strength of 0.96).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">temperature = tsutils.load_beijing()[&quot;temp&quot;].resample(&quot;D&quot;).mean().interpolate()
+
+def temp_climatology(history, horizon):
+    return tsutils.climatology_forecast(history, horizon, window=15, stat=&quot;mean&quot;)
+
+def temp_ridge(origins):
+    forecasts = {}
+    for h in range(1, H + 1):
+        X = pd.DataFrame(index=temperature.index)
+        for k in [0, 1, 2, 6]:
+            X[f&quot;lag_{k}&quot;] = temperature.shift(k)
+        X[&quot;mean_7&quot;] = temperature.rolling(7).mean()
+        for column in [&quot;dew_point&quot;, &quot;humidity&quot;, &quot;pressure&quot;, &quot;pressure_change&quot;, &quot;nw_share&quot;, &quot;wind&quot;]:
+            X[column] = weather[column]
+        target_doy = (X.index + pd.Timedelta(days=h)).dayofyear.to_numpy()
+        X[&quot;sin&quot;], X[&quot;cos&quot;] = np.sin(2 * np.pi * target_doy / 365.25), np.cos(2 * np.pi * target_doy / 365.25)
+        target = temperature.shift(-h)
+        complete = X.notna().all(axis=1) &amp; target.notna()
+        for _, month_origins in pd.Series(origins, index=origins).groupby([origins.year, origins.month]):
+            usable = complete &amp; (X.index &lt;= month_origins.iloc[0] - pd.Timedelta(days=h))
+            model = ridge().fit(X[usable], target[usable])
+            forecasts.update({(o, h): p for o, p in zip(month_origins, model.predict(X.loc[month_origins.to_numpy()]))})
+    return forecasts
+
+temp_scores = pd.DataFrame({
+    name: tsutils.evaluate(tsutils.backtest(temperature, f, TEST, H))[&quot;MAE&quot;]
+    for name, f in [(&quot;naive&quot;, tsutils.naive_forecast), (&quot;climatology&quot;, temp_climatology),
+                    (&quot;ridge (lags, today&#x27;s weather, season)&quot;, from_table(temp_ridge(TEST)))]
+}).T
+temp_scores.round(2)</code></pre>
+<pre class="output">h                                        1    2    3    4    5    6    7
+naive                                  1.6  2.3  2.6  2.7  2.7  2.8  3.1
+climatology                            2.3  2.3  2.3  2.3  2.3  2.3  2.3
+ridge (lags, today&#x27;s weather, season)  1.4  2.0  2.1  2.1  2.2  2.2  2.3</pre>
+</div>
+
+<div class="md">
+<p>Temperature tells the same story in a friendlier range of numbers. Ridge's day-1 error is about <strong>1.4 °C</strong>, for a series whose daily means ran from about −7 to +32 °C over the year. Naive is close behind, and by days 6–7 ridge converges to <strong>climatology (≈ 2.3 °C)</strong>. It's the same shape as PM2.5: skill for a few days, then back to &quot;typical for the season&quot;.</p>
+<p>The difference isn't the methods. It's where each series' structure lives. <strong>Temperature's structure lives in the calendar</strong>: its climatology alone is already excellent (chapter 02 measured a seasonal strength of 0.96). <strong>PM2.5's structure lives in the weather</strong>: its climatology is poor (about 54 µg/m³ of error in a year averaging about 83), and the weather that drives it can only be seen a day ahead. The same toolkit gives impressive-looking numbers on the first kind of series, and honest, modest, still useful numbers on the second.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-what-the-course-has-shown">7. What the course has shown</h2>
+<p><strong>About forecasting PM2.5</strong></p>
+<ul>
+<li>Beijing's PM2.5 is <strong>mean-reverting with a half-life of about a day</strong> (chapter 03). Tomorrow is forecastable; next week, beyond the season, largely isn't.</li>
+<li>The skill for tomorrow comes from <strong>recent memory</strong> (chapters 06, 09) and <strong>today's weather</strong>, especially the evening wind (chapters 07, 09).</li>
+<li>The ceiling is set by information, not algorithms: with <strong>perfect weather forecasts</strong> the errors would fall sharply (chapter 07). Operational air-quality services get their skill from weather and chemistry models, which no single dataset contains.</li>
+</ul>
+<p><strong>About forecasting in general</strong></p>
+<ul>
+<li><strong>Baselines first.</strong> Naive and climatology were hard to beat, and each model's worth is measured against them (chapter 04).</li>
+<li><strong>Honest evaluation</strong> means a rolling origin, no leakage, tuning on one period and reporting on another, and a <strong>locked test set</strong> opened once, as here.</li>
+<li><strong>Match the model to the data's behaviour.</strong> Exponential smoothing and Prophet assume persistence and a smooth calendar curve. They excelled on CO₂ and struggled on a series that snaps back (chapters 05, 08).</li>
+<li><strong>Better inputs usually beat bigger models</strong> on small data (chapters 09–10). Deep learning earned its place where there was more data and richer dynamics (chapter 10, hourly).</li>
+<li><strong>Check uncertainty</strong>, not just point forecasts. Intervals must be checked against outcomes (chapters 04–08).</li>
+<li><strong>Report variability.</strong> Random seeds, noisy test windows and small samples all move the numbers (chapter 10).</li>
+<li><strong>Lock a test set and open it once.</strong> Here the 2014 rankings largely held on 2015, the pre-declared combination didn't win, and the biases surprised us. All three are findings you only get from a test you can't tune on.</li>
+</ul>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-would-a-different-combination-have-been-better">Exercise 1: Would a different combination have been better?</h3>
+<p>Compute the 2015 MAE of every equal-weight average of <strong>two or three</strong> of the finalists (excluding the baselines), and find the best. Then ask: would you have picked it using <strong>2014</strong> alone? Use the 2014 forecasts, which you can rebuild with <code>run_all(DEV, ...)</code>, to rank the same combinations.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">from itertools import combinations
+
+candidates = [n for n in test_runs if n not in (&quot;naive&quot;, &quot;climatology (median)&quot;) and not n.startswith(&quot;Combination&quot;)]
+dev_runs = run_all(DEV, tuning_origins=pd.date_range(&quot;2012-12-31&quot;, &quot;2013-12-24&quot;, freq=&quot;D&quot;))
+
+def combo_mae(runs, names):
+    frame = runs[names[0]].copy()
+    frame[&quot;forecast&quot;] = np.mean([runs[n][&quot;forecast&quot;].to_numpy() for n in names], axis=0)
+    return tsutils.evaluate(frame)[&quot;MAE&quot;].mean()
+
+rows = []
+for k in (2, 3):
+    for names in combinations(candidates, k):
+        rows.append({&quot;members&quot;: &quot; + &quot;.join(names), &quot;2014 mean MAE&quot;: combo_mae(dev_runs, list(names)),
+                     &quot;2015 mean MAE&quot;: combo_mae(test_runs, list(names))})
+table = pd.DataFrame(rows)
+table[&quot;rank 2014&quot;], table[&quot;rank 2015&quot;] = table[&quot;2014 mean MAE&quot;].rank(), table[&quot;2015 mean MAE&quot;].rank()
+table.sort_values(&quot;2015 mean MAE&quot;).head(8).round(1)
+</code></pre>
+<p>The best 2015 combination is only slightly better than the one declared in advance, and on 2014 it ranked far down the list. <strong>None of them beats ridge on its own.</strong> Picking the winner <em>after</em> seeing the test results would report an optimistic number. Declaring the combination beforehand, as section 1 did, gives up a little accuracy in exchange for a score you can trust.</p>
+</details>
+<h3 id="exercise-2-how-do-errors-depend-on-the-pollution-level">Exercise 2: How do errors depend on the pollution level?</h3>
+<p>For the lead model's day-1 forecasts in 2015, group the absolute errors by the <strong>actual</strong> PM2.5 band (0–35, 35–75, 75–150, 150–250, 250+ µg/m³). Report the count, the median absolute error and the median <em>relative</em> error in each band. Where does most of the total error come from?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">frame = test_runs[LEAD].query(&quot;h == 1&quot;).dropna(subset=[&quot;actual&quot;]).copy()
+frame[&quot;abs_error&quot;] = (frame[&quot;forecast&quot;] - frame[&quot;actual&quot;]).abs()
+frame[&quot;relative_error&quot;] = frame[&quot;abs_error&quot;] / frame[&quot;actual&quot;]
+frame[&quot;band&quot;] = pd.cut(frame[&quot;actual&quot;], [0, 35, 75, 150, 250, np.inf], labels=[&quot;0–35&quot;, &quot;35–75&quot;, &quot;75–150&quot;, &quot;150–250&quot;, &quot;250+&quot;])
+summary = frame.groupby(&quot;band&quot;, observed=True).agg(days=(&quot;abs_error&quot;, &quot;size&quot;), median_abs_error=(&quot;abs_error&quot;, &quot;median&quot;),
+                                                   median_relative_error=(&quot;relative_error&quot;, &quot;median&quot;),
+                                                   share_of_total_error=(&quot;abs_error&quot;, &quot;sum&quot;))
+summary[&quot;share_of_total_error&quot;] /= frame[&quot;abs_error&quot;].sum()
+summary[&quot;share_of_days&quot;] = summary[&quot;days&quot;] / summary[&quot;days&quot;].sum()
+summary.style.format({&quot;median_abs_error&quot;: &quot;{:.0f}&quot;, &quot;median_relative_error&quot;: &quot;{:.0%}&quot;,
+                      &quot;share_of_total_error&quot;: &quot;{:.0%}&quot;, &quot;share_of_days&quot;: &quot;{:.0%}&quot;})
+</code></pre>
+<p>Absolute errors grow steeply with the pollution level. The heavy days (150 µg/m³ and above) are only about one day in seven, but they account for over a third of the total error, and the worst few days (250+) alone contribute nearly a fifth. That's why the MAE looks large: it's driven by the hardest days. Relative errors tell a more even story, and they're largest on the cleanest days, where small absolute misses are large percentages (chapter 04's argument against MAPE).</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="where-to-go-next">Where to go next</h2>
+<ul>
+<li><strong>Probabilistic forecasting:</strong> forecast whole distributions (quantile regression, conformal prediction) and score them with proper scoring rules such as the CRPS.</li>
+<li><strong>Many series at once:</strong> global models trained across stations or cities, and hierarchical forecasting that keeps city and district forecasts consistent.</li>
+<li><strong>External forecasts as inputs:</strong> numerical weather prediction, the ingredient our oracle showed is worth the most.</li>
+<li><strong>Further reading:</strong> Hyndman &amp; Athanasopoulos, <em>Forecasting: Principles and Practice</em> (free online), covers most of this course's statistical methods in depth.</li>
+</ul>
+<p>Thank you for working through the course.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="10-deep-learning.html"><span class="lbl">Previous · 10</span><span class="t">Deep learning</span></a>
+  <span></span>
+</nav>
+
+<footer class="col">
+  <p>Chapter 11 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

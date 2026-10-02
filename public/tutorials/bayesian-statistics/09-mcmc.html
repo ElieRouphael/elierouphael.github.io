@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>09 · Beyond conjugacy: Monte Carlo and Metropolis — Bayesian statistics course</title>
+<meta name="description" content="Monte Carlo error, the Metropolis algorithm from scratch, step-size tuning, effective sample size and R-hat.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Bayesian statistics course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Bayesian statistics course · Chapter 09 of 09</span>
+  <h1>Beyond conjugacy: Monte Carlo and Metropolis</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Handle posteriors that have no closed form. We make Monte Carlo
+integration precise, derive and implement the Metropolis algorithm from scratch, learn
+to tune it and to diagnose whether it worked, and use it on a two-parameter logistic
+regression. The course ends with a map of where to go next.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/09_mcmc.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="bayesian-statistics-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-monte-carlo-integration">1. Monte Carlo integration</a></li>
+    <li><a href="#2-when-there-is-no-formula">2. When there is no formula</a></li>
+    <li><a href="#3-the-metropolis-algorithm">3. The Metropolis algorithm</a></li>
+    <li><a href="#4-tuning-the-step-size">4. Tuning the step size</a></li>
+    <li><a href="#5-a-two-parameter-example-logistic-regression">5. A two-parameter example: logistic regression</a></li>
+    <li><a href="#6-where-to-go-next">6. Where to go next</a></li>
+    <li><a href="#you-have-finished-the-course">You have finished the course</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-monte-carlo-integration">1. Monte Carlo integration</h2>
+<p>Every posterior summary is an expectation: a mean is <span class="math inline">\mathbb E[\theta\mid y]</span>, a
+probability is <span class="math inline">\mathbb E[I_{\{\theta\in A\}}\mid y]</span>, a predictive density is
+<span class="math inline">\mathbb E[p(\tilde y\mid\theta)\mid y]</span>. Given <span class="math inline">S</span> independent draws
+<span class="math inline">\theta^{(1)},\dots,\theta^{(S)}</span> from the posterior,
+<span class="math display"> \mathbb E[g(\theta)\mid y] \approx \frac1S\sum_{s=1}^S g\big(\theta^{(s)}\big), </span>
+and by the central limit theorem (chapter 02) the error is approximately normal with
+standard deviation <span class="math inline">\mathrm{sd}(g(\theta))/\sqrt S</span>. The error shrinks like
+<span class="math inline">1/\sqrt S</span> <strong>whatever the dimension of <span class="math inline">\theta</span></strong>, which is why sampling beats grids
+in many dimensions. We have been using this since chapter 05. The plot checks the
+rate on the A/B test, where the exact answer is known.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats, integrate
+
+plt.rcParams.update({&quot;figure.dpi&quot;: 120, &quot;figure.figsize&quot;: (7.5, 3.4), &quot;axes.grid&quot;: True,
+                     &quot;grid.alpha&quot;: 0.3, &quot;axes.spines.top&quot;: False, &quot;axes.spines.right&quot;: False})
+PRIOR, LIK, POST = &quot;#8a949e&quot;, &quot;#eb6834&quot;, &quot;#2a78d6&quot;
+rng = np.random.default_rng(9)
+
+postA, postB = stats.beta(29, 241), stats.beta(44, 236)   # the A/B posteriors of chapter 05
+exact = integrate.quad(lambda t: postA.pdf(t) * postB.sf(t), 0, 1)[0]
+sizes = np.logspace(1, 6, 21).astype(int)
+err = [np.mean([abs((postB.rvs(S, random_state=rng) &gt; postA.rvs(S, random_state=rng)).mean() - exact)
+                for _ in range(30)]) for S in sizes]
+plt.loglog(sizes, err, &quot;o-&quot;, color=POST, ms=4, label=&quot;mean absolute error (30 repeats)&quot;)
+plt.loglog(sizes, 0.8 * np.sqrt(exact * (1 - exact) / sizes), &quot;--&quot;, color=&quot;k&quot;, lw=1, label=&quot;∝ 1/√S&quot;)
+plt.xlabel(&quot;number of draws S&quot;); plt.ylabel(&quot;error in P(θB &gt; θA)&quot;)
+plt.title(&quot;Monte Carlo error falls like one over the square root of the sample size&quot;)
+plt.legend(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/09-1.png" alt="Figure: Monte Carlo error falls like one over the square root of the sample size" width="803" height="419" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="2-when-there-is-no-formula">2. When there is no formula</h2>
+<p>Conjugate models are the exception. Change the prior to one that is not conjugate, or
+the likelihood to anything more realistic, and the posterior is known only up to its
+constant:
+<span class="math display"> p(\theta\mid y) = \frac{q(\theta)}{Z},\qquad q(\theta) = p(y\mid\theta)\,p(\theta)\ \text{(easy to evaluate)},\qquad Z = \int q(\theta)\,\mathrm d\theta\ \text{(hard).} </span>
+We cannot sample it directly, and grids fail beyond a few dimensions. <strong>Markov chain
+Monte Carlo</strong> (MCMC) produces samples using only evaluations of <span class="math inline">q</span>.</p>
+<p><strong>Example: a robust prior.</strong> Back to measuring a quantity <span class="math inline">\mu</span> with known noise
+<span class="math inline">\sigma = 1</span>. Our prior guess is <span class="math inline">\mu\approx0</span>, but we want a prior that gives way
+gracefully if the data disagree strongly, so we use a heavy-tailed Cauchy prior
+(<span class="math inline">t</span> with 1 degree of freedom) instead of a normal. Five measurements average around
+4. Normal likelihood times Cauchy prior is not a known distribution. It is one
+dimensional, so a grid gives the exact answer to check the sampler against.</p>
+</div>
+
+<div class="md">
+<h2 id="3-the-metropolis-algorithm">3. The Metropolis algorithm</h2>
+<p>Build a random walk whose long-run distribution is the posterior [1]:</p>
+<ol>
+<li>Start at some <span class="math inline">\theta^{(0)}</span>.</li>
+<li>At step <span class="math inline">s</span>, <strong>propose</strong> <span class="math inline">\theta^* = \theta^{(s)} + \varepsilon</span> with
+<span class="math inline">\varepsilon\sim</span> Normal<span class="math inline">(0, \delta^2)</span> (a symmetric proposal; <span class="math inline">\delta</span> is the step size).</li>
+<li><strong>Accept</strong> with probability <span class="math inline">\min\big(1,\ q(\theta^*)/q(\theta^{(s)})\big)</span>: set
+<span class="math inline">\theta^{(s+1)} = \theta^*</span>. Otherwise <strong>stay</strong>: <span class="math inline">\theta^{(s+1)} = \theta^{(s)}</span>.</li>
+</ol>
+<p>Moves uphill are always accepted; moves downhill are accepted in proportion to how
+far down they go. Only the <strong>ratio</strong> <span class="math inline">q(\theta^*)/q(\theta)</span> is needed, so the unknown
+<span class="math inline">Z</span> cancels. In code we work with <span class="math inline">\log q</span> to avoid underflow and accept when
+<span class="math inline">\log u &lt; \log q(\theta^*) - \log q(\theta)</span> for <span class="math inline">u\sim</span> Uniform<span class="math inline">(0,1)</span>.</p>
+<p><strong>Why it works.</strong> Write <span class="math inline">\pi</span> for the posterior and <span class="math inline">T(\theta\to\theta&#x27;)</span> for the
+chance of moving from <span class="math inline">\theta</span> to <span class="math inline">\theta&#x27;</span>. For <span class="math inline">\theta\ne\theta&#x27;</span> the proposal density
+<span class="math inline">g</span> is symmetric, so
+<span class="math display"> \pi(\theta)\,T(\theta\to\theta&#x27;) = \pi(\theta)\,g(\theta&#x27;-\theta)\,\min\Big(1,\frac{\pi(\theta&#x27;)}{\pi(\theta)}\Big)
+   = g(\theta&#x27;-\theta)\,\min\big(\pi(\theta),\pi(\theta&#x27;)\big), </span>
+which is symmetric in <span class="math inline">\theta</span> and <span class="math inline">\theta&#x27;</span>. This <strong>detailed balance</strong> means that if
+the chain is distributed as <span class="math inline">\pi</span> at one step, it is still distributed as <span class="math inline">\pi</span> at the
+next: <span class="math inline">\pi</span> is the stationary distribution. Under mild conditions the chain converges
+to it from any starting point [2, 3]. Hastings generalised the rule to asymmetric
+proposals by including the ratio <span class="math inline">g(\theta\mid\theta^*)/g(\theta^*\mid\theta)</span> [2].</p>
+<p>The price is that successive draws are <strong>correlated</strong> and the first ones depend on
+the start, so we discard an initial <strong>burn-in</strong> and need more draws than independent
+sampling would.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def metropolis(log_q, start, step, n_steps, rng):
+    &quot;&quot;&quot;Random-walk Metropolis. Works for scalar or vector parameters.&quot;&quot;&quot;
+    theta = np.atleast_1d(np.asarray(start, float))
+    lq = log_q(theta)
+    chain = np.empty((n_steps, theta.size))
+    accepted = 0
+    for s in range(n_steps):
+        proposal = theta + step * rng.standard_normal(theta.size)
+        lq_prop = log_q(proposal)
+        if np.log(rng.random()) &lt; lq_prop - lq:
+            theta, lq = proposal, lq_prop
+            accepted += 1
+        chain[s] = theta
+    return chain, accepted / n_steps
+
+y = np.array([3.6, 4.9, 3.2, 4.4, 4.1])
+sigma = 1.0
+def log_q(mu):                                    # log likelihood + log Cauchy prior, constants dropped
+    mu = mu[0]
+    return -0.5 * np.sum((y - mu) ** 2) / sigma**2 - np.log1p(mu**2)
+
+chain, acc = metropolis(log_q, start=0.0, step=1.0, n_steps=20_000, rng=rng)
+draws = chain[1000:, 0]                           # discard burn-in
+
+grid = np.linspace(-2, 8, 4001)
+dens = np.exp([log_q(np.array([g])) for g in grid]); dens /= dens.sum() * (grid[1] - grid[0])
+print(f&quot;acceptance rate {acc:.2f}&quot;)
+print(f&quot;posterior mean: Metropolis {draws.mean():.3f}, grid {np.sum(grid * dens) * (grid[1] - grid[0]):.3f}&quot;)
+print(f&quot;sample mean {y.mean():.2f}; a Normal(0, 1) prior would give {len(y) * y.mean() / (len(y) + 1):.2f} &quot;
+      &quot;(the Cauchy prior gives way to the data)&quot;)
+
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.2), gridspec_kw=dict(width_ratios=[1.4, 1]))
+ax[0].plot(chain[:1500, 0], color=POST, lw=0.7); ax[0].axvspan(0, 1000, color=PRIOR, alpha=0.2)
+ax[0].set_xlabel(&quot;iteration&quot;); ax[0].set_ylabel(&quot;μ&quot;); ax[0].set_title(&quot;trace: starts at 0, burn-in shaded&quot;)
+ax[1].hist(draws, bins=80, density=True, color=POST, alpha=0.45, label=&quot;Metropolis draws&quot;)
+ax[1].plot(grid, dens, color=POST, lw=2, label=&quot;exact (grid)&quot;)
+ax[1].set_xlim(1.5, 6.5); ax[1].set_xlabel(&quot;μ&quot;); ax[1].legend(fontsize=8)
+plt.tight_layout(); plt.show()</code></pre>
+<pre class="output">acceptance rate 0.47
+posterior mean: Metropolis 3.939, grid 3.944
+sample mean 4.04; a Normal(0, 1) prior would give 3.37 (the Cauchy prior gives way to the data)</pre>
+<figure class="output-figure"><img src="img/09-2.png" alt="Figure: trace: starts at 0, burn-in shaded" width="1187" height="371" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="4-tuning-the-step-size">4. Tuning the step size</h2>
+<p>The step size <span class="math inline">\delta</span> controls how fast the chain explores:</p>
+<ul>
+<li><strong>too small</strong>: almost every proposal is accepted, but each moves a tiny distance, so the
+chain crawls and successive draws are nearly identical;</li>
+<li><strong>too large</strong>: proposals mostly land in low-probability regions and are rejected, so the
+chain sits still for long stretches;</li>
+<li><strong>about right</strong>: for a one-dimensional roughly normal target, an acceptance rate
+around 40-45% is near optimal, falling towards 23% in high dimensions [4].</li>
+</ul>
+<p>Correlation is measured by the <strong>effective sample size</strong> (ESS): the number of
+independent draws that would give the same Monte Carlo error,
+<span class="math display"> \text{ESS} = \frac{S}{1+2\sum_{k\ge1}\rho_k}, </span>
+where <span class="math inline">\rho_k</span> is the autocorrelation of the chain at lag <span class="math inline">k</span>. We estimate it by
+summing the autocorrelations until they first drop below zero.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ess(x):
+    x = x - x.mean()
+    acf = np.correlate(x, x, &quot;full&quot;)[x.size - 1:] / (x.var() * x.size)
+    neg = np.nonzero(acf[1:] &lt; 0)[0]
+    first_neg = neg[0] + 1 if neg.size else acf.size
+    return x.size / (1 + 2 * acf[1:first_neg].sum())
+
+fig, ax = plt.subplots(3, 1, figsize=(7.5, 5), sharex=True)
+for a, step in zip(ax, [0.05, 1.0, 25.0]):
+    c, acc = metropolis(log_q, 4.0, step, 5000, rng)
+    a.plot(c[:, 0], color=POST, lw=0.6)
+    a.set_ylabel(&quot;μ&quot;); a.set_ylim(1.5, 6.5)
+    a.set_title(f&quot;step {step}: acceptance {acc:.0%}, effective sample size {ess(c[500:, 0]):.0f} of 4500&quot;,
+                fontsize=10)
+ax[-1].set_xlabel(&quot;iteration&quot;); plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/09-3.png" alt="Figure: step …: acceptance …, effective sample size … of 4500" width="887" height="587" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="5-a-two-parameter-example-logistic-regression">5. A two-parameter example: logistic regression</h2>
+<p>Golfers putt from different distances. For each distance (in feet) we record the
+number of attempts and successes. The probability of success falls with distance,
+which we model with <strong>logistic regression</strong>:
+<span class="math display"> y_j\sim\text{Binomial}(n_j, p_j),\qquad \log\frac{p_j}{1-p_j} = a + b\,x_j, </span>
+with weakly informative priors <span class="math inline">a\sim</span> Normal<span class="math inline">(0, 5^2)</span> and <span class="math inline">b\sim</span> Normal<span class="math inline">(0, 1)</span>. No
+conjugate prior exists for this likelihood. (The data are simulated from <span class="math inline">a = 2.5</span>,
+<span class="math inline">b = -0.25</span>.)</p>
+<p>Two practical points:</p>
+<ul>
+<li><strong>Run several chains</strong> from dispersed starting points. If they end up exploring the
+same region, that is evidence they have converged; if not, something is wrong.</li>
+<li><strong><span class="math inline">\hat R</span></strong> (the Gelman-Rubin statistic) compares the variance between chains with
+the variance within chains [5]. Values close to 1 (below about 1.01 by current
+advice [6]) indicate agreement.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">dist = np.arange(2, 21, 2).astype(float)
+attempts = np.full(dist.size, 60)
+made = rng.binomial(attempts, 1 / (1 + np.exp(-(2.5 - 0.25 * dist))))
+
+def log_q2(params):
+    a, b = params
+    eta = a + b * dist
+    loglik = np.sum(made * eta - attempts * np.logaddexp(0, eta))
+    return loglik - a**2 / (2 * 5**2) - b**2 / 2
+
+starts = [(-4, 1), (6, -1), (0, 0), (4, 0.5)]
+chains = [metropolis(log_q2, s, np.array([0.15, 0.015]), 12_000, rng) for s in starts]
+print(&quot;acceptance rates:&quot;, &quot;, &quot;.join(f&quot;{acc:.2f}&quot; for _, acc in chains))
+kept = np.array([c[2000:] for c, _ in chains])                        # chains x draws x 2
+
+def rhat(x):                                                          # x: chains x draws
+    m, n_ = x.shape
+    B = n_ * x.mean(axis=1).var(ddof=1)
+    W = x.var(axis=1, ddof=1).mean()
+    return np.sqrt(((n_ - 1) / n_ * W + B / n_) / W)
+
+for j, name in enumerate([&quot;a&quot;, &quot;b&quot;]):
+    allj = kept[:, :, j].ravel()
+    print(f&quot;{name}: posterior mean {allj.mean():7.3f}, 95% interval ({np.quantile(allj, 0.025):.3f}, &quot;
+          f&quot;{np.quantile(allj, 0.975):.3f}), R-hat {rhat(kept[:, :, j]):.4f}, &quot;
+          f&quot;ESS about {sum(ess(kept[c, :, j]) for c in range(len(starts))):.0f}&quot;)
+
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.4))
+for c, _ in chains:
+    ax[0].plot(c[:3000, 0], c[:3000, 1], lw=0.5, alpha=0.8)
+ax[0].plot(*np.array(starts).T, &quot;ks&quot;, ms=5, label=&quot;starting points&quot;)
+ax[0].set_xlabel(&quot;a&quot;); ax[0].set_ylabel(&quot;b&quot;); ax[0].set_title(&quot;four chains find the same region&quot;); ax[0].legend(fontsize=8)
+xs = np.linspace(0, 22, 200)
+draws2 = kept.reshape(-1, 2)[::20]
+curves = 1 / (1 + np.exp(-(draws2[:, :1] + draws2[:, 1:] * xs)))
+ax[1].fill_between(xs, *np.quantile(curves, [0.025, 0.975], axis=0), color=POST, alpha=0.3, label=&quot;95% credible band&quot;)
+ax[1].plot(xs, np.median(curves, axis=0), color=POST, lw=2)
+ax[1].plot(dist, made / attempts, &quot;o&quot;, color=&quot;k&quot;, ms=4, label=&quot;observed success rate&quot;)
+ax[1].set_xlabel(&quot;distance (feet)&quot;); ax[1].set_ylabel(&quot;P(putt is made)&quot;); ax[1].legend(fontsize=8)
+plt.tight_layout(); plt.show()</code></pre>
+<pre class="output">acceptance rates: 0.43, 0.42, 0.42, 0.43
+a: posterior mean   2.723, 95% interval (2.254, 3.201), R-hat 1.0013, ESS about 894
+b: posterior mean  -0.255, 95% interval (-0.296, -0.215), R-hat 1.0022, ESS about 900</pre>
+<figure class="output-figure"><img src="img/09-4.png" alt="Figure: four chains find the same region" width="1177" height="396" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>All four chains agree (<span class="math inline">\hat R\approx 1</span>), but notice the effective sample size:
+about 900 out of 40,000 draws. The posterior of <span class="math inline">(a,b)</span> is a long, thin diagonal
+ridge (a steeper slope is compensated by a larger intercept), and a random walk
+with independent steps in <span class="math inline">a</span> and <span class="math inline">b</span> can only shuffle slowly along it. Centring the
+distance, or a proposal shaped like the posterior, fixes this; the gradient-based
+samplers below handle it automatically.</p>
+</div>
+
+<div class="md">
+<h2 id="6-where-to-go-next">6. Where to go next</h2>
+<p>Random-walk Metropolis is the simplest MCMC algorithm and the one to understand
+first. Practical work uses its descendants:</p>
+<ul>
+<li><strong>Gibbs sampling</strong> [7, 8] draws each parameter in turn from its conditional posterior
+given the others. When those conditionals are known distributions, as in the
+normal-inverse-gamma model of chapter 06, no tuning is needed.</li>
+<li><strong>Hamiltonian Monte Carlo</strong> uses the gradient of <span class="math inline">\log q</span> to make long, informed
+moves, and its adaptive version <strong>NUTS</strong> [9] tunes itself. It scales to models with
+thousands of parameters.</li>
+<li><strong>Probabilistic programming languages</strong> let you write the model and get NUTS for
+free: <strong>Stan</strong> [10] and, in Python, <strong>PyMC</strong> [11]. The golf model above is about
+ten lines in either.</li>
+<li><strong>Hierarchical models</strong> are the natural next topic: many related groups (players,
+schools, hospitals), each with its own parameter, sharing a common prior whose
+parameters are also learned. They are where Bayesian methods most clearly beat the
+alternatives, and they need exactly the MCMC tools of this chapter.</li>
+</ul>
+</div>
+
+<div class="md">
+<h2 id="you-have-finished-the-course">You have finished the course</h2>
+<p>You can now take a question about an unknown quantity and answer it the Bayesian way:
+choose a likelihood that describes how the data arise, choose a prior and check what
+it implies, compute the posterior (exactly with a conjugate model, or by sampling),
+and report it honestly, with intervals, probabilities of the statements that matter,
+predictions, a model check, and a sensitivity analysis. The textbooks in chapter 00's
+reference list, in particular McElreath [12] and Gelman et al. [13], are good next
+steps.</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Replace the Cauchy prior in the measurement example by Normal<span class="math inline">(0, 1)</span> and compare the
+posteriors. Then move the data to average 1 instead of 4. When does the choice
+between the two priors matter?</li>
+<li>Show that the Metropolis acceptance rule in Section 3 satisfies detailed balance even
+when <span class="math inline">\pi(\theta&#x27;) &gt; \pi(\theta)</span>. (Handle the two cases of the minimum separately.)</li>
+<li>For the golf model, compute the posterior of the distance at which the success
+probability falls to 50%, <span class="math inline">-a/b</span>, from the samples.</li>
+<li>Start one golf chain far away, at <span class="math inline">(20, 5)</span>, with only 3,000 steps. Compute <span class="math inline">\hat R</span>
+with and without it. What does <span class="math inline">\hat R</span> detect?</li>
+<li>Implement a Gibbs sampler for the normal model with unknown mean and variance of
+chapter 06, alternating <span class="math inline">\mu\mid\sigma^2,y</span> and <span class="math inline">\sigma^2\mid\mu,y</span> (derive the second
+one). Check it against the exact <span class="math inline">t</span> marginal of chapter 06.</li>
+<li>Install PyMC and fit the golf model with NUTS. Compare its posterior means, run
+time and effective sample size with your Metropolis sampler.</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>N. Metropolis, A. W. Rosenbluth, M. N. Rosenbluth, A. H. Teller, E. Teller. <em>Equation of state calculations by fast computing machines.</em> The Journal of Chemical Physics, 21(6):1087-1092, 1953. <a href="https://doi.org/10.1063/1.1699114">doi:10.1063/1.1699114</a></li>
+<li>W. K. Hastings. <em>Monte Carlo sampling methods using Markov chains and their applications.</em> Biometrika, 57(1):97-109, 1970. <a href="https://doi.org/10.1093/biomet/57.1.97">doi:10.1093/biomet/57.1.97</a></li>
+<li>C. P. Robert, G. Casella. <em>Monte Carlo Statistical Methods</em>, 2nd ed. Springer, 2004.</li>
+<li>G. O. Roberts, A. Gelman, W. R. Gilks. <em>Weak convergence and optimal scaling of random walk Metropolis algorithms.</em> The Annals of Applied Probability, 7(1):110-120, 1997. <a href="https://doi.org/10.1214/aoap/1034625254">doi:10.1214/aoap/1034625254</a></li>
+<li>A. Gelman, D. B. Rubin. <em>Inference from iterative simulation using multiple sequences.</em> Statistical Science, 7(4):457-472, 1992. <a href="https://doi.org/10.1214/ss/1177011136">doi:10.1214/ss/1177011136</a></li>
+<li>A. Vehtari, A. Gelman, D. Simpson, B. Carpenter, P.-C. Bürkner. <em>Rank-normalization, folding, and localization: an improved R-hat for assessing convergence of MCMC.</em> Bayesian Analysis, 16(2):667-718, 2021. <a href="https://doi.org/10.1214/20-BA1221">doi:10.1214/20-BA1221</a></li>
+<li>S. Geman, D. Geman. <em>Stochastic relaxation, Gibbs distributions, and the Bayesian restoration of images.</em> IEEE Transactions on Pattern Analysis and Machine Intelligence, 6(6):721-741, 1984. <a href="https://doi.org/10.1109/TPAMI.1984.4767596">doi:10.1109/TPAMI.1984.4767596</a></li>
+<li>A. E. Gelfand, A. F. M. Smith. <em>Sampling-based approaches to calculating marginal densities.</em> Journal of the American Statistical Association, 85(410):398-409, 1990. <a href="https://doi.org/10.1080/01621459.1990.10476213">doi:10.1080/01621459.1990.10476213</a></li>
+<li>M. D. Hoffman, A. Gelman. <em>The No-U-Turn Sampler: adaptively setting path lengths in Hamiltonian Monte Carlo.</em> Journal of Machine Learning Research, 15:1593-1623, 2014.</li>
+<li>B. Carpenter et al. <em>Stan: a probabilistic programming language.</em> Journal of Statistical Software, 76(1), 2017. <a href="https://doi.org/10.18637/jss.v076.i01">doi:10.18637/jss.v076.i01</a></li>
+<li>O. Abril-Pla et al. <em>PyMC: a modern and comprehensive probabilistic programming framework in Python.</em> PeerJ Computer Science, 9:e1516, 2023. <a href="https://doi.org/10.7717/peerj-cs.1516">doi:10.7717/peerj-cs.1516</a></li>
+<li>R. McElreath. <em>Statistical Rethinking</em>, 2nd ed. CRC Press, 2020.</li>
+<li>A. Gelman et al. <em>Bayesian Data Analysis</em>, 3rd ed. CRC Press, 2013.</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="08-linear-regression.html"><span class="lbl">Previous · 08</span><span class="t">Bayesian linear regression</span></a>
+  <span></span>
+</nav>
+
+<footer class="col">
+  <p>Chapter 09 of the Bayesian statistics course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

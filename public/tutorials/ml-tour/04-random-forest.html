@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>04 · Random Forest — A Tour of Machine Learning</title>
+<meta name="description" content="A single decision tree vs. a 300-tree random forest on real heart-disease data, and the feature importances the forest learned.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 04 of 11</span>
+  <h1>Random Forest</h1>
+  <div class="intro prose">
+<p><strong>Objectives:</strong> train a random forest classifier on real patient data, read feature
+importances, and see why an ensemble of weak, decorrelated trees beats any single
+tree.</p>
+<p><em>Loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier
+Tutorial</a>
+on Kaggle, reworked here with a different dataset and a focus on feature importance.</em></p>
+<p>A single decision tree overfits easily — it can memorise the training set by growing
+deep enough. A <strong>random forest</strong> trains many trees, each on a bootstrap resample of
+the data and a random subset of features at every split, then averages their votes.
+The randomness decorrelates the trees' mistakes, so the average is much more stable
+than any one tree.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/04_random_forest.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-a-decision-tree-splitting-into-purer-groups">1. A decision tree: splitting into purer groups</a></li>
+    <li><a href="#2-why-one-deep-tree-overfits">2. Why one deep tree overfits</a></li>
+    <li><a href="#3-from-trees-to-a-forest-bootstrap-averaging-random-features">3. From trees to a forest: bootstrap, averaging, random features</a></li>
+    <li><a href="#4-the-data">4. The data</a></li>
+    <li><a href="#5-one-tree-vs-a-forest">5. One tree vs. a forest</a></li>
+    <li><a href="#6-how-many-trees-are-enough">6. How many trees are enough?</a></li>
+    <li><a href="#7-which-features-matter">7. Which features matter?</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-a-decision-tree-splitting-into-purer-groups">1. A decision tree: splitting into purer groups</h2>
+<p>A decision tree predicts by asking a sequence of yes/no questions, such as &quot;is <code>chol</code> above 250?&quot;. Each question is a <strong>split</strong>: it picks one feature <span class="math inline">j</span> and a threshold <span class="math inline">s</span>, and sends a patient left if <span class="math inline">x_j \le s</span> and right otherwise. Training starts with all training patients in one node, the root. It picks the best split, applies it, and then repeats the same procedure inside each of the two new nodes, and so on (<strong>recursive splitting</strong>). A node that is not split any further is a <strong>leaf</strong>, and it predicts the majority class of the training patients that reached it. Geometrically, the tree cuts the feature space into boxes with sides parallel to the axes.</p>
+<p><strong>Impurity.</strong> &quot;Best split&quot; needs a score. Consider a node and let <span class="math inline">p_k</span> be the fraction of its patients in class <span class="math inline">k</span>, for <span class="math inline">k = 1, \dots, K</span> (below, <span class="math inline">K = 2</span>: heart disease or not). The <strong>Gini impurity</strong> is</p>
+<div class="math display">G = 1 - \sum_{k=1}^{K} p_k^2</div>
+<p>It has a direct reading: draw two patients at random (with replacement) from the node; <span class="math inline">G</span> is the probability that they belong to different classes. A pure node has <span class="math inline">G = 0</span>. With two classes, the worst case is a 50/50 mix, where <span class="math inline">G = 1 - 0.5^2 - 0.5^2 = 0.5</span>. A common alternative is the <strong>entropy</strong>, measured in bits:</p>
+<div class="math display">H = -\sum_{k=1}^{K} p_k \log_2 p_k</div>
+<p>It is also 0 for a pure node and reaches 1 bit for a 50/50 mix. Both scores behave very similarly; scikit-learn uses Gini by default.</p>
+<p><strong>Impurity decrease.</strong> A split sends <span class="math inline">n_L</span> of the node's <span class="math inline">n</span> patients left and <span class="math inline">n_R</span> right. Its quality is the drop in impurity, with each child weighted by its share of the patients:</p>
+<div class="math display">\Delta G = G_{\text{parent}} - \frac{n_L}{n}\, G_L - \frac{n_R}{n}\, G_R</div>
+<p>The weights matter: a large impure child costs more than a tiny one. At every node the tree tries all features and thresholds and keeps the split with the largest <span class="math inline">\Delta G</span>. It is greedy: it takes the best single step and never looks ahead.</p>
+<p><strong>A hand example.</strong> A node holds 10 patients, 5 with disease and 5 without. Two candidate splits:</p>
+<table>
+<thead>
+<tr>
+<th>node</th>
+<th>patients</th>
+<th>disease / no disease</th>
+<th><span class="math inline">p_{\text{disease}}</span></th>
+<th>Gini <span class="math inline">1 - p_1^2 - p_2^2</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>parent</td>
+<td>10</td>
+<td>5 / 5</td>
+<td>0.5</td>
+<td><span class="math inline">1 - 0.25 - 0.25 = 0.5</span></td>
+</tr>
+<tr>
+<td>split A, left</td>
+<td>4</td>
+<td>1 / 3</td>
+<td>0.25</td>
+<td><span class="math inline">1 - 0.0625 - 0.5625 = 0.375</span></td>
+</tr>
+<tr>
+<td>split A, right</td>
+<td>6</td>
+<td>4 / 2</td>
+<td>0.667</td>
+<td><span class="math inline">1 - 0.444 - 0.111 = 0.444</span></td>
+</tr>
+<tr>
+<td>split B, left</td>
+<td>5</td>
+<td>4 / 1</td>
+<td>0.8</td>
+<td><span class="math inline">1 - 0.64 - 0.04 = 0.32</span></td>
+</tr>
+<tr>
+<td>split B, right</td>
+<td>5</td>
+<td>1 / 4</td>
+<td>0.2</td>
+<td><span class="math inline">1 - 0.04 - 0.64 = 0.32</span></td>
+</tr>
+</tbody>
+</table>
+<p>Split A: <span class="math inline">\Delta G = 0.5 - 0.4 \times 0.375 - 0.6 \times 0.444 = 0.5 - 0.150 - 0.267 = 0.083</span>.</p>
+<p>Split B: <span class="math inline">\Delta G = 0.5 - 0.5 \times 0.32 - 0.5 \times 0.32 = 0.18</span>.</p>
+<p>The tree chooses split B. Entropy agrees: split B lowers it from 1 bit to 0.722 bits, a gain of 0.278 bits, against 0.125 bits for split A.</p>
+</div>
+
+<div class="md">
+<h2 id="2-why-one-deep-tree-overfits">2. Why one deep tree overfits</h2>
+<p>Left alone, a tree keeps splitting until every leaf is pure. It then classifies its training set almost perfectly. But the deepest splits are decided by two or three patients each, so they follow the noise in those particular patients rather than a real pattern. Replace a handful of training patients and the tree can change completely, from the first split down, and its predictions change with it.</p>
+<p>This is <strong>high variance</strong>. Think of the training set as one random draw from a population of possible training sets. The prediction <span class="math inline">\hat f(x)</span> of the fitted tree for a new patient <span class="math inline">x</span> is then a random quantity too. Its expected squared error splits into three parts: bias squared (how far the <em>average</em> prediction is from the truth), variance (how much the prediction jumps from one training set to another), and irreducible noise. A deep tree has low bias but high variance. Averaging many trees trained on <em>independent</em> training sets would keep the low bias and shrink the variance. We only have one training set, so a random forest manufactures new ones.</p>
+</div>
+
+<div class="md">
+<h2 id="3-from-trees-to-a-forest-bootstrap-averaging-random-features">3. From trees to a forest: bootstrap, averaging, random features</h2>
+<p><strong>Bootstrap samples.</strong> Each tree gets its own training set: <span class="math inline">n</span> patients drawn <em>with replacement</em> from the <span class="math inline">n</span> training patients. Some patients are drawn twice or more, and some are not drawn at all. A given patient is missed by one draw with probability <span class="math inline">1 - 1/n</span>, so it is missed by all <span class="math inline">n</span> independent draws with probability</p>
+<div class="math display">\Big(1 - \frac1n\Big)^n \;\longrightarrow\; e^{-1} \approx 0.368 \quad \text{as } n \text{ grows}</div>
+<table>
+<thead>
+<tr>
+<th><span class="math inline">n</span></th>
+<th>2</th>
+<th>3</th>
+<th>5</th>
+<th>10</th>
+<th>100</th>
+<th>227</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">(1 - 1/n)^n</span></td>
+<td>0.250</td>
+<td>0.296</td>
+<td>0.328</td>
+<td>0.349</td>
+<td>0.366</td>
+<td>0.367</td>
+</tr>
+</tbody>
+</table>
+<p>For <span class="math inline">n = 3</span>: <span class="math inline">(2/3)^3 = 8/27 \approx 0.296</span>. So each tree sees about 63% of the distinct patients. The other 37% are its <strong>out-of-bag</strong> patients, a free test set for that tree (scikit-learn reports the resulting score with <code>oob_score=True</code>).</p>
+<p><strong>Averaging correlated predictors.</strong> Let <span class="math inline">T_1, \dots, T_B</span> be the predictions of <span class="math inline">B</span> trees at the same input <span class="math inline">x</span>. Each has variance <span class="math inline">\sigma^2</span>, and any two have correlation <span class="math inline">\rho</span>: they are not independent, because their bootstrap samples overlap. The forest outputs the average <span class="math inline">\bar T = \frac1B \sum_b T_b</span>. Its variance is the sum of all <span class="math inline">B^2</span> covariances, divided by <span class="math inline">B^2</span>. There are <span class="math inline">B</span> diagonal terms, each <span class="math inline">\sigma^2</span>, and <span class="math inline">B(B-1)</span> off-diagonal terms, each <span class="math inline">\rho\sigma^2</span>:</p>
+<div class="math display">\mathrm{Var}(\bar T) = \frac{1}{B^2}\Big(B\sigma^2 + B(B-1)\,\rho\sigma^2\Big) = \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2</div>
+<p>The second term shrinks as trees are added; the first does not. More trees always help, but only down to a floor <span class="math inline">\rho\sigma^2</span> set by how similar the trees are. With <span class="math inline">\sigma^2 = 1</span>:</p>
+<table>
+<thead>
+<tr>
+<th>trees <span class="math inline">B</span></th>
+<th>1</th>
+<th>10</th>
+<th>100</th>
+<th><span class="math inline">\infty</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">\rho = 0.5</span></td>
+<td>1</td>
+<td>0.55</td>
+<td>0.505</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td><span class="math inline">\rho = 0.2</span></td>
+<td>1</td>
+<td>0.28</td>
+<td>0.208</td>
+<td>0.2</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Random feature subsets.</strong> The only way to lower the floor is to lower <span class="math inline">\rho</span>. If one feature is very strong, nearly every bootstrap tree splits on it first, and the trees end up alike. A random forest therefore lets each split choose only among <span class="math inline">m</span> features drawn at random from the <span class="math inline">p</span> available; a common choice for classification is <span class="math inline">m \approx \sqrt p</span>. Each individual tree gets a little worse, but the trees become much less correlated, and the average wins.</p>
+<p><strong>Voting.</strong> Each tree votes for a class and the forest predicts the majority. scikit-learn uses a soft version: it averages the trees' class probabilities and picks the largest, which almost always gives the same answer.</p>
+<p><strong>Feature importance.</strong> Every split in every tree lowers impurity by some <span class="math inline">\Delta G</span>. Add up these decreases for all splits that use feature <span class="math inline">j</span>, weighting each by the fraction <span class="math inline">n_t / N</span> of training samples that reach that node <span class="math inline">t</span>, and average over the trees:</p>
+<div class="math display">\mathrm{Imp}(j) = \frac1B \sum_{b=1}^{B} \ \sum_{\text{nodes } t \text{ of tree } b \text{ that split on } j} \frac{n_t}{N}\, \Delta G_t</div>
+<p>The scores are then rescaled to sum to 1. This is the <strong>mean decrease in impurity</strong>. It is computed on the training data, and it tends to favour features with many possible thresholds, so it is a quick guide rather than a final verdict.</p>
+<p><strong>In the code below.</strong> <code>X</code> has <span class="math inline">p = 13</span> clinical features and <code>y</code> is <code>output</code> (1 = disease). <code>DecisionTreeClassifier</code> grows one unrestricted Gini tree: the high-variance learner of Section 2. <code>RandomForestClassifier(n_estimators=300)</code> grows <span class="math inline">B = 300</span> trees, each on a bootstrap sample of the 227 training patients and, by default, with <span class="math inline">m = \lfloor\sqrt{13}\rfloor = 3</span> candidate features per split, then averages them. The loop over <code>tree_counts</code> traces how test accuracy settles as <span class="math inline">B</span> grows, and <code>forest.feature_importances_</code> is the mean decrease in impurity defined above.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+import mlutils
+mlutils.set_style()</code></pre>
+</div>
+
+<div class="md">
+<h2 id="4-the-data">4. The data</h2>
+<p>303 patients referred for a cardiac evaluation, 13 clinical measurements, and
+<code>output</code>: whether significant heart disease was found. A realistic mix of continuous
+measurements (cholesterol, max heart rate) and coded categorical ones (chest-pain
+type, ECG results).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">heart = pd.read_csv(&quot;data/heart.csv&quot;)
+print(heart.shape)
+print(heart[&quot;output&quot;].value_counts().rename(&quot;count&quot;))
+heart.head()</code></pre>
+<pre class="output">(303, 14)
+output
+1    165
+0    138
+Name: count, dtype: int64
+   age  sex  cp  trtbps  chol  fbs  restecg  thalachh  exng  oldpeak  slp  \
+0   63    1   3     145   233    1        0       150     0      2.3    0   
+1   37    1   2     130   250    0        1       187     0      3.5    0   
+2   41    0   1     130   204    0        0       172     0      1.4    2   
+3   56    1   1     120   236    0        1       178     0      0.8    2   
+4   57    0   0     120   354    0        1       163     1      0.6    2   
+
+   caa  thall  output  
+0    0      1       1  
+1    0      2       1  
+2    0      2       1  
+3    0      2       1  
+4    0      2       1</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">X = heart.drop(columns=[&quot;output&quot;])
+y = heart[&quot;output&quot;]
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+print(f&quot;train: {len(X_train)}, test: {len(X_test)}&quot;)</code></pre>
+<pre class="output">train: 227, test: 76</pre>
+</div>
+
+<div class="md">
+<h2 id="5-one-tree-vs-a-forest">5. One tree vs. a forest</h2>
+<p>First, a single unrestricted decision tree — it can split on anything, as many times
+as it wants, so it fits the training set almost perfectly and often pays for it on
+new data.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">tree = DecisionTreeClassifier(random_state=42).fit(X_train, y_train)
+print(f&quot;single tree — train accuracy: {tree.score(X_train, y_train):.3f}, &quot;
+      f&quot;test accuracy: {accuracy_score(y_test, tree.predict(X_test)):.3f}&quot;)</code></pre>
+<pre class="output">single tree — train accuracy: 1.000, test accuracy: 0.724</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">forest = RandomForestClassifier(n_estimators=300, random_state=42).fit(X_train, y_train)
+acc_forest = accuracy_score(y_test, forest.predict(X_test))
+print(f&quot;forest (300 trees) — train accuracy: {forest.score(X_train, y_train):.3f}, &quot;
+      f&quot;test accuracy: {acc_forest:.3f}&quot;)</code></pre>
+<pre class="output">forest (300 trees) — train accuracy: 1.000, test accuracy: 0.789</pre>
+</div>
+
+<div class="md">
+<p>The forest's <em>training</em> accuracy is lower than the single tree's — each tree only
+ever saw a bootstrap resample and a random slice of features, so no individual tree
+memorises everything. But averaging over 300 such trees usually <strong>generalises</strong>
+better, which is the number that matters.</p>
+<h2 id="6-how-many-trees-are-enough">6. How many trees are enough?</h2>
+<p>Trees are cheap to add and never hurt on their own (with this scheme); the only
+question is how many are needed before the ensemble average stops moving.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">tree_counts = [1, 2, 5, 10, 25, 50, 100, 200, 300]
+accs = []
+for n in tree_counts:
+    m = RandomForestClassifier(n_estimators=n, random_state=42).fit(X_train, y_train)
+    accs.append(accuracy_score(y_test, m.predict(X_test)))
+
+fig, ax = plt.subplots(figsize=(6.5, 4.5))
+ax.plot(tree_counts, accs, color=mlutils.BLUE, marker=&quot;o&quot;)
+ax.set(xlabel=&quot;number of trees&quot;, ylabel=&quot;test accuracy&quot;, title=&quot;Test accuracy vs. forest size&quot;)</code></pre>
+<pre class="output">[Text(0.5, 0, &#x27;number of trees&#x27;),
+ Text(0, 0.5, &#x27;test accuracy&#x27;),
+ Text(0.5, 1.0, &#x27;Test accuracy vs. forest size&#x27;)]</pre>
+<figure class="output-figure"><img src="img/04-1.png" alt="Figure 1 produced by the code above" width="647" height="478" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="7-which-features-matter">7. Which features matter?</h2>
+<p>Section 3 defined each feature's <strong>importance</strong> as its mean decrease in impurity: the
+impurity reduction of every split on that feature, weighted by how many samples reach
+the split, averaged over all trees.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">importances = pd.Series(forest.feature_importances_, index=X.columns).sort_values(ascending=False)
+fig, ax = plt.subplots(figsize=(6.5, 5))
+ax.barh(importances.index[::-1], importances.values[::-1], color=mlutils.BLUE)
+ax.set(xlabel=&quot;importance (mean impurity decrease)&quot;, title=&quot;Random forest feature importances&quot;)
+importances</code></pre>
+<pre class="output">cp          0.157507
+oldpeak     0.123321
+thall       0.120078
+thalachh    0.114468
+caa         0.079881
+chol        0.078990
+age         0.073159
+trtbps      0.068857
+slp         0.063579
+exng        0.062523
+sex         0.030288
+restecg     0.019888
+fbs         0.007461
+dtype: float64</pre>
+<figure class="output-figure"><img src="img/04-2.png" alt="Figure 2 produced by the code above" width="661" height="520" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p><code>cp</code> (chest pain type), <code>oldpeak</code> (ST depression from exercise) and <code>thall</code>
+(thalassemia test result) come out on top — all clinically plausible signals for
+heart disease, which is a good sanity check that the model learned something
+sensible rather than an artefact of the data.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-feature-ablation">Exercise 1: Feature ablation</h3>
+<p>Drop the top feature from <code>X</code> entirely and retrain. Does test accuracy drop by much?
+What does that tell you about redundancy between features?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">top_feature = importances.index[0]
+X2 = X.drop(columns=[top_feature])
+X2_train, X2_test, _, _ = train_test_split(X2, y, test_size=0.25, random_state=42, stratify=y)
+m2 = RandomForestClassifier(n_estimators=300, random_state=42).fit(X2_train, y_train)
+print(accuracy_score(y_test, m2.predict(X2_test)))
+</code></pre>
+<p>Accuracy usually drops only a little: other correlated features (e.g. <code>thalachh</code>,
+<code>oldpeak</code>) carry overlapping information, so the forest routes around a missing
+feature.</p>
+</details>
+<h3 id="exercise-2-depth-limited-trees">Exercise 2: Depth-limited trees</h3>
+<p>Retrain the single <code>DecisionTreeClassifier</code> with <code>max_depth=3</code>. Compare its train and
+test accuracy to the unrestricted tree. Is a shallow single tree competitive with the
+forest here?</p>
+<details><summary>Solution</summary>
+<p>A depth-3 tree trades away training accuracy but usually closes much of the test-
+accuracy gap to the unrestricted tree, since it can no longer memorise noise — though
+it typically still falls short of the forest, which averages away variance without
+having to sacrifice any single tree's depth.</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A random forest averages many trees, each trained on a bootstrap resample with a
+random subset of features per split; the randomness decorrelates their errors so
+the average generalises better than any single deep tree.</li>
+<li>Feature importances come free from training and are a fast way to sanity-check that
+a model is picking up on plausible signal.</li>
+<li>More trees essentially never hurts (only costs compute); the accuracy curve
+flattens once there are enough to average out tree-to-tree variance.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="03-support-vector-machines.html"><span class="lbl">Previous · 03</span><span class="t">Support Vector Machines</span></a>
+  <a class="next" rel="next" href="05-kmeans-and-kmeans-plusplus.html"><span class="lbl">Next · 05</span><span class="t">K-Means and K-Means++</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 04 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

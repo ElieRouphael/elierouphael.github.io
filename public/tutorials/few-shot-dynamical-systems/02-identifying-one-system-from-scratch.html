@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>02 · Identifying One System From Scratch — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Output-error least squares fit to one experiment, and what 30 repeated fits reveal about identifiability as the experiment grows from 4 to 40 seconds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 02 of 09</span>
+  <h1>Identifying One System From Scratch</h1>
+  <div class="intro prose">
+<p>Chapter 01 built the simulator and set the rules: the learner chooses an input, reads a noisy
+position sensor, and fits a model that is missing two of the true system's effects. This chapter
+asks the most direct question first: <strong>treating every system on its own, with no help from any
+other system, how well can we identify it?</strong></p>
+<p>This &quot;from-scratch&quot; baseline is what every later chapter, which <em>does</em> use other systems, has to
+beat.</p>
+<hr />
+<h2 id="1-output-error-identification">1. Output-error identification</h2>
+<p>Given one experiment <span class="math inline">(u_{0:T-1}, y_{0:T})</span>, <strong>output-error identification</strong> chooses the
+coefficients whose simulated position best matches the measurements:</p>
+<div class="math display">
+\hat\eta = \arg\min_{\eta}\ \sum_{t=0}^{T} \big(y_t - \hat q_t(\eta; u)\big)^2 .
+</div>
+<p>We simulate the model <em>freely</em> from the known initial state rather than fitting one-step-ahead
+differences. This avoids differentiating the noisy position to recover velocity: an equation-error
+(regression) formulation would need the velocity and acceleration, i.e. first and second differences
+of <span class="math inline">y</span>, whose noise variances scale as <span class="math inline">\sigma_y^2/\Delta t^2</span> and <span class="math inline">\sigma_y^2/\Delta t^4</span>. Output
+error is the maximum-likelihood estimator under white measurement noise and a correct model; it is
+not maximum likelihood in the presence of process noise, for which a state estimator such as an
+extended Kalman filter would be appropriate. We keep the simpler estimator for transparency, and its
+bias is part of what the experiments below measure.</p>
+<p>The optimisation is started from a generic guess with physically sensible bounds, deliberately
+<strong>not</strong> taken from the family structure of chapter 01, so from-scratch identification uses no
+information about it.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/02_identifying_one_system_from_scratch.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-output-error-identification">1. Output-error identification</a></li>
+    <li><a href="#2-short-experiments-versus-long-ones">2. Short experiments versus long ones</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import least_squares
+
+import dynutils
+from dynutils import sample_system, simulate, multisine, actuator, DT, X0
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR, NAMES = dynutils.COLOR, dynutils.NAMES</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">LOW = np.array([0.05, 0.01, 0.05, 0.0])
+HIGH = np.array([5.0, 2.0, 3.0, 5.0])
+GENERIC_GUESS = np.array([1.0, 0.5, 1.0, 0.5])
+
+
+def predict(eta, u):
+    # Learner&#x27;s model: simulate positions. Vectorised: eta (..., 4) and u (..., T) broadcast.
+    eta, u = np.asarray(eta, float), np.asarray(u, float)
+    shape = np.broadcast_shapes(eta.shape[:-1], u.shape[:-1])
+    k, d, b, a = (np.broadcast_to(eta[..., i], shape) for i in range(4))
+    force = actuator(np.concatenate([np.zeros(u.shape[:-1] + (1,)), u[..., :-1]], axis=-1))
+    q, v = np.full(shape, X0[0]), np.full(shape, X0[1])
+    out = np.empty(shape + (u.shape[-1] + 1,)); out[..., 0] = q
+    for t in range(u.shape[-1]):
+        v = v + DT * (-k * q - d * v + b * force[..., t] - a * q**3)
+        q = q + DT * v
+        out[..., t + 1] = q
+    return out
+
+
+def fit_from_scratch(y, u, return_cov=False):
+    residual = lambda eta: predict(eta, u) - y
+    sol = least_squares(residual, GENERIC_GUESS, bounds=(LOW, HIGH), x_scale=&quot;jac&quot;)
+    if not return_cov:
+        return sol.x
+    # Gauss-Newton covariance of the estimate: sigma^2 (J^T J)^-1
+    return sol.x, np.mean(sol.fun**2) * np.linalg.pinv(sol.jac.T @ sol.jac)
+
+
+def rmse(a, b):
+    return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-short-experiments-versus-long-ones">2. Short experiments versus long ones</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">test = sample_system(rng)
+estimates = {}
+for T in (40, 400):                                      # 4 s versus 40 s of data
+    estimates[T] = np.array([fit_from_scratch(simulate(test, u, rng)[1], u)
+                             for u in (multisine(T, rng) for _ in range(30))])
+
+fig, axes = plt.subplots(1, 4, figsize=(12, 3))
+for j, ax in enumerate(axes):
+    for T, col in ((40, COLOR[&quot;scratch&quot;]), (400, COLOR[&quot;context&quot;])):
+        ax.hist(estimates[T][:, j], bins=15, alpha=0.55, color=col, label=f&quot;{T*DT:.0f} s of data&quot;)
+    ax.axvline(test[&quot;eta&quot;][j], color=COLOR[&quot;truth&quot;], lw=2, label=&quot;true value&quot;)
+    ax.set(title=NAMES[j], yticks=[])
+axes[0].legend(fontsize=8)
+fig.suptitle(&quot;From-scratch estimates over 30 repeated experiments on the same system&quot;, y=1.03)
+plt.tight_layout(); plt.show()
+
+for T in (40, 400):
+    rel = np.median(np.abs(estimates[T] - test[&quot;eta&quot;]) / test[&quot;eta&quot;], axis=0)
+    print(f&quot;{T*DT:&gt;4.0f} s  median relative error:&quot;, &quot;  &quot;.join(f&quot;{n}={100*r:5.1f}%&quot; for n, r in zip(NAMES, rel)))</code></pre>
+<figure class="output-figure"><img src="img/02-1.png" alt="Figure: From-scratch estimates over 30 repeated experiments on the same system" width="1309" height="345" loading="lazy"></figure>
+<pre class="output">   4 s  median relative error: k= 11.1%  d= 22.1%  b=  8.6%  α=103.4%
+  40 s  median relative error: k=  6.2%  d=  8.7%  b=  6.1%  α=100.0%</pre>
+</div>
+
+<div class="md">
+<p>Two lessons carry through the rest of the course:</p>
+<ol>
+<li><strong>Short experiments leave the coefficients poorly determined.</strong> Four seconds is shorter than one
+oscillation period, so many coefficient combinations explain the data equally well. The estimates
+scatter widely.</li>
+<li><strong>Some coefficients are hard to identify even with plenty of data.</strong> The hardening term <span class="math inline">\alpha</span>
+only matters at large deflections, and it competes with the unmodelled quintic term and the
+disturbance. With 40 s, <span class="math inline">k</span>, <span class="math inline">d</span> and <span class="math inline">b</span> are within a few percent, but <span class="math inline">\alpha</span> is still uncertain
+by tens of percent. Identifiability depends on the <em>experiment</em> as much as on its length.</li>
+</ol>
+<p>A new system gives us little data. The obvious question, and the subject of the rest of this
+course: can other systems help?</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-how-much-does-the-guess-matter">Exercise 1: How much does the guess matter?</h3>
+<p>Refit the 4-second experiments from three different starting guesses: the generic one used above,
+one close to the true system, and one at the opposite corner of the bounds. Does the scatter of the
+resulting estimates change?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def fit_from(y, u, guess):
+    residual = lambda eta: predict(eta, u) - y
+    return least_squares(residual, guess, bounds=(LOW, HIGH), x_scale=&quot;jac&quot;).x
+
+u4 = multisine(40, rng); _, y4 = simulate(test, u4, rng)
+guesses = {&quot;generic&quot;: GENERIC_GUESS, &quot;near truth&quot;: test[&quot;eta&quot;] * 1.05, &quot;far corner&quot;: HIGH * 0.9}
+{name: fit_from(y4, u4, g) for name, g in guesses.items()}
+</code></pre>
+<p>With so little data the cost surface is genuinely flat along several directions, so different
+starting points can converge to different, equally-fitting solutions — the scatter in the figure
+above is a property of the <em>data</em>, not an artefact of one starting guess.</p>
+</details>
+<h3 id="exercise-2-a-cleaner-sensor">Exercise 2: A cleaner sensor</h3>
+<p>Repeat the 4-second study with the sensor noise cut to a tenth (<span class="math inline">\sigma_y=0.001</span>) by scaling the
+measurement noise term manually (<code>simulate</code> doesn't expose it, so add <code>0.1 * rng.normal(size=q.size)</code>
+to a noise-free run instead of the built-in noisy one). Does better identifiability of <span class="math inline">\alpha</span>
+follow?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def simulate_low_noise(system, u, rng):
+    q, _ = simulate(system, u, rng, noise=False)
+    return q, q + 0.001 * rng.normal(size=q.size)
+
+low_noise = np.array([fit_from_scratch(simulate_low_noise(test, u, rng)[1], u)
+                      for u in (multisine(40, rng) for _ in range(30))])
+np.median(np.abs(low_noise - test[&quot;eta&quot;]) / test[&quot;eta&quot;], axis=0)
+</code></pre>
+<p><span class="math inline">\alpha</span> improves a little but stays the worst-identified coefficient by far: its uncertainty is
+dominated by <em>how little the hardening term is excited</em> at these amplitudes, not by sensor noise,
+which is why quieter data alone does not fix it.</p>
+</details></div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="01-the-system-and-what-we-can-measure.html"><span class="lbl">Previous · 01</span><span class="t">The System, and What We Can Measure</span></a>
+  <a class="next" rel="next" href="03-what-many-systems-have-in-common.html"><span class="lbl">Next · 03</span><span class="t">What Many Systems Have in Common</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 02 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

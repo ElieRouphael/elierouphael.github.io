@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>08 · Capstone: the whole system — TrustDrive course</title>
+<meta name="description" content="Everything assembled into one closed loop and evaluated as a controlled experiment, with multi-seed statistics and a component ablation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 08 of 09</span>
+  <h1>Capstone: the whole system</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Assemble every component into one closed loop and evaluate it as a small
+experiment: a controlled ablation across three architectures and four scenarios,
+with per-scenario mechanism analysis, multi-seed statistics, a component ablation,
+and an honest account of the limitations.</p>
+<p>We use <code>courselib</code>, the consolidated library that mirrors what notebooks 01-07 built.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/08_capstone_closed_loop.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">This notebook imports <code>courselib</code>, the course's reference library. Download the full course to run it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#the-assembled-system">The assembled system</a></li>
+    <li><a href="#1-methodology">1. Methodology</a></li>
+    <li><a href="#2-mechanism-analysis">2. Mechanism analysis</a></li>
+    <li><a href="#3-is-the-improvement-statistically-real">3. Is the improvement statistically real?</a></li>
+    <li><a href="#4-component-ablation-what-is-each-part-doing">4. Component ablation: what is each part doing?</a></li>
+    <li><a href="#5-limitations-and-threats-to-validity">5. Limitations and threats to validity</a></li>
+    <li><a href="#6-what-you-built">6. What you built</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="the-assembled-system">The assembled system</h2>
+<p>The full closed loop chains every component built in notebooks 01-07: perception feeds
+three monitors, their scores fuse into one integrity number, and that number sets the
+shared authority and the speed. The block diagram shows the data flow (the numbers in
+parentheses are the notebooks).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+fig, ax = plt.subplots(figsize=(10.5, 5.0)); ax.axis(&quot;off&quot;); ax.set_xlim(0, 100); ax.set_ylim(0, 54)
+
+def box(x, y, w, h, text, fc, fs=8.5):
+    ax.add_patch(Rectangle((x, y), w, h, facecolor=fc, edgecolor=&quot;#333&quot;, lw=1.2))
+    ax.text(x + w/2, y + h/2, text, ha=&quot;center&quot;, va=&quot;center&quot;, fontsize=fs)
+
+def arrow(x1, y1, x2, y2, text=None, dy=1.4):
+    ax.annotate(&quot;&quot;, xy=(x2, y2), xytext=(x1, y1),
+                arrowprops=dict(arrowstyle=&quot;-|&gt;&quot;, color=&quot;#555&quot;, lw=1.3, shrinkA=0, shrinkB=0))
+    if text: ax.text((x1+x2)/2, (y1+y2)/2 + dy, text, ha=&quot;center&quot;, fontsize=7, color=&quot;#555&quot;)
+
+box(2, 38, 16, 9, &quot;camera image\n(03)&quot;, &quot;#dbe8f0&quot;)
+box(22, 38, 18, 9, &quot;perception (03/04)\nmean + Sigma^AI&quot;, &quot;#cfe0ef&quot;)
+box(45, 44, 23, 6, &quot;uncertainty (04)  -&gt;  s_unc&quot;, &quot;#e7d8f0&quot;)
+box(45, 37, 23, 6, &quot;Kalman / NIS (05)  -&gt;  s_NIS&quot;, &quot;#f5e2cc&quot;)
+box(45, 30, 23, 6, &quot;ODD (06)  -&gt;  s_ODD&quot;, &quot;#d7ead9&quot;)
+box(72, 37, 26, 9, &quot;integrity  I  (06)\nI = s_unc . s_NIS . s_ODD&quot;, &quot;#f3e4b3&quot;)
+box(50, 9, 31, 10, &quot;shared control (07)\nlambda = Phi(I, W)\nv_ref = v_nom(0.4 + 0.6 I)&quot;, &quot;#cfe6e6&quot;, fs=8)
+box(51, 22, 22, 6, &quot;driver (07)&quot;, &quot;#ededed&quot;)
+box(2, 10, 18, 9, &quot;LQR (02)\n+ vehicle (01)&quot;, &quot;#e0e0e0&quot;)
+
+arrow(18, 42.5, 22, 42.5)
+for yb in (47, 40, 33):                         # perception -&gt; three monitors
+    arrow(40, 42.5, 45, yb)
+for yb, yi in ((47, 43), (40, 41.5), (33, 40)): # three monitors -&gt; integrity
+    arrow(68, yb, 72, yi)
+arrow(83, 37, 74, 19, &quot;I&quot;)                      # integrity -&gt; shared control
+arrow(62, 22, 62, 19)                           # driver -&gt; shared control (from above)
+arrow(50, 13.5, 20, 13.5, &quot;delta (steering)&quot;)   # shared control -&gt; plant
+arrow(11, 19, 10, 38, &quot;state -&gt; next image&quot;)    # plant -&gt; camera (loop)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/08-1.png" alt="Figure 1 produced by the code above" width="1143" height="538" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Three architectures use this same machinery differently:</p>
+<ul>
+<li><strong>naive</strong> - perception -&gt; LQR, full automation, no monitoring;</li>
+<li><strong>hard handover</strong> - switch fully to the driver when the <em>reported uncertainty</em>
+<span class="math inline">\mathrm{tr}\,\Sigma^{AI}</span> crosses a threshold;</li>
+<li><strong>proposed</strong> - filter the estimate, fuse the integrity score, share authority
+smoothly and contract speed.</li>
+</ul>
+</div>
+
+<div class="md">
+<h2 id="1-methodology">1. Methodology</h2>
+<p><strong>Controlled comparison.</strong> For a given seed the plant, perception noise, driver and
+scenario are <em>identical</em> across the three methods; only the use of the perception
+output differs. Any difference in outcome is therefore attributable to the
+monitoring-and-arbitration layer, not to luck.</p>
+<p><strong>Scenarios</strong> map to failure modes: <code>nominal</code> (in-domain), <code>fog</code> (visible
+degradation - blur/darkness/occlusion), <code>ood_curve</code> (an out-of-distribution regime
+that still looks like a valid image), <code>conflict</code> (an overloaded driver fighting the
+automation).</p>
+<p><strong>Metrics.</strong> RMSE and max of the lateral error <span class="math inline">e_y</span>; number of lane exits
+(<span class="math inline">|e_y|&gt;0.7</span> m); steering jerk (<span class="math inline">\sum_k|\Delta\delta_k|</span>, ride quality);
+<strong>unsafe-AI-usage</strong> = fraction of time the automation is trusted (<span class="math inline">\lambda&gt;0.5</span>)
+while the vehicle is <em>outside</em> the ODD (the safety-critical figure).</p>
+<p><strong>Statistics.</strong> Because the comparison is paired (same seeds), we report the mean
+over seeds and put a <strong>bootstrap 95% confidence interval</strong> [1] on the paired
+difference between methods; an interval excluding zero is a reliable improvement.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import sys; sys.path.append(&quot;..&quot;)
+import numpy as np
+from courselib import (build_scenario, run_episode, metrics, METHODS, SCENARIOS,
+                       use_course_style, trust_panel, METHOD_COLORS)
+use_course_style()
+
+rows = []
+for sc in SCENARIOS:
+    fr = build_scenario(sc, T=30.0)
+    for m in METHODS:
+        me = metrics(run_episode(m, fr, seed=0))
+        rows.append((sc, m, me[&quot;RMSE_ey&quot;], me[&quot;lane_exits&quot;], me[&quot;steering_jerk&quot;], me[&quot;unsafe_ai_usage_pct&quot;]))
+print(&quot;%-10s %-9s %7s %6s %8s %9s&quot; % (&quot;scenario&quot;, &quot;method&quot;, &quot;RMSE&quot;, &quot;exits&quot;, &quot;jerk&quot;, &quot;unsafe%&quot;))
+for r in rows:
+    print(&quot;%-10s %-9s %7.3f %6d %8.2f %9.1f&quot; % r)</code></pre>
+<pre class="output">scenario   method       RMSE  exits     jerk   unsafe%
+nominal    naive       0.035      0    12.10       0.0
+nominal    handover    0.035      0    12.10       0.0
+nominal    proposed    0.036      0     6.20       0.0
+fog        naive       0.245      4    82.08      32.2
+fog        handover    0.145      0    15.57       0.0
+fog        proposed    0.045      0    10.46       0.0
+ood_curve  naive       0.187      0    15.96      33.3
+ood_curve  handover    0.187      0    15.96      33.3
+ood_curve  proposed    0.052      0    11.14       0.2
+conflict   naive       0.035      0    12.10       0.0
+conflict   handover    0.035      0    12.10       0.0
+conflict   proposed    0.036      0     7.38       0.0</pre>
+</div>
+
+<div class="md">
+<h2 id="2-mechanism-analysis">2. Mechanism analysis</h2>
+<p>The aggregate numbers hide <em>why</em> each method behaves as it does. Two figures make it
+concrete.</p>
+<p><strong>Out-of-distribution curve (the decisive case).</strong> The reported uncertainty barely
+moves, so the hard-handover threshold never trips - it is <em>identical to naive</em>. The
+model-based checks are what react: the NIS spikes and the ODD margin on the
+(map-provided) curvature falls, together collapsing the integrity score and shifting
+authority.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import matplotlib.pyplot as plt
+log = run_episode(&quot;proposed&quot;, build_scenario(&quot;ood_curve&quot;, T=30.0), seed=0)
+trust_panel(log, &quot;Proposed system - out-of-distribution curve&quot;); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/08-2.png" alt="Figure 2 produced by the code above" width="869" height="759" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Fog: the uncertainty rises, integrity falls, and authority hands off smoothly
+from courselib import CHI2_2DOF
+log = run_episode(&quot;proposed&quot;, build_scenario(&quot;fog&quot;, T=30.0), seed=0)
+t = log[&quot;t&quot;]
+fig, ax = plt.subplots(2, 1, figsize=(8, 4.4), sharex=True)
+ax[0].plot(t, log[&quot;integrity&quot;], color=METHOD_COLORS[&quot;proposed&quot;], label=&quot;integrity $I$&quot;)
+ax[0].plot(t, log[&quot;lambda&quot;], color=&quot;#0e7c8b&quot;, ls=&quot;--&quot;, label=&quot;authority $\\lambda$&quot;)
+ax[0].set_ylabel(&quot;trust / authority&quot;); ax[0].legend(loc=&quot;lower left&quot;); ax[0].set_ylim(-.05, 1.05)
+ax[1].plot(t, log[&quot;delta_auto&quot;], label=&quot;$\\delta_A$ automation&quot;, lw=.9)
+ax[1].plot(t, log[&quot;delta_human&quot;], label=&quot;$\\delta_H$ driver&quot;, lw=.9, alpha=.8)
+ax[1].plot(t, log[&quot;delta&quot;], &#x27;k&#x27;, lw=1.2, label=&quot;applied $\\delta$&quot;)
+ax[1].set_ylabel(&quot;steering [rad]&quot;); ax[1].set_xlabel(&quot;t [s]&quot;); ax[1].legend(loc=&quot;upper right&quot;, fontsize=8)
+for a in ax: a.grid(alpha=.3)
+fig.suptitle(&quot;Fog: authority hands off as integrity falls&quot;); plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/08-3.png" alt="Figure: Fog: authority hands off as integrity falls" width="869" height="479" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>In <code>fog</code> the perception uncertainty genuinely rises, so integrity falls and authority
+transfers to the driver <em>smoothly</em> while the automation's noisy command is
+de-weighted. In <code>conflict</code>, by contrast, perception is fine, so integrity stays high,
+authority stays with the automation, and the overloaded/mistaken driver is correctly
+out-voted (notebook 07). Different mechanism, same principle: authority follows
+integrity.</p>
+</div>
+
+<div class="md">
+<h2 id="3-is-the-improvement-statistically-real">3. Is the improvement statistically real?</h2>
+<p>One seed could be a fluke. We repeat every method on 20 seeds per scenario, report
+the mean RMSE, and bootstrap a 95% confidence interval on the <em>paired</em> difference
+(proposed minus baseline), aggregated over the two degraded scenarios where it should
+matter.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">seeds = range(20)
+rmse = {m: {sc: [] for sc in SCENARIOS} for m in METHODS}
+unsafe = {m: {sc: [] for sc in SCENARIOS} for m in METHODS}
+for sc in SCENARIOS:
+    for s in seeds:
+        fr = build_scenario(sc, T=30.0)
+        for m in METHODS:
+            me = metrics(run_episode(m, fr, seed=s))
+            rmse[m][sc].append(me[&quot;RMSE_ey&quot;]); unsafe[m][sc].append(me[&quot;unsafe_ai_usage_pct&quot;])
+
+print(&quot;mean RMSE e_y (+/- std) over 20 seeds&quot;)
+print(&quot;%-10s %14s %14s %14s&quot; % (&quot;scenario&quot;, &quot;naive&quot;, &quot;handover&quot;, &quot;proposed&quot;))
+for sc in SCENARIOS:
+    cells = []
+    for m in METHODS:
+        a = np.array(rmse[m][sc]); cells.append(&quot;%.3f+/-%.3f&quot; % (a.mean(), a.std()))
+    print(&quot;%-10s %14s %14s %14s&quot; % (sc, *cells))
+
+def boot_ci(d, n=20000, seed=0):
+    r = np.random.default_rng(seed); idx = r.integers(0, len(d), (n, len(d)))
+    m = d[idx].mean(1); return d.mean(), np.percentile(m, 2.5), np.percentile(m, 97.5)
+
+deg = [&quot;fog&quot;, &quot;ood_curve&quot;]
+d_naive = np.array([rmse[&quot;proposed&quot;][sc][i] - rmse[&quot;naive&quot;][sc][i]    for sc in deg for i in range(len(seeds))])
+d_hand  = np.array([rmse[&quot;proposed&quot;][sc][i] - rmse[&quot;handover&quot;][sc][i] for sc in deg for i in range(len(seeds))])
+for name, d in [(&quot;proposed - naive&quot;, d_naive), (&quot;proposed - handover&quot;, d_hand)]:
+    m, lo, hi = boot_ci(d)
+    sig = &quot;significant&quot; if hi &lt; 0 else &quot;not significant&quot;
+    print(&quot;\n%-20s  mean dRMSE = %+.3f m   95%% CI [%+.3f, %+.3f]  -&gt; %s&quot; % (name, m, lo, hi, sig))</code></pre>
+<pre class="output">mean RMSE e_y (+/- std) over 20 seeds
+scenario            naive       handover       proposed
+nominal     0.034+/-0.001  0.034+/-0.001  0.035+/-0.001
+fog         0.242+/-0.049  0.170+/-0.019  0.043+/-0.003
+ood_curve   0.193+/-0.004  0.193+/-0.004  0.052+/-0.006
+conflict    0.034+/-0.001  0.034+/-0.001  0.036+/-0.001
+
+proposed - naive      mean dRMSE = -0.170 m   95% CI [-0.185, -0.157]  -&gt; significant
+
+proposed - handover   mean dRMSE = -0.134 m   95% CI [-0.139, -0.129]  -&gt; significant</pre>
+</div>
+
+<div class="md">
+<h2 id="4-component-ablation-what-is-each-part-doing">4. Component ablation: what is each part doing?</h2>
+<p>To show that the integrity score's parts <em>earn their place</em>, we rebuild the closed
+loop directly from the library with switches, and turn components off one at a time.
+The test bed is the out-of-distribution curve, where the failure is subtle.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from courselib import (Vehicle, VehicleParams, LQRController, SharedController,
+                       SharedControlParams, SyntheticPerception, KalmanMonitor,
+                       ODD, IntegrityMonitor, SimulatedDriver)
+
+def run_cfg(frames, use_nis=True, use_odd=True, filt=True, speed=True, seed=0):
+    vp = VehicleParams(); veh = Vehicle(vp, x0=(0.3, 0.02))
+    per = SyntheticPerception(seed=seed); lqr = LQRController(veh)
+    shared = SharedController(SharedControlParams(v_nom=vp.v)); drv = SimulatedDriver(seed=seed+1)
+    odd = ODD(); integ = IntegrityMonitor(odd)
+    A, B, E = veh.linear_model(); kf = KalmanMonitor(A, B, E, np.diag([1e-4, 1e-4]), P0=np.diag([0.05, 0.02]))
+    kf.x = np.array([0.3, 0.02]); prev = 0.0
+    ey, lam_log, out = [], [], []
+    for fr in frames:
+        true = veh.x.copy()
+        po = per.measure(true, fr.kappa, fr.cond); y, R = po[&quot;mean&quot;], po[&quot;cov&quot;]
+        kf.predict(prev, fr.kappa); nis = kf.update(y, R)
+        nis_u = nis if use_nis else 0.0
+        b, bl, oc = (fr.cond.brightness, fr.cond.blur, fr.cond.occlusion) if use_odd else (1.0, 0.0, 0.0)
+        kap = fr.kappa if use_odd else 0.0
+        I, _ = integ.update(po[&quot;trace&quot;], nis_u, kap, b, bl, oc)
+        xhat = kf.x.copy() if filt else y
+        vcmd = shared.reference_speed(I) if speed else vp.v
+        ff = lqr.feedforward(fr.kappa); fb = lqr.feedback(xhat, v=vcmd)
+        dh = drv.command(true, fr.workload, fr.available, fr.conflict)
+        delta, lam, vref = shared.arbitrate(fb, dh, ff, I, fr.workload, fr.available)
+        delta = float(np.clip(delta, -vp.delta_max, vp.delta_max))
+        veh.step(delta, fr.kappa, v=vref); prev = delta
+        ey.append(true[0]); lam_log.append(lam)
+        out.append(odd.inside(fr.kappa, fr.cond.brightness, fr.cond.blur, fr.cond.occlusion))
+    ey = np.array(ey); lam_log = np.array(lam_log); inside = np.array(out)
+    return {&quot;RMSE&quot;: float(np.sqrt(np.mean(ey**2))),
+            &quot;unsafe%&quot;: 100*float(np.mean((lam_log &gt; 0.5) &amp; ~inside))}
+
+fr = build_scenario(&quot;ood_curve&quot;, T=30.0)
+configs = [(&quot;full proposed&quot;,              dict()),
+           (&quot;no speed contraction&quot;,       dict(speed=False)),
+           (&quot;no NIS (ODD still on)&quot;,      dict(use_nis=False)),
+           (&quot;no ODD (NIS still on)&quot;,      dict(use_odd=False)),
+           (&quot;uncertainty only (no NIS+ODD)&quot;, dict(use_nis=False, use_odd=False))]
+print(&quot;%-30s %8s %9s&quot; % (&quot;configuration&quot;, &quot;RMSE&quot;, &quot;unsafe%&quot;))
+for name, kw in configs:
+    r = run_cfg(fr, **kw); print(&quot;%-30s %8.3f %9.1f&quot; % (name, r[&quot;RMSE&quot;], r[&quot;unsafe%&quot;]))</code></pre>
+<pre class="output">configuration                      RMSE   unsafe%
+full proposed                     0.052       0.2
+no speed contraction              0.051       0.2
+no NIS (ODD still on)             0.053       0.2
+no ODD (NIS still on)             0.170      30.2
+uncertainty only (no NIS+ODD)     0.192      33.3</pre>
+</div>
+
+<div class="md">
+<p>The ablation is precise about each part. Removing the <strong>speed contraction</strong> costs only
+a little tracking - it shrinks the operating envelope, it does not <em>detect</em> anything.</p>
+<p>Removing the <strong>NIS</strong> while keeping the ODD barely hurts <em>here</em>, because the
+out-of-distribution curve is a <em>monitored</em> condition: with map-provided curvature the
+ODD margin falls in a sustained way and holds integrity down on its own.</p>
+<p>Removing the <strong>ODD</strong> while keeping the NIS hurts more - but not because the NIS is
+blind. It clearly <em>sees</em> the inconsistency (over the OOD window its NIS averages about
+9 and spikes above 100), yet as an <em>instantaneous</em> soft score, under a bias the filter
+partially tracks, it crosses the threshold only intermittently (~30% of samples). On
+its own that does not keep integrity low. This is exactly why a <em>cumulative</em> test
+(CUSUM, notebook 09) is the right way to turn the NIS into a robust standalone
+trigger, and why fusing it with the ODD is valuable in the meantime.</p>
+<p>Removing <strong>both</strong> - leaving only the perception's self-reported uncertainty -
+collapses the integrity signal entirely: the automation stays trusted while outside
+the ODD, and the method degrades to naive. This is the same failure that sinks the
+hard-handover baseline (which also relies on reported uncertainty), and it is the
+quantitative statement of the course's thesis: <strong>self-reported uncertainty is not
+enough; you need at least one external, model- or domain-based check - and, for the
+intermittent ones, a cumulative test to make the trigger robust.</strong></p>
+</div>
+
+<div class="md">
+<h2 id="5-limitations-and-threats-to-validity">5. Limitations and threats to validity</h2>
+<p>An honest capstone states where the demonstrator is simplified:</p>
+<ul>
+<li><strong>Perception is synthetic.</strong> We emulate a learned sensor analytically rather than
+training a network on real images. The main project shows the CNN drop-in; the
+qualitative conclusions (uncertainty flat but NIS spiking OOD) should be revalidated
+on a real network and dataset.</li>
+<li><strong>Kinematic plant.</strong> No tyre slip, actuator lag, or longitudinal dynamics. Near the
+0.9 g of the OOD curve (notebook 01) a dynamic model would matter.</li>
+<li><strong>Simple driver.</strong> A delayed proportional model is a caricature of a human; real
+takeover behaviour, distraction and trust dynamics are richer (notebook 07).</li>
+<li><strong>Tuning.</strong> The score maps, thresholds and gains are hand-set, not learned or
+certified; the ODD box is a coarse proxy. Results are internally consistent but not
+a safety case.</li>
+<li><strong>Scope.</strong> One vehicle, lateral control only, short episodes, and the integrity
+score is a heuristic, not a guaranteed bound.</li>
+</ul>
+<p>These are exactly the openings notebook 09 turns into research directions.</p>
+</div>
+
+<div class="md">
+<h2 id="6-what-you-built">6. What you built</h2>
+<p>From first principles you assembled a small but complete trustworthy-autonomy stack:
+a vehicle model, an optimal controller, a perception front-end with calibrated
+uncertainty, a model-based consistency monitor, a fused integrity score, and an
+integrity-aware shared controller - and you showed, with a controlled and
+statistically-checked experiment, that using perception <em>through</em> that monitoring
+layer is safer than trusting it or switching away from it. Notebook 09 explores how
+to make each piece stronger.</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Add <code>max|e_y|</code> and the authority split to the 20-seed study and bootstrap their CIs.</li>
+<li>Extend the ablation to <code>fog</code>: which component matters there, and does the
+redundancy story change (NIS is quiet under honest-noise blur)?</li>
+<li>Replace the bootstrap with a paired Wilcoxon signed-rank test [2] and compare the
+conclusions.</li>
+<li>Vary the hard-handover threshold over a wide range and show that <em>no</em> setting makes
+it competitive on <code>ood_curve</code> - the reported uncertainty simply never crosses.</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>B. Efron, R. J. Tibshirani. <em>An Introduction to the Bootstrap.</em> Chapman &amp; Hall/CRC, 1993.</li>
+<li>F. Wilcoxon. <em>Individual Comparisons by Ranking Methods.</em> Biometrics Bulletin, 1(6):80-83, 1945. <a href="https://doi.org/10.2307/3001968">doi:10.2307/3001968</a></li>
+<li>J. Demsar. <em>Statistical Comparisons of Classifiers over Multiple Data Sets.</em> Journal of Machine Learning Research, 7:1-30, 2006.</li>
+<li>P. Antonante, H. Nilsen, L. Carlone. <em>Monitoring of Perception Systems.</em> Artificial Intelligence, 2022. <a href="https://arxiv.org/abs/2205.10906">arXiv:2205.10906</a></li>
+<li>T. Charmet, V. Berge-Cherfaoui, J. Guzman, A. Armand. <em>Operational Design Domain Monitoring with Uncertain Measurements.</em> IEEE ITSC, 2024. <a href="https://doi.org/10.1109/ITSC58415.2024.10919733">doi:10.1109/ITSC58415.2024.10919733</a></li>
+<li>SAE International. <em>Taxonomy and Definitions for Terms Related to Driving Automation Systems.</em> Standard J3016_202104, 2021.</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="07-shared-control.html"><span class="lbl">Previous · 07</span><span class="t">Shared control</span></a>
+  <a class="next" rel="next" href="09-advanced-ideas.html"><span class="lbl">Next · 09</span><span class="t">Advanced ideas</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 08 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

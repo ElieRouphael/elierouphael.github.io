@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>09 · Machine Learning for Forecasting — Time-series course</title>
+<meta name="description" content="Forecasting as a table, honest features and training cut-offs, direct vs. recursive, ridge vs. gradient boosting, three leakage traps measured.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 09 of 11</span>
+  <h1>Machine Learning for Forecasting</h1>
+  <div class="intro prose">
+<p>Every model so far was built <em>for</em> time series: it knows that observations are ordered and that today follows yesterday. Machine-learning methods such as linear regression and gradient boosting know nothing of the sort. They learn a mapping from a row of <strong>features</strong> to a <strong>target</strong>. We can still use them for forecasting, by turning the series into a table where every row is a forecast origin, the features are what's known at that origin, and the target is the value some days later.</p>
+<p>This recipe is one of the most effective approaches in practice. Gradient-boosted trees on lag features won several major forecasting competitions. It also opens the door to <strong>leakage</strong> more widely than any method so far, because a generic learner will happily use any column you hand it, including ones that secretly contain the future.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>reframe forecasting as <strong>supervised learning</strong>, with a clear rule for what may be a feature</li>
+<li>build <strong>lag, rolling-window, calendar and weather</strong> features that are known at the forecast origin</li>
+<li>train <strong>one model per horizon</strong> (the <em>direct</em> strategy) with an honest training cut-off</li>
+<li>compare a <strong>linear model</strong> with <strong>gradient boosting</strong>, and explain why more flexible isn't automatically better</li>
+<li>recognise three leakage traps, and measure how much each would flatter your results</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/09_machine_learning.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-forecasting-as-a-table">1. Forecasting as a table</a></li>
+    <li><a href="#2-features">2. Features</a></li>
+    <li><a href="#3-training-honestly-the-target-date-is-what-counts">3. Training honestly: the target date is what counts</a></li>
+    <li><a href="#4-two-learners">4. Two learners</a></li>
+    <li><a href="#5-what-did-the-models-learn">5. What did the models learn?</a></li>
+    <li><a href="#6-three-leakage-traps">6. Three leakage traps</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import KFold, TimeSeriesSplit, cross_val_predict
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from threadpoolctl import threadpool_limits
+
+import tsutils
+
+threadpool_limits(1)        # on small tables, multi-threaded tree fitting is slower, not faster
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 3)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+weather = tsutils.load_daily_weather()
+origins, H = tsutils.BACKTEST_ORIGINS, tsutils.HORIZON</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-forecasting-as-a-table">1. Forecasting as a table</h2>
+<p>Take one forecast origin, the end of day <span class="math inline">T</span>. We want <span class="math inline">y_{T+h}</span>. A supervised learner needs a row of features <span class="math inline">x_T</span> and a target <span class="math inline">y_{T+h}</span>, and it learns <span class="math inline">f</span> in <span class="math inline">y_{T+h} \approx f(x_T)</span> from many past rows.</p>
+<p>The one rule that matters:</p>
+<blockquote>
+<p><strong>Every feature in row <span class="math inline">T</span> must be known by the end of day <span class="math inline">T</span>.</strong></p>
+</blockquote>
+<p>Values of the series up to <span class="math inline">T</span>, today's weather and the calendar are allowed. The calendar is allowed even for the <em>target</em> date, because we know in advance that <span class="math inline">T + 3</span> is a Saturday or Spring Festival. Anything computed from days after <span class="math inline">T</span> is forbidden: centred windows, interpolation across the future, future weather.</p>
+<p>There are two ways to forecast several days ahead:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>How it works</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Recursive</strong></td>
+<td>train one model for <span class="math inline">h = 1</span>, then feed each forecast back in as if it were data</td>
+<td>one model; errors compound, and future weather features have to be invented</td>
+</tr>
+<tr>
+<td><strong>Direct</strong></td>
+<td>train a separate model for each <span class="math inline">h</span></td>
+<td><span class="math inline">H</span> models, each fitted exactly to its own horizon</td>
+</tr>
+</tbody>
+</table>
+<p>Chapter 05 showed why fitting to the right horizon matters: SES tuned per horizon beat one-size-fits-all. We use the <strong>direct</strong> strategy here, and Exercise 1 compares the two.</p>
+<hr />
+<h2 id="2-features">2. Features</h2>
+<p><code>tsutils.ml_features(y, weather, horizon)</code> builds one row per day. Here's what's in it, and why each block is allowed:</p>
+<table>
+<thead>
+<tr>
+<th>Block</th>
+<th>Columns</th>
+<th>Known at the origin because…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Lags</strong> of log PM2.5</td>
+<td><code>lag_0</code> (today), <code>lag_1</code>, <code>lag_2</code>, <code>lag_3</code>, <code>lag_6</code>, <code>lag_13</code>, <code>lag_27</code></td>
+<td>they're past values</td>
+</tr>
+<tr>
+<td><strong>Trailing statistics</strong></td>
+<td>3-, 7- and 30-day means, 7-day standard deviation, today's change</td>
+<td>windows end today (chapter 01's <em>trailing, not centred</em>)</td>
+</tr>
+<tr>
+<td><strong>Today's weather</strong></td>
+<td>wind direction shares, humidity, evening wind and humidity, pressure and humidity changes</td>
+<td>observed by the end of the day (chapter 07, approach C)</td>
+</tr>
+<tr>
+<td><strong>Target calendar</strong></td>
+<td>Fourier terms of the target's day of year, its weekday, Spring Festival flags</td>
+<td>the calendar is known in advance</td>
+</tr>
+</tbody>
+</table>
+<p>We work with <strong>log</strong> PM2.5 as the target (chapter 04: exponentiating a log forecast gives a median-type forecast, which suits MAE).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">X1 = tsutils.ml_features(y, weather, horizon=1)
+print(X1.shape)
+X1.loc[&quot;2014-01-29&quot;:&quot;2014-02-01&quot;].T</code></pre>
+<pre class="output">(2191, 27)
+timestamp               2014-01-29  2014-01-30  2014-01-31  2014-02-01
+lag_0                        5.006       4.267       5.113       5.044
+lag_1                        3.841       5.006       4.267       5.113
+lag_2                        4.566       3.841       5.006       4.267
+lag_3                        4.078       4.566       3.841       5.006
+lag_6                        5.664       5.026       3.518       4.078
+lag_13                       6.106       5.040       4.341       4.826
+lag_27                       5.122       3.997       5.043       4.619
+mean_3                       4.471       4.372       4.796       4.808
+mean_7                       4.528       4.329       4.341       4.559
+mean_30                      4.469       4.481       4.516       4.513
+std_7                        0.760       0.572       0.590       0.512
+change_1                     1.165      -0.739       0.846      -0.069
+nw_share                     0.125       0.208       0.292       0.375
+calm_share                   0.375       0.167       0.417       0.125
+humidity                    62.792      30.375      59.667      63.292
+wind                         4.319      12.572      10.763       9.558
+nw_evening                   0.500       0.000       0.000       0.000
+humidity_evening            62.000      48.333      57.833      76.167
+pressure_change            -12.833       2.875       1.542      -3.333
+humidity_change             32.500     -32.417      29.292       3.625
+sin_1                        0.493       0.508       0.523       0.538
+cos_1                        0.870       0.861       0.852       0.843
+sin_2                        0.858       0.876       0.892       0.907
+cos_2                        0.513       0.483       0.453       0.422
+target_dow                   3.000       4.000       5.000       6.000
+target_is_festival           0.000       1.000       0.000       0.000
+target_is_festival_eve       1.000       0.000       0.000       0.000</pre>
+</div>
+
+<div class="md">
+<p>The last rows show the Spring Festival flags switching on as the target date reaches Lunar New Year's Eve and Day 2014. The first 27 rows of the table have missing lags, and we'll simply drop incomplete rows.</p>
+<hr />
+<h2 id="3-training-honestly-the-target-date-is-what-counts">3. Training honestly: the target date is what counts</h2>
+<p>Each model is <strong>refitted at the first origin of every month</strong> and used for the rest of that month, the schedule from chapter 07. The subtle part is which rows may be used for training at a refit date <span class="math inline">R</span>.</p>
+<p>A row dated <span class="math inline">t</span> holds features from day <span class="math inline">t</span> and a target from day <span class="math inline">t + h</span>. It's usable only if <strong><span class="math inline">t + h \le R</span></strong>, meaning its <em>target</em> has also been observed by <span class="math inline">R</span>. Requiring only <span class="math inline">t \le R</span> would train on targets from up to <span class="math inline">h</span> days after the refit date: the very days we're about to forecast. That's trap number three in section 6.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def direct_forecasts(make_model, horizons=range(1, H + 1), origins_=origins, drop=(),
+                     features=None, cutoff=&quot;target&quot;):
+    &quot;&quot;&quot;One model per horizon, refitted at the first origin of each month.
+
+    cutoff=&quot;target&quot;: train on rows whose target date is on or before the refit date (honest).
+    cutoff=&quot;row&quot;:    train on rows whose own date is on or before it (leaky; section 6).
+    Returns {(origin, h): forecast on the original scale}.
+    &quot;&quot;&quot;
+    forecasts = {}
+    log_actual = np.log(actual)
+    for h in horizons:
+        X = (tsutils.ml_features(y, weather, h) if features is None else features(h)).drop(columns=list(drop))
+        target = log_actual.shift(-h)                     # log PM2.5 h days after each row&#x27;s date
+        complete = X.notna().all(axis=1) &amp; target.notna()
+        month_groups = pd.Series(origins_, index=origins_).groupby([origins_.year, origins_.month])
+        for _, month_origins in month_groups:
+            refit = month_origins.iloc[0]
+            last_row = refit - pd.Timedelta(days=h) if cutoff == &quot;target&quot; else refit
+            usable = complete &amp; (X.index &lt;= last_row)
+            model = make_model().fit(X[usable], target[usable])
+            predictions = np.exp(model.predict(X.loc[month_origins.to_numpy()]))
+            forecasts.update({(o, h): p for o, p in zip(month_origins, predictions)})
+    return forecasts
+
+def score(forecasts, origins_=origins, horizon=H):
+    lookup = lambda history, steps: np.array([forecasts[(history.index[-1], k)] for k in range(1, steps + 1)])
+    return tsutils.evaluate(tsutils.backtest(y, lookup, origins_, horizon, actuals=actual))</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-two-learners">4. Two learners</h2>
+<ul>
+<li><strong>Ridge regression</strong>: a linear model with a small penalty on coefficient size, fitted on standardised features. It can only add up weighted features.</li>
+<li><strong>Gradient boosting</strong> (<code>HistGradientBoostingRegressor</code>): hundreds of small decision trees, each correcting the previous ones' errors. It can model interactions and non-linear effects, such as &quot;north-westerly wind matters only when humidity is high&quot;.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ridge():
+    return make_pipeline(StandardScaler(), Ridge(alpha=1.0))
+
+def boosting():
+    return HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05, max_leaf_nodes=15,
+                                         min_samples_leaf=20, random_state=0)
+
+ml_scores = {
+    &quot;Ridge, direct&quot;: score(direct_forecasts(ridge)),
+    &quot;Gradient boosting, direct&quot;: score(direct_forecasts(boosting)),
+}
+for name, s in ml_scores.items():
+    tsutils.save_scores(name, s)
+
+board = tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;)
+leaders = [&quot;climatology (median)&quot;, &quot;AR(2) on anomalies&quot;, &quot;SARIMAX, today&#x27;s weather&quot;,
+           &quot;Ridge, direct&quot;, &quot;Gradient boosting, direct&quot;]
+board[leaders]</code></pre>
+<pre class="output">model  climatology (median)  AR(2) on anomalies  SARIMAX, today&#x27;s weather  \
+h                                                                           
+1                    56.079              46.803                    40.937   
+2                    56.561              55.419                    55.956   
+3                    56.771              56.264                    56.834   
+4                    57.133              56.533                    56.809   
+5                    57.099              56.587                    56.687   
+6                    57.132              56.491                    56.634   
+7                    57.068              56.407                    56.545   
+
+model  Ridge, direct  Gradient boosting, direct  
+h                                                
+1             40.187                     39.879  
+2             54.082                     54.816  
+3             56.391                     57.687  
+4             56.233                     58.713  
+5             55.832                     57.502  
+6             55.905                     58.252  
+7             56.557                     58.221</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, ax = plt.subplots()
+for name in leaders:
+    ax.plot(board.index, board[name], marker=&quot;o&quot;, label=name)
+ax.set(title=&quot;MAE by horizon: machine learning vs. the best earlier models&quot;, xlabel=&quot;days ahead&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+ax.legend(fontsize=8);</code></pre>
+<figure class="output-figure"><img src="img/09-1.png" alt="Figure 1 produced by the code above" width="1010" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p><strong>Ridge regression is among the best honest models on the scoreboard for days 1 and 2</strong>: narrowly ahead of chapter 07's SARIMAX at day 1, and clearly ahead of everything at day 2. From day 3 on it sits with the rest of the pack at the climatology level. It combines what the earlier chapters found separately: today's value (AR memory), today's weather (chapter 07), the season and holidays.</p>
+<p><strong>Gradient boosting</strong> is the best of all at day 1, by a whisker, and second only to ridge at day 2. Then it <strong>falls behind from day 3 on</strong>, below plain climatology at every longer horizon. That isn't a bug. It's a lesson about the data:</p>
+<ul>
+<li>We have about 1,400 training rows per model. At long horizons the signal is weak (chapter 03's one-day half-life), so a flexible learner spends its flexibility <strong>fitting noise</strong>, while ridge's rigidity protects it.</li>
+<li>The strongest relationships here are close to linear on the log scale, such as &quot;today's anomaly carries partly into tomorrow&quot; and &quot;evening wind lowers tomorrow&quot;. A linear model captures them with a handful of numbers.</li>
+</ul>
+<p>Boosting pays off with <strong>more data</strong> (for example, thousands of related series) and <strong>genuine non-linear interactions</strong>. On one short daily series, a well-chosen linear model is very hard to beat, and Exercise 2 shows that honest tuning narrows the gap without closing it.</p>
+<hr />
+<h2 id="5-what-did-the-models-learn">5. What did the models learn?</h2>
+<p>Ridge's standardised coefficients show how each feature moves the forecast, per standard deviation. We fit on 2010–2013 and compare the model for tomorrow with the one for a week ahead.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ridge_coefficients(h):
+    X = tsutils.ml_features(y, weather, h)
+    target = np.log(actual).shift(-h)
+    usable = X.notna().all(axis=1) &amp; target.notna() &amp; (X.index &lt;= pd.Timestamp(&quot;2013-12-31&quot;) - pd.Timedelta(days=h))
+    model = ridge().fit(X[usable], target[usable])
+    return pd.Series(model.named_steps[&quot;ridge&quot;].coef_, index=X.columns)
+
+coefficients = pd.DataFrame({&quot;1 day ahead&quot;: ridge_coefficients(1), &quot;7 days ahead&quot;: ridge_coefficients(7)})
+coefficients.reindex(coefficients[&quot;1 day ahead&quot;].abs().sort_values(ascending=False).index).head(12)</code></pre>
+<pre class="output">                  1 day ahead  7 days ahead
+nw_evening             -0.400         0.046
+humidity_evening        0.262        -0.054
+lag_0                   0.210        -0.008
+humidity               -0.205         0.035
+change_1                0.188        -0.001
+humidity_change        -0.095        -0.002
+mean_3                  0.088        -0.002
+nw_share                0.071        -0.077
+pressure_change         0.051         0.023
+sin_1                   0.051        -0.036
+wind                    0.051        -0.043
+lag_3                  -0.040        -0.025</pre>
+</div>
+
+<div class="md">
+<p>The two models tell very different stories.</p>
+<ul>
+<li><strong>One day ahead:</strong> <strong>today's weather</strong> carries the most weight, above all the evening north-westerly wind, exactly chapter 07's finding. Evening humidity is next, then today's level (<code>lag_0</code>, <code>change_1</code>, <code>mean_3</code>). Correlated features share the credit between them. For example, same-day humidity gets a <em>negative</em> coefficient only because evening humidity already carries a strong positive one, so read individual coefficients with care.</li>
+<li><strong>Seven days ahead:</strong> <strong>every coefficient is small</strong>, a fraction of the day-1 values, and no block of features dominates. The model has learned, from data alone, that very little is predictable a week out, so it forecasts close to the average level with small adjustments. The weather terms that remain most likely act as rough indicators of the season. This is chapter 03's one-day half-life, rediscovered by a regression.</li>
+</ul>
+<hr />
+<h2 id="6-three-leakage-traps">6. Three leakage traps</h2>
+<p>A generic learner can't tell a legitimate feature from a leaky one, so each trap below produces a model that looks better than it is.</p>
+<h3 id="trap-1-a-feature-that-peeks-at-the-future">Trap 1: a feature that peeks at the future</h3>
+<p>A <em>centred</em> 7-day mean (chapter 01) averages three days before and three days <strong>after</strong> each date. Swap it in for the trailing <code>mean_7</code>:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def features_with_centred_mean(h):
+    X = tsutils.ml_features(y, weather, h)
+    X[&quot;mean_7&quot;] = np.log(y).rolling(7, center=True).mean()          # uses days t+1 .. t+3!
+    return X
+
+leaky_centred = score(direct_forecasts(boosting, features=features_with_centred_mean))
+pd.DataFrame({&quot;honest&quot;: ml_scores[&quot;Gradient boosting, direct&quot;][&quot;MAE&quot;], &quot;centred mean_7 (leaky)&quot;: leaky_centred[&quot;MAE&quot;]})</code></pre>
+<pre class="output">   honest  centred mean_7 (leaky)
+h                                
+1  39.879                  31.714
+2  54.816                  28.410
+3  57.687                  38.134
+4  58.713                  56.045
+5  57.502                  56.799
+6  58.252                  59.228
+7  58.221                  57.212</pre>
+</div>
+
+<div class="md">
+<p>The leaky model looks spectacular for days 1–3, <strong>beating even chapter 07's oracle with perfect weather</strong>, then drops back to normal from day 4, because a centred 7-day window reaches exactly three days ahead. That pattern, remarkable accuracy up to a horizon that matches some window length and then nothing, is a classic signature of leakage. If a result looks too good to be true, compare its horizon profile with the windows in your features.</p>
+<h3 id="trap-2-shuffled-cross-validation">Trap 2: shuffled cross-validation</h3>
+<p>The default habit in machine learning is K-fold cross-validation with <strong>shuffled</strong> rows. For time series, that means training on Thursday and &quot;testing&quot; on the Wednesday before it. How much does it matter here? We compare shuffled 5-fold CV with <strong>time-ordered</strong> splits (<code>TimeSeriesSplit</code>, where each fold trains only on the past), for the one-day-ahead models on 2010–2014.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">X_dev = tsutils.ml_features(y, weather, 1)
+target_dev = np.log(actual).shift(-1)
+keep = X_dev.notna().all(axis=1) &amp; target_dev.notna() &amp; (X_dev.index &lt;= pd.Timestamp(tsutils.DEV_END) - pd.Timedelta(days=1))
+X_dev, target_dev = X_dev[keep], target_dev[keep]
+
+def cv_mae(make_model, splitter):
+    errors = []
+    for train_idx, test_idx in splitter.split(X_dev):
+        model = make_model().fit(X_dev.iloc[train_idx], target_dev.iloc[train_idx])
+        errors.append(np.abs(np.exp(model.predict(X_dev.iloc[test_idx])) - np.exp(target_dev.iloc[test_idx])))
+    return np.concatenate(errors).mean()
+
+pd.DataFrame({
+    name: {&quot;shuffled 5-fold&quot;: cv_mae(make, KFold(5, shuffle=True, random_state=0)),
+           &quot;time-ordered 5-fold&quot;: cv_mae(make, TimeSeriesSplit(5))}
+    for name, make in [(&quot;Ridge&quot;, ridge), (&quot;Gradient boosting&quot;, boosting)]
+}).T</code></pre>
+<pre class="output">                   shuffled 5-fold  time-ordered 5-fold
+Ridge                       40.998               40.853
+Gradient boosting           40.896               42.438</pre>
+</div>
+
+<div class="md">
+<p>Here the damage is <strong>modest</strong>. Shuffling flatters gradient boosting by a few percent and barely affects ridge. (The comparison isn't perfectly like-for-like either: the early time-ordered folds train on less data, which works against them.) Two reasons it's this small here: our features are all trailing, so no single row contains its neighbours' targets, and daily PM2.5 forgets within a day or two. The optimism grows with model flexibility and with how strongly neighbouring rows share information. With hourly data, overlapping windows or deep trees it can be severe, and you can't know how big it will be <strong>without measuring it</strong>. Time-ordered evaluation costs nothing and removes the question.</p>
+<h3 id="trap-3-training-rows-whose-targets-lie-in-the-future">Trap 3: training rows whose targets lie in the future</h3>
+<p>Section 3's rule was that the target date, not the row date, must fall before the refit date. What if we only checked the row date?</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">leaky_cutoff = score(direct_forecasts(boosting, cutoff=&quot;row&quot;))
+pd.DataFrame({&quot;honest cut-off (target date)&quot;: ml_scores[&quot;Gradient boosting, direct&quot;][&quot;MAE&quot;],
+              &quot;leaky cut-off (row date)&quot;: leaky_cutoff[&quot;MAE&quot;]})</code></pre>
+<pre class="output">   honest cut-off (target date)  leaky cut-off (row date)
+h                                                        
+1                        39.879                    39.595
+2                        54.816                    54.264
+3                        57.687                    57.120
+4                        58.713                    57.429
+5                        57.502                    56.925
+6                        58.252                    59.040
+7                        58.221                    57.554</pre>
+</div>
+
+<div class="md">
+<p>The leaky cut-off looks slightly better at most horizons, by about half a µg/m³ on average. The effect is noisy, and one horizon even gets worse, because each monthly model trains on only a few extra leaked rows. An <span class="math inline">h</span>-day model trains on targets up to <span class="math inline">h</span> days past the refit date, which overlaps the very days it's then asked to forecast. The gain is small, but it's pure illusion, and this off-by-<span class="math inline">h</span> bug is exactly the kind that slips through code review, because its symptom is a result that looks only a <em>little</em> better. The fix costs nothing: always filter training rows by <strong>when the target became known</strong>.</p>
+<blockquote>
+<p><strong>Checklist for any ML forecast:</strong> (1) every feature known at the origin? (2) trailing windows only? (3) evaluation ordered in time? (4) training cut-off on the <em>target</em> date? (5) is the horizon profile of the accuracy plausible?</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-direct-vs-recursive">Exercise 1: Direct vs. recursive</h3>
+<p>To isolate the <em>strategy</em>, use only lag features: <code>lag_0</code>, <code>lag_1</code>, <code>lag_2</code>, <code>lag_3</code>, <code>lag_6</code>, <code>mean_3</code> and <code>mean_7</code>. Build a <strong>recursive</strong> ridge forecaster: fit one model for <span class="math inline">h = 1</span> (refitted monthly, same honest cut-off), then at each origin predict tomorrow, append that prediction to the series, recompute the seven features, and repeat for 7 steps. Compare it with <strong>direct</strong> ridge models on the same features.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">lag_cols = [&quot;lag_0&quot;, &quot;lag_1&quot;, &quot;lag_2&quot;, &quot;lag_3&quot;, &quot;lag_6&quot;, &quot;mean_3&quot;, &quot;mean_7&quot;]
+
+def lag_features_from(values):
+    &quot;&quot;&quot;The seven lag features for the last position of an array of log values.&quot;&quot;&quot;
+    return np.array([values[-1], values[-2], values[-3], values[-4], values[-7],
+                     values[-3:].mean(), values[-7:].mean()])
+
+X_lags = tsutils.ml_features(y, weather, 1)[lag_cols]
+target_1 = np.log(actual).shift(-1)
+complete = X_lags.notna().all(axis=1) &amp; target_1.notna()
+log_y = np.log(y)
+
+recursive = {}
+for _, month_origins in pd.Series(origins, index=origins).groupby([origins.year, origins.month]):
+    refit = month_origins.iloc[0]
+    usable = complete &amp; (X_lags.index &lt;= refit - pd.Timedelta(days=1))
+    model = ridge().fit(X_lags[usable], target_1[usable])
+    for origin_ in month_origins:
+        values = list(log_y[:origin_].to_numpy()[-30:])
+        for h in range(1, H + 1):
+            step = model.predict(pd.DataFrame([lag_features_from(np.array(values))], columns=lag_cols))[0]
+            values.append(step)
+            recursive[(origin_, h)] = np.exp(step)
+
+direct = direct_forecasts(ridge, features=lambda h: tsutils.ml_features(y, weather, h)[lag_cols])
+pd.DataFrame({&quot;recursive&quot;: score(recursive)[&quot;MAE&quot;], &quot;direct&quot;: score(direct)[&quot;MAE&quot;]})
+</code></pre>
+<p>With lag features only, the two strategies end up close: both are essentially AR models, and for linear models the recursive and direct forecasts differ mainly in how they're fitted. The practical differences show up elsewhere. The recursive strategy has no honest way to use weather features beyond day 1, since future weather would have to be invented (chapter 07's approach B problem). Its errors also compound through the recursion, which matters more for non-linear models. The direct strategy sidesteps both, at the cost of training <span class="math inline">H</span> models.</p>
+</details>
+<h3 id="exercise-2-tune-gradient-boosting-honestly">Exercise 2: Tune gradient boosting honestly</h3>
+<p>Try <code>max_iter</code> values of 50, 100 and 200 with <code>max_leaf_nodes=7</code> (simpler trees than before). Choose the setting on a <strong>2013</strong> backtest for horizons 1 and 5, then report its <strong>2014</strong> MAE. Does honest tuning close the gap to ridge?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">tuning_origins = pd.date_range(&quot;2012-12-31&quot;, &quot;2013-12-24&quot;, freq=&quot;D&quot;)
+
+def mae_for(forecasts, h, origins_):
+    &quot;&quot;&quot;MAE of the h-step forecasts, skipping days with no scorable actual.&quot;&quot;&quot;
+    errors = [abs(forecasts[(o, h)] - actual.get(o + pd.Timedelta(days=h), np.nan)) for o in origins_]
+    return np.nanmean(errors)
+
+rows = {}
+for n_trees in [50, 100, 200]:
+    make = lambda n=n_trees: HistGradientBoostingRegressor(max_iter=n, learning_rate=0.05, max_leaf_nodes=7,
+                                                            min_samples_leaf=20, random_state=0)
+    for period, origins_ in [(&quot;2013&quot;, tuning_origins), (&quot;2014&quot;, origins)]:
+        fc = direct_forecasts(make, horizons=[1, 5], origins_=origins_)
+        for h in [1, 5]:
+            rows[(n_trees, f&quot;{period}, h={h}&quot;)] = mae_for(fc, h, origins_)
+
+tuning = pd.Series(rows).unstack()
+tuning.index.name = &quot;max_iter&quot;
+tuning
+</code></pre>
+<p>Pick the setting with the lowest 2013 error at each horizon and read its 2014 value. Compare with ridge (<code>ml_scores[&quot;Ridge, direct&quot;]</code>). Simpler, shorter-trained boosting usually does better at day 5, where there's little signal to find, but it still doesn't clearly beat ridge. More flexibility buys nothing when the signal is weak and nearly linear. Tuning the model's <strong>capacity</strong> to the data matters more than the choice of algorithm.</p>
+</details>
+<h3 id="exercise-3-prediction-intervals-with-quantile-regression">Exercise 3: Prediction intervals with quantile regression</h3>
+<p>Gradient boosting can predict <strong>quantiles</strong> directly with <code>loss=&quot;quantile&quot;</code>. Train one-day-ahead models for the 10% and 90% quantiles (<code>quantile=0.1</code> and <code>0.9</code>) with the monthly schedule, and measure how often 2014's actual values fall between them. Compare with chapter 06's AR(2) intervals (78–80%).</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def quantile_model(q):
+    return lambda: HistGradientBoostingRegressor(loss=&quot;quantile&quot;, quantile=q, max_iter=200, learning_rate=0.05,
+                                                 max_leaf_nodes=15, min_samples_leaf=20, random_state=0)
+
+lower = direct_forecasts(quantile_model(0.1), horizons=[1])
+upper = direct_forecasts(quantile_model(0.9), horizons=[1])
+rows = [(lower[(o, 1)], upper[(o, 1)], actual.get(o + pd.Timedelta(days=1), np.nan)) for o in origins]
+band = pd.DataFrame(rows, columns=[&quot;lower&quot;, &quot;upper&quot;, &quot;actual&quot;]).dropna()
+inside = (band[&quot;actual&quot;] &gt;= band[&quot;lower&quot;]) &amp; (band[&quot;actual&quot;] &lt;= band[&quot;upper&quot;])
+print(f&quot;coverage of the 80% interval, 1 day ahead: {inside.mean():.0%}&quot;)
+print(f&quot;median interval width: {(band['upper'] - band['lower']).median():.0f} µg/m³&quot;)
+</code></pre>
+<p>Coverage comes out at only about <strong>two in three</strong>, well short of the promised 80%. The intervals are much narrower than chapter 04's climatology intervals, because the model knows today's conditions, but they're <em>too</em> narrow. Two reasons. Each monthly model learns its extreme quantiles from only about 1,400 rows, and boosted trees tend to pull extreme quantiles towards the middle on small data. And 2014 had larger swings than the training years, which chapter 04 already found with naive's intervals.</p>
+<p>Learning quantiles directly doesn't guarantee calibrated intervals, so <strong>check coverage out of sample</strong>. The standard repair is a <strong>calibration step</strong>, often called <em>conformal prediction</em>: measure how far actuals fall outside the raw intervals on a held-out year (2013), and widen the intervals by that amount. Quantile models trained separately can also occasionally cross (lower above upper), so check for that in production code.</p>
+</details>
+<h3 id="exercise-4-which-feature-blocks-matter">Exercise 4: Which feature blocks matter?</h3>
+<p>Run the ridge model four more times, each time dropping one block: the lags and trailing statistics, the weather, the calendar (Fourier terms, weekday, festival flags), and the festival flags alone. Compare MAE at 1, 2 and 7 days ahead with the full model.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">columns = tsutils.ml_features(y, weather, 1).columns
+blocks = {
+    &quot;lags &amp; trailing stats&quot;: [c for c in columns if c.startswith((&quot;lag_&quot;, &quot;mean_&quot;, &quot;std_&quot;, &quot;change_&quot;))],
+    &quot;weather&quot;: tsutils.KNOWN_TODAY_WEATHER,
+    &quot;calendar&quot;: [c for c in columns if c.startswith((&quot;sin_&quot;, &quot;cos_&quot;, &quot;target_&quot;))],
+    &quot;festival flags only&quot;: [&quot;target_is_festival&quot;, &quot;target_is_festival_eve&quot;],
+}
+ablation = {&quot;full model&quot;: ml_scores[&quot;Ridge, direct&quot;][&quot;MAE&quot;]}
+for block, cols in blocks.items():
+    ablation[f&quot;without {block}&quot;] = score(direct_forecasts(ridge, drop=cols))[&quot;MAE&quot;]
+pd.DataFrame(ablation).loc[[1, 2, 7]].T
+</code></pre>
+<p>Dropping the <strong>weather</strong> hurts most at day 1, and dropping the <strong>lags</strong> nearly as much. Neither matters much by day 7, which matches chapters 03 and 07.</p>
+<p>The surprise is the <strong>calendar</strong>. Dropping it makes the model slightly <em>better</em> at every horizon. The seasonal level is already carried by the trailing 30-day mean, so the Fourier terms add parameters without adding usable information. And a weekday coded as the integer 0–6 is a poor input for a linear model anyway. The festival flags barely change the averages: they matter on about three days a year, so an average over 359 origins hides them. Check such features on the days they're meant for.</p>
+<p>Should you now remove the calendar block? Not on this evidence. <strong>We found it by looking at 2014, the year we report on</strong>, which is exactly the tuning-on-the-test-set trap from chapter 04. The honest procedure is to run the same ablation on the 2013 backtest, decide there, and only then check 2014.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Forecasting becomes supervised learning with <strong>one row per origin</strong>, features <strong>known at that origin</strong>, and a target <span class="math inline">h</span> days later.</li>
+<li>The <strong>direct</strong> strategy, one model per horizon, fits each horizon properly and uses today's weather without inventing future weather.</li>
+<li><strong>Ridge regression</strong> on lag, weather and calendar features is the <strong>best honest model so far at day 2</strong> and a near-tie for best at day 1. <strong>Gradient boosting</strong> edges it at day 1 but <strong>overfits</strong> from day 3, where the signal is weak and nearly linear.</li>
+<li>The models rediscovered the course's story: <strong>weather and memory for tomorrow; for next week, little beyond the average level</strong>.</li>
+<li>Leakage traps, in order of how loudly they announce themselves: <strong>centred features</strong> (spectacular and fake), <strong>shuffled CV</strong> (modest here, but unpredictable), <strong>training cut-off by row date</strong> (small, noisy and silent).</li>
+<li>New scoreboard entries: <code>Ridge, direct</code> and <code>Gradient boosting, direct</code>.</li>
+</ul>
+<p><strong>Next:</strong> <em>10 · Deep Learning</em>. Recurrent networks and LSTMs learn their own features from raw sequences. We'll give them a fair, carefully validated chance against the ridge model.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="08-prophet.html"><span class="lbl">Previous · 08</span><span class="t">Prophet</span></a>
+  <a class="next" rel="next" href="10-deep-learning.html"><span class="lbl">Next · 10</span><span class="t">Deep learning</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 09 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

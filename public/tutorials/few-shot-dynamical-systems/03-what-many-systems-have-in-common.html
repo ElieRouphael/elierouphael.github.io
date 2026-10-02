@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>03 · What Many Systems Have in Common — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Twenty long recordings, each identified on its own, then noise-whitened PCA to find the low-dimensional geometry the family shares: the pretrained backbone every later chapter reuses.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 03 of 09</span>
+  <h1>What Many Systems Have in Common</h1>
+  <div class="intro prose">
+<p>Chapter 02 fit one system at a time and found that a short experiment leaves the coefficients
+poorly determined. Suppose instead we have long historical recordings (80 s each) of 20 <em>other</em>
+systems from the same family, e.g. from end-of-line tests. Can we learn, from this population, what
+systems of this kind have in common, and package it into something a new system can borrow from?</p>
+<hr />
+<h2 id="1-two-steps-identify-each-system-then-find-the-shared-geometry">1. Two steps: identify each system, then find the shared geometry</h2>
+<p><strong>Step 1: identify each training system.</strong> With 80 s of data each, we obtain estimates
+<span class="math inline">\hat\eta_1,\dots,\hat\eta_{20}</span> <em>and</em> their uncertainties: the Gauss–Newton covariance
+<span class="math inline">\hat\sigma_i^2(J_i^\top J_i)^{-1}</span> of each fit, exactly as in chapter 02.</p>
+<p><strong>Step 2: learn the geometry of the family.</strong> We look for a low-dimensional description of how the
+coefficients vary from system to system. Principal component analysis (PCA) finds the best
+rank-<span class="math inline">r</span> affine approximation</p>
+<div class="math display">
+\hat\eta_i \approx \bar\eta + U z_i, \qquad z_i \in \mathbb R^r, \quad z_i \sim \mathcal N(0, I),
+</div>
+<p>where <span class="math inline">\bar\eta</span> is the average system and the columns of <span class="math inline">U</span> are the main directions of variation,
+scaled so that the <em>task context</em> <span class="math inline">z</span> has unit variance across the family. <span class="math inline">\bar\eta</span> and <span class="math inline">U</span> are the
+&quot;pretrained backbone&quot;; <span class="math inline">z</span> is the small part that changes from system to system. We also record the
+typical size of the output residual <span class="math inline">\hat\sigma</span>: the noise level a model should expect.</p>
+<p><strong>A trap, and its fix.</strong> Plain PCA looks for the directions of largest <em>spread</em> in the estimates.
+But <span class="math inline">\hat\eta_i</span> spreads for two reasons: genuine differences between systems, and estimation
+error. Chapter 02 showed that <span class="math inline">\alpha</span> is poorly identified, so its estimates scatter widely, and
+plain PCA would spend a principal direction on this <em>noise</em>. The remedy is to measure every
+coefficient in units of its own estimation uncertainty before running PCA (<strong>noise-whitened PCA</strong>, a
+simple form of factor analysis): with <span class="math inline">s_j</span> the average estimation standard deviation of coefficient
+<span class="math inline">j</span>, PCA is applied to <span class="math inline">(\hat\eta_{ij}-\bar\eta_j)/s_j</span>, and <span class="math inline">U</span> is mapped back to physical units.
+Directions are then ranked by <em>signal-to-noise ratio</em> rather than raw spread.</p>
+<hr />
+<h2 id="2-fitting-the-family">2. Fitting the family</h2>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/03_what_many_systems_have_in_common.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-two-steps-identify-each-system-then-find-the-shared-geometry">1. Two steps: identify each system, then find the shared geometry</a></li>
+    <li><a href="#2-fitting-the-family">2. Fitting the family</a></li>
+    <li><a href="#3-what-the-learned-family-looks-like">3. What the learned family looks like</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import least_squares
+
+import dynutils
+from dynutils import sample_system, simulate, multisine, predict, fit_from_scratch, LOW
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR, NAMES = dynutils.COLOR, dynutils.NAMES</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">class Family:
+    # Pretrained low-dimensional model of a family of systems.
+
+    def fit(self, fits, data, rank=2, whiten=True):
+        # fits: list of (eta_hat, covariance) from fit_from_scratch(..., return_cov=True)
+        self.eta_hat = np.array([eta for eta, _ in fits])
+        self.sigma = np.sqrt(np.mean([np.mean((predict(e, u) - y) ** 2)
+                                      for e, (y, u) in zip(self.eta_hat, data)]))
+        self.mean = self.eta_hat.mean(axis=0)
+        self.scale = (np.sqrt(np.mean([np.diag(cov) for _, cov in fits], axis=0))
+                      if whiten else np.ones(4))
+        centred = (self.eta_hat - self.mean) / self.scale
+        _, sv, vt = np.linalg.svd(centred, full_matrices=False)
+        var = sv**2 / (len(centred) - 1)
+        self.explained = var / var.sum()
+        self.U = self.scale[:, None] * vt[:rank].T * np.sqrt(var[:rank])
+        self.z_train = centred @ vt[:rank].T / np.sqrt(var[:rank])
+        return self
+
+    def decode(self, z):
+        return np.clip(self.mean + np.asarray(z) @ self.U.T, LOW, dynutils.HIGH)
+
+    def project(self, eta):
+        # Best context for known coefficients, in the whitened metric (used only for evaluation).
+        return np.linalg.lstsq(self.U / self.scale[:, None], (eta - self.mean) / self.scale, rcond=None)[0]
+
+
+def r_squared(Z, C):
+    # Share of the variance of the hidden variables C explained by an affine function of Z.
+    A = np.c_[Z, np.ones(len(Z))]
+    residual = C - A @ np.linalg.lstsq(A, C, rcond=None)[0]
+    return 1 - (residual**2).sum(axis=0) / ((C - C.mean(axis=0)) ** 2).sum(axis=0)
+
+
+train_systems = [sample_system(rng) for _ in range(20)]
+train_data = []
+for s in train_systems:
+    u = multisine(800, rng, n=6)
+    train_data.append((simulate(s, u, rng)[1], u))
+train_fits = [fit_from_scratch(y, u, return_cov=True) for y, u in train_data]
+family = Family().fit(train_fits, train_data)
+naive = Family().fit(train_fits, train_data, whiten=False)
+true_train = np.array([s[&quot;eta&quot;] for s in train_systems])
+hidden = np.array([s[&quot;context&quot;] for s in train_systems])
+
+print(&quot;Estimation std per coefficient (k, d, b, α):&quot;, np.round(family.scale, 4))
+print(&quot;Variance explained by each principal direction:&quot;, np.round(family.explained, 3))
+print(f&quot;Estimated residual noise level sigma = {family.sigma:.4f}  (sensor noise alone: 0.01)&quot;)
+print()
+print(&quot;How well do the learned contexts explain the hidden design variables (R², 1 = perfectly)?&quot;)
+for name, fam in ((&quot;plain PCA&quot;, naive), (&quot;noise-whitened PCA&quot;, family)):
+    r2 = r_squared(fam.z_train, hidden)
+    print(f&quot;  {name:&gt;18s}:  c1 {r2[0]:.2f}   c2 {r2[1]:.2f}&quot;)</code></pre>
+<pre class="output">Estimation std per coefficient (k, d, b, α): [0.0107 0.0048 0.008  0.2976]
+Variance explained by each principal direction: [0.832 0.146 0.018 0.004]
+Estimated residual noise level sigma = 0.0190  (sensor noise alone: 0.01)
+
+How well do the learned contexts explain the hidden design variables (R², 1 = perfectly)?
+           plain PCA:  c1 0.98   c2 0.22
+  noise-whitened PCA:  c1 0.99   c2 0.96</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-what-the-learned-family-looks-like">3. What the learned family looks like</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig = plt.figure(figsize=(12, 5.6))
+grid = fig.add_gridspec(2, 4)
+for j in range(4):
+    ax = fig.add_subplot(grid[0, j])
+    ax.scatter(true_train[:, j], family.eta_hat[:, j], s=18, color=COLOR[&quot;context&quot;])
+    lim = [min(true_train[:, j].min(), family.eta_hat[:, j].min()),
+           max(true_train[:, j].max(), family.eta_hat[:, j].max())]
+    ax.plot(lim, lim, &quot;--&quot;, color=COLOR[&quot;reference&quot;], lw=1)
+    ax.set(title=NAMES[j], xlabel=&quot;true&quot;, ylabel=&quot;estimated&quot; if j == 0 else None)
+ax = fig.add_subplot(grid[1, :2])
+ax.bar(np.arange(1, 5), family.explained, color=[COLOR[&quot;context&quot;]] * 2 + [COLOR[&quot;none&quot;]] * 2, width=0.6)
+ax.set(xticks=range(1, 5), xlabel=&quot;principal direction&quot;, ylabel=&quot;share of variance&quot;,
+       title=&quot;Two directions describe the family&quot;)
+r2 = r_squared(family.z_train, hidden)
+for j in range(2):
+    ax = fig.add_subplot(grid[1, 2 + j])
+    sc = ax.scatter(*family.z_train.T, c=hidden[:, j], cmap=&quot;viridis&quot;, s=30)
+    fig.colorbar(sc, ax=ax, label=f&quot;hidden design variable c{j+1}&quot;)
+    ax.set(xlabel=&quot;learned z₁&quot;, ylabel=&quot;learned z₂&quot;, title=f&quot;Learned contexts (R² for c{j+1}: {r2[j]:.2f})&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/03-1.png" alt="Figure 1 produced by the code above" width="1320" height="605" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<ul>
+<li><strong>Top row.</strong> Stiffness, damping and gain are identified well from long recordings; <span class="math inline">\alpha</span> is only
+roughly determined (as chapter 02 predicted). Pretraining inherits these imperfections.</li>
+<li><strong>Bottom left.</strong> Two directions explain almost all of the (noise-weighted) variation. The learner
+has discovered, from data alone, that the family is essentially two-dimensional.</li>
+<li><strong>Bottom right.</strong> The learned coordinates <span class="math inline">z</span> encode both hidden design variables smoothly. They are
+a rotated and rescaled version of <span class="math inline">c</span>: PCA cannot know the &quot;names&quot; of the hidden variables, and
+it does not need to.</li>
+<li><strong>The printout above</strong> shows why the noise weighting matters. Plain PCA recovers the first design
+variable but largely misses the second, because it spends a direction on the scatter of the
+poorly identified <span class="math inline">\alpha</span>. <em>What a model can learn from a population is limited by what can be
+identified in each of its members.</em></li>
+</ul>
+<p>This is the miniature version of a foundation model. A large model would replace the fixed physics
+equation by a neural state-space model and PCA by a learned encoder. The division of labour stays
+the same: <strong>a shared backbone plus a small system-specific context.</strong></p>
+<p>From here on, every chapter needs this pretrained family. <code>dynutils.build_family(rng)</code> rebuilds it
+with exactly the code above, so calling it with a freshly-seeded
+<code>rng = np.random.default_rng(dynutils.SEED)</code> reproduces this same family, deterministically, at the
+top of every later chapter.</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-how-many-training-systems-does-the-family-need">Exercise 1: How many training systems does the family need?</h3>
+<p>Refit the family with only 5 and 10 training systems (reuse <code>train_systems[:5]</code> and
+<code>train_systems[:10]</code> and their corresponding <code>train_data</code>/<code>train_fits</code>) and compare the variance
+explained by the first two directions and the R² against the hidden design variables.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">for n in (5, 10, 20):
+    fam_n = Family().fit(train_fits[:n], train_data[:n])
+    r2_n = r_squared(fam_n.z_train, hidden[:n])
+    print(f&quot;n={n:&gt;2d}: variance explained {fam_n.explained[:2].sum():.2f}, R² {r2_n[0]:.2f} {r2_n[1]:.2f}&quot;)
+</code></pre>
+<p>With only 5 systems the two-dimensional structure is already visible, but the learned axes are
+noisier and their R² against the true design variables is markedly lower; 20 systems is enough for
+the family to stabilise, which is why that is what the rest of the course reuses.</p>
+</details>
+<h3 id="exercise-2-how-much-does-whitening-change-the-backbone-itself">Exercise 2: How much does whitening change the backbone itself?</h3>
+<p>Compare <code>family.mean</code> and <code>naive.mean</code> (both are the plain average of the 20 estimates, so they
+should match) against <code>family.U</code> and <code>naive.U</code>. Which one points closer to the true mixing matrix
+<code>_M</code> used by the simulator (up to rotation and scale, so compare the <em>subspaces</em> by looking at how
+well each explains the hidden <code>context</code>, i.e. reuse the R² already printed above)?</p>
+<details><summary>Solution</summary>
+<p>Whitened PCA's R² (about 0.98 and 0.96 for c1 and c2) is far higher than plain PCA's (about 0.96 and
+0.35), even though both share the same <code>mean</code>. The <em>directions</em> <code>U</code> differ because whitening
+reweights each coefficient before finding them; only the whitened ones recover a subspace close to
+the true <code>M @ c</code>, since plain PCA's second direction is dominated by α's estimation noise rather
+than genuine variation.</p>
+</details></div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="02-identifying-one-system-from-scratch.html"><span class="lbl">Previous · 02</span><span class="t">Identifying One System From Scratch</span></a>
+  <a class="next" rel="next" href="04-few-shot-identification-of-a-new-system.html"><span class="lbl">Next · 04</span><span class="t">Few-Shot Identification of a New System</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 03 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

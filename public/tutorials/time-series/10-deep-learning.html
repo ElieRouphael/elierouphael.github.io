@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>10 · Deep Learning — Time-series course</title>
+<meta name="description" content="Honest windows, training-only scaling, early stopping, MLP, SimpleRNN and LSTM, seed ensembles, and an hourly next-24-hours task.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 10 of 11</span>
+  <h1>Deep Learning</h1>
+  <div class="intro prose">
+<p>Neural networks promise something none of our earlier models offer: <strong>learning the features themselves</strong>. Instead of us deciding that yesterday's value, the 7-day mean and the evening wind are what matter, a recurrent network reads the raw recent history and works out what to pay attention to.</p>
+<p>Deep learning for forecasting is also where tutorials most often go wrong. Common mistakes include unscaled inputs, a single hand-picked test window, no baseline, tuning on the test period, and one training run reported as <em>the</em> result. This chapter avoids all of them, and gives neural networks a fair, carefully validated chance on the same task as every other model.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>turn a series into the <strong>(samples, timesteps, features)</strong> windows that sequence models expect, without leaking the future</li>
+<li>scale inputs using <strong>training data only</strong>, and stop training early using a <strong>time-ordered validation</strong> split</li>
+<li>build and train an <strong>MLP</strong>, a <strong>SimpleRNN</strong> and an <strong>LSTM</strong> that forecast all horizons at once</li>
+<li>measure <strong>run-to-run variability</strong> across random seeds, and reduce it by <strong>ensembling</strong></li>
+<li>separate &quot;better model&quot; from &quot;better inputs&quot; with a like-for-like comparison, and judge when deep learning is worth it</li>
+<li>apply the same discipline to an <strong>hourly, next-24-hours</strong> task with far more data</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/10_deep_learning.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-from-a-series-to-windows">1. From a series to windows</a></li>
+    <li><a href="#2-scaling-validation-and-early-stopping">2. Scaling, validation and early stopping</a></li>
+    <li><a href="#3-two-architectures">3. Two architectures</a></li>
+    <li><a href="#4-the-backtest-with-five-random-seeds">4. The backtest, with five random seeds</a></li>
+    <li><a href="#5-better-model-or-better-inputs">5. Better model, or better inputs?</a></li>
+    <li><a href="#6-hourly-data-forecasting-the-next-24-hours">6. Hourly data: forecasting the next 24 hours</a></li>
+    <li><a href="#7-when-is-deep-learning-worth-it">7. When is deep learning worth it?</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import os
+os.environ.setdefault(&quot;TF_CPP_MIN_LOG_LEVEL&quot;, &quot;3&quot;)         # hide TensorFlow&#x27;s start-up messages
+os.environ.setdefault(&quot;TF_ENABLE_ONEDNN_OPTS&quot;, &quot;0&quot;)         # deterministic CPU arithmetic across runs
+
+import logging
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import keras
+from keras import layers
+from sklearn.linear_model import Ridge
+
+import tsutils
+
+logging.getLogger(&quot;tensorflow&quot;).setLevel(logging.ERROR)     # e.g. the &quot;no GPU on native Windows&quot; notice
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 3)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+weather = tsutils.load_daily_weather()
+origins, H = tsutils.BACKTEST_ORIGINS, tsutils.HORIZON
+print(&quot;Keras&quot;, keras.__version__)</code></pre>
+<pre class="output">Keras 3.15.1</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-from-a-series-to-windows">1. From a series to windows</h2>
+<p>A sequence model takes, at each forecast origin, the last <span class="math inline">L</span> days of <strong>raw inputs</strong>, one row of features per day, and outputs forecasts for the next 7 days <strong>in one go</strong>. Producing all horizons at once from one model is called the <strong>multi-output</strong> (or MIMO) strategy. It's a middle ground between chapter 09's direct approach (one model per horizon) and the recursive approach.</p>
+<p>Each day's input row contains:</p>
+<ul>
+<li><strong>log PM2.5</strong> that day</li>
+<li><strong>that day's weather</strong>, the eight features known by the end of the day (chapter 07's approach C)</li>
+<li>the <strong>season</strong>, as sine and cosine of the day of the year</li>
+</ul>
+<p>So a single training example is a matrix of shape <span class="math inline">L \times 11</span>, and a batch of them is a 3-D array of shape <strong>(samples, timesteps, features)</strong>. We use <span class="math inline">L = 28</span> days.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">L = 28
+
+inputs = pd.concat([np.log(y).rename(&quot;log_pm25&quot;), weather[tsutils.KNOWN_TODAY_WEATHER]], axis=1)
+doy = inputs.index.dayofyear.to_numpy()
+inputs[&quot;season_sin&quot;] = np.sin(2 * np.pi * doy / 365.25)
+inputs[&quot;season_cos&quot;] = np.cos(2 * np.pi * doy / 365.25)
+
+values = inputs.to_numpy(dtype=float)
+log_actual = np.log(actual).to_numpy()          # NaN on unscorable days: never used as targets
+
+def window_at(position):
+    &quot;&quot;&quot;The L days of inputs ending on (and including) `position`.&quot;&quot;&quot;
+    return values[position - L + 1: position + 1]
+
+def training_windows(refit_date):
+    &quot;&quot;&quot;All windows whose 7 targets were known by `refit_date`, dropping any with a missing target.&quot;&quot;&quot;
+    last_end = inputs.index.get_loc(refit_date) - H         # targets end on the refit date at the latest
+    ends = np.arange(L - 1, last_end + 1)
+    X = np.stack([window_at(p) for p in ends])
+    Y = np.stack([log_actual[p + 1: p + 1 + H] for p in ends])
+    complete = ~np.isnan(Y).any(axis=1)
+    return X[complete], Y[complete]
+
+X_example, Y_example = training_windows(pd.Timestamp(&quot;2013-12-31&quot;))
+print(&quot;inputs X:&quot;, X_example.shape, &quot; targets Y:&quot;, Y_example.shape)</code></pre>
+<pre class="output">inputs X: (1183, 28, 11)  targets Y: (1183, 7)</pre>
+</div>
+
+<div class="md">
+<p>About 1,180 examples, each a 28 × 11 matrix with 7 targets. It's fewer than the number of days, because a window is dropped if <strong>any</strong> of its 7 target days is unscorable. Note also the cut-off in <code>training_windows</code>: a window may only be used for training if all 7 of its targets had been observed by the refit date. That's chapter 09's trap 3, handled in the same way.</p>
+<hr />
+<h2 id="2-scaling-validation-and-early-stopping">2. Scaling, validation and early stopping</h2>
+<p>Neural networks train badly on inputs with wildly different scales (humidity in the tens, wind shares between 0 and 1), so we <strong>standardise</strong> every input feature and the targets. The means and standard deviations come from the <strong>training windows only</strong>. Computing them over all the data would leak the future's typical level into the model.</p>
+<p>We also need to decide <strong>when to stop training</strong>. We hold out the most recent 20% of the training windows as a <strong>validation set</strong>. It's time-ordered, so the model is validated on the period right after the one it learned from. Training stops once validation error hasn't improved for 15 passes through the data (<em>epochs</em>), and the best weights are restored. This is <strong>early stopping</strong>, the main defence against overfitting.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">class Scaler:
+    &quot;&quot;&quot;Standardise inputs per feature and targets overall, using statistics from the training data only.&quot;&quot;&quot;
+    def fit(self, X, Y):
+        flat = X.reshape(-1, X.shape[-1])
+        self.x_mean, self.x_std = flat.mean(axis=0), flat.std(axis=0) + 1e-9
+        self.y_mean, self.y_std = Y.mean(), Y.std()
+        return self
+    def x(self, X):
+        return (X - self.x_mean) / self.x_std
+    def y(self, Y):
+        return (Y - self.y_mean) / self.y_std
+    def y_back(self, Y_scaled):
+        return Y_scaled * self.y_std + self.y_mean
+
+
+def train(build_model, X, Y, seed, max_epochs=300, patience=15):
+    &quot;&quot;&quot;Fit one network with a time-ordered validation split and early stopping.&quot;&quot;&quot;
+    keras.utils.set_random_seed(seed)                 # seeds Python, NumPy and TensorFlow together
+    scaler = Scaler().fit(X, Y)
+    Xs, Ys = scaler.x(X), scaler.y(Y)
+    n_val = int(len(Xs) * 0.2)
+    model = build_model(X.shape[1:])
+    history = model.fit(Xs[:-n_val], Ys[:-n_val], validation_data=(Xs[-n_val:], Ys[-n_val:]),
+                        epochs=max_epochs, batch_size=32, verbose=0,
+                        callbacks=[keras.callbacks.EarlyStopping(patience=patience, restore_best_weights=True)])
+    return model, scaler, history</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-two-architectures">3. Two architectures</h2>
+<p><strong>MLP (multi-layer perceptron).</strong> Flatten the 28 × 11 window into 308 numbers, pass them through one hidden layer of 64 units, and output 7 values. It sees all the inputs but has no built-in notion that they're ordered in time.</p>
+<p><strong>LSTM (long short-term memory).</strong> A recurrent layer that reads the window <strong>one day at a time</strong>, carrying a hidden state forward. Learned <em>gates</em> decide at each step what to keep, what to forget and what to output. This lets it capture patterns such as &quot;the last few days matter, and a wind shift yesterday matters more&quot;. After reading day 28, its final state feeds a layer that outputs 7 values.</p>
+<p>Both use <strong>dropout</strong> (randomly silencing 20% of units during training) as extra regularisation, and are trained on <strong>mean absolute error</strong>, on the log scale, to match our metric.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def mlp(input_shape):
+    inp = keras.Input(input_shape)
+    x = layers.Flatten()(inp)
+    x = layers.Dense(64, activation=&quot;relu&quot;)(x)
+    x = layers.Dropout(0.2)(x)
+    model = keras.Model(inp, layers.Dense(H)(x))
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=&quot;mae&quot;)
+    return model
+
+def lstm(input_shape):
+    inp = keras.Input(input_shape)
+    x = layers.LSTM(32)(inp)
+    x = layers.Dropout(0.2)(x)
+    model = keras.Model(inp, layers.Dense(H)(x))
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=&quot;mae&quot;)
+    return model
+
+lstm(X_example.shape[1:]).summary()</code></pre>
+<pre class="output">Model: &quot;functional&quot;
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Layer (type)                    ┃ Output Shape           ┃       Param # ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ input_layer (InputLayer)        │ (None, 28, 11)         │             0 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ lstm (LSTM)                     │ (None, 32)             │         5,632 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout (Dropout)               │ (None, 32)             │             0 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense (Dense)                   │ (None, 7)              │           231 │
+└─────────────────────────────────┴────────────────────────┴───────────────┘
+
+ Total params: 5,863 (22.90 KB)
+
+ Trainable params: 5,863 (22.90 KB)
+
+ Non-trainable params: 0 (0.00 B)</pre>
+</div>
+
+<div class="md">
+<p>About 5,900 parameters for the LSTM, trained on about 950 examples (the other 20% are the validation set). That ratio is worth keeping in mind. Chapter 09's ridge models had about 27 coefficients each.</p>
+<p>Here are the learning curves from one training run, the first quarter's model:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">_, _, history = train(lstm, X_example, Y_example, seed=0)
+curves = pd.DataFrame({&quot;training&quot;: history.history[&quot;loss&quot;], &quot;validation&quot;: history.history[&quot;val_loss&quot;]})
+ax = curves.plot(title=&quot;LSTM learning curves (loss = MAE on standardised log PM2.5)&quot;, xlabel=&quot;epoch&quot;, ylabel=&quot;loss&quot;)
+ax.axvline(curves[&quot;validation&quot;].idxmin(), color=&quot;0.4&quot;, ls=&quot;--&quot;, label=&quot;best validation epoch&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/10-1.png" alt="Figure 1 produced by the code above" width="1010" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Training loss keeps falling, but <strong>validation loss is almost flat from the very first epoch</strong>. It reaches its best after about five epochs and then drifts upward. Almost everything the network learns after its first few passes through the data is specific to the training period, which is <strong>memorisation</strong>, not generalisable pattern. Early stopping keeps the best validation epoch and discards the rest. (Validation loss sits <em>below</em> training loss partly because dropout is only active during training, and partly because the validation period may simply be easier to forecast.) With this little data, there's very little to learn beyond the first few epochs.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-the-backtest-with-five-random-seeds">4. The backtest, with five random seeds</h2>
+<p>Networks are refitted at the start of each <strong>quarter</strong> of 2014. That's less often than chapter 09's monthly refits, because training is slower, but the inputs are always the latest 28 days, so every forecast still uses up-to-date data. (Exercise 4 checks that refit frequency barely matters for a comparable ridge model.)</p>
+<p>Training starts from random initial weights, so two runs on identical data give different models. We train the LSTM with <strong>five seeds</strong> and keep every seed's forecasts, both to measure that variability and to test the standard remedy: <strong>average the ensemble</strong>. The whole backtest takes a few minutes.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">SEEDS = [0, 1, 2, 3, 4]
+quarters = pd.Series(origins, index=origins).groupby(origins.quarter)
+
+def network_backtest(build_model, seeds):
+    &quot;&quot;&quot;Quarterly refits; returns {seed: {(origin, h): forecast}}.&quot;&quot;&quot;
+    per_seed = {seed: {} for seed in seeds}
+    for _, quarter_origins in quarters:
+        X, Y = training_windows(quarter_origins.iloc[0])
+        X_pred = np.stack([window_at(p) for p in inputs.index.get_indexer(quarter_origins.to_numpy())])
+        for seed in seeds:
+            model, scaler, _ = train(build_model, X, Y, seed)
+            forecast = np.exp(scaler.y_back(model(scaler.x(X_pred), training=False).numpy()))
+            for origin, row in zip(quarter_origins, forecast):
+                per_seed[seed].update({(origin, h): row[h - 1] for h in range(1, H + 1)})
+    return per_seed
+
+def score(forecasts):
+    lookup = lambda history, steps: np.array([forecasts[(history.index[-1], k)] for k in range(1, steps + 1)])
+    return tsutils.evaluate(tsutils.backtest(y, lookup, origins, H, actuals=actual))
+
+def ensemble(per_seed, seeds):
+    keys = per_seed[seeds[0]].keys()
+    return {key: np.mean([per_seed[s][key] for s in seeds]) for key in keys}
+
+lstm_runs = network_backtest(lstm, SEEDS)
+mlp_runs = network_backtest(mlp, [0])</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">seed_scores = pd.DataFrame({f&quot;LSTM, seed {s}&quot;: score(lstm_runs[s])[&quot;MAE&quot;] for s in SEEDS})
+seed_scores[&quot;LSTM, 5-seed ensemble&quot;] = score(ensemble(lstm_runs, SEEDS))[&quot;MAE&quot;]
+seed_scores[&quot;MLP, seed 0&quot;] = score(mlp_runs[0])[&quot;MAE&quot;]
+seed_scores</code></pre>
+<pre class="output">   LSTM, seed 0  LSTM, seed 1  LSTM, seed 2  LSTM, seed 3  LSTM, seed 4  \
+h                                                                         
+1        49.803        46.160        49.052        44.739        48.524   
+2        56.647        59.521        54.816        54.414        57.355   
+3        56.648        60.607        55.683        55.852        59.812   
+4        57.084        62.399        55.600        56.930        57.946   
+5        56.994        63.569        56.174        57.361        58.246   
+6        56.585        61.518        55.944        57.083        57.045   
+7        56.931        60.295        55.557        56.353        56.584   
+
+   LSTM, 5-seed ensemble  MLP, seed 0  
+h                                      
+1                 46.711       50.316  
+2                 55.466       62.551  
+3                 56.595       63.474  
+4                 57.009       61.905  
+5                 57.350       62.589  
+6                 56.690       60.610  
+7                 56.461       58.516</pre>
+</div>
+
+<div class="md">
+<p><strong>The same architecture, trained on the same data, gives noticeably different results depending only on the random seed.</strong> The spread between the best and worst seed is several µg/m³ at some horizons, larger than most of the differences between <em>models</em> on our scoreboard. A single training run can make an LSTM look better or worse than it really is, and that's why reporting one run is one of the most common flaws in deep-learning forecasting studies.</p>
+<p><strong>Averaging the five seeds</strong> smooths out their idiosyncrasies. The ensemble is better than a typical individual seed at most horizons, and far more reproducible. The <strong>MLP</strong> does clearly worse than the LSTM. Flattening the window throws away the ordering, and with 308 inputs and one short series it overfits easily.</p>
+</div>
+
+<div class="md">
+<h3 id="the-simplest-recurrent-network-simplernn">The simplest recurrent network: SimpleRNN</h3>
+<p>The LSTM's gates exist to solve a specific problem. A plain recurrent layer updates its hidden state with a single formula, <span class="math inline">h_t = \tanh(W x_t + U h_{t-1} + b)</span>. When it's trained, the signal from early time steps has to pass through that formula once per step. Over long sequences it tends to shrink towards zero (or blow up). This is the <strong>vanishing (or exploding) gradient</strong> problem, and it makes long memory hard to learn. LSTM gates give the network a protected path along which information can flow unchanged.</p>
+<p>Does that matter here? Our windows are 28 steps, and PM2.5's memory is short. Let's train <code>SimpleRNN</code> with the same 32 units, five seeds and quarterly refits, and compare.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def simple_rnn(input_shape):
+    inp = keras.Input(input_shape)
+    x = layers.SimpleRNN(32)(inp)
+    x = layers.Dropout(0.2)(x)
+    model = keras.Model(inp, layers.Dense(H)(x))
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=&quot;mae&quot;)
+    return model
+
+rnn_runs = network_backtest(simple_rnn, SEEDS)
+pd.DataFrame({
+    &quot;LSTM, 5-seed ensemble&quot;: seed_scores[&quot;LSTM, 5-seed ensemble&quot;],
+    &quot;SimpleRNN, 5-seed ensemble&quot;: score(ensemble(rnn_runs, SEEDS))[&quot;MAE&quot;],
+    &quot;SimpleRNN, best single seed&quot;: pd.DataFrame({s: score(rnn_runs[s])[&quot;MAE&quot;] for s in SEEDS}).min(axis=1),
+    &quot;SimpleRNN, worst single seed&quot;: pd.DataFrame({s: score(rnn_runs[s])[&quot;MAE&quot;] for s in SEEDS}).max(axis=1),
+})</code></pre>
+<pre class="output">   LSTM, 5-seed ensemble  SimpleRNN, 5-seed ensemble  \
+h                                                      
+1                 46.711                      42.423   
+2                 55.466                      56.095   
+3                 56.595                      57.442   
+4                 57.009                      57.009   
+5                 57.350                      56.435   
+6                 56.690                      56.982   
+7                 56.461                      57.107   
+
+   SimpleRNN, best single seed  SimpleRNN, worst single seed  
+h                                                             
+1                       41.072                        45.411  
+2                       56.122                        58.587  
+3                       56.725                        60.129  
+4                       57.036                        59.686  
+5                       55.799                        59.409  
+6                       57.114                        59.062  
+7                       57.055                        59.993</pre>
+</div>
+
+<div class="md">
+<p><strong>Here the simpler network wins at day 1.</strong> The SimpleRNN ensemble is clearly ahead of the LSTM ensemble for tomorrow, and its best single seed gets close to chapter 09's ridge. From day 2 on the two are level. Two reasons:</p>
+<ul>
+<li><strong>No long memory is needed.</strong> PM2.5 forgets within days, so the vanishing-gradient problem that LSTM gates solve doesn't arise over these 28-step windows.</li>
+<li><strong>Fewer parameters.</strong> SimpleRNN has about 1,400 against the LSTM's 5,600. With about 950 training examples, less capacity means less room to memorise the training period (section 2's learning curves).</li>
+</ul>
+<p>The seed spread is again several µg/m³, so the ensemble matters as much as the architecture. An LSTM's extra machinery pays off for long-range dependencies, and this problem has almost none. Start with the simplest model that could work.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">tsutils.save_scores(&quot;LSTM, 5-seed ensemble&quot;, score(ensemble(lstm_runs, SEEDS)))
+tsutils.save_scores(&quot;MLP&quot;, score(mlp_runs[0]))
+tsutils.save_scores(&quot;SimpleRNN, 5-seed ensemble&quot;, score(ensemble(rnn_runs, SEEDS)))
+
+board = tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;)
+leaders = [&quot;climatology (median)&quot;, &quot;AR(2) on anomalies&quot;, &quot;SARIMAX, today&#x27;s weather&quot;, &quot;Ridge, direct&quot;, &quot;LSTM, 5-seed ensemble&quot;]
+
+fig, ax = plt.subplots()
+for name in leaders:
+    ax.plot(board.index, board[name], marker=&quot;o&quot;, label=name)
+single_seeds = seed_scores.filter(like=&quot;LSTM, seed&quot;)
+low, high = single_seeds.min(axis=1), single_seeds.max(axis=1)
+ax.fill_between(board.index, low, high, color=tsutils.PALETTE[4], alpha=0.15, label=&quot;range of single LSTM seeds&quot;)
+ax.set(title=&quot;Deep learning vs. the best earlier models&quot;, xlabel=&quot;days ahead&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+ax.legend(fontsize=8)
+board[leaders]</code></pre>
+<pre class="output">model  climatology (median)  AR(2) on anomalies  SARIMAX, today&#x27;s weather  \
+h                                                                           
+1                    56.079              46.803                    40.937   
+2                    56.561              55.419                    55.956   
+3                    56.771              56.264                    56.834   
+4                    57.133              56.533                    56.809   
+5                    57.099              56.587                    56.687   
+6                    57.132              56.491                    56.634   
+7                    57.068              56.407                    56.545   
+
+model  Ridge, direct  LSTM, 5-seed ensemble  
+h                                            
+1             40.187                 46.711  
+2             54.082                 55.466  
+3             56.391                 56.595  
+4             56.233                 57.009  
+5             55.832                 57.350  
+6             55.905                 56.690  
+7             56.557                 56.461</pre>
+<figure class="output-figure"><img src="img/10-2.png" alt="Figure 2 produced by the code above" width="997" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The ensemble LSTM lands at roughly the level of <strong>chapter 06's AR(2)</strong>. It has learned the one-day memory and the seasonal level from raw data, which is a genuine achievement for a model given no hand-made features. But it's <strong>well behind chapter 09's ridge regression at days 1 and 2</strong>, and from day 3 on everything converges to the same climatology-like level.</p>
+<hr />
+<h2 id="5-better-model-or-better-inputs">5. Better model, or better inputs?</h2>
+<p>Is ridge better because it's a better <em>model</em>, or because chapter 09 gave it better <em>inputs</em>? We can separate the two by giving ridge <strong>exactly the LSTM's raw windows</strong>, flattened, with the same quarterly refits and scaling.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def ridge_on_windows(columns):
+    positions = [inputs.columns.get_loc(c) for c in columns]
+    forecasts = {}
+    for _, quarter_origins in quarters:
+        X, Y = training_windows(quarter_origins.iloc[0])
+        X = X[:, :, positions]
+        scaler = Scaler().fit(X, Y)
+        model = Ridge(alpha=10.0).fit(scaler.x(X).reshape(len(X), -1), scaler.y(Y))
+        X_pred = np.stack([window_at(p) for p in inputs.index.get_indexer(quarter_origins.to_numpy())])[:, :, positions]
+        forecast = np.exp(scaler.y_back(model.predict(scaler.x(X_pred).reshape(len(X_pred), -1))))
+        for origin, row in zip(quarter_origins, forecast):
+            forecasts.update({(origin, h): row[h - 1] for h in range(1, H + 1)})
+    return forecasts
+
+like_for_like = pd.DataFrame({
+    &quot;LSTM ensemble (raw windows)&quot;: seed_scores[&quot;LSTM, 5-seed ensemble&quot;],
+    &quot;ridge on the same raw windows&quot;: score(ridge_on_windows(list(inputs.columns)))[&quot;MAE&quot;],
+    &quot;ridge on the same windows, no weather&quot;: score(ridge_on_windows([&quot;log_pm25&quot;, &quot;season_sin&quot;, &quot;season_cos&quot;]))[&quot;MAE&quot;],
+    &quot;ridge on chapter 09&#x27;s features&quot;: board[&quot;Ridge, direct&quot;],
+})
+like_for_like</code></pre>
+<pre class="output">   LSTM ensemble (raw windows)  ridge on the same raw windows  \
+h                                                               
+1                       46.711                         43.016   
+2                       55.466                         58.526   
+3                       56.595                         60.668   
+4                       57.009                         60.620   
+5                       57.350                         60.335   
+6                       56.690                         59.834   
+7                       56.461                         60.241   
+
+   ridge on the same windows, no weather  ridge on chapter 09&#x27;s features  
+h                                                                         
+1                                 47.478                          40.187  
+2                                 55.661                          54.082  
+3                                 56.349                          56.391  
+4                                 56.280                          56.233  
+5                                 56.465                          55.832  
+6                                 56.561                          55.905  
+7                                 56.519                          56.557</pre>
+</div>
+
+<div class="md">
+<p>Read across the rows:</p>
+<ul>
+<li>On <strong>identical raw windows</strong>, ridge beats the LSTM at day 1, but it's worse from day 2 on. Hundreds of raw inputs (28 days × 11 features) are too many for a linear model to use well at horizons where there's little signal, and it overfits in its own way.</li>
+<li>Without the weather, ridge on raw windows falls back to roughly the AR(2) level. Most of the day-1 skill again comes from <strong>today's weather</strong>.</li>
+<li><strong>Chapter 09's ridge, with a couple of dozen well-chosen features, beats everything.</strong> Its features encode what we learned across chapters 01–07: log scale, trailing means, <em>evening</em> wind, seasonal terms.</li>
+</ul>
+<p>So on this problem, <strong>the inputs matter more than the model</strong>. Good feature design, informed by understanding the data, beats a more powerful model asked to discover that understanding from about 950 training examples.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-hourly-data-forecasting-the-next-24-hours">6. Hourly data: forecasting the next 24 hours</h2>
+<p>Daily data gave the networks only about 1,200 examples. Hourly data offers far more, and it's a different task that air-quality services also publish: <strong>at midnight, forecast each of the next 24 hours</strong>. This section runs that task on the same principles, as a self-contained comparison (it isn't part of the daily leaderboard).</p>
+<p><strong>Setup:</strong></p>
+<ul>
+<li>Inputs: the last <strong>72 hours</strong> of log PM2.5, plus hour-of-day (as sine and cosine), a north-westerly-wind indicator and humidity, all observed by the forecast time.</li>
+<li>Training windows: every 3 hours through 2012–2013, keeping only windows with no missing values and whose 24 targets end before 2014.</li>
+<li>Evaluation: one forecast per day at 23:00 for <strong>January–March 2014</strong>, a demanding winter quarter. Hours with no observation aren't scored.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">hourly = tsutils.load_beijing()
+hourly_pm = hourly[&quot;pm25&quot;].interpolate(method=&quot;time&quot;, limit=3, limit_area=&quot;inside&quot;)
+hourly_inputs = pd.DataFrame({
+    &quot;log_pm25&quot;: np.log(hourly_pm.clip(lower=1)),
+    &quot;hour_sin&quot;: np.sin(2 * np.pi * hourly.index.hour / 24),
+    &quot;hour_cos&quot;: np.cos(2 * np.pi * hourly.index.hour / 24),
+    &quot;nw_wind&quot;: (hourly[&quot;wind_dir&quot;] == &quot;NW&quot;).astype(float),
+    &quot;humidity&quot;: hourly[&quot;humidity&quot;].interpolate(limit_direction=&quot;both&quot;) / 100,
+})
+hv = hourly_inputs.to_numpy(dtype=float)
+h_log_target = np.log(hourly[&quot;pm25&quot;].clip(lower=1)).to_numpy()     # observed values only (NaN where missing)
+h_actual = hourly[&quot;pm25&quot;].to_numpy()
+LH, HH = 72, 24
+
+def hourly_window(position):
+    return hv[position - LH + 1: position + 1]
+
+first_end = hourly_inputs.index.get_loc(pd.Timestamp(&quot;2012-01-03 23:00&quot;))
+last_end = hourly_inputs.index.get_loc(pd.Timestamp(&quot;2013-12-31 23:00&quot;)) - HH
+ends = np.arange(first_end, last_end + 1, 3)
+Xh = np.stack([hourly_window(p) for p in ends])
+Yh = np.stack([h_log_target[p + 1: p + 1 + HH] for p in ends])
+keep = ~np.isnan(Xh).any(axis=(1, 2)) &amp; ~np.isnan(Yh).any(axis=1)
+Xh, Yh = Xh[keep], Yh[keep]
+
+h_origins = pd.date_range(&quot;2014-01-01 23:00&quot;, &quot;2014-03-30 23:00&quot;, freq=&quot;D&quot;)
+h_positions = hourly_inputs.index.get_indexer(h_origins)
+Xh_test = np.stack([hourly_window(p) for p in h_positions])
+testable = ~np.isnan(Xh_test).any(axis=(1, 2))
+h_truth = np.stack([h_actual[p + 1: p + 1 + HH] for p in h_positions])
+
+def hourly_mae(forecasts):
+    errors = np.abs(forecasts - h_truth)[testable]
+    return pd.Series(np.nanmean(errors, axis=0), index=pd.RangeIndex(1, HH + 1, name=&quot;hours ahead&quot;))
+
+print(f&quot;training windows: {Xh.shape}, test origins with complete inputs: {testable.sum()}&quot;)</code></pre>
+<pre class="output">training windows: (4735, 72, 5), test origins with complete inputs: 85</pre>
+</div>
+
+<div class="md">
+<p>Four forecasters, all seeing exactly the same information:</p>
+<ul>
+<li><strong>Naive:</strong> every one of the next 24 hours equals the last observed hour.</li>
+<li><strong>Same hour yesterday:</strong> the seasonal naive with period 24.</li>
+<li><strong>Ridge</strong> on the flattened 72-hour window, with standardised inputs.</li>
+<li><strong>LSTM</strong> (32 units) on the window, three seeds averaged, with the same early stopping as before.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">naive_h = np.repeat(hourly_pm.to_numpy()[h_positions][:, None], HH, axis=1)
+yesterday_h = np.stack([hourly_pm.to_numpy()[p - HH + 1: p + 1] for p in h_positions])
+
+h_scaler = Scaler().fit(Xh, Yh)
+ridge_h = Ridge(alpha=10.0).fit(h_scaler.x(Xh).reshape(len(Xh), -1), h_scaler.y(Yh))
+ridge_fc = np.exp(h_scaler.y_back(ridge_h.predict(np.nan_to_num(h_scaler.x(Xh_test)).reshape(len(Xh_test), -1))))
+
+def lstm_24(input_shape):
+    inp = keras.Input(input_shape)
+    x = layers.Dropout(0.2)(layers.LSTM(32)(inp))
+    model = keras.Model(inp, layers.Dense(HH)(x))
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=&quot;mae&quot;)
+    return model
+
+lstm_members = []
+for seed in [0, 1, 2]:
+    model, scaler, _ = train(lstm_24, Xh, Yh, seed, patience=8)
+    scaled_inputs = np.nan_to_num(scaler.x(Xh_test)).astype(&quot;float32&quot;)      # untestable rows are ignored later
+    lstm_members.append(scaler.y_back(model(scaled_inputs, training=False).numpy()))
+lstm_fc = np.exp(np.mean(lstm_members, axis=0))
+
+hourly_scores = pd.DataFrame({
+    &quot;naive (last hour)&quot;: hourly_mae(naive_h),
+    &quot;same hour yesterday&quot;: hourly_mae(yesterday_h),
+    &quot;ridge on the window&quot;: hourly_mae(ridge_fc),
+    &quot;LSTM, 3-seed ensemble&quot;: hourly_mae(lstm_fc),
+})
+ax = hourly_scores.plot(marker=&quot;.&quot;, title=&quot;Next-24-hour forecasts, January–March 2014&quot;, xlabel=&quot;hours ahead&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+hourly_scores.iloc[[0, 5, 11, 17, 23]].round(1)</code></pre>
+<pre class="output">             naive (last hour)  same hour yesterday  ridge on the window  \
+hours ahead                                                                
+1                         17.4                115.7                 25.2   
+6                         45.8                 92.1                 56.6   
+12                        62.9                 92.7                 71.0   
+18                        80.9                 84.7                 72.8   
+24                       101.9                101.9                 96.0   
+
+             LSTM, 3-seed ensemble  
+hours ahead                         
+1                             27.0  
+6                             45.2  
+12                            58.6  
+18                            63.5  
+24                            87.4</pre>
+<figure class="output-figure"><img src="img/10-3.png" alt="Figure 3 produced by the code above" width="1010" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The hourly task has its own shape:</p>
+<ul>
+<li><strong>For the next hour or two, naive is very hard to beat.</strong> Air quality barely changes within an hour. The multi-output models spread their effort over all 24 hours, and give up some of that first-hour precision.</li>
+<li><strong>&quot;Same hour yesterday&quot; is poor</strong>, worst of all for the first hours. The daily cycle (chapter 01) is weak next to hour-to-hour persistence.</li>
+<li><strong>With more data, the LSTM earns its place.</strong> It matches naive by about 6 hours ahead, and from half a day out it's clearly best, ahead of naive by roughly 4 to 17 µg/m³. It also beats <strong>ridge on the same window at every horizon from 6 hours</strong>, and ridge even trails naive at 6 and 12 hours.</li>
+</ul>
+<p>That's the reverse of the daily result. Here there are about 4,700 training windows, and the dynamics are richer: the daily cycle unfolding hour by hour, and fronts arriving through the night. The flexible sequence model finds structure that a linear model on raw inputs misses. It's one winter quarter and three seeds, so treat it as a first result rather than a verdict. But it shows the conditions under which deep learning pays off, which section 7 sums up.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-when-is-deep-learning-worth-it">7. When is deep learning worth it?</h2>
+<p>Our result is typical for <strong>a single, short, noisy series</strong>. Deep learning tends to earn its place when some of these hold:</p>
+<table>
+<thead>
+<tr>
+<th>Deep learning helps when…</th>
+<th>Our case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>lots of data</strong>: long histories, high frequency, or <strong>many related series</strong> trained together (a <em>global</em> model)</td>
+<td>1 series, about 1,400 daily examples</td>
+</tr>
+<tr>
+<td>rich, <strong>high-dimensional inputs</strong> (images, text, many sensors) whose useful features are hard to hand-craft</td>
+<td>11 inputs per day, which we understand well</td>
+</tr>
+<tr>
+<td>complex <strong>non-linear interactions</strong> that simple features can't express</td>
+<td>effects close to linear on the log scale</td>
+</tr>
+<tr>
+<td>compute and time for <strong>ensembles and tuning</strong> are affordable</td>
+<td>yes, but the gains are small</td>
+</tr>
+</tbody>
+</table>
+<p>Large <strong>pretrained time-series foundation models</strong> push the &quot;lots of data&quot; idea furthest: they're trained on vast collections of public series and then applied to new ones. Whatever the model, the discipline of this chapter carries over. That means honest windows, training-only scaling, time-ordered validation, several seeds, and a like-for-like comparison with strong simple models.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-watch-overfitting-happen">Exercise 1: Watch overfitting happen</h3>
+<p>Train the LSTM on <code>X_example, Y_example</code> for a fixed 150 epochs, with <strong>no</strong> early stopping (hint: pass <code>patience=10_000</code> to <code>train</code>). Plot the training and validation losses. At which epoch is validation loss lowest, and how much worse is it by epoch 150?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">_, _, long_history = train(lstm, X_example, Y_example, seed=0, max_epochs=150, patience=10_000)
+long_curves = pd.DataFrame({&quot;training&quot;: long_history.history[&quot;loss&quot;], &quot;validation&quot;: long_history.history[&quot;val_loss&quot;]})
+best_epoch = long_curves[&quot;validation&quot;].idxmin()
+long_curves.plot(title=&quot;150 epochs without early stopping&quot;, xlabel=&quot;epoch&quot;, ylabel=&quot;loss&quot;)
+print(f&quot;best validation loss {long_curves['validation'].min():.3f} at epoch {best_epoch}; &quot;
+      f&quot;at epoch 150 it's {long_curves['validation'].iloc[-1]:.3f}&quot;)
+</code></pre>
+<p>The training loss falls steadily for all 150 epochs, while the validation loss reaches its minimum early and then rises as the network memorises the training period. The gap between the two curves is overfitting made visible. Without early stopping, you'd deploy the epoch-150 model and get worse forecasts.</p>
+</details>
+<h3 id="exercise-2-how-big-should-the-ensemble-be">Exercise 2: How big should the ensemble be?</h3>
+<p>Using the saved per-seed forecasts in <code>lstm_runs</code>, score ensembles of the first 1, 2, 3, 4 and 5 seeds. Plot the average MAE over horizons against ensemble size.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">sizes = range(1, len(SEEDS) + 1)
+by_size = pd.Series({k: score(ensemble(lstm_runs, SEEDS[:k]))[&quot;MAE&quot;].mean() for k in sizes},
+                    name=&quot;average MAE over 7 horizons&quot;)
+by_size.plot(marker=&quot;o&quot;, title=&quot;LSTM ensemble size vs. error&quot;, xlabel=&quot;number of seeds averaged&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+by_size
+</code></pre>
+<p>The curve isn't smooth, and that's the lesson. Adding seed 1, the worst single run in section 4, makes the two-member ensemble <em>worse</em> than seed 0 alone. From three members on, the average settles and stops depending much on any single seed. With only a few members, the ensemble still inherits the luck of the seeds you happened to draw. So use more members than seems necessary, and to measure the effect of ensemble size properly, average over many random orderings of the seeds. Even so, ensembling remains the cheapest reliable improvement for any neural network.</p>
+</details>
+<h3 id="exercise-3-how-much-history-should-the-network-see">Exercise 3: How much history should the network see?</h3>
+<p>Rebuild the windows with <code>L = 7</code> and then <code>L = 56</code> days. Change <code>L</code> and re-run the cells in section 1 so that <code>window_at</code> and <code>training_windows</code> pick up the new length. Train 2-seed LSTM ensembles for each and compare with <code>L = 28</code>.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">results = {&quot;L = 28 (5 seeds)&quot;: seed_scores[&quot;LSTM, 5-seed ensemble&quot;]}
+for window_length in [7, 56]:
+    L = window_length                                   # window_at / training_windows read the global L
+    runs = network_backtest(lstm, [0, 1])
+    results[f&quot;L = {window_length} (2 seeds)&quot;] = score(ensemble(runs, [0, 1]))[&quot;MAE&quot;]
+L = 28                                                  # restore
+pd.DataFrame(results)
+</code></pre>
+<p>A <strong>7-day</strong> window is noticeably worse at day 1, while <strong>56 days</strong> performs about the same as 28. So a week of history isn't quite enough, even though PM2.5 forgets within days (chapter 03). The network uses the longer window to judge the <em>recent level</em>, the job the 30-day mean does in chapter 09's features. Beyond about a month, more history adds nothing. With only two seeds per run, part of any difference is seed noise (section 4), and the 5-seed baseline isn't a perfectly fair comparison, but the 7-day shortfall at day 1 is larger than that noise.</p>
+</details>
+<h3 id="exercise-4-does-refit-frequency-matter">Exercise 4: Does refit frequency matter?</h3>
+<p>The networks were refitted quarterly, while chapter 09's models were refitted monthly. Refit chapter 09's ridge features <strong>quarterly</strong> and compare with the monthly version. Is the comparison in section 4 fair?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+quarterly = {}
+for h in range(1, H + 1):
+    X = tsutils.ml_features(y, weather, h)
+    target = np.log(actual).shift(-h)
+    complete = X.notna().all(axis=1) &amp; target.notna()
+    for _, quarter_origins in quarters:
+        usable = complete &amp; (X.index &lt;= quarter_origins.iloc[0] - pd.Timedelta(days=h))
+        model = make_pipeline(StandardScaler(), Ridge(alpha=1.0)).fit(X[usable], target[usable])
+        preds = np.exp(model.predict(X.loc[quarter_origins.to_numpy()]))
+        quarterly.update({(o, h): p for o, p in zip(quarter_origins, preds)})
+
+pd.DataFrame({&quot;ridge, monthly refits (ch. 09)&quot;: board[&quot;Ridge, direct&quot;], &quot;ridge, quarterly refits&quot;: score(quarterly)[&quot;MAE&quot;]})
+</code></pre>
+<p>The two are nearly identical. With years of history, adding one more month changes the fitted model very little, and the inputs are always current. So the networks' quarterly schedule doesn't explain their gap to ridge. The comparison is fair.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Sequence models take <strong>(samples, timesteps, features)</strong> windows. Train only on windows whose <strong>targets were all known</strong> at the refit date, and scale with <strong>training statistics only</strong>.</li>
+<li><strong>Time-ordered validation with early stopping</strong> is essential. On small data, networks start overfitting within a few epochs.</li>
+<li><strong>Random seeds matter</strong>: single LSTM runs differed by several µg/m³, more than many model-to-model differences. <strong>Ensembling</strong> several seeds is cheap and reliable. Never report a single run.</li>
+<li>A 5-seed LSTM ensemble learned the AR(2)-level memory from raw data, and the smaller <strong>SimpleRNN did better at day 1</strong>, but <strong>chapter 09's feature-based ridge still wins at days 1–2</strong>. On one short series, <strong>better inputs beat a bigger model</strong>.</li>
+<li>On the <strong>hourly</strong> next-24-hours task, with about 4,700 training windows, the LSTM beat both naive and ridge from about 6–12 hours ahead. More data and richer dynamics tip the balance.</li>
+<li>Deep learning pays off with <strong>much more data</strong> (long, high-frequency or many related series), <strong>complex inputs</strong>, or <strong>genuine non-linearity</strong>. Always compare like-for-like against strong simple models.</li>
+</ul>
+<p><strong>Next:</strong> <em>11 · Capstone</em>. We finally open the locked 2015 data and run the best model from each family through a single, final, honest comparison.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="09-machine-learning.html"><span class="lbl">Previous · 09</span><span class="t">Machine learning for forecasting</span></a>
+  <a class="next" rel="next" href="11-capstone.html"><span class="lbl">Next · 11</span><span class="t">Capstone: the final test</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 10 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>
