@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>04 · Uncertainty and deep ensembles — TrustDrive course</title>
+<meta name="description" content="Aleatoric versus epistemic uncertainty through the law of total variance, deep ensembles, calibration and proper scoring rules.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 04 of 09</span>
+  <h1>Uncertainty and deep ensembles</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Make a model say &quot;I do not know&quot;, and understand exactly what that means.
+We separate the two kinds of predictive uncertainty, connect ensembles to Bayesian
+inference, estimate uncertainty from scratch with numpy, then test whether it is
+<em>calibrated</em> - and see the failure mode (uncertainty is not error) that the rest of
+the course is built to catch.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/04_uncertainty_ensembles.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-two-uncertainties-via-the-law-of-total-variance">1. Two uncertainties, via the law of total variance</a></li>
+    <li><a href="#2-the-bayesian-predictive-and-why-ensembles-approximate-it">2. The Bayesian predictive, and why ensembles approximate it</a></li>
+    <li><a href="#3-the-estimator">3. The estimator</a></li>
+    <li><a href="#4-is-the-uncertainty-calibrated">4. Is the uncertainty <em>calibrated</em>?</a></li>
+    <li><a href="#5-the-failure-mode-uncertainty-is-not-error">5. The failure mode: uncertainty is not error</a></li>
+    <li><a href="#6-consequences-for-the-driving-system">6. Consequences for the driving system</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-two-uncertainties-via-the-law-of-total-variance">1. Two uncertainties, via the law of total variance</h2>
+<p>Let a model with parameters <span class="math inline">\theta</span> define <span class="math inline">p(y\mid x,\theta)</span>, and let <span class="math inline">p(\theta\mid D)</span>
+be the posterior after seeing data <span class="math inline">D</span>. The predictive variance decomposes exactly
+by the <strong>law of total variance</strong>:</p>
+<div class="math display"> \underbrace{\mathrm{Var}(y\mid x)}_{\text{predictive}}
+ = \underbrace{\mathbb E_{\theta}\!\big[\mathrm{Var}(y\mid x,\theta)\big]}_{\text{aleatoric}}
+ + \underbrace{\mathrm{Var}_{\theta}\!\big(\mathbb E[y\mid x,\theta]\big)}_{\text{epistemic}} . </div>
+<ul>
+<li><strong>Aleatoric</strong> uncertainty is the <em>expected data noise</em> - irreducible, present even
+with a perfect model; more data does not shrink it [1,2,3].</li>
+<li><strong>Epistemic</strong> uncertainty is the <em>spread of model predictions</em> under the posterior
+<ul>
+<li>it is the model's ignorance, and it <em>does</em> shrink with more data. It is largest
+where the training set was sparse, i.e. out of distribution.</li>
+</ul>
+</li>
+</ul>
+<p>For safety, epistemic uncertainty is the interesting one: it is what should rise
+when the vehicle enters an unfamiliar regime.</p>
+</div>
+
+<div class="md">
+<h2 id="2-the-bayesian-predictive-and-why-ensembles-approximate-it">2. The Bayesian predictive, and why ensembles approximate it</h2>
+<p>The quantity we actually want is the <strong>posterior predictive</strong>, marginalising over
+all plausible parameters:</p>
+<div class="math display"> p(y\mid x, D) = \int p(y\mid x,\theta)\,p(\theta\mid D)\,\mathrm d\theta . </div>
+<p>For a neural network <span class="math inline">p(\theta\mid D)</span> is intractable, so we approximate it - by a
+Laplace approximation [4], MC dropout [5], variational inference [6], or a
+<strong>deep ensemble</strong> [7]. A deep ensemble trains <span class="math inline">M</span> models from different random
+initialisations (and/or data resamples) and treats the resulting parameters
+<span class="math inline">\{\theta_i\}</span> as samples of the posterior:</p>
+<div class="math display"> p(y\mid x,D) \approx \frac1M\sum_{i=1}^M p(y\mid x,\theta_i). </div>
+<p>Empirically ensembles are among the strongest uncertainty methods: independent SGD
+runs land in <em>different</em> modes of the loss landscape, giving genuine
+<strong>function-space diversity</strong> rather than small wiggles around one mode [7,8].</p>
+</div>
+
+<div class="md">
+<h2 id="3-the-estimator">3. The estimator</h2>
+<p>With <span class="math inline">M</span> member predictions <span class="math inline">\hat y_i(x)</span> (each optionally also predicting a noise
+variance <span class="math inline">\hat\sigma_i^2(x)</span> for the aleatoric part), the ensemble reports</p>
+<div class="math display"> \bar y(x)=\frac1M\sum_i \hat y_i(x),\qquad
+   \Sigma^{epi}(x)=\frac{1}{M-1}\sum_i\big(\hat y_i(x)-\bar y(x)\big)\big(\hat y_i(x)-\bar y(x)\big)^\top, </div>
+<p>and the total predictive variance follows the decomposition of section 1,</p>
+<div class="math display"> \sigma^2_{tot}(x)=\underbrace{\tfrac1M\textstyle\sum_i \hat\sigma_i^2(x)}_{\text{aleatoric}}
+   +\underbrace{\mathrm{Var}_i\big(\hat y_i(x)\big)}_{\text{epistemic}} . </div>
+<p>In the driving system, <span class="math inline">\Sigma^{epi}</span> is exactly the perception covariance
+<span class="math inline">\Sigma^{AI}</span> whose trace feeds the integrity score (notebook 06). Let us build one
+from scratch. We use random-feature ridge regressors as cheap &quot;networks&quot; [12]; the
+diversity comes from different random features per member plus a bootstrap resample.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+from math import erf, sqrt
+rng = np.random.default_rng(0)
+
+f = lambda x: np.sin(1.5*x)                       # ground-truth function
+noise = 0.1                                       # aleatoric label noise (std)
+Xtr = rng.uniform(-2, 2, 300); Ytr = f(Xtr) + rng.normal(0, noise, 300)
+Xval = rng.uniform(-2, 2, 300); Yval = f(Xval) + rng.normal(0, noise, 300)
+
+def features(D, seed, scale=1.5):
+    r = np.random.default_rng(seed)
+    Wf, bf = r.normal(0, scale, (D, 1)), r.uniform(0, 2*np.pi, D)
+    return lambda x: np.cos(x.reshape(-1, 1) @ Wf.T + bf)
+
+def fit_member(phi, X, Y, lam=1e-2):
+    P = phi(X); w = np.linalg.solve(P.T@P + lam*np.eye(P.shape[1]), P.T@Y)
+    return lambda x: phi(x) @ w
+
+M = 25
+members = []
+for s in range(M):
+    phi = features(200, seed=1000 + s)            # init diversity: different random features
+    idx = rng.integers(0, len(Xtr), len(Xtr))     # data diversity: bootstrap resample
+    members.append(fit_member(phi, Xtr[idx], Ytr[idx]))
+
+preds    = lambda x: np.stack([m(x) for m in members])   # (M, N)
+ens_mean = lambda x: preds(x).mean(0)
+ens_epi  = lambda x: preds(x).var(0)
+sig_a2   = float(np.mean((Yval - ens_mean(Xval))**2))     # aleatoric estimate (held-out residual)
+
+xs = np.linspace(-5, 5, 400)
+mu, epi = ens_mean(xs), ens_epi(xs); tot = epi + sig_a2
+plt.figure(figsize=(8, 3.6))
+plt.fill_between(xs, mu-2*np.sqrt(tot), mu+2*np.sqrt(tot), color=&quot;#c68a12&quot;, alpha=.18, label=&quot;total $\\pm2\\sigma$&quot;)
+plt.fill_between(xs, mu-2*np.sqrt(epi), mu+2*np.sqrt(epi), color=&quot;#8e44ad&quot;, alpha=.30, label=&quot;epistemic $\\pm2\\sigma$&quot;)
+plt.plot(xs, f(xs), &#x27;k--&#x27;, lw=1, label=&quot;truth&quot;); plt.plot(xs, mu, color=&quot;#8e44ad&quot;, label=&quot;ensemble mean&quot;)
+plt.scatter(Xtr, Ytr, s=6, color=&quot;#1f77b4&quot;, alpha=.5)
+plt.axvspan(-2, 2, color=&quot;green&quot;, alpha=.05); plt.ylim(-2.5, 2.5)
+plt.legend(ncol=2, loc=&quot;upper center&quot;, fontsize=8); plt.title(&quot;Aleatoric floor + epistemic flare&quot;)
+plt.grid(alpha=.3); plt.tight_layout(); plt.show()
+print(&quot;aleatoric std  sqrt(sig_a2)     = %.3f   (true label noise %.2f)&quot; % (np.sqrt(sig_a2), noise))
+print(&quot;epistemic std  in [-2,2]        = %.3f&quot; % np.sqrt(epi[(xs&gt;-2)&amp;(xs&lt;2)].mean()))
+print(&quot;epistemic std  in |x|&gt;3 (OOD)   = %.3f&quot; % np.sqrt(epi[np.abs(xs)&gt;3].mean()))</code></pre>
+<figure class="output-figure"><img src="img/04-1.png" alt="Figure: Aleatoric floor + epistemic flare" width="868" height="384" loading="lazy"></figure>
+<pre class="output">aleatoric std  sqrt(sig_a2)     = 0.100   (true label noise 0.10)
+epistemic std  in [-2,2]        = 0.017
+epistemic std  in |x|&gt;3 (OOD)   = 1.314</pre>
+</div>
+
+<div class="md">
+<h2 id="4-is-the-uncertainty-calibrated">4. Is the uncertainty <em>calibrated</em>?</h2>
+<p>An uncertainty is only useful if it is calibrated: a claimed 95% interval should
+contain the truth about 95% of the time [9,10]. For regression we can check this
+with the standardised residual <span class="math inline">z=(y-\bar y)/\sigma_{tot}</span>: if the predictive
+Gaussian is calibrated, <span class="math inline">z\sim\mathcal N(0,1)</span>, so the empirical fraction with
+<span class="math inline">|z|\le t</span> should match the nominal <span class="math inline">2\Phi(t)-1</span> across thresholds <span class="math inline">t</span>. Plotting one
+against the other gives a <strong>reliability curve</strong> (the diagonal is perfect).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">Phi = lambda z: 0.5*(1 + erf(z/sqrt(2)))          # standard normal CDF (no scipy needed)
+
+def zscores(lo, hi, n=4000):
+    X = rng.uniform(lo, hi, n); Y = f(X) + rng.normal(0, noise, n)
+    var = ens_epi(X) + sig_a2
+    return np.abs(Y - ens_mean(X)) / np.sqrt(var)
+
+z_in, z_ood = zscores(-2, 2), zscores(3, 5)
+ts = np.linspace(0.05, 3.0, 40); nominal = np.array([2*Phi(t)-1 for t in ts])
+emp_in  = np.array([np.mean(z_in  &lt;= t) for t in ts])
+emp_ood = np.array([np.mean(z_ood &lt;= t) for t in ts])
+
+plt.figure(figsize=(4.6, 4.4))
+plt.plot([0,1],[0,1], &#x27;k--&#x27;, lw=1, label=&quot;perfect calibration&quot;)
+plt.plot(nominal, emp_in, &#x27;-o&#x27;, ms=3, color=&quot;#2e7d32&quot;, label=&quot;in-distribution&quot;)
+plt.plot(nominal, emp_ood, &#x27;-o&#x27;, ms=3, color=&quot;#d1495b&quot;, label=&quot;out-of-distribution&quot;)
+plt.xlabel(&quot;nominal coverage&quot;); plt.ylabel(&quot;empirical coverage&quot;)
+plt.title(&quot;Reliability curve&quot;); plt.legend(loc=&quot;lower right&quot;); plt.grid(alpha=.3)
+plt.tight_layout(); plt.show()
+print(&quot;95%% interval coverage  in-distribution : %.2f  (well calibrated)&quot; % np.mean(z_in  &lt;= 1.96))
+print(&quot;95%% interval coverage  out-of-dist     : %.2f  (intervals balloon -&gt; over-conservative)&quot; % np.mean(z_ood &lt;= 1.96))
+
+# proper scoring rule: Gaussian negative log-likelihood, single model vs ensemble
+Xte = rng.uniform(-3, 3, 4000); Yte = f(Xte) + rng.normal(0, noise, 4000)
+def gauss_nll(mu, var, y): return float(np.mean(0.5*np.log(2*np.pi*var) + 0.5*(y-mu)**2/var))
+nll_single = gauss_nll(members[0](Xte), np.full(len(Xte), sig_a2), Yte)   # one model, no epistemic
+nll_ens    = gauss_nll(ens_mean(Xte),   ens_epi(Xte) + sig_a2,     Yte)   # ensemble, with epistemic
+print(&quot;\nGaussian NLL (lower is better)   single model: %.3f   ensemble: %.3f&quot; % (nll_single, nll_ens))</code></pre>
+<figure class="output-figure"><img src="img/04-2.png" alt="Figure: Reliability curve" width="495" height="472" loading="lazy"></figure>
+<pre class="output">95% interval coverage  in-distribution : 0.95  (well calibrated)
+95% interval coverage  out-of-dist     : 1.00  (intervals balloon -&gt; over-conservative)
+
+Gaussian NLL (lower is better)   single model: 11.571   ensemble: -0.373</pre>
+</div>
+
+<div class="md">
+<h2 id="5-the-failure-mode-uncertainty-is-not-error">5. The failure mode: uncertainty is not error</h2>
+<p>In the demo above the well-specified ensemble stayed calibrated in-distribution and
+turned <em>conservative</em> out-of-distribution (coverage 1.00 - the band ballooned): it
+correctly widened where it was ignorant. That is the good case, and it is why the
+epistemic trace is a useful signal. But note that off-diagonal calibration can go
+<em>either</em> way, and only one direction is dangerous.</p>
+<p>The danger is this: an ensemble only disagrees where its members <em>can</em> disagree. If
+the members share a limiting assumption - too small a hypothesis class, the same
+blind spot - they <strong>agree and are all wrong</strong>: low variance, high error. Uncertainty
+then silently underestimates error, and no reliability check on in-distribution data
+would reveal it.</p>
+<p>Below we cripple the ensemble (very few, shared features; only the bootstrap
+differs). The members agree closely, so the reported band is tight - yet the fit is
+biased, and in a fraction of the domain the true error lies <em>outside</em> the 2-sigma
+band. This is the confidently-wrong regime.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">phi_shared = features(6, seed=7)                  # too few features, shared by all members
+weak = [fit_member(phi_shared, Xtr[rng.integers(0, len(Xtr), len(Xtr))], Ytr) for _ in range(25)]
+pw = np.stack([m(xs) for m in weak]); muw, stdw = pw.mean(0), pw.std(0)
+errw = np.abs(muw - f(xs))
+mask = (xs &gt; -2) &amp; (xs &lt; 2)
+over = 100*np.mean(errw[mask] &gt; 2*stdw[mask])
+
+plt.figure(figsize=(8, 3.4))
+plt.plot(xs[mask], errw[mask], color=&quot;#d1495b&quot;, label=&quot;actual error $|\\bar y - f|$&quot;)
+plt.plot(xs[mask], 2*stdw[mask], color=&quot;#8e44ad&quot;, label=&quot;reported $2\\sigma$ band&quot;)
+plt.fill_between(xs[mask], 2*stdw[mask], errw[mask], where=errw[mask] &gt; 2*stdw[mask],
+                 color=&quot;#d1495b&quot;, alpha=.15)
+plt.xlabel(&quot;x&quot;); plt.ylabel(&quot;magnitude&quot;); plt.title(&quot;Confidently wrong: error exceeds the reported uncertainty&quot;)
+plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
+print(&quot;in-domain fraction where actual error exceeds the 2-sigma band: %.0f%%&quot; % over)</code></pre>
+<figure class="output-figure"><img src="img/04-3.png" alt="Figure: Confidently wrong: error exceeds the reported uncertainty" width="869" height="362" loading="lazy"></figure>
+<pre class="output">in-domain fraction where actual error exceeds the 2-sigma band: 93%</pre>
+</div>
+
+<div class="md">
+<h2 id="6-consequences-for-the-driving-system">6. Consequences for the driving system</h2>
+<p>The trace of <span class="math inline">\Sigma^{epi}</span> is a genuinely useful signal - it rises under blur,
+darkness and sparse data, and it feeds the integrity score. But section 5 is the
+warning: on a truly novel regime (the out-of-distribution <em>curve</em> of notebook 03,
+which even looks like a valid image) an over-confident perception network can report
+a small covariance while being biased. No amount of introspective uncertainty fixes
+this, because the model is judging itself.</p>
+<p>The remedy is an <strong>external, model-based</strong> cross-check: compare the perception
+output against a physics prediction and test their consistency. That is the Kalman
+innovation / NIS test of notebook 05, and it is precisely what catches the case
+where uncertainty alone stays quiet.</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Verify the law of total variance numerically: estimate both terms from the
+ensemble and confirm they sum to the empirical predictive variance in-domain.</li>
+<li>Grow <span class="math inline">M</span> from 2 to 50 and plot how the epistemic estimate stabilises. How many
+members are &quot;enough&quot; here?</li>
+<li>Recalibrate the OOD intervals with a single temperature scalar
+<span class="math inline">\sigma\mapsto\tau\sigma</span> chosen on a validation set (temperature scaling [9]).
+Does one global <span class="math inline">\tau</span> fix both in- and out-of-distribution coverage? Why not?</li>
+<li>Replace the ensemble with MC dropout on a small MLP (if you have torch) and
+compare the reliability curves.</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>A. Der Kiureghian, O. Ditlevsen. <em>Aleatory or epistemic? Does it matter?</em> Structural Safety, 31(2):105-112, 2009. <a href="https://doi.org/10.1016/j.strusafe.2008.06.020">doi:10.1016/j.strusafe.2008.06.020</a></li>
+<li>E. Huellermeier, W. Waegeman. <em>Aleatoric and epistemic uncertainty in machine learning: an introduction to concepts and methods.</em> Machine Learning, 110:457-506, 2021. <a href="https://doi.org/10.1007/s10994-021-05946-3">doi:10.1007/s10994-021-05946-3</a></li>
+<li>A. Kendall, Y. Gal. <em>What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?</em> NeurIPS, 2017. <a href="https://arxiv.org/abs/1703.04977">arXiv:1703.04977</a></li>
+<li>D. J. C. MacKay. <em>A Practical Bayesian Framework for Backpropagation Networks.</em> Neural Computation, 4(3):448-472, 1992. <a href="https://doi.org/10.1162/neco.1992.4.3.448">doi:10.1162/neco.1992.4.3.448</a></li>
+<li>Y. Gal, Z. Ghahramani. <em>Dropout as a Bayesian Approximation: Representing Model Uncertainty in Deep Learning.</em> ICML, 2016. <a href="https://arxiv.org/abs/1506.02142">arXiv:1506.02142</a></li>
+<li>C. Blundell, J. Cornebise, K. Kavukcuoglu, D. Wierstra. <em>Weight Uncertainty in Neural Networks.</em> ICML, 2015. <a href="https://arxiv.org/abs/1505.05424">arXiv:1505.05424</a></li>
+<li>B. Lakshminarayanan, A. Pritzel, C. Blundell. <em>Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles.</em> NeurIPS, 2017. <a href="https://arxiv.org/abs/1612.01474">arXiv:1612.01474</a></li>
+<li>S. Fort, H. Hu, B. Lakshminarayanan. <em>Deep Ensembles: A Loss Landscape Perspective.</em> <a href="https://arxiv.org/abs/1912.02757">arXiv:1912.02757</a>, 2019.</li>
+<li>C. Guo, G. Pleiss, Y. Sun, K. Q. Weinberger. <em>On Calibration of Modern Neural Networks.</em> ICML, 2017. <a href="https://arxiv.org/abs/1706.04599">arXiv:1706.04599</a></li>
+<li>V. Kuleshov, N. Fenner, S. Ermon. <em>Accurate Uncertainties for Deep Learning Using Calibrated Regression.</em> ICML, 2018. <a href="https://arxiv.org/abs/1807.00263">arXiv:1807.00263</a></li>
+<li>T. Gneiting, A. E. Raftery. <em>Strictly Proper Scoring Rules, Prediction, and Estimation.</em> Journal of the American Statistical Association, 102(477):359-378, 2007. <a href="https://doi.org/10.1198/016214506000001437">doi:10.1198/016214506000001437</a></li>
+<li>A. Rahimi, B. Recht. <em>Random Features for Large-Scale Kernel Machines.</em> NeurIPS, 2007. (The random-feature regressors used here.)</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="03-perception-and-rendering.html"><span class="lbl">Previous · 03</span><span class="t">Perception and rendering</span></a>
+  <a class="next" rel="next" href="05-kalman-and-nis.html"><span class="lbl">Next · 05</span><span class="t">Kalman filter and NIS</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 04 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

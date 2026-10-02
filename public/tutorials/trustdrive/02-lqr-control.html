@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>02 · LQR lane keeping — TrustDrive course</title>
+<meta name="description" content="LQR by dynamic programming, the discrete Riccati equation, Bryson&#x27;s rule, curvature feed-forward and gain scheduling.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 02 of 09</span>
+  <h1>LQR lane keeping</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Design the feedback law <span class="math inline">u_k=\pi(\hat x_k)</span> that regulates the lane-error
+state to zero. We derive the linear-quadratic regulator (LQR) from first
+principles via dynamic programming, solve its Riccati equation numerically, prove
+the closed loop is stable, learn to choose the weights, add curvature
+feed-forward, and make the gain adapt to speed.</p>
+<p>We reuse the discrete linear model from notebook 01,
+<span class="math inline">x_{k+1}=A x_k + B\,\delta_k + E\,\kappa_k</span>, with</p>
+<div class="math display"> A=\begin{bmatrix}1 &amp; vT_s\\ 0 &amp; 1\end{bmatrix},\qquad
+   B=\begin{bmatrix}0\\ vT_s/L\end{bmatrix},\qquad
+   E=\begin{bmatrix}0\\ -vT_s\end{bmatrix}. </div>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/02_lqr_control.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-regulation-problem-and-a-quadratic-cost">1. The regulation problem and a quadratic cost</a></li>
+    <li><a href="#2-deriving-lqr-by-dynamic-programming">2. Deriving LQR by dynamic programming</a></li>
+    <li><a href="#3-the-discrete-algebraic-riccati-equation-dare">3. The discrete algebraic Riccati equation (DARE)</a></li>
+    <li><a href="#4-choosing-q-and-r">4. Choosing <span class="math inline">Q</span> and <span class="math inline">R</span></a></li>
+    <li><a href="#5-feed-forward-a-two-degree-of-freedom-controller">5. Feed-forward: a two-degree-of-freedom controller</a></li>
+    <li><a href="#6-gain-scheduling-a-linear-parameter-varying-controller">6. Gain scheduling: a linear-parameter-varying controller</a></li>
+    <li><a href="#7-two-classical-facts-worth-knowing">7. Two classical facts worth knowing</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-the-regulation-problem-and-a-quadratic-cost">1. The regulation problem and a quadratic cost</h2>
+<p>We want to drive <span class="math inline">x=[e_y,\,e_\psi]^\top\to 0</span> with limited steering effort. Encode
+this as an infinite-horizon quadratic cost:</p>
+<div class="math display"> J=\sum_{k=0}^{\infty}\big(x_k^\top Q\,x_k + \delta_k^\top R\,\delta_k\big),
+   \qquad Q=Q^\top\succeq 0,\quad R=R^\top\succ 0. </div>
+<p><span class="math inline">Q</span> prices tracking error (how quickly to return to the lane) and <span class="math inline">R</span> prices
+control (how hard to steer). The quadratic form is not arbitrary: for a linear
+plant it makes the problem convex and yields a <em>linear</em> optimal feedback with a
+closed-form solution [1,2]. Larger <span class="math inline">R</span> relative to <span class="math inline">Q</span> gives gentler steering;
+larger <span class="math inline">Q</span> gives tighter tracking. Section 4 makes that tradeoff quantitative.</p>
+</div>
+
+<div class="md">
+<h2 id="2-deriving-lqr-by-dynamic-programming">2. Deriving LQR by dynamic programming</h2>
+<p>Take the finite-horizon version with terminal weight <span class="math inline">P_N=Q_f</span> and apply the
+principle of optimality. Guess that the optimal cost-to-go from state <span class="math inline">x</span> at step
+<span class="math inline">k</span> is quadratic, <span class="math inline">V_k(x)=x^\top P_k x</span>. The Bellman equation is</p>
+<div class="math display"> V_k(x)=\min_{\delta}\Big[\,x^\top Q x + \delta^\top R\,\delta + V_{k+1}(Ax+B\delta)\,\Big]. </div>
+<p>Substituting <span class="math inline">V_{k+1}(x&#x27;)=x&#x27;^\top P_{k+1}x&#x27;</span>, the bracket is quadratic and convex in
+<span class="math inline">\delta</span> (its Hessian <span class="math inline">R+B^\top P_{k+1}B\succ 0</span>); setting the gradient to zero
+gives a <strong>linear</strong> optimal control <span class="math inline">\delta_k=-K_k x_k</span> with</p>
+<div class="math display"> K_k=(R+B^\top P_{k+1}B)^{-1}B^\top P_{k+1}A. </div>
+<p>Back-substituting produces the <strong>backward Riccati recursion</strong></p>
+<div class="math display"> P_k = Q + A^\top P_{k+1}A - A^\top P_{k+1}B\,(R+B^\top P_{k+1}B)^{-1}B^\top P_{k+1}A. </div>
+<p>As the horizon <span class="math inline">N\to\infty</span> the sequence <span class="math inline">P_k</span> converges (under the conditions in
+section 3) to a constant <span class="math inline">P</span>, the control becomes the stationary feedback
+<span class="math inline">\delta_k=-Kx_k</span>, and <span class="math inline">P</span> solves the algebraic equation of section 3. Full
+derivations are in [2,3]. Let us watch that convergence numerically.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+L, Ts, V, DMAX = 2.7, 0.05, 15.0, 0.6
+
+def linear_model(v=V):
+    return (np.array([[1., v*Ts],[0., 1.]]),
+            np.array([[0.],[v*Ts/L]]),
+            np.array([[0.],[-v*Ts]]))
+
+A, B, E = linear_model()
+Q = np.diag([1.0, 5.0]); R = np.array([[8.0]])
+
+# backward Riccati recursion from a terminal cost P_N = Q
+P = Q.copy(); gains = []
+for _ in range(120):
+    K = np.linalg.solve(R + B.T@P@B, B.T@P@A)
+    gains.append(K.ravel().copy())
+    P = Q + A.T@P@A - A.T@P@B@K
+gains = np.array(gains)
+
+plt.figure(figsize=(7, 3))
+plt.plot(gains[:,0], label=&quot;$K_1$ (on $e_y$)&quot;)
+plt.plot(gains[:,1], label=&quot;$K_2$ (on $e_\\psi$)&quot;)
+plt.xlabel(&quot;backward recursion step&quot;); plt.ylabel(&quot;gain&quot;)
+plt.title(&quot;The Riccati recursion converges to the stationary LQR gain&quot;)
+plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
+print(&quot;stationary gain K =&quot;, gains[-1])</code></pre>
+<figure class="output-figure"><img src="img/02-1.png" alt="Figure: The Riccati recursion converges to the stationary LQR gain" width="759" height="318" loading="lazy"></figure>
+<pre class="output">stationary gain K = [0.28335712 1.50012967]</pre>
+</div>
+
+<div class="md">
+<h2 id="3-the-discrete-algebraic-riccati-equation-dare">3. The discrete algebraic Riccati equation (DARE)</h2>
+<p>The stationary <span class="math inline">P</span> is the symmetric positive-semidefinite solution of</p>
+<div class="math display"> \boxed{\;P = Q + A^\top P A - A^\top P B\,(R+B^\top P B)^{-1}B^\top P A\;}
+   \qquad K=(R+B^\top P B)^{-1}B^\top P A. </div>
+<p><strong>When does a good solution exist?</strong> If <span class="math inline">(A,B)</span> is <em>stabilizable</em> and
+<span class="math inline">(A,Q^{1/2})</span> is <em>detectable</em>, the DARE has a unique symmetric PSD solution <span class="math inline">P</span> for
+which the closed loop <span class="math inline">A-BK</span> is <strong>Schur stable</strong> - all eigenvalues strictly inside
+the unit circle [2,5]. Our <span class="math inline">(A,B)</span> is controllable (notebook 01) and
+<span class="math inline">Q=\mathrm{diag}(1,5)\succ 0</span>, so <span class="math inline">(A,Q^{1/2})</span> is trivially detectable; both
+conditions hold.</p>
+<p><strong>How real solvers do it.</strong> Production code uses a numerically robust Schur /
+generalized-eigenvalue method on the associated Hamiltonian pencil [8] (e.g.
+<code>scipy.linalg.solve_discrete_are</code>). To keep the course dependency-free we iterate
+the recursion to its fixed point and <em>verify</em> the result by checking the DARE
+residual.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def dlqr(A, B, Q, R, iters=1000, tol=1e-14):
+    P = Q.copy()
+    for _ in range(iters):
+        Pn = Q + A.T@P@A - A.T@P@B@np.linalg.solve(R + B.T@P@B, B.T@P@A)
+        if np.max(np.abs(Pn - P)) &lt; tol:
+            P = Pn; break
+        P = Pn
+    K = np.linalg.solve(R + B.T@P@B, B.T@P@A)
+    return K, P
+
+K, P = dlqr(A, B, Q, R)
+residual = Q + A.T@P@A - A.T@P@B@np.linalg.solve(R + B.T@P@B, B.T@P@A) - P
+print(&quot;K =&quot;, K.ravel())
+print(&quot;DARE residual (max abs entry) = %.2e   &lt;- should be ~ machine zero&quot; % np.max(np.abs(residual)))</code></pre>
+<pre class="output">K = [0.28335712 1.50012967]
+DARE residual (max abs entry) = 7.11e-15   &lt;- should be ~ machine zero</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Closed-loop stability: eigenvalues of (A - B K) must lie inside the unit circle
+ev = np.linalg.eigvals(A - B@K)
+th = np.linspace(0, 2*np.pi, 300)
+plt.figure(figsize=(4.2, 4.2))
+plt.plot(np.cos(th), np.sin(th), &#x27;k&#x27;, lw=.8)
+plt.scatter(ev.real, ev.imag, s=60, color=&quot;#2e7d32&quot;, zorder=3)
+plt.axhline(0, color=&quot;.7&quot;, lw=.5); plt.axvline(0, color=&quot;.7&quot;, lw=.5)
+plt.gca().set_aspect(&quot;equal&quot;)
+plt.title(&quot;Closed-loop poles (inside the unit circle)&quot;)
+plt.xlabel(&quot;Re&quot;); plt.ylabel(&quot;Im&quot;); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
+print(&quot;eigenvalues:&quot;, np.round(ev, 4), &quot; spectral radius = %.3f&quot; % np.max(np.abs(ev)))</code></pre>
+<figure class="output-figure"><img src="img/02-2.png" alt="Figure: Closed-loop poles (inside the unit circle)" width="456" height="443" loading="lazy"></figure>
+<pre class="output">eigenvalues: [0.7916+0.125j 0.7916-0.125j]  spectral radius = 0.801</pre>
+</div>
+
+<div class="md">
+<h2 id="4-choosing-q-and-r">4. Choosing <span class="math inline">Q</span> and <span class="math inline">R</span></h2>
+<p>A practical starting point is <strong>Bryson's rule</strong> [4]: make each term of the cost
+order-one by scaling with the largest acceptable value of each variable,</p>
+<div class="math display"> Q_{ii}=\frac{1}{x_{i,\max}^2},\qquad R_{jj}=\frac{1}{\delta_{\max}^2}, </div>
+<p>then tune by hand. Because only the <em>ratio</em> <span class="math inline">Q/R</span> matters, sweeping <span class="math inline">R</span> traces a
+frontier between tracking accuracy and control effort - the fundamental LQR
+tradeoff. Each point below is a fully re-solved controller simulated on the same
+recovery manoeuvre.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def sim_recovery(K, kappa=0.0, x0=(0.5, 0.0), n=200, ff=False):
+    x = np.array(x0, float); ey, du = [], []
+    for _ in range(n):
+        d = (np.arctan(L*kappa) if ff else 0.0) - float((K@x).ravel()[0])
+        d = np.clip(d, -DMAX, DMAX); ey.append(x[0]); du.append(d)
+        x = np.array([x[0] + V*np.sin(x[1])*Ts, x[1] + (V/L*np.tan(d) - V*kappa)*Ts])
+    return np.sqrt(np.mean(np.square(ey))), np.sqrt(np.mean(np.square(du)))
+
+Rs = np.geomspace(0.5, 200, 25)
+pts = np.array([sim_recovery(dlqr(A, B, Q, np.array([[r]]))[0]) for r in Rs])
+star = sim_recovery(dlqr(A, B, Q, np.array([[8.0]]))[0])
+
+plt.figure(figsize=(6.2, 3.6))
+plt.plot(pts[:,1], pts[:,0], &#x27;-o&#x27;, ms=3, color=&quot;#0e7c8b&quot;)
+plt.scatter(star[1], star[0], s=70, color=&quot;#d1495b&quot;, zorder=3, label=&quot;R = 8 (course default)&quot;)
+plt.xlabel(&quot;control effort  RMS($\\delta$) [rad]&quot;)
+plt.ylabel(&quot;tracking  RMSE($e_y$) [m]&quot;)
+plt.title(&quot;The LQR tradeoff: sweeping R traces a cost frontier&quot;)
+plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
+print(&quot;small R (aggressive): RMSE %.3f, effort %.3f&quot; % tuple(pts[0]))
+print(&quot;large R (gentle)    : RMSE %.3f, effort %.3f&quot; % tuple(pts[-1]))</code></pre>
+<figure class="output-figure"><img src="img/02-3.png" alt="Figure: The LQR tradeoff: sweeping R traces a cost frontier" width="671" height="384" loading="lazy"></figure>
+<pre class="output">small R (aggressive): RMSE 0.066, effort 0.031
+large R (gentle)    : RMSE 0.111, effort 0.004</pre>
+</div>
+
+<div class="md">
+<h2 id="5-feed-forward-a-two-degree-of-freedom-controller">5. Feed-forward: a two-degree-of-freedom controller</h2>
+<p>Pure feedback leaves a <strong>steady-state error on a curve</strong>, because holding a bend
+needs a nonzero steering angle that error-driven feedback only supplies once an
+error already exists. For a constant curvature <span class="math inline">\kappa</span> the linear closed loop
+settles at</p>
+<div class="math display"> x_{ss}=\big(I-(A-BK)\big)^{-1}E\,\kappa \;\neq\; 0. </div>
+<p>We cancel it with a feed-forward term from the road geometry. Setting the
+curvature contribution of <span class="math inline">\dot e_\psi</span> to zero,</p>
+<div class="math display"> \frac{v}{L}\tan\delta_{ff}=v\,\kappa \;\Longrightarrow\; \delta_{ff}=\arctan(L\kappa), </div>
+<p>and the command becomes <span class="math inline">\delta=\delta_{ff}-Kx</span>. This is a <strong>two-degree-of-freedom</strong>
+design: feedback shapes the transient and rejects disturbances, feed-forward
+handles the known geometry. Because <span class="math inline">\delta_{ff}</span> comes from the map, not the
+camera, it stays valid in the full system even when perception is untrusted and
+authority shifts to the driver (notebook 07).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">kappa = 0.03
+K, P = dlqr(A, B, Q, R)
+x_ss = np.linalg.solve(np.eye(2) - (A - B@K), (E*kappa).ravel())
+print(&quot;feedback only: predicted steady-state e_y = %.3f m&quot; % x_ss[0])
+
+def run(ff):
+    x = np.array([0.0, 0.0]); H = [x]
+    for _ in range(300):
+        d = (np.arctan(L*kappa) if ff else 0.0) - float((K@x).ravel()[0])
+        d = np.clip(d, -DMAX, DMAX)
+        x = np.array([x[0] + V*np.sin(x[1])*Ts, x[1] + (V/L*np.tan(d) - V*kappa)*Ts]); H.append(x)
+    return np.array(H)
+
+t = np.arange(301)*Ts
+plt.figure(figsize=(7, 3))
+plt.plot(t, run(False)[:,0], &#x27;--&#x27;, label=&quot;feedback only&quot;)
+plt.plot(t, run(True)[:,0], label=&quot;feedback + feed-forward&quot;)
+plt.axhline(0, color=&#x27;k&#x27;, lw=.5)
+plt.axhline(x_ss[0], color=&#x27;.6&#x27;, ls=&#x27;:&#x27;, lw=1, label=&quot;predicted offset&quot;)
+plt.xlabel(&quot;t [s]&quot;); plt.ylabel(&quot;$e_y$ [m]&quot;)
+plt.title(&quot;Curvature feed-forward removes the steady-state error on a curve&quot;)
+plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/02-4.png" alt="Figure: Curvature feed-forward removes the steady-state error on a curve" width="759" height="318" loading="lazy"></figure>
+<pre class="output">feedback only: predicted steady-state e_y = -0.286 m</pre>
+</div>
+
+<div class="md">
+<h2 id="6-gain-scheduling-a-linear-parameter-varying-controller">6. Gain scheduling: a linear-parameter-varying controller</h2>
+<p><span class="math inline">A</span> and <span class="math inline">B</span> depend on the speed <span class="math inline">v</span>, so a single gain is optimal only at one speed.
+Since the integrity monitor will later <em>slow the car down</em> under low trust
+(notebook 07), we recompute <span class="math inline">K(v)</span> per speed - a <strong>gain-scheduled</strong> or
+linear-parameter-varying (LPV) controller [7], with <span class="math inline">v</span> as the scheduling
+parameter. The scheduled design keeps the closed loop comfortably stable across
+the whole operating range.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">vs = np.linspace(5, 25, 21)
+Kv, rho = [], []
+for v in vs:
+    Av, Bv, _ = linear_model(v)
+    Kg = dlqr(Av, Bv, Q, R)[0]
+    Kv.append(Kg.ravel()); rho.append(np.max(np.abs(np.linalg.eigvals(Av - Bv@Kg))))
+Kv = np.array(Kv)
+
+fig, ax = plt.subplots(1, 2, figsize=(9, 3.2))
+ax[0].plot(vs, Kv[:,0], label=&quot;$K_1$&quot;); ax[0].plot(vs, Kv[:,1], label=&quot;$K_2$&quot;)
+ax[0].set(xlabel=&quot;speed v [m/s]&quot;, ylabel=&quot;scheduled gain&quot;, title=&quot;Gain $K(v)$&quot;)
+ax[0].legend(); ax[0].grid(alpha=.3)
+ax[1].plot(vs, rho, color=&quot;#2e7d32&quot;); ax[1].axhline(1, ls=&quot;--&quot;, color=&quot;r&quot;, label=&quot;stability limit&quot;)
+ax[1].set(xlabel=&quot;speed v [m/s]&quot;, ylabel=&quot;spectral radius of $A-BK$&quot;,
+          title=&quot;Closed loop stays stable across speed&quot;, ylim=(0, 1.05))
+ax[1].legend(); ax[1].grid(alpha=.3); plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/02-5.png" alt="Figure 5 produced by the code above" width="979" height="340" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="7-two-classical-facts-worth-knowing">7. Two classical facts worth knowing</h2>
+<p><strong>Robustness.</strong> Full-state LQR is not only optimal, it is robust: the
+continuous-time regulator has a guaranteed gain margin of <span class="math inline">(\tfrac12,\infty)</span> and a
+phase margin of at least <span class="math inline">60^\circ</span> at each input, from the return-difference
+inequality [2,6]. (The discrete-time picture is analogous; the clean margins are
+the continuous-time result.) This is part of why LQR is such a strong baseline.</p>
+<p><strong>We do not actually measure the state.</strong> LQR assumes access to <span class="math inline">x</span>. In the full
+system the controller sees only the noisy perception estimate, so we pair LQR with
+a state estimator - the Kalman filter of notebook 05. The <strong>separation principle</strong>
+states that the optimal LQG controller is exactly the LQR gain applied to the
+Kalman estimate, and the two may be designed independently [2].</p>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Re-derive <span class="math inline">K_k</span> by setting the gradient of the Bellman right-hand side to zero.
+Where is convexity (hence a unique minimiser) used?</li>
+<li>If <code>scipy</code> is available, replace the Riccati iteration with
+<code>scipy.linalg.solve_discrete_are</code> and confirm the gains match to machine precision.</li>
+<li>Apply the gain designed at <span class="math inline">v=15</span> at <span class="math inline">v=6</span> (no rescheduling). Does the loop stay
+stable? Compare its poles to the scheduled design.</li>
+<li>Use Bryson's rule with <span class="math inline">e_{y,\max}=0.5</span> m, <span class="math inline">e_{\psi,\max}=0.1</span> rad,
+<span class="math inline">\delta_{\max}=0.2</span> rad to choose <span class="math inline">Q,R</span>; compare the resulting gain to the default.</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>R. E. Kalman. <em>Contributions to the theory of optimal control.</em> Boletin de la Sociedad Matematica Mexicana, 5:102-119, 1960.</li>
+<li>B. D. O. Anderson, J. B. Moore. <em>Optimal Control: Linear Quadratic Methods.</em> Prentice Hall, 1990.</li>
+<li>D. P. Bertsekas. <em>Dynamic Programming and Optimal Control, Vol. I.</em> Athena Scientific, 2017.</li>
+<li>A. E. Bryson, Y.-C. Ho. <em>Applied Optimal Control.</em> Hemisphere, 1975. (Bryson's rule for weight selection.)</li>
+<li>P. Lancaster, L. Rodman. <em>Algebraic Riccati Equations.</em> Oxford University Press, 1995.</li>
+<li>M. G. Safonov, M. Athans. <em>Gain and phase margin for multiloop LQG regulators.</em> IEEE Transactions on Automatic Control, 22(2):173-179, 1977. <a href="https://doi.org/10.1109/TAC.1977.1101251">doi:10.1109/TAC.1977.1101251</a></li>
+<li>W. J. Rugh, J. S. Shamma. <em>Research on gain scheduling.</em> Automatica, 36(10):1401-1425, 2000. <a href="https://doi.org/10.1016/S0005-1098(00)00058-3">doi:10.1016/S0005-1098(00)00058-3</a></li>
+<li>A. J. Laub. <em>A Schur method for solving algebraic Riccati equations.</em> IEEE Transactions on Automatic Control, 24(6):913-921, 1979. <a href="https://doi.org/10.1109/TAC.1979.1102178">doi:10.1109/TAC.1979.1102178</a></li>
+<li>R. Rajamani. <em>Vehicle Dynamics and Control,</em> 2nd ed. Springer, 2012. (Lane-keeping error dynamics.)</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="01-vehicle-model.html"><span class="lbl">Previous · 01</span><span class="t">The vehicle model</span></a>
+  <a class="next" rel="next" href="03-perception-and-rendering.html"><span class="lbl">Next · 03</span><span class="t">Perception and rendering</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 02 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

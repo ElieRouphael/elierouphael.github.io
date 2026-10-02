@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>02 · Anatomy of a Time Series — Time-series course</title>
+<meta name="description" content="Trend, seasonality and remainder, additive vs. multiplicative, classical decomposition from scratch, STL, the periodogram and component strength.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 02 of 11</span>
+  <h1>Anatomy of a Time Series</h1>
+  <div class="intro prose">
+<p>Chapter 01 turned up patterns by eye: a daily rhythm, a winter season of severe smog, differences between years. This chapter makes that precise. We'll write a series as the combination of a few <strong>components</strong>, extract them, and measure how much each one matters.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>describe a series in terms of <strong>trend</strong>, <strong>seasonality</strong> and <strong>remainder</strong></li>
+<li>tell <strong>additive</strong> from <strong>multiplicative</strong> structure, and use a log to turn one into the other</li>
+<li>implement a classical decomposition <strong>from scratch</strong>, and check it against statsmodels</li>
+<li>use <strong>STL</strong>, which allows the seasonal pattern to evolve and resists outliers</li>
+<li>quantify <strong>trend strength</strong> and <strong>seasonal strength</strong> so series can be compared on a single scale</li>
+<li>find an unknown seasonal period with the <strong>periodogram</strong>, and avoid its main trap</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/02_anatomy_of_a_time_series.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-three-components">1. Three components</a></li>
+    <li><a href="#2-build-a-series-so-we-know-the-answer">2. Build a series, so we know the answer</a></li>
+    <li><a href="#3-classical-decomposition-from-scratch">3. Classical decomposition, from scratch</a></li>
+    <li><a href="#4-when-the-model-type-is-wrong">4. When the model type is wrong</a></li>
+    <li><a href="#5-limits-of-classical-decomposition">5. Limits of classical decomposition</a></li>
+    <li><a href="#6-stl-seasonal-decomposition-that-can-evolve">6. STL: seasonal decomposition that can evolve</a></li>
+    <li><a href="#7-finding-the-period-the-periodogram">7. Finding the period: the periodogram</a></li>
+    <li><a href="#8-how-strong-is-each-component">8. How strong is each component?</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from statsmodels.tsa.seasonal import STL, seasonal_decompose
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 2)</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-three-components">1. Three components</h2>
+<p>Most series can usefully be described as a combination of:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>What it captures</th>
+<th>Example in Beijing air quality</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Trend</strong> <span class="math inline">T_t</span></td>
+<td>slow, long-run movement in the level</td>
+<td>gradual improvement across the 2010s</td>
+</tr>
+<tr>
+<td><strong>Seasonality</strong> <span class="math inline">S_t</span></td>
+<td>a pattern that repeats with a <strong>fixed, known period</strong></td>
+<td>the daily cycle; the heating season</td>
+</tr>
+<tr>
+<td><strong>Remainder</strong> <span class="math inline">R_t</span></td>
+<td>everything else: noise, one-off events, anything the other two miss</td>
+<td>a week-long smog episode</td>
+</tr>
+</tbody>
+</table>
+<p>Periodic-looking behaviour whose length <em>isn't</em> fixed, like business cycles or the roughly 11-year sunspot cycle, is called a <strong>cycle</strong>, not seasonality. Decomposition methods need the period in advance, so cycles usually end up split between the trend and the remainder.</p>
+<p>The components can combine in two basic ways:</p>
+<div class="math display">\text{additive: } y_t = T_t + S_t + R_t \qquad\qquad \text{multiplicative: } y_t = T_t \times S_t \times R_t</div>
+<p>In an additive series the seasonal swings stay the <strong>same size</strong> as the level changes. In a multiplicative series they <strong>grow and shrink with the level</strong>: a 10% seasonal bump is small when the level is 50 and large when it's 500.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-build-a-series-so-we-know-the-answer">2. Build a series, so we know the answer</h2>
+<p>The best way to understand a decomposition method is to feed it data where we <em>already know</em> the true components. We'll construct ten years of monthly data with a linear trend, a yearly seasonal pattern and random noise.</p>
+<p>One detail matters more than it looks. A seasonal pattern with period <span class="math inline">m</span> is <span class="math inline">\sin(2\pi t / m)</span>. Writing plain <code>np.sin(t)</code> gives a period of <span class="math inline">2\pi \approx 6.28</span> steps. That isn't a whole number of observations, so no method that expects an integer period can lock onto it.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">rng = np.random.default_rng(7)
+months = pd.date_range(&quot;2000-01&quot;, periods=120, freq=&quot;MS&quot;)
+t = np.arange(len(months))
+
+true_trend = 50 + 0.5 * t
+true_season = np.sin(2 * np.pi * t / 12)        # exactly one cycle every 12 months
+noise = rng.normal(0, 1, len(t))
+
+additive = pd.Series(true_trend + 8 * true_season + 2 * noise, index=months)
+multiplicative = pd.Series(true_trend * (1 + 0.15 * true_season) * (1 + 0.03 * noise), index=months)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharey=True)
+additive.plot(ax=axes[0], title=&quot;Additive: seasonal swings stay the same size&quot;)
+multiplicative.plot(ax=axes[1], title=&quot;Multiplicative: swings grow with the level&quot;)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/02-1.png" alt="Figure 1 produced by the code above" width="1290" height="390" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="the-log-trick">The log trick</h3>
+<p>Taking logs turns products into sums, <span class="math inline">\log(T \times S \times R) = \log T + \log S + \log R</span>, so <strong>a multiplicative series becomes additive on the log scale</strong>. We can check this numerically: the peak-to-trough range within each year should grow on the original scale and stay roughly constant on the log scale.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def yearly_range(s):
+    return s.groupby(s.index.year).agg(lambda x: x.max() - x.min())
+
+pd.DataFrame({
+    &quot;original scale&quot;: yearly_range(multiplicative),
+    &quot;log scale&quot;: yearly_range(np.log(multiplicative)),
+}).T</code></pre>
+<pre class="output">                 2000   2001   2002   2003   2004   2005   2006   2007   2008  \
+original scale  12.49  18.18  17.06  20.89  18.95  21.76  26.48  27.25  26.46   
+log scale        0.24   0.31   0.27   0.30   0.25   0.27   0.30   0.28   0.27   
+
+                 2009  
+original scale  33.37  
+log scale        0.32</pre>
+</div>
+
+<div class="md">
+<p>On the original scale the yearly swing nearly triples. On the log scale it stays roughly flat. This is why logs are one of the most common first steps in time-series work. We'll use them for PM2.5 too: chapter 01 showed its severe episodes stretch the upper tail far beyond the typical level.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-classical-decomposition-from-scratch">3. Classical decomposition, from scratch</h2>
+<p>Classical decomposition is the oldest method, and it's simple enough to write in a dozen lines. For an additive series with period <span class="math inline">m</span>:</p>
+<ol>
+<li><strong>Trend.</strong> Take a centred moving average spanning exactly one period, so every season is weighted equally and the seasonality averages out.</li>
+<li><strong>Detrend.</strong> Subtract the trend: <span class="math inline">y_t - \hat T_t</span>.</li>
+<li><strong>Seasonal.</strong> For each position in the cycle (every January, every February, …), average the detrended values. Shift the averages so they sum to zero over one cycle, so they only redistribute the level, never change it.</li>
+<li><strong>Remainder.</strong> Whatever is left: <span class="math inline">\hat R_t = y_t - \hat T_t - \hat S_t</span>.</li>
+</ol>
+<p>Step 1 has a wrinkle when <span class="math inline">m</span> is even. A 12-month window has no middle month, so a plain 12-point average sits between two time points. The standard fix is a <strong>2×12 moving average</strong>: 13 points, with half weight on the two ends. It's centred exactly and still gives each calendar month a total weight of 1/12.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def centred_moving_average(y, period):
+    &quot;&quot;&quot;Moving average spanning exactly one period, centred on each point.&quot;&quot;&quot;
+    if period % 2:
+        weights = np.ones(period) / period
+    else:
+        weights = np.r_[0.5, np.ones(period - 1), 0.5] / period
+    return y.rolling(len(weights), center=True).apply(lambda w: w @ weights, raw=True)
+
+
+def classical_decompose(y, period):
+    &quot;&quot;&quot;Additive classical decomposition. Returns observed, trend, seasonal, remainder.&quot;&quot;&quot;
+    trend = centred_moving_average(y, period)
+    detrended = y - trend
+
+    position = np.arange(len(y)) % period
+    seasonal_means = detrended.groupby(position).mean()
+    seasonal_means -= seasonal_means.mean()            # effects sum to zero over a cycle
+    seasonal = pd.Series(seasonal_means.to_numpy()[position], index=y.index)
+
+    return pd.DataFrame({
+        &quot;observed&quot;: y,
+        &quot;trend&quot;: trend,
+        &quot;seasonal&quot;: seasonal,
+        &quot;remainder&quot;: y - trend - seasonal,
+    })
+
+
+ours = classical_decompose(additive, period=12)
+ours.head(8)</code></pre>
+<pre class="output">            observed  trend  seasonal  remainder
+2000-01-01     50.00    NaN     -0.27        NaN
+2000-02-01     55.10    NaN      4.32        NaN
+2000-03-01     57.38    NaN      6.77        NaN
+2000-04-01     57.72    NaN      7.48        NaN
+2000-05-01     58.02    NaN      6.70        NaN
+2000-06-01     54.52    NaN      4.14        NaN
+2000-07-01     53.12  52.81     -0.60       0.91
+2000-08-01     52.18  53.22     -2.39       1.35</pre>
+</div>
+
+<div class="md">
+<p>The first and last six trend values are <code>NaN</code>: a centred window spanning a year needs six months on each side. Remember this. It means classical decomposition says nothing about the trend at <strong>the most recent end of the series</strong>, which is exactly where a forecaster cares most.</p>
+<p>Now plot the estimates against the truth we built in.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def plot_components(parts, truth=None, title=None):
+    fig, axes = plt.subplots(len(parts.columns), 1, figsize=(12, 7), sharex=True)
+    for ax, name in zip(axes, parts.columns):
+        parts[name].plot(ax=ax, label=&quot;estimated&quot;)
+        if truth is not None and name in truth:
+            pd.Series(truth[name], index=parts.index).plot(ax=ax, ls=&quot;--&quot;, color=&quot;0.4&quot;, label=&quot;true&quot;)
+            ax.legend(loc=&quot;upper left&quot;)
+        ax.set_ylabel(name)
+    if title:
+        axes[0].set_title(title)
+    fig.tight_layout()
+
+plot_components(ours,
+                truth={&quot;trend&quot;: true_trend, &quot;seasonal&quot;: 8 * true_season, &quot;remainder&quot;: 2 * noise},
+                title=&quot;Classical decomposition of the additive series&quot;)</code></pre>
+<figure class="output-figure"><img src="img/02-2.png" alt="Figure 2 produced by the code above" width="1197" height="690" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The trend and seasonal estimates track the truth closely. The estimated remainder is close to the noise we added, apart from the missing values at the ends.</p>
+<h3 id="check-against-the-library">Check against the library</h3>
+<p>It's good practice to check a hand-written method against a trusted implementation. statsmodels' <code>seasonal_decompose</code> is classical decomposition too, so the two should agree to floating-point precision.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">library = seasonal_decompose(additive, model=&quot;additive&quot;, period=12)
+
+print(&quot;trend matches:   &quot;, np.allclose(ours[&quot;trend&quot;], library.trend, equal_nan=True))
+print(&quot;seasonal matches:&quot;, np.allclose(ours[&quot;seasonal&quot;], library.seasonal))</code></pre>
+<pre class="output">trend matches:    True
+seasonal matches: True</pre>
+</div>
+
+<div class="md">
+<p>With the mechanics understood, we'll use the library version from here on.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-when-the-model-type-is-wrong">4. When the model type is wrong</h2>
+<p>What happens if we decompose the <strong>multiplicative</strong> series with an <strong>additive</strong> model? The seasonal step averages each month's swing across all ten years, so it finds a single mid-sized pattern. Early years have smaller swings than that and late years have larger ones, and the difference leaks into the remainder.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">wrong = seasonal_decompose(multiplicative, model=&quot;additive&quot;, period=12)
+right = seasonal_decompose(multiplicative, model=&quot;multiplicative&quot;, period=12)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 3.5), sharex=True)
+wrong.resid.plot(ax=axes[0], title=&quot;Additive model on multiplicative data: remainder&quot;)
+right.resid.plot(ax=axes[1], title=&quot;Multiplicative model: remainder&quot;)
+axes[1].axhline(1, color=&quot;0.4&quot;, lw=1)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/02-3.png" alt="Figure 3 produced by the code above" width="1290" height="340" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The left remainder still carries a <strong>seasonal wave that gets larger towards the end</strong>, where the true swings are biggest. That's a sign structure was left behind. The right one looks like patternless noise around 1, because in a multiplicative decomposition the remainder is a <em>ratio</em>. The seasonal component becomes ratios too: factors around 1, with each month's factor saying &quot;this month runs X% above or below trend&quot;.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">right.seasonal.iloc[:12].round(3)</code></pre>
+<pre class="output">2000-01-01    0.99
+2000-02-01    1.08
+2000-03-01    1.13
+2000-04-01    1.14
+2000-05-01    1.13
+2000-06-01    1.08
+2000-07-01    0.99
+2000-08-01    0.95
+2000-09-01    0.86
+2000-10-01    0.84
+2000-11-01    0.88
+2000-12-01    0.92
+Freq: MS, Name: seasonal, dtype: float64</pre>
+</div>
+
+<div class="md">
+<blockquote>
+<p><strong>Diagnostic habit:</strong> after any decomposition, look at the remainder. If you can still see seasonality, a trend, or swings that change size, the decomposition hasn't finished the job.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-limits-of-classical-decomposition">5. Limits of classical decomposition</h2>
+<p>Classical decomposition is transparent, but it makes strong assumptions:</p>
+<ol>
+<li><strong>The seasonal pattern never changes.</strong> Every January gets the same effect, from the first year to the last.</li>
+<li><strong>No trend estimate at the ends.</strong> That's <code>period // 2</code> points missing at each end.</li>
+<li><strong>Outliers spread.</strong> One wild value distorts the moving-average trend over a whole period, and the seasonal average for its month in every year.</li>
+<li><strong>One seasonal period only.</strong> Hourly data with daily <em>and</em> yearly cycles doesn't fit.</li>
+</ol>
+<p>A real dataset shows the first problem clearly. The Mauna Loa CO₂ record is one of the most famous series in science: continuous air samples taken on a Hawaiian volcano since 1958.</p>
+<blockquote>
+<p>Keeling, C.D. and T.P. Whorf (2004). <em>Atmospheric CO₂ concentrations derived from flask air samples at sites in the SIO network.</em> In <em>Trends: A Compendium of Data on Global Change</em>, CDIAC, Oak Ridge National Laboratory. Public domain; shipped with statsmodels as <code>sm.datasets.co2</code>.</p>
+</blockquote>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_weekly = sm.datasets.co2.load_pandas().data[&quot;co2&quot;]
+co2 = co2_weekly.resample(&quot;MS&quot;).mean().interpolate()   # monthly, filling a handful of gaps
+
+co2.plot(title=&quot;Atmospheric CO₂ at Mauna Loa&quot;, ylabel=&quot;ppm&quot;);</code></pre>
+<figure class="output-figure"><img src="img/02-4.png" alt="Figure 4 produced by the code above" width="1006" height="372" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Rising trend, regular yearly wiggle. It's the textbook additive series. The wiggle comes from the Northern Hemisphere's plants drawing CO₂ down each summer and releasing it each winter. But is the wiggle really constant?</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-stl-seasonal-decomposition-that-can-evolve">6. STL: seasonal decomposition that can evolve</h2>
+<p><strong>STL</strong> (<em>Seasonal-Trend decomposition using LOESS</em>; Cleveland et al., 1990) replaces the moving averages with <strong>local regression</strong> (LOESS) smoothers, fitted over and over. Compared with the classical method:</p>
+<ul>
+<li>the seasonal pattern may <strong>change slowly over time</strong></li>
+<li>it gives estimates <strong>right up to the ends</strong> of the series</li>
+<li>with <code>robust=True</code> it <strong>down-weights outliers</strong>, so they stay in the remainder instead of spreading</li>
+<li>the period can be any integer ≥ 2</li>
+</ul>
+<p>Its main settings are the smoother window lengths: <code>seasonal</code> controls how quickly the seasonal pattern may change, and <code>trend</code> controls how smooth the trend is. The defaults are a reasonable start.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">co2_stl = STL(co2, period=12, robust=True).fit()
+co2_stl.plot();</code></pre>
+<figure class="output-figure"><img src="img/02-5.png" alt="Figure 5 produced by the code above" width="1190" height="390" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">yearly_swing = yearly_range(co2_stl.seasonal)
+ax = yearly_swing.iloc[1:-1].plot(marker=&quot;.&quot;, title=&quot;Peak-to-trough seasonal swing in CO₂, per year&quot;)
+ax.set_ylabel(&quot;ppm&quot;);</code></pre>
+<figure class="output-figure"><img src="img/02-6.png" alt="Figure 6 produced by the code above" width="1010" height="372" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The seasonal swing is <strong>not constant</strong>. It widens by more than 1 ppm between the early 1960s and the early 1990s, with slower wobbles along the way. Classical decomposition would have forced a single average swing onto every year. STL lets the pattern drift, and the drift is itself a scientific finding.</p>
+<h3 id="robustness-to-outliers">Robustness to outliers</h3>
+<p>Now we corrupt one month with a large spike, as a faulty sensor or data-entry error would, and compare how each method copes.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">corrupted = co2.copy()
+corrupted.loc[&quot;1980-06-01&quot;] += 15
+
+classical = seasonal_decompose(corrupted, model=&quot;additive&quot;, period=12)
+robust = STL(corrupted, period=12, robust=True).fit()
+
+window = slice(&quot;1979-01&quot;, &quot;1981-12&quot;)
+fig, axes = plt.subplots(1, 2, figsize=(13, 3.5))
+for ax, part, title in [(axes[0], &quot;trend&quot;, &quot;Trend near the spike&quot;),
+                        (axes[1], &quot;resid&quot;, &quot;Remainder near the spike&quot;)]:
+    getattr(classical, part)[window].plot(ax=ax, label=&quot;classical&quot;)
+    getattr(robust, part)[window].plot(ax=ax, label=&quot;STL (robust)&quot;)
+    ax.set_title(title)
+    ax.legend()
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/02-7.png" alt="Figure 7 produced by the code above" width="1290" height="340" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The classical trend bulges for a whole year around the spike. Its seasonal averages absorb part of the spike as well, so a fake June effect gets added to every year in the record. Robust STL leaves the trend almost untouched and puts the spike into the remainder, where it belongs <strong>and where you can find it</strong>. Large remainder values from a robust decomposition make a simple, effective anomaly detector.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-finding-the-period-the-periodogram">7. Finding the period: the periodogram</h2>
+<p>Every method so far needed the period up front: 12 for monthly data, 24 for hourly. When you don't know it, the <strong>periodogram</strong> can find it. It splits a series' variance by <strong>frequency</strong>: how much of the ups and downs comes from waves that repeat every 2 steps, every 3, …, every <span class="math inline">n</span>. A strong seasonal cycle shows up as a tall peak at its frequency, <span class="math inline">1/\text{period}</span>. This is the Fourier idea again, used in reverse: instead of building a seasonal curve from sines and cosines, we measure which sines and cosines the data contains.</p>
+<p><code>scipy.signal.periodogram</code> does the computation. We'll start with CO₂, taking a first difference to remove the trend, which would otherwise swamp everything else (more on that in a moment).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from scipy.signal import periodogram
+
+def strongest_periods(series, n=4):
+    # periods (in steps) with the most power, plus the whole (period -&gt; power) curve
+    freq, power = periodogram(np.asarray(series, dtype=float) - np.mean(series))
+    freq, power = freq[1:], power[1:]                       # drop frequency 0 (the mean)
+    order = np.argsort(power)[::-1][:n]
+    return pd.Series(power[order], index=np.round(1 / freq[order], 1)), pd.Series(power, index=1 / freq)
+
+co2_top, co2_curve = strongest_periods(co2.diff().dropna())
+
+ax = co2_curve.plot(logx=True, title=&quot;Periodogram of monthly CO₂ changes&quot;)
+ax.set(xlabel=&quot;period (months, log scale)&quot;, ylabel=&quot;power&quot;)
+co2_top.rename(&quot;power&quot;).rename_axis(&quot;period (months)&quot;).to_frame()</code></pre>
+<pre class="output">                  power
+period (months)        
+11.9             452.30
+6.0               61.91
+6.0               55.74
+12.2              43.14</pre>
+<figure class="output-figure"><img src="img/02-8.png" alt="Figure 8 produced by the code above" width="1006" height="395" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The tallest peak is at <strong>12 months</strong>, the annual cycle, found without being told. The next is at <strong>6 months</strong>, a <strong>harmonic</strong>. The annual wave isn't a pure sine (CO₂ falls quickly and recovers slowly, as chapter 08 revisits), and describing a lopsided wave takes a 6-month component as well.</p>
+<h3 id="a-warning-from-hourly-pm2-5">A warning from hourly PM2.5</h3>
+<p>Now the hourly Beijing series. We expect a daily cycle (chapter 01), so the periodogram should peak at 24 hours. Let's compare the raw log series with its first difference.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">hourly_log = np.log(tsutils.load_beijing()[&quot;pm25&quot;].loc[&quot;2013&quot;:&quot;2014&quot;]
+                    .interpolate(method=&quot;time&quot;, limit_direction=&quot;both&quot;))
+
+raw_top, raw_curve = strongest_periods(hourly_log, n=6)
+diff_top, diff_curve = strongest_periods(hourly_log.diff().dropna(), n=6)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 3.5))
+raw_curve.plot(ax=axes[0], logx=True, title=&quot;Raw log PM2.5 (hourly)&quot;)
+diff_curve.plot(ax=axes[1], logx=True, title=&quot;Hour-to-hour changes&quot;)
+for ax in axes:
+    ax.axvline(24, color=&quot;#d1495b&quot;, ls=&quot;--&quot;, lw=1)
+    ax.set(xlabel=&quot;period (hours, log scale)&quot;, ylabel=&quot;power&quot;)
+fig.tight_layout()
+
+pd.DataFrame({&quot;raw series: top periods (h)&quot;: raw_top.index, &quot;differenced: top periods (h)&quot;: diff_top.index})</code></pre>
+<pre class="output">   raw series: top periods (h)  differenced: top periods (h)
+0                        389.3                          24.0
+1                        184.4                          12.0
+2                       2920.0                          23.9
+3                        182.5                           6.0
+4                        269.5                           8.8
+5                         24.0                           4.2</pre>
+<figure class="output-figure"><img src="img/02-9.png" alt="Figure 9 produced by the code above" width="1290" height="340" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>On the <strong>raw</strong> series, the top periods are mostly <strong>long</strong>: waves lasting days to weeks, the rhythm of smog episodes building and clearing. The 24-hour cycle is there, but it's buried among them. A persistent series puts most of its variance at <strong>low frequencies</strong>, a so-called <em>red</em> spectrum, and that can hide a genuine seasonal peak.</p>
+<p><strong>Differencing</strong> acts as a filter that removes slow wandering, and the picture flips: <strong>24 hours</strong> comes out on top, followed by <strong>12 hours</strong>, its harmonic. It's the daily cycle from chapter 01, found from the data alone.</p>
+<p>Two lessons:</p>
+<ul>
+<li><strong>Remove trend and slow persistence before looking for seasonal peaks</strong>, by differencing or by working on a decomposition's remainder.</li>
+<li><strong>Not every peak is a season.</strong> The long &quot;periods&quot; in the raw spectrum are episodes of varying length, <em>cycles</em> in section 1's sense, not a fixed calendar rhythm. Confirm any candidate period with domain knowledge and a plot before building it into a model.</li>
+</ul>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="8-how-strong-is-each-component">8. How strong is each component?</h2>
+<p>Decomposition always <em>produces</em> a trend and a seasonal component, even for pure noise. To know whether they mean anything, we compare their variance with the remainder's. For a decomposition <span class="math inline">y_t = T_t + S_t + R_t</span> (Wang, Smith &amp; Hyndman, 2006):</p>
+<div class="math display">F_T = \max\left(0,\; 1 - \frac{\operatorname{Var}(R_t)}{\operatorname{Var}(T_t + R_t)}\right) \qquad F_S = \max\left(0,\; 1 - \frac{\operatorname{Var}(R_t)}{\operatorname{Var}(S_t + R_t)}\right)</div>
+<p>Both measures run from 0 to 1. A value near 1 means the component dominates the remainder. A value near 0 means the &quot;component&quot; is indistinguishable from noise.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def component_strength(trend, seasonal, remainder):
+    var_r = np.nanvar(remainder)
+    return pd.Series({
+        &quot;trend strength&quot;: max(0.0, 1 - var_r / np.nanvar(trend + remainder)),
+        &quot;seasonal strength&quot;: max(0.0, 1 - var_r / np.nanvar(seasonal + remainder)),
+    })
+
+synthetic_stl = STL(additive, period=12, robust=True).fit()
+component_strength(synthetic_stl.trend, synthetic_stl.seasonal, synthetic_stl.resid)</code></pre>
+<pre class="output">trend strength       0.99
+seasonal strength    0.94
+dtype: float64</pre>
+</div>
+
+<div class="md">
+<h3 id="back-to-beijing">Back to Beijing</h3>
+<p>Now for our running dataset. Six years of data contain only <strong>six annual cycles</strong>. That's too few for a daily-resolution decomposition to separate a stable yearly pattern from individual smog episodes: the seasonal component would simply memorise them. So we decompose <strong>monthly means</strong>. Because chapter 01 found heavy upper tails, we use the <strong>log</strong> scale.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pm = tsutils.load_beijing()[&quot;pm25&quot;].interpolate(method=&quot;time&quot;, limit=3, limit_area=&quot;inside&quot;)
+pm_monthly_log = np.log(pm.resample(&quot;MS&quot;).mean())
+
+pm_stl = STL(pm_monthly_log, period=12, robust=True).fit()
+pm_stl.plot();</code></pre>
+<figure class="output-figure"><img src="img/02-10.png" alt="Figure 10 produced by the code above" width="1190" height="390" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pd.DataFrame({
+    &quot;CO₂ (monthly)&quot;: component_strength(co2_stl.trend, co2_stl.seasonal, co2_stl.resid),
+    &quot;PM2.5 (monthly, log)&quot;: component_strength(pm_stl.trend, pm_stl.seasonal, pm_stl.resid),
+}).T</code></pre>
+<pre class="output">                      trend strength  seasonal strength
+CO₂ (monthly)                   1.00               0.98
+PM2.5 (monthly, log)            0.12               0.47</pre>
+</div>
+
+<div class="md">
+<p>The contrast is striking. CO₂ is almost pure trend and seasonality: once you know the date, you nearly know the value. PM2.5 has a <strong>real but modest</strong> seasonal pattern (higher in the heating months, lower in late summer). Most of its month-to-month variation sits in the remainder, which here means weather-driven episodes that no calendar can predict.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">seasonal_effect = np.exp(pm_stl.seasonal.groupby(pm_stl.seasonal.index.month).mean())
+ax = ((seasonal_effect - 1) * 100).plot(kind=&quot;bar&quot;, rot=0, title=&quot;PM2.5 seasonal effect by month (STL, log scale)&quot;)
+ax.set(xlabel=&quot;month&quot;, ylabel=&quot;% above / below trend&quot;);</code></pre>
+<figure class="output-figure"><img src="img/02-11.png" alt="Figure 11 produced by the code above" width="1009" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Because we decomposed on the log scale, <span class="math inline">e^{S_t}</span> is a <strong>multiplicative factor</strong>. The bar chart reads directly as &quot;this month typically runs X% above or below the trend&quot;.</p>
+<p>This sets expectations for the rest of the course. <strong>A method can only forecast the structure that's actually there.</strong> Seasonal methods will do very well on CO₂. For PM2.5, the value of any model will depend on how well it tracks the <em>recent level</em> and, later, on <em>weather inputs</em>, far more than on the calendar.</p>
+</div>
+
+<div class="md">
+<blockquote>
+<p><strong>Multiple seasonalities.</strong> Hourly PM2.5 has a daily cycle <em>and</em> a yearly one. statsmodels' <code>MSTL</code> extends STL to several periods at once, e.g. <code>MSTL(y, periods=(24, 24 * 365))</code>, but it needs at least two full cycles of the longest period. We'll return to multiple seasonalities in the Prophet chapter, which handles them natively.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-temperature-vs-pollution">Exercise 1: Temperature vs. pollution</h3>
+<p>Resample Beijing's hourly <code>temp</code> column to daily means and decompose it with STL (<code>period=365</code>). Six cycles is fine here, because temperature's yearly pattern is very regular. Compute trend and seasonal strength. How do they compare with PM2.5, and what does that tell you about which of the two series the calendar alone can forecast?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">temp_daily = tsutils.load_beijing()[&quot;temp&quot;].resample(&quot;D&quot;).mean().interpolate()
+temp_stl = STL(temp_daily, period=365, robust=True).fit()
+temp_stl.plot()
+component_strength(temp_stl.trend, temp_stl.seasonal, temp_stl.resid)
+</code></pre>
+<p>Temperature's seasonal strength is close to 1, and its trend strength is near zero because six years show no meaningful warming or cooling. Knowing the day of the year tells you most of what there is to know about temperature, and much less about PM2.5.</p>
+</details>
+<h3 id="exercise-2-the-wrong-period">Exercise 2: The wrong period</h3>
+<p>Decompose the synthetic <code>additive</code> series with <code>seasonal_decompose</code> using <code>period=6</code> and then <code>period=10</code> instead of 12. Plot the remainder each time. How could you spot a wrong period if you <em>didn't</em> know the truth?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">fig, axes = plt.subplots(3, 1, figsize=(12, 7), sharex=True)
+for ax, p in zip(axes, [6, 10, 12]):
+    seasonal_decompose(additive, period=p).resid.plot(ax=ax, title=f&quot;remainder, period={p}&quot;)
+fig.tight_layout()
+</code></pre>
+<p>With the wrong period, the true yearly cycle can't be absorbed by the seasonal component, so it shows up as a clear repeating wave in the remainder, and the remainder's variance is much larger than with the correct period. Checking the remainder, and comparing <code>resid.var()</code> across candidate periods, exposes the mistake. Chapter 06's autocorrelation plots will give a more direct way to find the period.</p>
+</details>
+<h3 id="exercise-3-multiplicative-classical-decomposition-by-hand">Exercise 3: Multiplicative classical decomposition by hand</h3>
+<p>Adapt <code>classical_decompose</code> into <code>classical_decompose_mult</code>: divide instead of subtracting, and normalise the seasonal factors so they <strong>average to 1</strong> over a cycle. Check your result against <code>seasonal_decompose(multiplicative, model=&quot;multiplicative&quot;, period=12)</code>.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def classical_decompose_mult(y, period):
+    trend = centred_moving_average(y, period)
+    ratio = y / trend
+    position = np.arange(len(y)) % period
+    factors = ratio.groupby(position).mean()
+    factors /= factors.mean()                       # factors average to 1
+    seasonal = pd.Series(factors.to_numpy()[position], index=y.index)
+    return pd.DataFrame({&quot;observed&quot;: y, &quot;trend&quot;: trend,
+                         &quot;seasonal&quot;: seasonal, &quot;remainder&quot;: y / (trend * seasonal)})
+
+mine = classical_decompose_mult(multiplicative, 12)
+lib = seasonal_decompose(multiplicative, model=&quot;multiplicative&quot;, period=12)
+print(np.allclose(mine[&quot;seasonal&quot;], lib.seasonal),
+      np.allclose(mine[&quot;trend&quot;], lib.trend, equal_nan=True))
+</code></pre>
+</details>
+<h3 id="exercise-4-build-an-anomaly-detector">Exercise 4: Build an anomaly detector</h3>
+<p>Using robust STL on the <code>corrupted</code> CO₂ series from section 6, flag every month whose remainder is more than 4 robust standard deviations from zero. Use <span class="math inline">1.4826 \times \text{median}(|R_t|)</span> as the robust standard deviation. It's a common choice because, unlike <code>std()</code>, one large outlier can't inflate it.</p>
+<ol>
+<li>Does the rule find the spike you injected?</li>
+<li>How many <em>other</em> months does it flag, and how big are they compared with the spike?</li>
+<li>What does that tell you about choosing a threshold?</li>
+</ol>
+<details><summary>Solution</summary>
+<pre><code class="language-python">resid = robust.resid
+robust_sd = 1.4826 * resid.abs().median()
+flagged = resid[resid.abs() &gt; 4 * robust_sd]
+print(f&quot;robust sd: {robust_sd:.2f} ppm, months flagged: {len(flagged)}&quot;)
+flagged.abs().sort_values(ascending=False).head()
+</code></pre>
+<p>The spike (June 1980, about 15 ppm) is flagged, but so are roughly thirty genuine months. STL fits CO₂ so closely that the robust standard deviation is only about 0.15 ppm, so ordinary wobbles of 0.6–1 ppm clear a 4σ bar. Sorting by size shows the spike is more than <strong>ten times</strong> larger than anything else. A person spots it at once. The fixed rule doesn't.</p>
+<p>The lesson: a &quot;k standard deviations&quot; rule assumes roughly normal, independent residuals, and real remainders rarely are. Look at the <strong>ranked</strong> residuals and set the threshold for your purpose, based on how many false alarms you can tolerate, rather than trusting a textbook k.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A series can be described as <strong>trend + seasonality + remainder</strong>, combined additively or multiplicatively. Seasonality has a <strong>fixed period</strong>; cycles don't.</li>
+<li><strong>Swings that grow with the level</strong> signal multiplicative structure. A <strong>log</strong> transform turns it additive.</li>
+<li>Classical decomposition is simple: moving-average trend, averaged seasonal effects. But it assumes a fixed seasonal pattern, loses the ends, and spreads outliers.</li>
+<li><strong>STL</strong> allows evolving seasonality, covers the whole series and, with <code>robust=True</code>, isolates outliers in the remainder.</li>
+<li>The <strong>periodogram</strong> finds seasonal periods from the data, but difference or detrend first, because persistence buries seasonal peaks under low-frequency power.</li>
+<li>Always inspect the <strong>remainder</strong>, and measure <strong>component strength</strong>. Decomposition will invent components in pure noise if you let it.</li>
+<li>CO₂ is nearly all trend and season. PM2.5 is mostly remainder: its forecastability depends on dynamics and weather, not the calendar.</li>
+</ul>
+<p><strong>Next:</strong> <em>03 · Stationarity</em>. Most classical forecasting models need a series whose statistical behaviour doesn't drift over time. We'll learn what that means precisely, how to test for it, and how to get there.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="01-time-in-pandas.html"><span class="lbl">Previous · 01</span><span class="t">Working with time in pandas</span></a>
+  <a class="next" rel="next" href="03-stationarity.html"><span class="lbl">Next · 03</span><span class="t">Stationarity</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 02 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

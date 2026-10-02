@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>08 · LSTM for Sequences — A Tour of Machine Learning</title>
+<meta name="description" content="Windowing a synthetic sequence, training a small LSTM, and checking it against the naive &quot;tomorrow looks like today&quot; baseline.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 08 of 11</span>
+  <h1>LSTM for Sequences</h1>
+  <div class="intro prose">
+<p><strong>Objectives:</strong> build a small LSTM that predicts the next value of a synthetic time
+series from a window of recent history, and check it against the simplest possible
+baseline — &quot;tomorrow looks like today&quot; — to make sure the network earned its keep.</p>
+<p>A plain feedforward network (chapter 06) has no notion of order: shuffle a sequence's
+time steps and its prediction for a fixed input doesn't change. A <strong>recurrent</strong>
+network processes a sequence step by step, carrying a hidden state forward; an
+<strong>LSTM</strong> (Long Short-Term Memory) adds gates that let it choose what to remember,
+forget, and output at each step, which makes it much easier to train on longer
+sequences than a plain RNN.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/08_lstm_for_sequences.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-from-one-series-to-many-training-examples">1. From one series to many training examples</a></li>
+    <li><a href="#2-recurrent-networks-and-vanishing-gradients">2. Recurrent networks and vanishing gradients</a></li>
+    <li><a href="#3-the-lstm-cell">3. The LSTM cell</a></li>
+    <li><a href="#4-one-step-of-the-cell-by-hand">4. One step of the cell, by hand</a></li>
+    <li><a href="#5-a-synthetic-sequence">5. A synthetic sequence</a></li>
+    <li><a href="#6-windowing-turning-a-sequence-into-input-target-pairs">6. Windowing: turning a sequence into (input, target) pairs</a></li>
+    <li><a href="#7-the-model-and-a-naive-baseline">7. The model and a naive baseline</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-from-one-series-to-many-training-examples">1. From one series to many training examples</h2>
+<p>A time series is a list of numbers measured at regular steps, <span class="math inline">y_1, y_2, \dots, y_T</span>.
+In this chapter each <span class="math inline">y_t</span> is a single unitless number, roughly between <span class="math inline">-2</span> and <span class="math inline">2</span>,
+and <span class="math inline">T = 2000</span>; the code calls the series <code>y</code>. The task is <strong>one-step-ahead
+forecasting</strong>: predict <span class="math inline">y_t</span> from the values before it.</p>
+<p>Most learning methods need a table of examples, each with a fixed-size input and a
+target. A <strong>sliding window</strong> of length <span class="math inline">L</span> builds one: the input is the <span class="math inline">L</span> most recent
+values and the target is the next value,</p>
+<div class="math display">\mathbf{x}^{(t)} = (y_{t-L},\ \dots,\ y_{t-1}) \in \mathbb{R}^L, \qquad \text{target } y_t .</div>
+<p>Sliding the window one step at a time gives <span class="math inline">T - L</span> pairs. With <span class="math inline">L = 3</span> on the short
+series <span class="math inline">3, 5, 4, 6, 7, 5</span>:</p>
+<table>
+<thead>
+<tr>
+<th>input window</th>
+<th>target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">(3, 5, 4)</span></td>
+<td><span class="math inline">6</span></td>
+</tr>
+<tr>
+<td><span class="math inline">(5, 4, 6)</span></td>
+<td><span class="math inline">7</span></td>
+</tr>
+<tr>
+<td><span class="math inline">(4, 6, 7)</span></td>
+<td><span class="math inline">5</span></td>
+</tr>
+</tbody>
+</table>
+<p>In the code <span class="math inline">L</span> is <code>window = 30</code>, which gives <span class="math inline">2000 - 30 = 1970</span> pairs: <code>X_all</code> has
+shape <span class="math inline">1970\times 30</span> and <code>y_all</code> holds the 1970 targets. Every input uses only values
+from before its target. The first 80% of the pairs, in time order, are used for
+training and the last 20% for testing, so the model is scored on a stretch of time it
+has never seen.</p>
+<p><strong>The loss.</strong> For <span class="math inline">N</span> targets with predictions <span class="math inline">\hat y_t</span>, the <strong>mean squared error</strong> is</p>
+<div class="math display">\text{MSE} = \frac1N\sum_{t} (\hat y_t - y_t)^2 .</div>
+<p>Squaring makes every error count as positive and punishes large misses more than
+small ones. Among all forecasts that use the same information, the one with the
+smallest expected squared error is the conditional mean of <span class="math inline">y_t</span> given that
+information. MSE is both the training loss and the test score in this chapter.</p>
+<p><strong>The baseline every forecast must beat.</strong> The <strong>persistence</strong> forecast says the next
+value equals the last one:</p>
+<div class="math display">\hat y_t = y_{t-1} .</div>
+<p>It needs no training, and for a series that changes little from one step to the next
+it is hard to beat. A model that does not beat it has learned nothing useful about
+how the series moves, however complex the model is.</p>
+<p>For this series one can work out in advance what persistence will score. The series
+is a smooth signal <span class="math inline">s_t</span> plus independent noise <span class="math inline">\varepsilon_t</span> with standard deviation
+<span class="math inline">0.15</span>, so <span class="math inline">y_t = s_t + \varepsilon_t</span>, and the persistence error is</p>
+<div class="math display">y_{t-1} - y_t = (s_{t-1} - s_t) + (\varepsilon_{t-1} - \varepsilon_t) .</div>
+<p>The two independent noise terms each have variance <span class="math inline">0.15^2 = 0.0225</span>, so noise alone
+gives persistence an MSE of about <span class="math inline">2\times 0.0225 = 0.045</span>. The change of the signal
+over one step adds about <span class="math inline">0.025</span>: a sine of amplitude <span class="math inline">A</span> and period <span class="math inline">P</span> changes by
+about <span class="math inline">2\pi A/P</span> times another sine per step, and a sine of amplitude <span class="math inline">B</span> has mean
+square <span class="math inline">B^2/2</span>, so the two main components give
+<span class="math inline">\tfrac12(2\pi/50)^2 + \tfrac12(\pi/17)^2 \approx 0.008 + 0.017</span>. Persistence should
+therefore land near <span class="math inline">0.07</span>. A forecaster that knew <span class="math inline">s_t</span> exactly would still face the
+fresh noise <span class="math inline">\varepsilon_t</span>, which nothing can predict, so its MSE would be <span class="math inline">0.0225</span>.
+Any useful model must fall between these two numbers.</p>
+</div>
+
+<div class="md">
+<h2 id="2-recurrent-networks-and-vanishing-gradients">2. Recurrent networks and vanishing gradients</h2>
+<p>A window could be given to a dense network as 30 unrelated numbers. A <strong>recurrent
+neural network</strong> (RNN) instead reads the window in order, one value per step, and
+carries a summary of what it has read so far. Inside one window, write the inputs as
+<span class="math inline">x_1, \dots, x_L</span>, so <span class="math inline">x_1 = y_{t-L}</span> and <span class="math inline">x_L = y_{t-1}</span>. The summary is the <strong>hidden
+state</strong> <span class="math inline">h_s \in \mathbb{R}^H</span>, a vector of <span class="math inline">H</span> numbers (<span class="math inline">H = 24</span> in the code). It starts
+at <span class="math inline">h_0 = 0</span> and is updated at every step <span class="math inline">s</span> by</p>
+<div class="math display">h_s = \tanh\big(W_h\,h_{s-1} + W_x\,x_s + b\big),</div>
+<p>with <span class="math inline">W_h \in \mathbb{R}^{H\times H}</span>, <span class="math inline">W_x \in \mathbb{R}^{H\times 1}</span> and <span class="math inline">b \in \mathbb{R}^H</span>.
+Read it as: the new memory is a squashed mix of the old memory and the new input. The
+same weights are used at every step, which is weight sharing over time. After the
+last step, a dense layer reads the forecast off the final state:
+<span class="math inline">\hat y_t = v^\top h_L + c</span>, with <span class="math inline">v \in \mathbb{R}^H</span> and a number <span class="math inline">c</span>.</p>
+<p><strong>Why a plain RNN struggles to remember.</strong> Training needs the gradient of the loss
+with respect to the weights, and that requires knowing how the final state depends on
+earlier states. Take the smallest case, a scalar state
+<span class="math inline">h_s = \tanh(w\,h_{s-1} + u\,x_s)</span>. Using <span class="math inline">\tanh&#x27;(z) = 1 - \tanh^2(z)</span>, one step back
+multiplies the gradient by</p>
+<div class="math display">\frac{\partial h_s}{\partial h_{s-1}} = w\,\big(1 - h_s^2\big) .</div>
+<p>Going back <span class="math inline">k</span> steps, the chain rule multiplies <span class="math inline">k</span> such factors:</p>
+<div class="math display">\frac{\partial h_L}{\partial h_{L-k}} = \prod_{s=L-k+1}^{L} w\,\big(1-h_s^2\big) .</div>
+<p>A product of many factors behaves exponentially. If every factor is <span class="math inline">0.9</span>, then across
+the 29 steps of a 30-step window the product is <span class="math inline">0.9^{29} \approx 0.047</span>; across 50 steps
+it is <span class="math inline">0.9^{50} \approx 0.005</span>; across 100 steps, about <span class="math inline">0.00003</span>. If every factor is
+<span class="math inline">1.1</span>, then <span class="math inline">1.1^{50} \approx 117</span>. In the first case the gradient <strong>vanishes</strong>: what
+happened 50 steps back has almost no influence on the weight update, so long-range
+patterns cannot be learned. In the second it <strong>explodes</strong> and training becomes
+unstable. Because <span class="math inline">1 - h_s^2 \le 1</span>, and is close to 0 whenever the tanh saturates,
+vanishing is the more common failure. With vector states, <span class="math inline">w</span> becomes the matrix
+<span class="math inline">W_h</span> and the same effect acts along each of its directions.</p>
+</div>
+
+<div class="md">
+<h2 id="3-the-lstm-cell">3. The LSTM cell</h2>
+<p>The <strong>LSTM</strong> (Long Short-Term Memory) adds a second state, the <strong>cell state</strong>
+<span class="math inline">c_s \in \mathbb{R}^H</span>: a memory line that is updated by addition instead of being
+squashed again at every step. Three <strong>gates</strong> control it. A gate is a vector of
+numbers between 0 and 1, produced by the sigmoid <span class="math inline">\sigma(z) = 1/(1+e^{-z})</span>, that
+multiplies another vector entry by entry (written <span class="math inline">\odot</span>): a 1 lets a value through,
+a 0 blocks it. (This <span class="math inline">\sigma</span> is the sigmoid function, not the <code>sigma</code> used for scaling
+in the code.) At each step:</p>
+<div class="math display">\begin{aligned}
+f_s &amp;= \sigma\big(W_f\,x_s + U_f\,h_{s-1} + b_f\big) &amp;&amp; \text{forget gate}\\
+i_s &amp;= \sigma\big(W_i\,x_s + U_i\,h_{s-1} + b_i\big) &amp;&amp; \text{input gate}\\
+o_s &amp;= \sigma\big(W_o\,x_s + U_o\,h_{s-1} + b_o\big) &amp;&amp; \text{output gate}\\
+\tilde c_s &amp;= \tanh\big(W_c\,x_s + U_c\,h_{s-1} + b_c\big) &amp;&amp; \text{candidate}\\
+c_s &amp;= f_s \odot c_{s-1} + i_s \odot \tilde c_s &amp;&amp; \text{cell update}\\
+h_s &amp;= o_s \odot \tanh(c_s) &amp;&amp; \text{output}
+\end{aligned}</div>
+<p>Each <span class="math inline">W</span> is <span class="math inline">H\times 1</span> (it multiplies the scalar input), each <span class="math inline">U</span> is <span class="math inline">H\times H</span>, and each
+<span class="math inline">b</span> has <span class="math inline">H</span> entries. In plain words:</p>
+<ul>
+<li><strong>Forget gate</strong> <span class="math inline">f_s</span>: how much of each entry of the old memory <span class="math inline">c_{s-1}</span> to keep.</li>
+<li><strong>Candidate</strong> <span class="math inline">\tilde c_s</span>: new content proposed from the current input and the
+previous output, with values in <span class="math inline">(-1, 1)</span>.</li>
+<li><strong>Input gate</strong> <span class="math inline">i_s</span>: how much of the candidate to write into memory.</li>
+<li><strong>Output gate</strong> <span class="math inline">o_s</span>: how much of the squashed memory to reveal as the output
+<span class="math inline">h_s</span>, which is what the next step and the final dense layer see.</li>
+</ul>
+<p>With <span class="math inline">H = 24</span> and a scalar input, the four blocks hold
+<span class="math inline">4\cdot(24 + 24\cdot 24 + 24) = 2{,}496</span> parameters, and the dense output layer adds
+<span class="math inline">24 + 1 = 25</span>.</p>
+<p><strong>Why the gradient survives.</strong> Follow the memory line alone. From the cell update,
+the direct derivative is</p>
+<div class="math display">\frac{\partial c_s}{\partial c_{s-1}} = f_s \quad \text{(entry by entry)},</div>
+<p>so going back <span class="math inline">k</span> steps along the cell state multiplies <span class="math inline">k</span> forget gates (this ignores
+the smaller indirect paths through <span class="math inline">h_{s-1}</span> inside the gates). The product contains no
+weight matrix and no tanh derivative, and the forget gate is learned. When the network
+needs to remember, it can hold <span class="math inline">f_s</span> close to 1: with <span class="math inline">f_s = 0.99</span> at every step,
+<span class="math inline">0.99^{50} \approx 0.61</span> of the gradient survives 50 steps, against <span class="math inline">0.005</span> for the RNN
+factor <span class="math inline">0.9</span> above. The key is the addition in <span class="math inline">c_s = f_s\odot c_{s-1} + i_s\odot\tilde c_s</span>:
+new information is added to the memory rather than folded into it through a
+squashing function at every step.</p>
+</div>
+
+<div class="md">
+<h2 id="4-one-step-of-the-cell-by-hand">4. One step of the cell, by hand</h2>
+<p>Take an LSTM with a single unit (<span class="math inline">H = 1</span>), so every quantity is a number. Suppose the
+old memory is <span class="math inline">c_{s-1} = 2.0</span> and the four pre-activations (the expressions inside
+<span class="math inline">\sigma</span> and <span class="math inline">\tanh</span>) at this step are:</p>
+<table>
+<thead>
+<tr>
+<th>quantity</th>
+<th>pre-activation</th>
+<th>function</th>
+<th>value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>forget gate <span class="math inline">f_s</span></td>
+<td><span class="math inline">2.197</span></td>
+<td><span class="math inline">\sigma</span></td>
+<td><span class="math inline">0.9</span></td>
+</tr>
+<tr>
+<td>input gate <span class="math inline">i_s</span></td>
+<td><span class="math inline">0</span></td>
+<td><span class="math inline">\sigma</span></td>
+<td><span class="math inline">0.5</span></td>
+</tr>
+<tr>
+<td>output gate <span class="math inline">o_s</span></td>
+<td><span class="math inline">1.386</span></td>
+<td><span class="math inline">\sigma</span></td>
+<td><span class="math inline">0.8</span></td>
+</tr>
+<tr>
+<td>candidate <span class="math inline">\tilde c_s</span></td>
+<td><span class="math inline">0.693</span></td>
+<td><span class="math inline">\tanh</span></td>
+<td><span class="math inline">0.6</span></td>
+</tr>
+</tbody>
+</table>
+<p>The pre-activations are <span class="math inline">\ln 9</span>, <span class="math inline">0</span>, <span class="math inline">\ln 4</span> and <span class="math inline">\ln 2</span>, chosen so that the outputs are
+round: <span class="math inline">\sigma(\ln 9) = 1/(1 + 1/9) = 0.9</span>, <span class="math inline">\sigma(\ln 4) = 1/(1+1/4) = 0.8</span> and
+<span class="math inline">\tanh(\ln 2) = (e^{2\ln 2} - 1)/(e^{2\ln 2} + 1) = (4-1)/(4+1) = 0.6</span>. Then</p>
+<div class="math display">c_s = f_s\,c_{s-1} + i_s\,\tilde c_s = 0.9\times 2.0 + 0.5\times 0.6 = 1.8 + 0.3 = 2.1,</div>
+<div class="math display">h_s = o_s\,\tanh(c_s) = 0.8\times\tanh(2.1) \approx 0.8\times 0.970 = 0.776 .</div>
+<p>The memory kept 90% of its old content and added half of the new proposal; the output
+reveals 80% of the squashed memory. Along the memory line,
+<span class="math inline">\partial c_s/\partial c_{s-1} = f_s = 0.9</span>. That is the same factor as in the RNN example,
+with one difference: here the network chooses it. Raising the forget pre-activation
+from <span class="math inline">2.197</span> to <span class="math inline">4.6</span> gives <span class="math inline">f_s = \sigma(4.6) \approx 0.99</span>, and the memory, together with
+its gradient, is carried almost unchanged from step to step.</p>
+<p><strong>In the code.</strong> <code>X_all</code> and <code>y_all</code> are the windowed pairs of section 1 with <span class="math inline">L = 30</span>.
+Inputs and targets are standardised as (value <span class="math inline">-</span> <code>mu</code>) / <code>sigma</code>, using training
+statistics only, and each window is reshaped to <span class="math inline">30\times 1</span> so that the LSTM reads one
+number <span class="math inline">x_s</span> per step. The model is <code>LSTM(24)</code>, which runs the six equations of section
+3 with <span class="math inline">H = 24</span> and returns only the last output <span class="math inline">h_L</span>, followed by <code>Dense(1)</code>, which
+computes <span class="math inline">\hat y_t = v^\top h_L + c</span>. It is trained with <code>loss=&quot;mse&quot;</code>. The model works in
+standardised units, where every error is divided by <code>sigma</code>, so its mean squared error
+is multiplied by <code>sigma**2</code> to return to the original units. Finally,
+<code>naive_pred = X_test[:, -1]</code> is the persistence forecast <span class="math inline">\hat y_t = y_{t-1}</span>: the last
+value of each test window.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import os
+os.environ[&quot;TF_CPP_MIN_LOG_LEVEL&quot;] = &quot;3&quot;
+os.environ[&quot;TF_ENABLE_ONEDNN_OPTS&quot;] = &quot;0&quot;
+import warnings
+warnings.filterwarnings(&quot;ignore&quot;)
+
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+
+import mlutils
+mlutils.set_style()
+tf.get_logger().setLevel(&quot;ERROR&quot;)
+tf.keras.utils.set_random_seed(0)          # seeds Python, NumPy and TensorFlow together
+tf.config.experimental.enable_op_determinism()  # identical results on every run</code></pre>
+</div>
+
+<div class="md">
+<h2 id="5-a-synthetic-sequence">5. A synthetic sequence</h2>
+<p>Two sine waves at different periods, a slow drift, and noise — enough structure for a
+model to find, and enough noise that it can't predict perfectly. Real data (weather,
+sensor readings) usually looks like a messier version of exactly this.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">t = np.arange(0, 2000)
+y = (np.sin(2*np.pi*t/50) + 0.5*np.sin(2*np.pi*t/17) + 0.02*np.sin(2*np.pi*t/400)
+     + np.random.normal(0, 0.15, size=t.shape)).astype(&quot;float32&quot;)
+
+fig, ax = plt.subplots(figsize=(9, 3.5))
+ax.plot(t[:400], y[:400], color=mlutils.BLUE, lw=1.2)
+ax.set(xlabel=&quot;t&quot;, ylabel=&quot;value&quot;, title=&quot;First 400 steps of the synthetic series&quot;)</code></pre>
+<pre class="output">[Text(0.5, 0, &#x27;t&#x27;),
+ Text(0, 0.5, &#x27;value&#x27;),
+ Text(0.5, 1.0, &#x27;First 400 steps of the synthetic series&#x27;)]</pre>
+<figure class="output-figure"><img src="img/08-1.png" alt="Figure 1 produced by the code above" width="864" height="393" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="6-windowing-turning-a-sequence-into-input-target-pairs">6. Windowing: turning a sequence into (input, target) pairs</h2>
+<p>As in section 1, we slide a window of 30 past values across the series; the target
+is the very next value. This is exactly the same
+&quot;honest windows, no peeking&quot; idea as the Understanding Time Series course's chapter 04
+— the window at time <span class="math inline">t</span> may only see values up to <span class="math inline">t-1</span>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">window = 30
+X_all = np.stack([y[i:i+window] for i in range(len(y) - window)])
+y_all = y[window:]
+
+n_train = int(0.8 * len(X_all))
+X_train, X_test = X_all[:n_train], X_all[n_train:]
+y_train, y_test = y_all[:n_train], y_all[n_train:]
+print(f&quot;train windows: {X_train.shape}, test windows: {X_test.shape}&quot;)</code></pre>
+<pre class="output">train windows: (1576, 30), test windows: (394, 30)</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># scale using TRAINING statistics only, to avoid leaking test information
+mu, sigma = X_train.mean(), X_train.std()
+X_train_s = ((X_train - mu) / sigma)[..., np.newaxis]
+X_test_s = ((X_test - mu) / sigma)[..., np.newaxis]
+y_train_s = (y_train - mu) / sigma
+y_test_s = (y_test - mu) / sigma</code></pre>
+</div>
+
+<div class="md">
+<h2 id="7-the-model-and-a-naive-baseline">7. The model and a naive baseline</h2>
+<p>The naive baseline just predicts &quot;the next value equals the last observed value&quot; —
+persistence. Any real model has to beat this to be worth its complexity.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">model = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(window, 1)),
+    tf.keras.layers.LSTM(24),
+    tf.keras.layers.Dense(1),
+])
+model.compile(optimizer=&quot;adam&quot;, loss=&quot;mse&quot;)
+history = model.fit(X_train_s, y_train_s, epochs=15, batch_size=32, validation_split=0.1, verbose=0)
+print(f&quot;final training loss: {history.history[&#x27;loss&#x27;][-1]:.4f}, &quot;
+      f&quot;validation loss: {history.history[&#x27;val_loss&#x27;][-1]:.4f}&quot;)</code></pre>
+<pre class="output">final training loss: 0.0471, validation loss: 0.0423</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pred_s = model.predict(X_test_s, verbose=0).flatten()
+mse_lstm = float(np.mean((pred_s - y_test_s) ** 2)) * sigma**2       # back to original units
+
+naive_pred = X_test[:, -1]                                            # &quot;next = last observed&quot;
+mse_naive = float(np.mean((naive_pred - y_test) ** 2))
+
+print(f&quot;LSTM test MSE:              {mse_lstm:.4f}&quot;)
+print(f&quot;naive persistence test MSE: {mse_naive:.4f}&quot;)
+print(f&quot;LSTM is {mse_naive / mse_lstm:.2f}x better than the naive baseline&quot;)</code></pre>
+<pre class="output">LSTM test MSE:              0.0300
+naive persistence test MSE: 0.0693
+LSTM is 2.31x better than the naive baseline</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pred = pred_s * sigma + mu
+fig, ax = plt.subplots(figsize=(9, 4))
+show = 150
+ax.plot(y_test[:show], color=mlutils.INK, lw=1.5, label=&quot;actual&quot;)
+ax.plot(pred[:show], color=mlutils.BLUE, lw=1.5, label=&quot;LSTM forecast&quot;)
+ax.plot(naive_pred[:show], color=mlutils.ORANGE, lw=1, ls=&quot;--&quot;, label=&quot;naive (last value)&quot;)
+ax.set(xlabel=&quot;test step&quot;, ylabel=&quot;value&quot;, title=&quot;One-step-ahead forecasts on held-out data&quot;)
+ax.legend()</code></pre>
+<pre class="output">&lt;matplotlib.legend.Legend at 0x25e8f7412b0&gt;</pre>
+<figure class="output-figure"><img src="img/08-2.png" alt="Figure 2 produced by the code above" width="864" height="435" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The LSTM tracks the fast wiggle the naive baseline always lags by one step — it has
+learned the short-period sine component well enough to anticipate the turn, not just
+repeat the last value.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-window-size">Exercise 1: Window size</h3>
+<p>Retrain with <code>window = 5</code> and <code>window = 100</code>. Which does better on test MSE? What
+does too short a window fail to capture here, given the periods used to build <code>y</code>?</p>
+<details><summary>Solution</summary>
+<p>A window of 5 is shorter than even the fastest period (17 steps) and can't see enough
+of a cycle to extrapolate it; a much longer window (100) has enough context but takes
+longer to train and doesn't necessarily help further once the relevant periods are
+already covered.</p>
+</details>
+<h3 id="exercise-2-simplernn-vs-lstm">Exercise 2: SimpleRNN vs. LSTM</h3>
+<p>Swap <code>tf.keras.layers.LSTM(24)</code> for <code>tf.keras.layers.SimpleRNN(24)</code> and retrain. Does
+test MSE change much on a sequence this short? At what point (longer sequences, more
+history required) would you expect the LSTM's gating to start mattering more?</p>
+<details><summary>Solution</summary>
+<p>On a short window (30 steps) a SimpleRNN often performs comparably to the LSTM — the
+vanishing-gradient problem LSTMs are designed to fix mainly bites on much longer
+sequences, where a plain RNN struggles to keep information from many steps back.</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Windowing turns a single long sequence into supervised (input, target) pairs; the
+window may only look backward, never at data from after the target.</li>
+<li>An LSTM's gates let it learn what to carry forward and what to discard at each
+step, which is what makes it trainable on longer sequences than a plain RNN.</li>
+<li>Always compare against the naive &quot;predict the last value&quot; baseline — it's a
+surprisingly strong opponent, and the whole point of a model is to beat it.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="07-transfer-learning.html"><span class="lbl">Previous · 07</span><span class="t">Transfer Learning</span></a>
+  <a class="next" rel="next" href="09-anomaly-detection-autoencoder.html"><span class="lbl">Next · 09</span><span class="t">Anomaly Detection with an Autoencoder</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 08 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

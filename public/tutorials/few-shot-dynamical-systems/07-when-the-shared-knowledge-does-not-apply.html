@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>07 · When the Shared Knowledge Does Not Apply — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Pushing a new system&#x27;s coefficients away from the learned family along a direction the 2-number context cannot represent, and checking whether the adapter&#x27;s own output misfit can flag it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 07 of 09</span>
+  <h1>When the Shared Knowledge Does Not Apply</h1>
+  <div class="intro prose">
+<p>Every chapter so far drew new systems from the same family the pretrained model was built on. Real
+deployments are not always this polite: a worn bearing, a manufacturing defect, or simply a
+different product line can push a new system outside what pretraining ever saw. This chapter asks
+what happens then, and whether we can notice it.</p>
+<hr />
+<h2 id="1-moving-outside-the-learned-family">1. Moving outside the learned family</h2>
+<p>The pretrained model is only as good as the family it has seen. What happens when a new system
+varies in a way <strong>never seen during pretraining</strong>, e.g. a worn bearing changing damping and gain in
+an unusual combination? We move the true coefficients a distance <span class="math inline">\delta</span> away from the learned
+family, along a direction orthogonal to <span class="math inline">U</span>, and adapt with 12 s of data. A two-number context
+cannot represent the change.</p>
+<p>The adaptation itself offers a warning signal: the <strong>output misfit</strong>, already returned by <code>adapt</code> in
+chapter 04. If the best context still cannot explain the data, the residual is larger than it is for
+normal members of the family. We calibrate a threshold as the 95th percentile of the misfit on
+in-family systems.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/07_when_the_shared_knowledge_does_not_apply.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-moving-outside-the-learned-family">1. Moving outside the learned family</a></li>
+    <li><a href="#2-does-the-pretrained-model-degrade-and-can-we-detect-it">2. Does the pretrained model degrade, and can we detect it?</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+
+import dynutils
+from dynutils import sample_system, simulate, multisine, predict, fit_from_scratch, adapt, rmse
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR = dynutils.COLOR
+family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-does-the-pretrained-model-degrade-and-can-we-detect-it">2. Does the pretrained model degrade, and can we detect it?</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">T = 120
+basis_out = np.linalg.svd(family.U, full_matrices=True)[0][:, 2:]   # directions the context cannot express
+direction = basis_out[:, np.argmax(np.abs(basis_out[1]))]          # the one that moves damping most
+direction *= np.sign(direction[1]) / np.linalg.norm(direction)
+
+in_family = []
+for _ in range(60):
+    s = sample_system(rng); u = multisine(T, rng)
+    in_family.append(adapt(family, simulate(s, u, rng)[1], u)[2])
+threshold = np.quantile(in_family, 0.95)
+
+shifts = np.linspace(0, 0.6, 7)
+shift_err = {m: np.zeros((len(shifts), 30)) for m in (&quot;scratch&quot;, &quot;context&quot;)}
+flagged = np.zeros((len(shifts), 30), bool)
+for i, delta in enumerate(shifts):
+    for n in range(30):
+        s = sample_system(rng)
+        s[&quot;eta&quot;] = np.clip(s[&quot;eta&quot;] + delta * direction, dynutils.LOW + 0.02, dynutils.HIGH)
+        u = multisine(T, rng); _, y = simulate(s, u, rng)
+        u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
+        z_, _, misfit = adapt(family, y, u)
+        shift_err[&quot;context&quot;][i, n] = rmse(predict(family.decode(z_), u_val), q_val)
+        shift_err[&quot;scratch&quot;][i, n] = rmse(predict(fit_from_scratch(y, u), u_val), q_val)
+        flagged[i, n] = misfit &gt; threshold
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8))
+for m, lab in ((&quot;scratch&quot;, &quot;from scratch&quot;), (&quot;context&quot;, &quot;pretrained + context&quot;)):
+    ax1.plot(shifts, np.median(shift_err[m], axis=1), marker=&quot;o&quot;, color=COLOR[m], label=lab)
+ax1.set(xlabel=&quot;distance δ from the learned family&quot;, ylabel=&quot;median prediction RMSE&quot;,
+        title=&quot;Shared knowledge helps only inside the family&quot;); ax1.legend()
+ax2.plot(shifts, 100 * flagged.mean(axis=1), marker=&quot;o&quot;, color=COLOR[&quot;reference&quot;])
+ax2.axhline(5, ls=&quot;:&quot;, color=COLOR[&quot;none&quot;]); ax2.text(0.0, 8, &quot;false-alarm level (5 %)&quot;, fontsize=8)
+ax2.set(xlabel=&quot;distance δ from the learned family&quot;, ylabel=&quot;systems flagged [%]&quot;, ylim=(-3, 103),
+        title=&quot;Misfit test: &#x27;this system is unlike the others&#x27;&quot;)
+plt.tight_layout(); plt.show()
+print(&quot;direction of change in [k, d, b, α]:&quot;, np.round(direction, 2))
+for i, delta in enumerate(shifts):
+    print(f&quot;delta={delta:.1f}: scratch median RMSE={np.median(shift_err[&#x27;scratch&#x27;][i]):.4f}  &quot;
+          f&quot;context median RMSE={np.median(shift_err[&#x27;context&#x27;][i]):.4f}  flagged={100*flagged[i].mean():.0f}%&quot;)
+</code></pre>
+<figure class="output-figure"><img src="img/07-1.png" alt="Figure 1 produced by the code above" width="1308" height="407" loading="lazy"></figure>
+<pre class="output">direction of change in [k, d, b, α]: [ 0.33  0.88 -0.24 -0.24]
+delta=0.0: scratch median RMSE=0.0132  context median RMSE=0.0096  flagged=10%
+delta=0.1: scratch median RMSE=0.0150  context median RMSE=0.0096  flagged=23%
+delta=0.2: scratch median RMSE=0.0092  context median RMSE=0.0103  flagged=10%
+delta=0.3: scratch median RMSE=0.0072  context median RMSE=0.0111  flagged=17%
+delta=0.4: scratch median RMSE=0.0071  context median RMSE=0.0129  flagged=13%
+delta=0.5: scratch median RMSE=0.0079  context median RMSE=0.0129  flagged=43%
+delta=0.6: scratch median RMSE=0.0048  context median RMSE=0.0133  flagged=37%</pre>
+</div>
+
+<div class="md">
+<p>As the new system leaves the family, the pretrained model gets steadily worse, while the
+from-scratch estimate is unaffected: it assumes nothing about the family. (Its error even
+decreases, since more strongly damped systems move less and are easier to predict.) With 12 s of
+data, from scratch is already competitive inside the family, so the pretrained model loses its
+advantage after a small shift.</p>
+<p>The misfit test responds as it should. It flags about 5% of normal systems, as designed, and its
+detection rate rises with the shift to roughly three quarters of the systems. But <strong>detection
+lags degradation</strong>: at moderate shifts the adapter is already worse than from scratch, while most
+systems still pass the test, because the misfit is dominated by the disturbance.</p>
+<p>This yields a simple decision rule: <em>use the small adapter while it explains the data, and fall back
+to (or enlarge towards) full identification when it does not.</em> Making such a rule both sensitive
+and trustworthy, with guarantees, is an open question for learned models.</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-a-direction-that-stays-inside-the-family">Exercise 1: A direction that stays inside the family</h3>
+<p>Repeat the shift study, but move along a direction <em>inside</em> <code>family.U</code> (e.g. <code>family.U[:, 0] / np.linalg.norm(family.U[:, 0])</code>) instead of <code>direction</code>. Does the pretrained model degrade, and does
+the misfit test flag anything?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">inside = family.U[:, 0] / np.linalg.norm(family.U[:, 0])
+errs_inside, flags_inside = [], []
+for n in range(30):
+    s = sample_system(rng)
+    s[&quot;eta&quot;] = np.clip(s[&quot;eta&quot;] + 0.4 * inside, dynutils.LOW + 0.02, dynutils.HIGH)
+    u = multisine(T, rng); _, y = simulate(s, u, rng)
+    u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
+    z_, _, misfit = adapt(family, y, u)
+    errs_inside.append(rmse(predict(family.decode(z_), u_val), q_val)); flags_inside.append(misfit &gt; threshold)
+np.median(errs_inside), np.mean(flags_inside)
+</code></pre>
+<p>Moving along a direction the context <em>can</em> represent leaves both the error and the flag rate close
+to the in-family baseline, since <code>adapt</code> can simply find a <code>z</code> that reaches that part of coefficient
+space — confirming that it is specifically the <em>unrepresentable</em> component of a shift that hurts.</p>
+</details>
+<h3 id="exercise-2-a-stricter-threshold">Exercise 2: A stricter threshold</h3>
+<p>Recompute <code>threshold</code> at the 99th percentile instead of the 95th. How does the false-alarm rate on
+in-family systems and the detection rate at <span class="math inline">\delta=0.3</span> change?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">threshold_99 = np.quantile(in_family, 0.99)
+delta = 0.3
+misfits = []
+for n in range(30):
+    s = sample_system(rng)
+    s[&quot;eta&quot;] = np.clip(s[&quot;eta&quot;] + delta * direction, dynutils.LOW + 0.02, dynutils.HIGH)
+    u = multisine(T, rng); _, y = simulate(s, u, rng)
+    misfits.append(adapt(family, y, u)[2])
+np.mean(in_family &gt; threshold_99), np.mean(np.array(misfits) &gt; threshold_99)
+</code></pre>
+<p>Raising the threshold from the 95th to the 99th percentile roughly quarters the expected false-alarm
+rate on in-family systems (5% to about 1% by construction) but also detects fewer of the shifted
+systems at any given δ, since the same trade-off between false alarms and detection lag applies here
+as to any anomaly threshold.</p>
+</details></div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="06-choosing-the-best-experiment.html"><span class="lbl">Previous · 06</span><span class="t">Choosing the Best Experiment</span></a>
+  <a class="next" rel="next" href="08-from-a-better-model-to-better-control.html"><span class="lbl">Next · 08</span><span class="t">From a Better Model to Better Control</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 07 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

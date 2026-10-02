@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>01 · The System, and What We Can Measure — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="A family of nonlinear oscillators sharing one equation but not its four coefficients, a hidden two-dimensional design space behind them, and a learner that only ever chooses an input and reads a noisy position sensor.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 01 of 09</span>
+  <h1>The System, and What We Can Measure</h1>
+  <div class="intro prose">
+<p><em>Learning to Identify New Dynamical Systems from a Few Experiments</em> is a nine-chapter course built
+from the author's own research tutorial on few-shot system identification. Engineers rarely meet a
+dynamical system that is completely new: a new motor resembles motors characterised before, a new
+robot joint behaves like other joints of the same series, a new patient's heart rhythm varies around
+patterns seen in many other patients. <strong>Foundation models for dynamical systems</strong> aim to exploit
+exactly this: learn, from data of <em>many</em> systems, what systems of a kind have in common, so a <em>new</em>
+system can be understood, predicted and controlled from very little data.</p>
+<p>This course builds the smallest version of that idea in which every step can be inspected and
+tested. We work with a family of nonlinear oscillators and answer, one chapter at a time, the
+questions that also drive the large-scale research problem:</p>
+<table>
+<thead>
+<tr>
+<th>Chapter</th>
+<th>Question</th>
+<th>Tool</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01</td>
+<td>What is the system, and what can we actually measure?</td>
+<td>simulation, partial observation</td>
+</tr>
+<tr>
+<td>02</td>
+<td>How well can we identify one system from scratch?</td>
+<td>output-error least squares</td>
+</tr>
+<tr>
+<td>03</td>
+<td>What do many systems have in common?</td>
+<td>pretraining a low-dimensional family</td>
+</tr>
+<tr>
+<td>04</td>
+<td>Can the shared knowledge identify a new system from little data?</td>
+<td>few-shot Bayesian adaptation</td>
+</tr>
+<tr>
+<td>05</td>
+<td>When is pretraining worth it?</td>
+<td>data-budget study</td>
+</tr>
+<tr>
+<td>06</td>
+<td>Can we choose <em>which</em> experiment to run?</td>
+<td>Fisher information, optimal design</td>
+</tr>
+<tr>
+<td>07</td>
+<td>How do we notice that the shared knowledge does not fit?</td>
+<td>misfit-based detection</td>
+</tr>
+<tr>
+<td>08</td>
+<td>Does a better model give better control?</td>
+<td>model-based feedforward</td>
+</tr>
+<tr>
+<td>09</td>
+<td>Where does this go next?</td>
+<td>summary and open questions</td>
+</tr>
+</tbody>
+</table>
+<p>Everything is self-contained (NumPy, SciPy, Matplotlib) and each chapter runs in a few seconds to a
+couple of minutes on a laptop. All randomness is seeded; every number quoted in the text is
+recomputed when you run the notebook.</p>
+<hr />
+<h2 id="1-a-family-of-nonlinear-oscillators">1. A family of nonlinear oscillators</h2>
+<p>Our &quot;systems&quot; are carts attached to a nonlinear spring and a damper, pushed by a force-limited
+actuator. With position <span class="math inline">q</span> and velocity <span class="math inline">v</span>,</p>
+<div class="math display">
+\dot q = v, \qquad
+\dot v = -k\,q \;-\; d\,v \;+\; b\,\varphi(u) \;-\; \alpha\,q^3 .
+</div>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">k</span></td>
+<td>linear stiffness (sets the natural frequency <span class="math inline">\omega_n\approx\sqrt{k}</span>)</td>
+</tr>
+<tr>
+<td><span class="math inline">d</span></td>
+<td>damping (sets how sharp the resonance is)</td>
+</tr>
+<tr>
+<td><span class="math inline">b</span></td>
+<td>input gain (how strongly the actuator pushes)</td>
+</tr>
+<tr>
+<td><span class="math inline">\alpha</span></td>
+<td>hardening of the spring at large deflection</td>
+</tr>
+<tr>
+<td><span class="math inline">\varphi(u)=0.3\tanh(u/0.6)</span></td>
+<td>a saturating actuator: commands beyond <span class="math inline">\pm1</span> gain little extra force</td>
+</tr>
+</tbody>
+</table>
+<p>We collect the four physical coefficients in <span class="math inline">\eta=[k,\ d,\ b,\ \alpha]^\top</span>.</p>
+<p><strong>What makes it a <em>family</em>.</strong> Every system shares the equation above but has its own <span class="math inline">\eta</span>. In the
+simulator, the coefficients of a system are generated from two hidden &quot;design&quot; variables
+<span class="math inline">c\in[-1,1]^2</span> (think: spring material and cart mass), plus small individual deviations:</p>
+<div class="math display">
+\eta = \eta_0 + M c + \epsilon, \qquad \epsilon \sim \mathcal N(0, \operatorname{diag}(0.015, 0.004, 0.008, 0.04)^2).
+</div>
+<p>The learner is <strong>never</strong> told <span class="math inline">\eta_0</span>, <span class="math inline">M</span>, <span class="math inline">c</span> or even that the family is two-dimensional.
+It must discover this structure from data.</p>
+<p><strong>What makes it realistic.</strong> The true systems also contain effects the learner's model will not have:
+a weak quintic spring term <span class="math inline">-\gamma q^5</span>, a small constant force bias <span class="math inline">r</span>, and a <em>coloured</em> random
+disturbance <span class="math inline">w_t</span> (e.g. vibrations) acting on the cart. The actuator acts with a one-sample delay.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/01_the_system_and_what_we_can_measure.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-a-family-of-nonlinear-oscillators">1. A family of nonlinear oscillators</a></li>
+    <li><a href="#2-what-the-learner-sees-and-what-it-does-not">2. What the learner sees, and what it does not</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+
+import dynutils
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR = dynutils.COLOR</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">DT = 0.1                                  # sampling time [s]
+X0 = np.array([0.2, 0.0])                 # every experiment starts at rest, deflected by 0.2
+NAMES = [&quot;k&quot;, &quot;d&quot;, &quot;b&quot;, &quot;α&quot;]
+
+# Hidden family structure: known to the simulator only.
+_ETA0 = np.array([1.20, 0.32, 0.90, 1.00])
+_M = np.array([[0.55, 0.12], [0.07, 0.11], [0.16, -0.09], [0.30, 0.45]])
+_SIGMA_Y, _SIGMA_W, _RHO = 0.01, 0.01, 0.8     # sensor noise, disturbance strength, disturbance colour
+
+
+def actuator(u):
+    return 0.3 * np.tanh(np.asarray(u) / 0.6)
+
+
+def sample_system(rng, context=None):
+    # Draw a new member of the family (the &#x27;secret&#x27; ground truth).
+    c = rng.uniform(-1, 1, 2) if context is None else np.asarray(context, float)
+    eta = _ETA0 + _M @ c + rng.normal(scale=[0.015, 0.004, 0.008, 0.04])
+    return dict(eta=eta, context=c,
+                gamma=0.035 + 0.012 * rng.uniform(),        # unmodelled quintic spring
+                bias=0.006 * c[0] + 0.002 * rng.normal())   # unmodelled force bias
+
+
+def simulate(system, u, rng, noise=True):
+    # True plant. Returns (true positions, noisy position measurements), length len(u)+1.
+    k, d, b, a = system[&quot;eta&quot;]
+    u_delayed = np.r_[0.0, np.asarray(u, float)[:-1]]
+    (q, v), w = X0, 0.0
+    qs = [q]
+    for ut in u_delayed:
+        if noise:
+            w = _RHO * w + _SIGMA_W * rng.normal()
+        acc = (-k * q - d * v + b * actuator(ut) - a * q**3
+               - system[&quot;gamma&quot;] * q**5 + system[&quot;bias&quot;] + w)
+        v = v + DT * acc                  # semi-implicit Euler
+        q = q + DT * v
+        qs.append(q)
+    qs = np.array(qs)
+    y = qs + (_SIGMA_Y * rng.normal(size=qs.size) if noise else 0.0)
+    return qs, y
+
+
+def multisine(T, rng, n=3, fmin=0.02, fmax=0.8):
+    # Random admissible input: a sum of n sines with random frequencies [Hz] and phases, peak 1.
+    t = DT * np.arange(T)
+    f = np.exp(rng.uniform(np.log(fmin), np.log(fmax), n))
+    s = sum(np.sin(2 * np.pi * fi * t + rng.uniform(0, 2 * np.pi)) for fi in f)
+    return s / np.abs(s).max()</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">systems = [sample_system(rng, c) for c in [(-1, -1), (-1, 1), (0, 0), (1, -1), (1, 1)]]
+u_demo = multisine(300, rng, n=5)
+t = DT * np.arange(301)
+omega = np.linspace(0.05, 3, 400)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 3.6), gridspec_kw=dict(width_ratios=[1.8, 1]))
+for s in systems:
+    q, _ = simulate(s, u_demo, rng, noise=False)
+    ax1.plot(t, q, lw=1.5, label=f&quot;c = ({s[&#x27;context&#x27;][0]:+.0f}, {s[&#x27;context&#x27;][1]:+.0f})&quot;)
+    k, d, b, _ = s[&quot;eta&quot;]
+    ax2.plot(omega / (2 * np.pi), 0.5 * b / np.abs(k - omega**2 + 1j * d * omega), lw=1.5)
+ax1.set(xlabel=&quot;time [s]&quot;, ylabel=&quot;position q&quot;, title=&quot;Same input, five members of the family&quot;)
+ax1.legend(ncol=3, fontsize=8, loc=&quot;upper right&quot;)
+ax2.set(xlabel=&quot;frequency [Hz]&quot;, ylabel=&quot;|q / u|&quot;, title=&quot;Linearised frequency response&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/01-1.png" alt="Figure 1 produced by the code above" width="1198" height="385" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The same input produces clearly different motions. The frequency responses show why: the members
+differ in resonance frequency (roughly 0.1–0.25 Hz, i.e. a period of 4–10 s), in how peaked
+the resonance is, and in gain. A model of the <em>average</em> system will therefore mispredict most
+individual systems. Keep the resonance band in mind; it returns in chapter 06.</p>
+<hr />
+<h2 id="2-what-the-learner-sees-and-what-it-does-not">2. What the learner sees, and what it does not</h2>
+<p>In the laboratory, the learner can <strong>choose the input</strong> <span class="math inline">u_t</span> and <strong>read a position sensor</strong>
+<span class="math inline">y_t = q_t + \nu_t</span>. It does <em>not</em> see the velocity, the disturbance, or the coefficients.</p>
+<table>
+<thead>
+<tr>
+<th>Quantity</th>
+<th style="text-align:center">Simulator knows</th>
+<th style="text-align:center">Learner receives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>coefficients <span class="math inline">\eta</span>, hidden context <span class="math inline">c</span></td>
+<td style="text-align:center">✔</td>
+<td style="text-align:center">✘</td>
+</tr>
+<tr>
+<td>input <span class="math inline">u_t</span></td>
+<td style="text-align:center">✔</td>
+<td style="text-align:center">✔ (it chooses it)</td>
+</tr>
+<tr>
+<td>position <span class="math inline">q_t</span></td>
+<td style="text-align:center">✔</td>
+<td style="text-align:center">only noisy <span class="math inline">y_t</span></td>
+</tr>
+<tr>
+<td>velocity <span class="math inline">v_t</span>, disturbance <span class="math inline">w_t</span></td>
+<td style="text-align:center">✔</td>
+<td style="text-align:center">✘</td>
+</tr>
+<tr>
+<td>quintic term, bias</td>
+<td style="text-align:center">✔</td>
+<td style="text-align:center">✘ (not even in its model)</td>
+</tr>
+</tbody>
+</table>
+<p>The learner's model is the equation above <strong>without</strong> the unknown extra effects:</p>
+<div class="math display">
+\hat v_{t+1} = \hat v_t + \Delta t\,\big(-k\hat q_t - d\hat v_t + b\,\varphi(u_{t-1}) - \alpha \hat q_t^3\big),
+\qquad \hat q_{t+1} = \hat q_t + \Delta t\,\hat v_{t+1}.
+</div>
+<p>This mismatch is deliberate. Real models are always wrong in some way, and a method is only
+interesting if it degrades gracefully when that happens.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">s = systems[2]
+u = multisine(200, rng)
+q_true, y = simulate(s, u, rng)
+q_clean, _ = simulate(s, u, rng, noise=False)
+t = DT * np.arange(201)
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 4.6), sharex=True, gridspec_kw=dict(height_ratios=[1, 2]))
+ax1.step(t[:-1], u, where=&quot;post&quot;, color=COLOR[&quot;reference&quot;], lw=1.5)
+ax1.set(ylabel=&quot;input u&quot;, title=&quot;One experiment&quot;)
+ax2.plot(t, y, &quot;.&quot;, ms=3, color=COLOR[&quot;measured&quot;], label=&quot;measurement y (what the learner gets)&quot;)
+ax2.plot(t, q_true, color=COLOR[&quot;truth&quot;], lw=1.5, label=&quot;true position q&quot;)
+ax2.plot(t, q_clean, &quot;--&quot;, color=COLOR[&quot;context&quot;], lw=1.5, label=&quot;same system without disturbance&quot;)
+ax2.set(xlabel=&quot;time [s]&quot;, ylabel=&quot;position&quot;); ax2.legend(loc=&quot;upper right&quot;, fontsize=8)
+plt.tight_layout(); plt.show()
+print(f&quot;RMSE(true position, disturbance-free response) over this experiment: &quot;
+      f&quot;{np.sqrt(np.mean((q_true - q_clean) ** 2)):.4f} (sensor noise sd alone: 0.01)&quot;)
+</code></pre>
+<figure class="output-figure"><img src="img/01-2.png" alt="Figure 2 produced by the code above" width="1088" height="494" loading="lazy"></figure>
+<pre class="output">RMSE(true position, disturbance-free response) over this experiment: 0.0165 (sensor noise sd alone: 0.01)</pre>
+</div>
+
+<div class="md">
+<p>The gap between the solid and the dashed line is caused by the coloured disturbance alone. No model
+can predict it in advance, so we will judge models by how well they predict the system's
+<strong>disturbance-free response</strong> to a new input: this measures the quality of the <em>model</em>, not our luck
+with the noise.</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-a-stiffer-less-damped-corner-of-the-family">Exercise 1: A stiffer, less damped corner of the family</h3>
+<p>Draw 200 random contexts <code>c</code> uniformly in <span class="math inline">[-1,1]^2</span>, compute the corresponding <span class="math inline">\eta</span> with
+<code>sample_system(rng, c)</code>, and scatter the resulting natural frequency <span class="math inline">\sqrt{k}</span> against the damping
+ratio <span class="math inline">d/(2\sqrt{k})</span>. Which corner of <span class="math inline">c</span>-space gives the most lightly damped, highest-frequency
+systems?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">cs = rng.uniform(-1, 1, (200, 2))
+etas = np.array([sample_system(rng, c)[&quot;eta&quot;] for c in cs])
+k, d = etas[:, 0], etas[:, 1]
+wn, zeta = np.sqrt(k), d / (2 * np.sqrt(k))
+plt.scatter(wn, zeta, c=cs[:, 0], cmap=&quot;viridis&quot;, s=12)
+plt.colorbar(label=&quot;c1&quot;); plt.xlabel(&quot;natural frequency ωₙ&quot;); plt.ylabel(&quot;damping ratio ζ&quot;)
+</code></pre>
+<p>Both <span class="math inline">k</span> and <span class="math inline">d</span> load mostly onto <span class="math inline">c_1</span> (row 1 of <span class="math inline">M</span> is <span class="math inline">[0.55, 0.12]</span>, row 2 is <span class="math inline">[0.07, 0.11]</span>), so
+<span class="math inline">c_1 \to +1</span> gives the stiffest, highest-frequency systems, and since <span class="math inline">k</span> grows faster than <span class="math inline">d</span> along
+<span class="math inline">c_1</span>, those same systems end up the most lightly damped.</p>
+</details>
+<h3 id="exercise-2-how-much-does-the-disturbance-matter">Exercise 2: How much does the disturbance matter?</h3>
+<p>For one system, simulate the same input 50 times with <code>noise=True</code> and once with <code>noise=False</code>.
+Plot the disturbance-free trajectory against the envelope (min/max across the 50 noisy runs). At
+what fraction of the 20 s experiment does the spread exceed the sensor noise alone (<span class="math inline">\sigma_y=0.01</span>)?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">s = sample_system(rng); u = multisine(200, rng)
+clean, _ = simulate(s, u, rng, noise=False)
+noisy = np.array([simulate(s, u, rng)[0] for _ in range(50)])
+spread = noisy.std(axis=0)
+print(f&quot;fraction of samples with spread &gt; sensor noise: {(spread &gt; 0.01).mean():.0%}&quot;)
+</code></pre>
+<p>The disturbance is coloured (ρ=0.8), so it builds up over a run rather than averaging out sample by
+sample; the spread across repeats is usually well above 0.01 for most of the trajectory, confirming
+that the gap in the figure above is dominated by the disturbance, not by sensor noise.</p>
+</details>
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A &quot;family&quot; here means a shared nonlinear equation with a two-dimensional hidden design space
+<span class="math inline">c</span>; the physical coefficients <span class="math inline">\eta</span> are a noisy affine function of <span class="math inline">c</span>.</li>
+<li>The learner only ever sees a chosen input and a noisy position measurement, never the velocity,
+the disturbance, or the coefficients, and its model omits two effects the true systems have.</li>
+<li>Because no model can be perfect here, every chapter judges models by predicting the
+<strong>disturbance-free response to a new input</strong>, which isolates model quality from measurement luck.</li>
+</ul>
+<p><strong>Next:</strong> <em>02 · Identifying One System From Scratch</em>. The classical baseline: fit all four
+coefficients of one system from one experiment, and see where it succeeds and where it struggles.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <span></span>
+  <a class="next" rel="next" href="02-identifying-one-system-from-scratch.html"><span class="lbl">Next · 02</span><span class="t">Identifying One System From Scratch</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 01 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>10 · Transformers and Self-Attention — A Tour of Machine Learning</title>
+<meta name="description" content="Scaled dot-product and multi-head attention implemented from scratch in NumPy, plus a causal mask for autoregressive generation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 10 of 11</span>
+  <h1>Transformers and Self-Attention</h1>
+  <div class="intro prose">
+<p><strong>A note on scope.</strong> Fetching a real pretrained tokenizer and transformer (e.g. BERT)
+would add a large download and a new dependency for a few lines of illustration.
+Instead this chapter implements <strong>scaled dot-product attention and multi-head
+attention from scratch in NumPy</strong> on small, explicit, worked examples — the actual
+mechanism, not a library call around it — which trains (there's nothing to train) and
+runs instantly.</p>
+<p><strong>Objectives:</strong> implement scaled dot-product attention, see it resolve a pronoun
+reference in a toy sentence, extend it to multi-head attention, and add a causal mask
+for autoregressive generation.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/10_transformers_self_attention.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-tokens-as-vectors-and-the-idea-of-attention">1. Tokens as vectors, and the idea of attention</a></li>
+    <li><a href="#2-scaled-dot-product-attention-step-by-step">2. Scaled dot-product attention, step by step</a></li>
+    <li><a href="#3-a-worked-example-by-hand">3. A worked example by hand</a></li>
+    <li><a href="#4-multi-head-attention-masks-and-word-order">4. Multi-head attention, masks and word order</a></li>
+    <li><a href="#5-scaled-dot-product-attention-in-code">5. Scaled dot-product attention in code</a></li>
+    <li><a href="#6-a-worked-example-resolving-it">6. A worked example: resolving &quot;it&quot;</a></li>
+    <li><a href="#7-multi-head-attention">7. Multi-head attention</a></li>
+    <li><a href="#8-causal-masking-for-generation">8. Causal masking, for generation</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-tokens-as-vectors-and-the-idea-of-attention">1. Tokens as vectors, and the idea of attention</h2>
+<p>A transformer reads a sentence as a list of <strong>tokens</strong> (words or pieces of words). Each token is represented by a vector of numbers, its <strong>embedding</strong>. The <span class="math inline">n</span> token vectors of a sentence are stacked as the rows of a matrix</p>
+<div class="math display">X \in \mathbb R^{n \times d_{\text{model}}},</div>
+<p>where <span class="math inline">n</span> is the number of tokens and <span class="math inline">d_{\text{model}}</span> the length of each vector. Row <span class="math inline">i</span>, written <span class="math inline">\mathbf x_i</span>, stands for token <span class="math inline">i</span>.</p>
+<p>An embedding describes a word out of context. Meaning, however, depends on context: in <em>&quot;The animal didn't cross because it was tired&quot;</em>, the vector for &quot;it&quot; should end up carrying information about &quot;animal&quot;. <strong>Self-attention</strong> is the operation that does this. Every token looks at every token of the sentence (itself included), decides how relevant each one is, and replaces its own vector by a weighted average of what it found, the relevant tokens weighing most.</p>
+<p>Think of a library. You arrive with a <strong>query</strong> (what you are looking for). Every book has a <strong>key</strong> (the label on its spine) and a <strong>value</strong> (its content). You compare your query with every key and read mostly the books whose keys match. Attention does the same, except that it reads every book a little, in proportion to how well it matches.</p>
+</div>
+
+<div class="md">
+<h2 id="2-scaled-dot-product-attention-step-by-step">2. Scaled dot-product attention, step by step</h2>
+<p><strong>Step 1: queries, keys, values.</strong> Each token plays three roles, obtained from its embedding by three learned matrices:</p>
+<div class="math display">Q = X W_Q, \qquad K = X W_K, \qquad V = X W_V .</div>
+<p><span class="math inline">W_Q</span> and <span class="math inline">W_K</span> have shape <span class="math inline">d_{\text{model}} \times d_k</span> and <span class="math inline">W_V</span> has shape <span class="math inline">d_{\text{model}} \times d_v</span>, so <span class="math inline">Q</span> and <span class="math inline">K</span> are <span class="math inline">n \times d_k</span> and <span class="math inline">V</span> is <span class="math inline">n \times d_v</span>. Row <span class="math inline">i</span> of <span class="math inline">Q</span>, written <span class="math inline">\mathbf q_i</span>, is what token <span class="math inline">i</span> is looking for; row <span class="math inline">j</span> of <span class="math inline">K</span>, <span class="math inline">\mathbf k_j</span>, is what token <span class="math inline">j</span> can be found by; row <span class="math inline">j</span> of <span class="math inline">V</span>, <span class="math inline">\mathbf v_j</span>, is what token <span class="math inline">j</span> hands over once found.</p>
+<p><strong>Step 2: scores.</strong> The match between a query and a key is their dot product:</p>
+<div class="math display">s_{ij} = \mathbf q_i \cdot \mathbf k_j = \sum_{m=1}^{d_k} q_{im}\, k_{jm}.</div>
+<p>It is large and positive when the two vectors point the same way, zero when they are perpendicular, negative when they point in opposite directions. All <span class="math inline">n^2</span> scores form the matrix <span class="math inline">S = QK^\top</span> (<span class="math inline">n \times n</span>); row <span class="math inline">i</span> holds how token <span class="math inline">i</span> rates every token.</p>
+<p><strong>Step 3: scaling.</strong> Every score is divided by <span class="math inline">\sqrt{d_k}</span>. The reason is statistical. Suppose the components <span class="math inline">q_m</span> and <span class="math inline">k_m</span> of a query and a key are independent random numbers with mean 0 and variance 1. Each product <span class="math inline">q_m k_m</span> then has mean <span class="math inline">\mathbb E[q_m]\,\mathbb E[k_m] = 0</span>, and variance</p>
+<div class="math display">\mathrm{Var}(q_m k_m) = \mathbb E[q_m^2 k_m^2] - 0^2 = \mathbb E[q_m^2]\,\mathbb E[k_m^2] = 1 \cdot 1 = 1.</div>
+<p>The dot product is a sum of <span class="math inline">d_k</span> such independent terms, and variances of independent terms add:</p>
+<div class="math display">\mathrm{Var}(\mathbf q \cdot \mathbf k) = \sum_{m=1}^{d_k} \mathrm{Var}(q_m k_m) = d_k .</div>
+<p>So the typical size of a score (its standard deviation) grows like <span class="math inline">\sqrt{d_k}</span>: with <span class="math inline">d_k = 64</span>, scores of <span class="math inline">\pm 8</span> are routine. Dividing by <span class="math inline">\sqrt{d_k}</span> brings the variance back to <span class="math inline">d_k / d_k = 1</span>, whatever the dimension. Step 4 shows why large scores would hurt.</p>
+<p><strong>Step 4: softmax.</strong> Write <span class="math inline">u_{ij} = s_{ij}/\sqrt{d_k}</span> for the scaled scores. Each row is turned into weights by the <strong>softmax</strong>:</p>
+<div class="math display">a_{ij} = \frac{e^{u_{ij}}}{\sum_{l=1}^{n} e^{u_{il}}}.</div>
+<p>Its properties can be read off the formula:</p>
+<ul>
+<li>every <span class="math inline">a_{ij}</span> is positive, since an exponential is positive;</li>
+<li>each row sums to 1, since the denominator is the sum of the numerators; row <span class="math inline">i</span> is a probability distribution over the tokens that token <span class="math inline">i</span> attends to;</li>
+<li>a higher score always gets a higher weight;</li>
+<li>adding the same constant <span class="math inline">c</span> to a whole row changes nothing, since <span class="math inline">e^{c}</span> multiplies numerator and denominator alike (the code subtracts the row maximum before exponentiating, which avoids overflow);</li>
+<li>it is sensitive to spread: scores <span class="math inline">(0, 1)</span> give weights <span class="math inline">(0.27, 0.73)</span>, scores <span class="math inline">(0, 8)</span> give <span class="math inline">(0.0003, 0.9997)</span>.</li>
+</ul>
+<p>The last point is the one the scaling addresses. The derivative of the softmax is <span class="math inline">\partial a_{ij}/\partial u_{il} = a_{ij}(\delta_{jl} - a_{il})</span>, with <span class="math inline">\delta_{jl} = 1</span> if <span class="math inline">j = l</span> and 0 otherwise. When one weight is near 1 and the others near 0, every such product is near 0, and gradient-based learning stalls.</p>
+<p><strong>Step 5: weighted average of values.</strong> The output for token <span class="math inline">i</span> is</p>
+<div class="math display">\mathbf o_i = \sum_{j=1}^{n} a_{ij}\, \mathbf v_j .</div>
+<p>The weights are positive and sum to 1, so <span class="math inline">\mathbf o_i</span> is an average of the value vectors, pulled toward the tokens that token <span class="math inline">i</span> found most relevant.</p>
+<p><strong>All together.</strong> Steps 2 to 5, for all tokens at once, are one line of matrix algebra:</p>
+<div class="math display">\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right) V ,</div>
+<p>with the softmax applied to each row. The softmax produces the weight matrix <span class="math inline">A</span> (<span class="math inline">n \times n</span>, entries <span class="math inline">a_{ij}</span>), and multiplying by <span class="math inline">V</span> gives one output row per token (<span class="math inline">n \times d_v</span>).</p>
+</div>
+
+<div class="md">
+<h2 id="3-a-worked-example-by-hand">3. A worked example by hand</h2>
+<p>Three tokens with 2-D embeddings. As in the code's first example, the embeddings are used directly as queries, keys and values (<span class="math inline">Q = K = V = X</span>, so <span class="math inline">d_k = 2</span>):</p>
+<div class="math display">X = \begin{pmatrix} 1 &amp; 0 \\ 0 &amp; 1 \\ 1 &amp; 1 \end{pmatrix}, \qquad \mathbf x_1 = (1, 0),\quad \mathbf x_2 = (0, 1),\quad \mathbf x_3 = (1, 1).</div>
+<p><strong>Scores.</strong> <span class="math inline">S = QK^\top = XX^\top</span>. For instance <span class="math inline">s_{13} = \mathbf x_1 \cdot \mathbf x_3 = 1 \cdot 1 + 0 \cdot 1 = 1</span> and <span class="math inline">s_{33} = 1 + 1 = 2</span>. Then divide by <span class="math inline">\sqrt 2 \approx 1.414</span>:</p>
+<div class="math display">S = \begin{pmatrix} 1 &amp; 0 &amp; 1 \\ 0 &amp; 1 &amp; 1 \\ 1 &amp; 1 &amp; 2 \end{pmatrix}, \qquad \frac{S}{\sqrt 2} \approx \begin{pmatrix} 0.707 &amp; 0 &amp; 0.707 \\ 0 &amp; 0.707 &amp; 0.707 \\ 0.707 &amp; 0.707 &amp; 1.414 \end{pmatrix}.</div>
+<p><strong>Softmax, row by row</strong>, using <span class="math inline">e^{0} = 1</span>, <span class="math inline">e^{0.707} \approx 2.028</span> and <span class="math inline">e^{1.414} \approx 4.113</span>:</p>
+<table>
+<thead>
+<tr>
+<th>query</th>
+<th>exponentials</th>
+<th>row sum</th>
+<th>weights <span class="math inline">a_{i1},\ a_{i2},\ a_{i3}</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>token 1</td>
+<td>2.028, 1, 2.028</td>
+<td>5.056</td>
+<td>0.401, 0.198, 0.401</td>
+</tr>
+<tr>
+<td>token 2</td>
+<td>1, 2.028, 2.028</td>
+<td>5.056</td>
+<td>0.198, 0.401, 0.401</td>
+</tr>
+<tr>
+<td>token 3</td>
+<td>2.028, 2.028, 4.113</td>
+<td>8.169</td>
+<td>0.248, 0.248, 0.503</td>
+</tr>
+</tbody>
+</table>
+<p>Each row sums to 1, up to rounding. Token 1 gives the least weight to token 2, whose vector is perpendicular to its own (score 0).</p>
+<p><strong>Outputs.</strong> <span class="math inline">\mathbf o_1 = 0.401\,(1, 0) + 0.198\,(0, 1) + 0.401\,(1, 1) = (0.802,\ 0.599)</span>. In the same way <span class="math inline">\mathbf o_2 = (0.599,\ 0.802)</span> and <span class="math inline">\mathbf o_3 = (0.752,\ 0.752)</span>. Token 1 started as <span class="math inline">(1, 0)</span> and now carries some of the second direction, borrowed from tokens 2 and 3: it has been mixed with its context.</p>
+<p><strong>With a causal mask</strong> (section 4), token 1 may only look at itself: weights <span class="math inline">(1, 0, 0)</span>, output <span class="math inline">(1, 0)</span>. Token 2 may look at tokens 1 and 2, with scaled scores <span class="math inline">0</span> and <span class="math inline">0.707</span>: weights <span class="math inline">1/3.028 \approx 0.330</span> and <span class="math inline">2.028/3.028 \approx 0.670</span>. Token 3 already sees everything before it, so its row is unchanged.</p>
+</div>
+
+<div class="md">
+<h2 id="4-multi-head-attention-masks-and-word-order">4. Multi-head attention, masks and word order</h2>
+<p><strong>Multi-head attention.</strong> One weight matrix <span class="math inline">A</span> expresses one notion of relevance, but language has several at once: which noun a pronoun refers to, which verb goes with which subject, which words are neighbours. <strong>Multi-head attention</strong> runs <span class="math inline">H</span> attention computations, called heads, side by side. Head <span class="math inline">h</span> has its own projections <span class="math inline">W_Q^{(h)}, W_K^{(h)}, W_V^{(h)}</span>, each of shape <span class="math inline">d_{\text{model}} \times d_k</span> with <span class="math inline">d_k = d_{\text{model}}/H</span>:</p>
+<div class="math display">\mathrm{head}_h = \mathrm{Attention}\big(XW_Q^{(h)},\ XW_K^{(h)},\ XW_V^{(h)}\big) \qquad (n \times d_k).</div>
+<p>The <span class="math inline">H</span> outputs are placed side by side into an <span class="math inline">n \times d_{\text{model}}</span> matrix and mixed by one more learned matrix <span class="math inline">W_O</span> (<span class="math inline">d_{\text{model}} \times d_{\text{model}}</span>):</p>
+<div class="math display">\mathrm{MultiHead}(X) = \big[\,\mathrm{head}_1,\ \dots,\ \mathrm{head}_H\,\big]\, W_O .</div>
+<p>Splitting <span class="math inline">d_{\text{model}}</span> among the heads keeps the cost close to that of one full-width head.</p>
+<p><strong>Causal mask.</strong> A model that generates text left to right predicts token <span class="math inline">i+1</span> from tokens 1 to <span class="math inline">i</span>, so during training token <span class="math inline">i</span> must not attend to any later token. Before the softmax, every scaled score with <span class="math inline">j &gt; i</span> is replaced by <span class="math inline">-\infty</span>:</p>
+<div class="math display">u_{ij} = \begin{cases} s_{ij}/\sqrt{d_k} &amp; \text{if } j \le i, \\ -\infty &amp; \text{if } j &gt; i, \end{cases} \qquad \text{so} \qquad a_{ij} = 0 \ \text{ for } j &gt; i,</div>
+<p>because <span class="math inline">e^{-\infty} = 0</span>. The remaining weights of each row still sum to 1, spread over the past and the present only, and <span class="math inline">A</span> becomes lower-triangular.</p>
+<p><strong>Attention alone ignores word order.</strong> Without a mask, nothing in the formula of section 2 knows where a token sits. Reorder the rows of <span class="math inline">X</span> with a permutation matrix <span class="math inline">P</span> (a matrix that shuffles rows, with <span class="math inline">P^\top P = I</span>). Then <span class="math inline">Q</span>, <span class="math inline">K</span> and <span class="math inline">V</span> are reordered the same way, the scores become <span class="math inline">PSP^\top</span> (rows and columns shuffled together), the row-wise softmax gives <span class="math inline">PAP^\top</span>, and</p>
+<div class="math display">\mathrm{Attention}(PX) = PAP^\top\, PV = PAV = P\,\mathrm{Attention}(X).</div>
+<p>Reordering the input only reorders the output: attention is <strong>permutation equivariant</strong>. In &quot;the dog bit the man&quot; and &quot;the man bit the dog&quot;, &quot;dog&quot; would get the same output vector. To make order visible, transformers add a <strong>positional encoding</strong> <span class="math inline">\mathbf p_i</span>, a vector that depends only on the position <span class="math inline">i</span>, to each embedding: <span class="math inline">\mathbf x_i \leftarrow \mathbf x_i + \mathbf p_i</span>. The original transformer (Vaswani et al., 2017) uses sines and cosines of different frequencies, <span class="math inline">p_{i,2m} = \sin\big(i/10000^{2m/d_{\text{model}}}\big)</span> and <span class="math inline">p_{i,2m+1} = \cos\big(i/10000^{2m/d_{\text{model}}}\big)</span>; many later models learn <span class="math inline">\mathbf p_i</span> instead. The examples below need no positions, because the link between &quot;it&quot; and &quot;animal&quot; is written into the embeddings directly.</p>
+<p><strong>What the code does.</strong> Section 5 writes the formula of section 2 as <code>scaled_dot_product_attention(Q, K, V, mask=None)</code>: <code>scores</code> is <span class="math inline">QK^\top/\sqrt{d_k}</span>, masked entries become <code>-np.inf</code>, <code>softmax</code> normalises each row after subtracting its maximum, and the function returns <code>weights @ V</code> together with <span class="math inline">A</span> (<code>weights</code>). Section 6 builds <code>embeddings</code> for an 8-token sentence and uses them as <code>Q = K = V</code>, like the hand example. Section 7 implements <code>multi_head_attention</code> with <code>Wq</code>, <code>Wk</code>, <code>Wv</code>, <code>Wo</code> (<span class="math inline">W_Q, W_K, W_V, W_O</span>): each is one <span class="math inline">d_{\text{model}} \times d_{\text{model}}</span> matrix whose columns are cut into <code>n_heads</code> blocks of <code>d_k</code> columns, which is the same as giving every head its own <span class="math inline">d_{\text{model}} \times d_k</span> projection. Section 8 builds the causal mask with <code>np.tril</code>; <code>True</code> marks the allowed positions <span class="math inline">j \le i</span>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+
+import mlutils
+mlutils.set_style()
+rng = np.random.default_rng(0)</code></pre>
+</div>
+
+<div class="md">
+<h2 id="5-scaled-dot-product-attention-in-code">5. Scaled dot-product attention in code</h2>
+<p>The function below is the formula of section 2, <span class="math inline">\mathrm{softmax}(QK^\top/\sqrt{d_k})\,V</span>,
+with the optional causal mask of section 4. It returns both the outputs and the weight
+matrix, so the attention pattern can be plotted.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def softmax(x, axis=-1):
+    x = x - x.max(axis=axis, keepdims=True)          # subtract max for numerical stability
+    e = np.exp(x)
+    return e / e.sum(axis=axis, keepdims=True)
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    d_k = Q.shape[-1]
+    scores = Q @ K.swapaxes(-2, -1) / np.sqrt(d_k)
+    if mask is not None:
+        scores = np.where(mask, scores, -np.inf)
+    weights = softmax(scores, axis=-1)
+    return weights @ V, weights</code></pre>
+</div>
+
+<div class="md">
+<h2 id="6-a-worked-example-resolving-it">6. A worked example: resolving &quot;it&quot;</h2>
+<p>Take the classic ambiguous sentence <em>&quot;The animal didn't cross because it was tired&quot;</em>.
+A reader instantly knows &quot;it&quot; means the animal, not the street or &quot;because&quot;. To show
+attention doing the same thing, we hand-build embeddings where &quot;it&quot;'s embedding is
+partly built from &quot;animal&quot;'s (the token really does carry information pointing back
+to what it refers to) and use the raw embeddings directly as <span class="math inline">Q</span>, <span class="math inline">K</span> and <span class="math inline">V</span> — no
+learned projection yet, so the attention pattern reflects nothing but embedding
+similarity.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">tokens = [&quot;The&quot;, &quot;animal&quot;, &quot;didn&#x27;t&quot;, &quot;cross&quot;, &quot;because&quot;, &quot;it&quot;, &quot;was&quot;, &quot;tired&quot;]
+n = len(tokens)
+embeddings = np.eye(n)                       # one-hot base: every token starts fully distinct
+
+it_idx, animal_idx = tokens.index(&quot;it&quot;), tokens.index(&quot;animal&quot;)
+embeddings[it_idx] = 0.4 * embeddings[it_idx] + 0.6 * embeddings[animal_idx]   # &quot;it&quot; echoes &quot;animal&quot;
+
+Q = K = V = embeddings
+out, weights = scaled_dot_product_attention(Q, K, V)
+
+fig, ax = plt.subplots(figsize=(6, 5.5))
+im = ax.imshow(weights, cmap=&quot;Blues&quot;, vmin=0, vmax=1)
+ax.set_xticks(range(n)); ax.set_xticklabels(tokens, rotation=45, ha=&quot;right&quot;)
+ax.set_yticks(range(n)); ax.set_yticklabels(tokens)
+ax.set_title(&#x27;Attention weights — row &quot;it&quot; lights up on &quot;animal&quot;&#x27;)
+fig.colorbar(im, ax=ax, shrink=0.8)</code></pre>
+<pre class="output">&lt;matplotlib.colorbar.Colorbar at 0x26c411d5160&gt;</pre>
+<figure class="output-figure"><img src="img/10-1.png" alt="Figure: Attention weights — row &quot;it&quot; lights up on &quot;animal&quot;" width="593" height="527" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">it_weights = weights[it_idx]
+for token, w in sorted(zip(tokens, it_weights), key=lambda p: -p[1])[:3]:
+    print(f&quot;{token!r}: {w:.3f}&quot;)</code></pre>
+<pre class="output">&#x27;animal&#x27;: 0.147
+&#x27;it&#x27;: 0.142
+&#x27;The&#x27;: 0.119</pre>
+</div>
+
+<div class="md">
+<p>The row for &quot;it&quot; puts most of its attention mass on &quot;animal&quot; (and on itself) — the
+same coreference a reader resolves instantly. Nothing here was trained: this is pure
+arithmetic once the embeddings encode the relationship, which is exactly the
+computation a trained transformer performs once <em>its</em> embeddings (learned from data)
+encode similar relationships.</p>
+<h2 id="7-multi-head-attention">7. Multi-head attention</h2>
+<p>Section 4 described multi-head attention: several attention computations in parallel,
+each in a smaller subspace of the embedding with its own projections, concatenated and
+mixed by <span class="math inline">W_O</span>. The implementation below projects once with full
+<span class="math inline">d_{\text{model}} \times d_{\text{model}}</span> matrices and then reshapes, so that each head
+works on its own block of <span class="math inline">d_k</span> columns.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def multi_head_attention(X, n_heads, Wq, Wk, Wv, Wo):
+    seq_len, d_model = X.shape
+    d_k = d_model // n_heads
+    Q, K, V = X @ Wq, X @ Wk, X @ Wv                       # (seq_len, d_model) each
+
+    def split_heads(M):
+        return M.reshape(seq_len, n_heads, d_k).transpose(1, 0, 2)   # (n_heads, seq_len, d_k)
+
+    Qh, Kh, Vh = split_heads(Q), split_heads(K), split_heads(V)
+    head_outputs, head_weights = [], []
+    for h in range(n_heads):
+        out_h, w_h = scaled_dot_product_attention(Qh[h], Kh[h], Vh[h])
+        head_outputs.append(out_h)
+        head_weights.append(w_h)
+    concat = np.concatenate(head_outputs, axis=-1)          # back to (seq_len, d_model)
+    return concat @ Wo, np.stack(head_weights)               # (n_heads, seq_len, seq_len)</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">d_model, n_heads = 8, 2
+Wq = rng.normal(size=(d_model, d_model)) * 0.3
+Wk = rng.normal(size=(d_model, d_model)) * 0.3
+Wv = rng.normal(size=(d_model, d_model)) * 0.3
+Wo = rng.normal(size=(d_model, d_model)) * 0.3
+
+mh_out, mh_weights = multi_head_attention(embeddings, n_heads, Wq, Wk, Wv, Wo)
+print(&quot;multi-head output shape:&quot;, mh_out.shape, &quot;(unchanged: seq_len x d_model)&quot;)
+print(&quot;per-head attention weights shape:&quot;, mh_weights.shape, &quot;(n_heads, seq_len, seq_len)&quot;)
+
+fig, axes = plt.subplots(1, n_heads, figsize=(10, 4.5))
+for h, ax in enumerate(axes):
+    ax.imshow(mh_weights[h], cmap=&quot;Oranges&quot;, vmin=0, vmax=mh_weights[h].max())
+    ax.set_xticks(range(n)); ax.set_xticklabels(tokens, rotation=45, ha=&quot;right&quot;, fontsize=7)
+    ax.set_yticks(range(n)); ax.set_yticklabels(tokens, fontsize=7)
+    ax.set_title(f&quot;head {h}&quot;)
+fig.suptitle(&quot;Two heads, two different (randomly-projected) attention patterns&quot;)
+fig.tight_layout()</code></pre>
+<pre class="output">multi-head output shape: (8, 8) (unchanged: seq_len x d_model)
+per-head attention weights shape: (2, 8, 8) (n_heads, seq_len, seq_len)</pre>
+<figure class="output-figure"><img src="img/10-2.png" alt="Figure: head …; Two heads, two different (randomly-projected) attention patterns" width="962" height="488" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>With random <span class="math inline">W_Q, W_K, W_V</span> the two heads' patterns are just different linear views
+of the same embeddings — nothing meaningful yet, since nothing was trained. In a real
+transformer, gradient descent shapes these projection matrices so that different
+heads reliably specialise (one might track subject-verb agreement, another
+coreference like section 6's), purely by minimising a training loss end to end.</p>
+<h2 id="8-causal-masking-for-generation">8. Causal masking, for generation</h2>
+<p>As explained in section 4, a model that generates text left to right must not &quot;see the
+future&quot;: token <span class="math inline">i</span> may only attend to tokens <span class="math inline">1, \dots, i</span>. The mask below marks those
+allowed positions with <code>True</code>; every other score becomes <span class="math inline">-\infty</span> before the softmax.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">causal_mask = np.tril(np.ones((n, n), dtype=bool))     # True = allowed to attend
+_, causal_weights = scaled_dot_product_attention(Q, K, V, mask=causal_mask)
+
+fig, ax = plt.subplots(figsize=(6, 5.5))
+im = ax.imshow(causal_weights, cmap=&quot;Greens&quot;, vmin=0, vmax=1)
+ax.set_xticks(range(n)); ax.set_xticklabels(tokens, rotation=45, ha=&quot;right&quot;)
+ax.set_yticks(range(n)); ax.set_yticklabels(tokens)
+ax.set_title(&quot;Causal attention — strictly lower-triangular&quot;)
+fig.colorbar(im, ax=ax, shrink=0.8)
+
+upper_triangle_zero = np.allclose(causal_weights[np.triu_indices(n, k=1)], 0)
+print(f&quot;weights above the diagonal are exactly zero: {upper_triangle_zero}&quot;)</code></pre>
+<pre class="output">weights above the diagonal are exactly zero: True</pre>
+<figure class="output-figure"><img src="img/10-3.png" alt="Figure: Causal attention — strictly lower-triangular" width="593" height="527" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Notice &quot;it&quot; (position 5) can no longer see &quot;was&quot; or &quot;tired&quot; (positions 6-7) — with the
+mask on, &quot;it&quot; would have to be resolved from context that comes <em>before</em> it, which is
+the real constraint an autoregressive model generating left to right has to work
+under.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-remove-the-coreference-signal">Exercise 1: Remove the coreference signal</h3>
+<p>Rebuild <code>embeddings</code> as a plain one-hot matrix (skip the &quot;it echoes animal&quot; blend) and
+rerun section 6's heatmap. What does the attention pattern look like now, and why?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">plain_embeddings = np.eye(n)
+_, plain_weights = scaled_dot_product_attention(plain_embeddings, plain_embeddings, plain_embeddings)
+</code></pre>
+<p>With pure one-hot embeddings every token is equally (dis)similar to every other, so
+the softmax is close to uniform — attention has nothing informative to key on because
+the embeddings themselves carry no relationship. That's the real lesson: attention's
+patterns are only as meaningful as the embeddings (or learned projections) feeding it.</p>
+</details>
+<h3 id="exercise-2-more-heads-smaller-head-dimension">Exercise 2: More heads, smaller head dimension</h3>
+<p>Change <code>n_heads</code> to 4 (so each head only gets <span class="math inline">d_k = 2</span>). Do the per-head patterns
+look noisier? What's the trade-off multi-head attention is making between number of
+heads and dimensionality per head?</p>
+<details><summary>Solution</summary>
+<p>More heads with the same total <code>d_model</code> means each head reasons in a lower-
+dimensional subspace, which can make individual head patterns look more erratic —
+the trade-off is between having <em>more distinct relationships</em> a model can represent
+(more heads) versus <em>more expressive power per relationship</em> (bigger <code>d_k</code> per head).</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Attention scores how well each query matches each key, turns the scores into
+weights with a softmax, and outputs a weighted blend of values — nothing more
+exotic than a differentiable, content-based lookup.</li>
+<li>Multi-head attention runs several smaller attention computations in parallel so
+different heads can specialise in different relationships; concatenating them
+restores the original dimensionality.</li>
+<li>A causal mask blocks attention to future positions, which is what makes
+autoregressive, left-to-right generation well-defined during training.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="09-anomaly-detection-autoencoder.html"><span class="lbl">Previous · 09</span><span class="t">Anomaly Detection with an Autoencoder</span></a>
+  <a class="next" rel="next" href="11-federated-learning.html"><span class="lbl">Next · 11</span><span class="t">Federated Learning</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 10 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

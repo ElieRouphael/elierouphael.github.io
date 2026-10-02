@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>06 · Autocorrelation and ARMA Models — Time-series course</title>
+<meta name="description" content="ACF and PACF from scratch, AR, MA and ARMA fingerprints, AIC/BIC, Ljung–Box checks and mean-reverting forecasts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 06 of 11</span>
+  <h1>Autocorrelation and ARMA Models</h1>
+  <div class="intro prose">
+<p>Every chapter so far has run into the same fact about PM2.5: <strong>today says a lot about tomorrow, and very little about next week</strong>. Naive captured the first half, climatology the second, and exponential smoothing could only switch between them. What we need is a model that <em>remembers</em> recent values and <em>lets that memory fade gradually</em> towards a typical level.</p>
+<p>That's exactly what <strong>autoregressive moving-average (ARMA)</strong> models do. They're the workhorses of classical time-series analysis. This chapter builds them from the ground up, starting with the tools that reveal a series' memory, the ACF and PACF, and ending with the best forecasts on our scoreboard so far.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>compute and read the <strong>autocorrelation (ACF)</strong> and <strong>partial autocorrelation (PACF)</strong> functions, and implement both from scratch</li>
+<li>describe <strong>AR</strong>, <strong>MA</strong> and <strong>ARMA</strong> processes, and recognise their ACF/PACF fingerprints</li>
+<li>fit ARMA models, choose orders with <strong>AIC/BIC</strong>, and check residuals with the <strong>Ljung–Box</strong> test</li>
+<li>explain why ARMA forecasts <strong>revert to the mean</strong>, and why their intervals <strong>stop widening</strong></li>
+<li>combine a seasonal profile with an ARMA model for the deviations, and backtest it honestly</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/06_autocorrelation_and_arma.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-the-autocorrelation-function-acf">1. The autocorrelation function (ACF)</a></li>
+    <li><a href="#2-the-partial-autocorrelation-function-pacf">2. The partial autocorrelation function (PACF)</a></li>
+    <li><a href="#3-a-zoo-of-processes-and-their-fingerprints">3. A zoo of processes and their fingerprints</a></li>
+    <li><a href="#4-fitting-an-arma-model">4. Fitting an ARMA model</a></li>
+    <li><a href="#5-how-arma-models-forecast">5. How ARMA models forecast</a></li>
+    <li><a href="#6-arma-for-beijing-pm2-5">6. ARMA for Beijing PM2.5</a></li>
+    <li><a href="#7-the-backtest">7. The backtest</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import warnings
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.arima_process import ArmaProcess
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.stattools import acf, pacf
+from scipy.signal import lfilter
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 3)
+
+daily = tsutils.load_daily_pm25()
+y, actual = daily[&quot;pm25&quot;], daily[&quot;actual&quot;]
+origins, H = tsutils.BACKTEST_ORIGINS, tsutils.HORIZON</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-the-autocorrelation-function-acf">1. The autocorrelation function (ACF)</h2>
+<p>The <strong>autocorrelation at lag <span class="math inline">k</span></strong> is the correlation between the series and itself shifted by <span class="math inline">k</span> steps. For a sample <span class="math inline">y_1, \dots, y_n</span> with mean <span class="math inline">\bar y</span>, the standard estimate is</p>
+<div class="math display">r_k = \frac{\sum_{t=k+1}^{n} (y_t - \bar y)(y_{t-k} - \bar y)}{\sum_{t=1}^{n} (y_t - \bar y)^2}.</div>
+<p>Note the denominator: it uses <strong>all</strong> <span class="math inline">n</span> terms, not just the <span class="math inline">n - k</span> overlapping ones. That shrinks long-lag estimates slightly towards zero, but it guarantees the ACF behaves like a proper autocorrelation function, which is why every library uses it.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def sample_acf(x, max_lag):
+    x = np.asarray(x, dtype=float) - np.mean(x)
+    denominator = np.sum(x * x)
+    return np.array([np.sum(x[k:] * x[:-k]) / denominator for k in range(1, max_lag + 1)])
+
+log_y = np.log(y)
+print(&quot;matches statsmodels:&quot;, np.allclose(sample_acf(log_y, 10), acf(log_y, nlags=10)[1:]))</code></pre>
+<pre class="output">matches statsmodels: True</pre>
+</div>
+
+<div class="md">
+<h3 id="how-big-is-significant">How big is &quot;significant&quot;?</h3>
+<p>If the series were <strong>white noise</strong>, each <span class="math inline">r_k</span> would be approximately normal with mean 0 and standard deviation <span class="math inline">1/\sqrt{n}</span>. So values outside <span class="math inline">\pm 1.96/\sqrt{n}</span> are unusual <em>for white noise</em>: that's the shaded band on every ACF plot.</p>
+<p>Two cautions when reading those bands. First, with 30 lags on the plot, about <strong>1 or 2 will poke outside by chance</strong> even for pure noise, since each has a 5% chance. Don't build a model around one marginal spike. Second, the band assumes white noise. Once the early lags are clearly non-zero, later lags have wider uncertainty than the band suggests.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def plot_acf_pacf(series, lags=20, title=&quot;&quot;, theory=None):
+    &quot;&quot;&quot;Sample ACF and PACF as stems, optional theoretical values as dots, with ±1.96/√n bands.&quot;&quot;&quot;
+    fig, axes = plt.subplots(1, 2, figsize=(12, 3))
+    band = 1.96 / np.sqrt(len(series))
+    k = np.arange(1, lags + 1)
+    for ax, name, values in [(axes[0], &quot;ACF&quot;, acf(series, nlags=lags)[1:]),
+                             (axes[1], &quot;PACF&quot;, pacf(series, nlags=lags)[1:])]:
+        ax.vlines(k, 0, values, lw=2)
+        ax.axhline(0, color=&quot;k&quot;, lw=0.8)
+        ax.axhspan(-band, band, color=&quot;#1f6feb&quot;, alpha=0.12)
+        if theory is not None:
+            ax.plot(k, theory[name], &quot;o&quot;, color=&quot;#d1495b&quot;, ms=4, label=&quot;theory&quot;)
+            ax.legend(loc=&quot;upper right&quot;, fontsize=8)
+        ax.set(title=f&quot;{title} {name}&quot;.strip(), xlabel=&quot;lag&quot;)
+    fig.tight_layout()
+
+rng = np.random.default_rng(0)
+plot_acf_pacf(pd.Series(rng.normal(size=500)), lags=30, title=&quot;White noise:&quot;)</code></pre>
+<figure class="output-figure"><img src="img/06-1.png" alt="Figure 1 produced by the code above" width="1181" height="290" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-the-partial-autocorrelation-function-pacf">2. The partial autocorrelation function (PACF)</h2>
+<p>The ACF has a blind spot. If today depends on yesterday, and yesterday on the day before, then today and the day before will be correlated <strong>even if there's no direct link</strong> between them. The correlation is passed along the chain.</p>
+<p>The <strong>partial autocorrelation at lag <span class="math inline">k</span></strong> removes that relay effect. It's the correlation between <span class="math inline">y_t</span> and <span class="math inline">y_{t-k}</span> <strong>after accounting for the lags in between</strong>. The clearest way to compute it is by regression: regress <span class="math inline">y_t</span> on <span class="math inline">y_{t-1}, \dots, y_{t-k}</span>, and the coefficient on <span class="math inline">y_{t-k}</span> is the PACF at lag <span class="math inline">k</span>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def sample_pacf(x, max_lag):
+    &quot;&quot;&quot;PACF(k) = last coefficient when regressing y_t on a constant and y_{t-1}, ..., y_{t-k}.&quot;&quot;&quot;
+    x = np.asarray(x, dtype=float)
+    out = []
+    for k in range(1, max_lag + 1):
+        target = x[k:]
+        lagged = [x[k - j:-j] for j in range(1, k + 1)]
+        design = np.column_stack([np.ones(len(target))] + lagged)
+        coefficients = np.linalg.lstsq(design, target, rcond=None)[0]
+        out.append(coefficients[-1])
+    return np.array(out)
+
+print(&quot;matches statsmodels (OLS method):&quot;,
+      np.allclose(sample_pacf(log_y, 10), pacf(log_y, nlags=10, method=&quot;ols&quot;)[1:]))</code></pre>
+<pre class="output">matches statsmodels (OLS method): True</pre>
+</div>
+
+<div class="md">
+<p>(statsmodels' default PACF uses a slightly different estimator, Yule–Walker, which gives nearly the same values on long series. Our plots use the default.)</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-a-zoo-of-processes-and-their-fingerprints">3. A zoo of processes and their fingerprints</h2>
+<p><strong>Autoregressive, AR(<span class="math inline">p</span>):</strong> today is a weighted sum of the last <span class="math inline">p</span> values plus a new shock,</p>
+<div class="math display">y_t = c + \phi_1 y_{t-1} + \dots + \phi_p y_{t-p} + \varepsilon_t.</div>
+<p><strong>Moving average, MA(<span class="math inline">q</span>):</strong> today is a weighted sum of the last <span class="math inline">q</span> <strong>shocks</strong>,</p>
+<div class="math display">y_t = \mu + \varepsilon_t + \theta_1 \varepsilon_{t-1} + \dots + \theta_q \varepsilon_{t-q}.</div>
+<blockquote>
+<p>⚠️ An MA <em>model</em> has nothing to do with moving-average <em>smoothing</em> from chapter 01. The name is historical. An MA model says today is built from recent <strong>random shocks</strong>, not from an average of recent observations.</p>
+</blockquote>
+<p><strong>ARMA(<span class="math inline">p, q</span>)</strong> has both parts. Each has a characteristic fingerprint:</p>
+<table>
+<thead>
+<tr>
+<th>Process</th>
+<th>ACF</th>
+<th>PACF</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AR(<span class="math inline">p</span>)</td>
+<td>tails off gradually (decay, possibly oscillating)</td>
+<td><strong>cuts off</strong> after lag <span class="math inline">p</span></td>
+</tr>
+<tr>
+<td>MA(<span class="math inline">q</span>)</td>
+<td><strong>cuts off</strong> after lag <span class="math inline">q</span></td>
+<td>tails off gradually</td>
+</tr>
+<tr>
+<td>ARMA(<span class="math inline">p,q</span>)</td>
+<td>tails off</td>
+<td>tails off</td>
+</tr>
+</tbody>
+</table>
+<p>The logic: in an AR(<span class="math inline">p</span>), once you know the last <span class="math inline">p</span> values, nothing older adds information, so the PACF stops. In an MA(<span class="math inline">q</span>), a shock is forgotten after <span class="math inline">q</span> steps, so the ACF stops.</p>
+<p>statsmodels' <code>ArmaProcess</code> simulates any ARMA process and also gives its <strong>theoretical</strong> ACF and PACF, which we'll overlay as dots.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">zoo = {
+    &quot;AR(1): φ=0.7&quot;: ([0.7], []),
+    &quot;AR(2): φ=(0.5, 0.3)&quot;: ([0.5, 0.3], []),
+    &quot;MA(1): θ=0.8&quot;: ([], [0.8]),
+    &quot;ARMA(1,1): φ=0.7, θ=0.4&quot;: ([0.7], [0.4]),
+}
+
+for name, (ar, ma) in zoo.items():
+    process = ArmaProcess.from_coeffs(ar, ma)
+    sample = process.generate_sample(1000, distrvs=np.random.default_rng(1).standard_normal)
+    theory = {&quot;ACF&quot;: process.acf(21)[1:], &quot;PACF&quot;: process.pacf(21)[1:]}
+    plot_acf_pacf(pd.Series(sample), lags=20, title=name, theory=theory)</code></pre>
+<figure class="output-figure"><img src="img/06-2.png" alt="Figure 2 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/06-3.png" alt="Figure 3 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/06-4.png" alt="Figure 4 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/06-5.png" alt="Figure 5 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The sample values (stems) follow the theory (dots) closely with 1,000 observations, and the fingerprints are clear:</p>
+<ul>
+<li><strong>AR(1):</strong> the ACF decays geometrically (<span class="math inline">0.7^k</span>), and the PACF has a single spike.</li>
+<li><strong>AR(2):</strong> the ACF decays, and the PACF has two spikes.</li>
+<li><strong>MA(1):</strong> the ACF has a single spike, and the PACF decays with alternating sign.</li>
+<li><strong>ARMA(1,1):</strong> both tail off, so neither plot pins down the orders. That's where information criteria come in (section 6).</li>
+</ul>
+<p>On real data with a few hundred points, the patterns are rarely this clean. The fingerprints are a <strong>starting point</strong> for identification, not a verdict.</p>
+<h3 id="stationarity-and-invertibility">Stationarity and invertibility</h3>
+<p>Not every set of coefficients gives a sensible process. An AR model is <strong>stationary</strong> only if its coefficients don't let shocks build up. For AR(1) that means <span class="math inline">|\phi| &lt; 1</span>, and <span class="math inline">\phi = 1</span> is chapter 03's random walk. The general condition is that the roots of <span class="math inline">1 - \phi_1 z - \dots - \phi_p z^p</span> lie <strong>outside the unit circle</strong>. MA models have a mirror-image condition, <strong>invertibility</strong>, which makes the shocks recoverable from the data. <code>ArmaProcess</code> checks both:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">for ar in ([0.7], [1.0], [0.5, 0.3], [0.5, 0.6]):
+    process = ArmaProcess.from_coeffs(ar, [])
+    print(f&quot;AR coefficients {ar}: stationary = {process.isstationary}&quot;)</code></pre>
+<pre class="output">AR coefficients [0.7]: stationary = True
+AR coefficients [1.0]: stationary = False
+AR coefficients [0.5, 0.3]: stationary = True
+AR coefficients [0.5, 0.6]: stationary = False</pre>
+</div>
+
+<div class="md">
+<p><span class="math inline">(0.5, 0.6)</span> fails even though each coefficient is below 1: together they sum above 1, and the process would explode.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-fitting-an-arma-model">4. Fitting an ARMA model</h2>
+<p>statsmodels fits ARMA models by <strong>maximum likelihood</strong> through its <code>ARIMA</code> class. The order is <code>(p, d, q)</code>, and the middle number is the differencing from chapter 03, which we'll use in chapter 07; for now it's 0. Let's check we can recover known coefficients from a simulated AR(2):</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">true_process = ArmaProcess.from_coeffs([0.5, 0.3], [])
+simulated = true_process.generate_sample(500, distrvs=np.random.default_rng(2).standard_normal)
+
+fit = ARIMA(simulated, order=(2, 0, 0), trend=&quot;c&quot;).fit()
+pd.DataFrame({&quot;estimate&quot;: fit.params, &quot;std error&quot;: fit.bse,
+              &quot;true&quot;: [0, 0.5, 0.3, 1.0]}, index=[&quot;const&quot;, &quot;φ1&quot;, &quot;φ2&quot;, &quot;σ²&quot;])</code></pre>
+<pre class="output">       estimate  std error  true
+const    -0.256      0.190   0.0
+φ1        0.463      0.044   0.5
+φ2        0.297      0.045   0.3
+σ²        1.022      0.066   1.0</pre>
+</div>
+
+<div class="md">
+<p>The estimates land within about two standard errors of the truth. They're close but not exact: 500 observations carry limited information, and Exercise 2 shows that AR estimates are also slightly <strong>biased towards zero</strong> in short series.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-how-arma-models-forecast">5. How ARMA models forecast</h2>
+<p>For an AR(1) with mean <span class="math inline">\mu</span>, the forecast <span class="math inline">h</span> steps ahead is</p>
+<div class="math display">\hat y_{T+h} = \mu + \phi^h\,(y_T - \mu).</div>
+<p>Today's departure from the mean <strong>decays geometrically</strong> towards zero, exactly the <em>damped persistence</em> forecast you built by hand in chapter 04's Exercise 2. Now it's a fitted model with a proper error structure.</p>
+<p>The forecast <strong>variance</strong> grows with the horizon, but only up to a limit:</p>
+<div class="math display">\operatorname{Var}(y_{T+h} - \hat y_{T+h}) = \sigma^2 \,(1 + \phi^2 + \phi^4 + \dots + \phi^{2(h-1)}) \;\longrightarrow\; \frac{\sigma^2}{1 - \phi^2}.</div>
+<p>For a stationary series, far-ahead uncertainty is simply the series' natural spread. Compare the random walk from chapter 03, whose uncertainty grows without limit.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">steps = 40
+shocks = np.random.default_rng(4).normal(size=300)
+ar_path = lfilter([1], [1, -0.8], shocks)      # AR(1) recursion, as in chapter 03
+walk_path = np.cumsum(shocks)                  # same shocks, no reversion
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+for ax, series, order, title in [(axes[0], ar_path, (1, 0, 0), &quot;AR(1), φ = 0.8: forecasts revert, intervals level off&quot;),
+                                 (axes[1], walk_path, (0, 1, 0), &quot;Random walk: forecasts stay flat, intervals keep widening&quot;)]:
+    result = ARIMA(series, order=order, trend=&quot;c&quot; if order[1] == 0 else &quot;n&quot;).fit()
+    forecast = result.get_forecast(steps)
+    t_future = np.arange(len(series), len(series) + steps)
+    ax.plot(np.arange(len(series))[-80:], series[-80:], color=&quot;k&quot;, lw=1)
+    ax.plot(t_future, forecast.predicted_mean, color=&quot;#d1495b&quot;)
+    band = forecast.conf_int(alpha=0.2)
+    ax.fill_between(t_future, band[:, 0], band[:, 1], color=&quot;#d1495b&quot;, alpha=0.2)
+    ax.set_title(title, fontsize=10)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/06-6.png" alt="Figure 6 produced by the code above" width="1290" height="390" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-arma-for-beijing-pm2-5">6. ARMA for Beijing PM2.5</h2>
+<p>Our series has a seasonal profile (chapter 02) that an ARMA model with a constant mean can't represent. So we split the job in two, on the log scale:</p>
+<div class="math display">\log y_t = \underbrace{s(\text{day of year}_t)}_{\text{seasonal profile}} + \underbrace{a_t}_{\text{anomaly: ARMA}}</div>
+<p>The profile <span class="math inline">s</span> is a log-scale climatology: the median log PM2.5 for each day of the year, smoothed over a month. It's learned <strong>only from the history available at each origin</strong>. <code>tsutils.log_climatology_profile</code> computes it. The ARMA model then describes how the day-to-day <strong>anomalies</strong> <span class="math inline">a_t</span> remember and forget.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">train = y[:&quot;2013-12-31&quot;]
+profile = tsutils.log_climatology_profile(train)
+
+def anomalies(series, profile):
+    return np.log(series) - profile.reindex(series.index.dayofyear).to_numpy()
+
+train_anomaly = anomalies(train, profile)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 3.5))
+np.exp(profile).plot(ax=axes[0], title=&quot;Seasonal profile (2010–2013)&quot;, ylabel=&quot;typical PM2.5 (µg/m³)&quot;)
+train_anomaly.plot(ax=axes[1], lw=0.4, title=&quot;Log anomalies: what the ARMA model must explain&quot;)
+fig.tight_layout()
+
+plot_acf_pacf(train_anomaly, lags=20, title=&quot;Anomalies:&quot;)</code></pre>
+<figure class="output-figure"><img src="img/06-7.png" alt="Figure 7 produced by the code above" width="1290" height="340" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/06-8.png" alt="Figure 8 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The anomalies have the AR fingerprint: the <strong>ACF decays</strong> quickly (0.5, then about 0.15, then about 0), and the <strong>PACF has two clear spikes</strong>, the second one negative, and then nothing. The fingerprint suggests an <strong>AR(2)</strong>.</p>
+<h3 id="letting-information-criteria-decide">Letting information criteria decide</h3>
+<p>Fingerprints are suggestive; information criteria are systematic. We fit every ARMA(<span class="math inline">p, q</span>) with <span class="math inline">p, q \le 3</span> and compare <strong>AIC</strong> and <strong>BIC</strong>. Both reward fit and penalise parameters, and BIC penalises more heavily. A few of the larger models struggle to converge; we silence those warnings here, since the criteria will rank them poorly anyway.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">rows = []
+with warnings.catch_warnings():
+    warnings.simplefilter(&quot;ignore&quot;, ConvergenceWarning)
+    for p in range(4):
+        for q in range(4):
+            result = ARIMA(train_anomaly.to_numpy(), order=(p, 0, q), trend=&quot;c&quot;).fit()
+            rows.append({&quot;p&quot;: p, &quot;q&quot;: q, &quot;AIC&quot;: result.aic, &quot;BIC&quot;: result.bic})
+
+ic = pd.DataFrame(rows)
+ic.sort_values(&quot;AIC&quot;).head(6)</code></pre>
+<pre class="output">    p  q       AIC       BIC
+8   2  0  3048.678  3069.826
+5   1  1  3049.204  3070.351
+3   0  3  3050.015  3076.449
+9   2  1  3050.564  3076.998
+12  3  0  3050.613  3077.047
+6   1  2  3050.921  3077.356</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">ic.pivot(index=&quot;p&quot;, columns=&quot;q&quot;, values=&quot;BIC&quot;).style.format(&quot;{:.1f}&quot;).highlight_min(axis=None, color=&quot;#cfe3ff&quot;)</code></pre>
+<pre class="output">q       0       1       2       3
+p
+0  3525.1  3104.3  3073.7  3076.4
+1  3092.6  3070.4  3077.4  3083.7
+2  3069.8  3077.0  3083.6  3090.1
+3  3077.0  3083.6  3090.3  3096.1</pre>
+</div>
+
+<div class="md">
+<p><strong>AR(2)</strong> comes out on top on both criteria, agreeing with the PACF. ARMA(1,1) is a close second, and it produces nearly identical forecasts. When two models are this close, prefer the simpler or more interpretable one, and let the backtest have the final word.</p>
+<h3 id="residual-checks-has-the-model-captured-the-memory">Residual checks: has the model captured the memory?</h3>
+<p>If a model has captured the series' memory, its residuals should look like <strong>white noise</strong>. The <strong>Ljung–Box test</strong> checks many residual autocorrelations at once. Its null hypothesis is &quot;no autocorrelation up to lag <span class="math inline">m</span>&quot;, so here we <em>want</em> large p-values.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fits = {name: ARIMA(train_anomaly.to_numpy(), order=order, trend=&quot;c&quot;).fit()
+        for name, order in [(&quot;AR(1)&quot;, (1, 0, 0)), (&quot;AR(2)&quot;, (2, 0, 0))]}
+
+pd.concat({name: acorr_ljungbox(f.resid, lags=[7, 14]) for name, f in fits.items()}).rename_axis([&quot;model&quot;, &quot;lags&quot;])</code></pre>
+<pre class="output">            lb_stat  lb_pvalue
+model lags                    
+AR(1) 7      30.739  6.946e-05
+      14     36.750  8.049e-04
+AR(2) 7       1.437  9.844e-01
+      14      8.279  8.743e-01</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plot_acf_pacf(pd.Series(fits[&quot;AR(1)&quot;].resid), lags=20, title=&quot;AR(1) residuals:&quot;)
+plot_acf_pacf(pd.Series(fits[&quot;AR(2)&quot;].resid), lags=20, title=&quot;AR(2) residuals:&quot;)</code></pre>
+<figure class="output-figure"><img src="img/06-9.png" alt="Figure 9 produced by the code above" width="1181" height="290" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/06-10.png" alt="Figure 10 produced by the code above" width="1190" height="290" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p><strong>AR(1) fails</strong>: its residuals still show a positive spike at lag 1 and a larger negative one at lag 2, both outside the band, and Ljung–Box rejects white noise decisively. <strong>AR(2) passes</strong>. That second coefficient isn't decoration: it captures how quickly episodes <strong>clear</strong>, a little faster than a single geometric decay would allow.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fits[&quot;AR(2)&quot;].summary().tables[1]</code></pre>
+<pre class="output">&lt;class &#x27;statsmodels.iolib.table.SimpleTable&#x27;&gt;</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-the-backtest">7. The backtest</h2>
+<p>Now the real test, on the chapter 04 setup. At every origin we <strong>re-learn the profile and refit the ARMA model</strong> from the history alone, forecast the anomalies, add back the profile, and exponentiate. That gives a median-type forecast on the original scale, which suits MAE (chapter 04). We'll also collect the model's 80% prediction intervals as we go.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def arma_forecaster(order, intervals=None):
+    &quot;&quot;&quot;Seasonal log profile + ARMA(order) on anomalies, refitted on each history.&quot;&quot;&quot;
+    def forecast(history, horizon):
+        profile_ = tsutils.log_climatology_profile(history)
+        anomaly = anomalies(history, profile_)
+        result = ARIMA(anomaly.to_numpy(), order=order, trend=&quot;c&quot;).fit()
+        prediction = result.get_forecast(horizon)
+        targets = pd.date_range(history.index[-1] + pd.Timedelta(days=1), periods=horizon, freq=&quot;D&quot;)
+        seasonal = profile_.reindex(targets.dayofyear).to_numpy()
+        if intervals is not None:
+            band = prediction.conf_int(alpha=0.2)
+            intervals[history.index[-1]] = np.exp(band + seasonal[:, None])
+        return np.exp(prediction.predicted_mean + seasonal)
+    return forecast
+
+ar2_intervals = {}
+arma_scores = {
+    &quot;AR(1) on anomalies&quot;: tsutils.evaluate(tsutils.backtest(y, arma_forecaster((1, 0, 0)), origins, H, actuals=actual)),
+    &quot;AR(2) on anomalies&quot;: tsutils.evaluate(tsutils.backtest(y, arma_forecaster((2, 0, 0), ar2_intervals),
+                                                            origins, H, actuals=actual)),
+}
+for name, scores in arma_scores.items():
+    tsutils.save_scores(name, scores)
+
+board = tsutils.load_scores().pivot(index=&quot;h&quot;, columns=&quot;model&quot;, values=&quot;MAE&quot;)
+board[[&quot;naive&quot;, &quot;climatology (median)&quot;, &quot;SES (log), α per horizon&quot;, &quot;AR(1) on anomalies&quot;, &quot;AR(2) on anomalies&quot;]]</code></pre>
+<pre class="output">model   naive  climatology (median)  SES (log), α per horizon  \
+h                                                               
+1      51.105                56.079                    52.135   
+2      72.237                56.561                    56.283   
+3      81.266                56.771                    56.078   
+4      81.559                57.133                    56.347   
+5      76.293                57.099                    56.310   
+6      75.097                57.132                    56.320   
+7      76.937                57.068                    56.261   
+
+model  AR(1) on anomalies  AR(2) on anomalies  
+h                                              
+1                  47.737              46.803  
+2                  56.563              55.419  
+3                  57.349              56.264  
+4                  56.869              56.533  
+5                  56.475              56.587  
+6                  56.455              56.491  
+7                  56.417              56.407</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, ax = plt.subplots()
+for name in [&quot;naive&quot;, &quot;climatology (median)&quot;, &quot;SES (log), α per horizon&quot;, &quot;AR(2) on anomalies&quot;]:
+    ax.plot(board.index, board[name], marker=&quot;o&quot;, label=name)
+ax.set(title=&quot;MAE by horizon: ARMA vs. the best earlier models&quot;, xlabel=&quot;days ahead&quot;, ylabel=&quot;MAE (µg/m³)&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/06-11.png" alt="Figure 11 produced by the code above" width="997" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p><strong>The first model to lead at both ends.</strong></p>
+<ul>
+<li><strong>One day ahead</strong>, AR(2) is the best forecast so far, clearly ahead of naive, the previous leader. It uses today's anomaly, but only as much of it as the data say survives to tomorrow.</li>
+<li><strong>Two days ahead</strong> it's also the best, about 1 µg/m³ ahead of both climatology and the per-horizon SES.</li>
+<li><strong>From about day 3</strong>, it settles to the same level as climatology and the long-memory SES. That isn't a failure. The forecast has decayed back to the seasonal profile because, as chapter 03 found, the series has forgotten today's conditions by then. <strong>No model that uses only past PM2.5 can do much better at those horizons.</strong> The remaining information is in things the series itself doesn't contain, above all the <strong>weather forecast</strong>, which chapters 07 and 09 bring in.</li>
+</ul>
+<p>AR(2) also edges out AR(1) at short horizons, as the residual checks predicted.</p>
+<h3 id="are-the-intervals-honest">Are the intervals honest?</h3>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">rows = []
+for origin_, band in ar2_intervals.items():
+    dates = pd.date_range(origin_ + pd.Timedelta(days=1), periods=H, freq=&quot;D&quot;)
+    rows.append(pd.DataFrame({&quot;h&quot;: np.arange(1, H + 1), &quot;lower&quot;: band[:, 0], &quot;upper&quot;: band[:, 1],
+                              &quot;actual&quot;: actual.reindex(dates).to_numpy()}))
+scored = pd.concat(rows).dropna(subset=[&quot;actual&quot;])
+inside = (scored[&quot;actual&quot;] &gt;= scored[&quot;lower&quot;]) &amp; (scored[&quot;actual&quot;] &lt;= scored[&quot;upper&quot;])
+inside.groupby(scored[&quot;h&quot;]).mean().rename(&quot;coverage of 80% interval&quot;).to_frame().T.style.format(&quot;{:.0%}&quot;)</code></pre>
+<pre class="output">h                           1    2    3    4    5    6    7
+coverage of 80% interval  80%  78%  78%  78%  78%  78%  78%</pre>
+</div>
+
+<div class="md">
+<p>The AR(2) intervals come out close to the 80% they promise across horizons, without any calibration step. Working on the log scale helps: there, the anomalies are close to the constant-variance, roughly normal errors the model assumes. The intervals also <strong>widen from day 1 to day 2 and then stop</strong>. That's section 5's theory showing up in real data: beyond a couple of days, the uncertainty is simply the natural spread of PM2.5 at that time of year.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-identify-these-processes">Exercise 1: Identify these processes</h3>
+<p>For each of the three processes below, simulate 800 observations with <code>ArmaProcess.from_coeffs(...).generate_sample(...)</code>, plot the ACF and PACF, and guess the orders <strong>before</strong> checking with an AIC grid over <span class="math inline">p, q \le 2</span>:</p>
+<ul>
+<li>A: AR coefficients <code>[0.6, -0.3]</code>, no MA</li>
+<li>B: no AR, MA coefficients <code>[0.6, 0.4]</code></li>
+<li>C: AR <code>[0.8]</code>, MA <code>[-0.5]</code></li>
+</ul>
+<details><summary>Solution</summary>
+<pre><code class="language-python">mystery = {&quot;A&quot;: ([0.6, -0.3], []), &quot;B&quot;: ([], [0.6, 0.4]), &quot;C&quot;: ([0.8], [-0.5])}
+for label, (ar, ma) in mystery.items():
+    sample = ArmaProcess.from_coeffs(ar, ma).generate_sample(800, distrvs=np.random.default_rng(10).standard_normal)
+    plot_acf_pacf(pd.Series(sample), lags=15, title=f&quot;Process {label}:&quot;)
+    with warnings.catch_warnings():
+        warnings.simplefilter(&quot;ignore&quot;)          # start-up and convergence warnings from poor candidate orders
+        aic = {(p, q): ARIMA(sample, order=(p, 0, q), trend=&quot;c&quot;).fit().aic for p in range(3) for q in range(3)}
+    print(label, &quot;-&gt; lowest AIC at (p, q) =&quot;, min(aic, key=aic.get))
+</code></pre>
+<p>A is an <strong>AR(2)</strong>: the ACF oscillates as it decays, and the PACF cuts off after lag 2. B is an <strong>MA(2)</strong>: the ACF cuts off after lag 2. C is an <strong>ARMA(1,1)</strong>: both plots tail off, and it's the hardest to identify by eye. AIC usually finds the right orders here, but with less data or smaller coefficients it can pick a neighbouring model that forecasts almost identically. That's fine for forecasting, less so if you want to interpret the coefficients.</p>
+</details>
+<h3 id="exercise-2-ar-estimates-are-biased-in-short-series">Exercise 2: AR estimates are biased in short series</h3>
+<p>Simulate 500 AR(1) series with φ = 0.9 at each length n = 50, 200 and 1000. Fit each by least squares with <code>AutoReg(x, lags=1, trend=&quot;c&quot;)</code>, which is much faster than <code>ARIMA</code> for 1,500 fits and has the same small-sample bias. Compare the average estimate with the true value and with Kendall's approximation for the expected estimate, <span class="math inline">\phi - (1 + 3\phi)/n</span>.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">process = ArmaProcess.from_coeffs([0.9], [])
+sim_rng = np.random.default_rng(3)
+rows = []
+for n in [50, 200, 1000]:
+    estimates = [AutoReg(process.generate_sample(n, distrvs=sim_rng.standard_normal, burnin=200),
+                         lags=1, trend=&quot;c&quot;).fit().params[1] for _ in range(500)]
+    rows.append({&quot;n&quot;: n, &quot;mean estimate&quot;: np.mean(estimates),
+                 &quot;Kendall approximation&quot;: 0.9 - (1 + 3 * 0.9) / n, &quot;spread (sd)&quot;: np.std(estimates)})
+pd.DataFrame(rows).set_index(&quot;n&quot;)
+</code></pre>
+<p>With 50 observations the average estimate falls noticeably short of 0.9, close to Kendall's formula. The bias shrinks as n grows. Estimating the mean from the same short sample makes the series look more mean-reverting than it really is. For forecasting that means <strong>short histories understate persistence</strong>, which is one reason models fitted on a few months of data revert too fast.</p>
+</details>
+<h3 id="exercise-3-pseudo-cycles-from-ar-2">Exercise 3: Pseudo-cycles from AR(2)</h3>
+<p>An AR(2) whose characteristic roots are complex produces <strong>pseudo-cycles</strong>: waves with a typical, but not fixed, length. Take φ = (1.0, −0.5). Use <code>ArmaProcess.from_coeffs([1.0, -0.5], []).arroots</code> to get the roots, and compute the implied period <span class="math inline">2\pi / |\text{angle}|</span>. Then simulate 500 points, plot them, and plot the theoretical ACF for 30 lags. Does the ACF oscillate with that period?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">process = ArmaProcess.from_coeffs([1.0, -0.5], [])
+roots = process.arroots
+period = 2 * np.pi / np.abs(np.angle(roots[0]))
+print(&quot;roots:&quot;, np.round(roots, 3), f&quot;-&gt; period ≈ {period:.1f} steps&quot;)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 3.5))
+axes[0].plot(process.generate_sample(500, distrvs=np.random.default_rng(6).standard_normal), lw=0.8)
+axes[0].set_title(&quot;AR(2) with complex roots: irregular waves&quot;)
+axes[1].stem(process.acf(31)[1:])
+axes[1].set_title(f&quot;Theoretical ACF: damped oscillation, period ≈ {period:.0f}&quot;)
+fig.tight_layout()
+</code></pre>
+<p>The period is 8 steps, and the ACF swings through a full cycle roughly every 8 lags while decaying. The simulated series shows waves of roughly that length, but irregular, because shocks keep nudging the phase. This is how AR models represent quasi-periodic behaviour such as business cycles, and why they aren't the same as fixed seasonality.</p>
+</details>
+<h3 id="exercise-4-ar-1-forecasts-are-damped-persistence">Exercise 4: AR(1) forecasts are damped persistence</h3>
+<p>Fit an AR(1) with a constant to <code>train_anomaly</code>. From the fitted mean <span class="math inline">\mu</span> (in statsmodels, the <code>const</code> parameter <em>is</em> the mean) and <span class="math inline">\phi</span>, compute <span class="math inline">\mu + \phi^h (a_T - \mu)</span> for <span class="math inline">h = 1, \dots, 7</span> by hand, where <span class="math inline">a_T</span> is the last training anomaly. Check that it matches <code>fit.forecast(7)</code>, then work out the half-life of an anomaly in days.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">fit1 = ARIMA(train_anomaly.to_numpy(), order=(1, 0, 0), trend=&quot;c&quot;).fit()
+mu, phi = fit1.params[0], fit1.params[1]
+last = train_anomaly.iloc[-1]
+by_hand = mu + phi ** np.arange(1, 8) * (last - mu)
+print(&quot;matches statsmodels:&quot;, np.allclose(by_hand, fit1.forecast(7)))
+print(f&quot;φ = {phi:.2f} -&gt; half-life ≈ {np.log(0.5) / np.log(phi):.1f} days&quot;)
+</code></pre>
+<p>The two agree exactly. The half-life, about a day, matches chapter 03's estimate from the raw series. Now it comes from a fitted model with standard errors and intervals, instead of a hand-built rule.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>The <strong>ACF</strong> measures a series' total memory at each lag. The <strong>PACF</strong> measures the <em>direct</em> part, after removing intermediate lags. Both are easy to compute from scratch.</li>
+<li><strong>AR(<span class="math inline">p</span>):</strong> ACF tails off, PACF cuts off after <span class="math inline">p</span>. <strong>MA(<span class="math inline">q</span>):</strong> the reverse. <strong>ARMA:</strong> both tail off, so use <strong>AIC/BIC</strong> and let the backtest decide.</li>
+<li>ARMA forecasts <strong>revert to the mean</strong> geometrically, and their intervals <strong>level off</strong> at the series' natural spread, unlike a random walk's.</li>
+<li>Check residuals with <strong>Ljung–Box</strong>. On PM2.5 anomalies, AR(1) left structure behind and AR(2) didn't.</li>
+<li><strong>Seasonal profile + AR(2) on log anomalies</strong> is the best model on the scoreboard at 1 and 2 days ahead, with well-calibrated intervals. Beyond that, <em>no</em> model built on past PM2.5 alone does much better than climatology. The next gains must come from <strong>outside information</strong>.</li>
+</ul>
+<p><strong>Next:</strong> <em>07 · ARIMA, SARIMA and SARIMAX</em>. We'll add differencing and seasonal terms (and CO₂ will show why they matter), then feed <strong>weather</strong> into the model as exogenous inputs.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="05-exponential-smoothing.html"><span class="lbl">Previous · 05</span><span class="t">Exponential smoothing</span></a>
+  <a class="next" rel="next" href="07-arima-sarima-sarimax.html"><span class="lbl">Next · 07</span><span class="t">ARIMA, SARIMA and SARIMAX</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 06 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>08 · From a Better Model to Better Control — Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="A model-based feedforward controller computed from each candidate model and applied to the true system, so tracking error becomes a direct test of model quality.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Learning to Identify New Dynamical Systems</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 08 of 09</span>
+  <h1>From a Better Model to Better Control</h1>
+  <div class="intro prose">
+<p>The last five chapters compared models purely by prediction error. But models are rarely the end
+goal; we want to <em>act</em>. This chapter asks the question a control engineer actually cares about: does
+a better-identified model translate into a better-controlled system?</p>
+<hr />
+<h2 id="1-feedforward-control-from-a-model">1. Feedforward control from a model</h2>
+<p>As a simple model-based controller, we compute a <strong>feedforward input</strong> that should move the cart
+along a reference trajectory <span class="math inline">r_t</span>, by solving</p>
+<div class="math display">
+u^\star = \arg\min_{u}\ \sum_t \big(\hat q_t(\hat\eta; u) - r_t\big)^2 + \lambda\sum_t (u_{t+1}-u_t)^2
+</div>
+<p>with each candidate model, and then apply <span class="math inline">u^\star</span> to the <strong>true</strong> system. Feedforward cannot
+correct errors while running, so it is a direct test of model quality. The context models use a
+designed 6-second experiment (chapter 06).</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/08_from_a_better_model_to_better_control.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-feedforward-control-from-a-model">1. Feedforward control from a model</a></li>
+    <li><a href="#2-tracking-a-new-system">2. Tracking a new system</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+
+import dynutils
+from dynutils import sample_system, simulate, multisine, predict, adapt, design_score, rmse
+
+dynutils.set_style()
+rng = np.random.default_rng(dynutils.SEED)
+COLOR = dynutils.COLOR
+family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">T_ctrl = 120
+tc = dynutils.DT * np.arange(T_ctrl + 1)
+ref = 0.2 - 0.35 * (1 / (1 + np.exp(-(tc - 3) * 3))) + 0.25 * (1 / (1 + np.exp(-(tc - 8) * 3)))
+
+
+def feedforward(eta, lam=0.05, eps=1e-5):
+    return dynutils.feedforward(eta, ref, lam=lam, eps=eps)</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-tracking-a-new-system">2. Tracking a new system</h2>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pool = np.array([multisine(60, rng) for _ in range(200)])
+u_design = pool[np.argmax(design_score(family, pool))]
+ctrl_err = {m: [] for m in (&quot;none&quot;, &quot;context&quot;, &quot;reference&quot;)}
+ctrl_example = {}
+for n in range(15):
+    s = sample_system(rng)
+    z_, _, _ = adapt(family, simulate(s, u_design, rng)[1], u_design)
+    for m, eta in ((&quot;none&quot;, family.mean), (&quot;context&quot;, family.decode(z_)), (&quot;reference&quot;, s[&quot;eta&quot;])):
+        q_ctrl, _ = simulate(s, feedforward(eta), rng)
+        ctrl_err[m].append(rmse(q_ctrl, ref))
+        if n == 0:
+            ctrl_example[m] = q_ctrl
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8), gridspec_kw=dict(width_ratios=[2, 1]))
+ax1.plot(tc, ref, color=COLOR[&quot;truth&quot;], lw=2.5, label=&quot;reference&quot;)
+lab = dict(none=&quot;average-system model&quot;, context=&quot;adapted model (6 s)&quot;, reference=&quot;true coefficients&quot;)
+for m, q_ctrl in ctrl_example.items():
+    ax1.plot(tc, q_ctrl, &quot;--&quot; if m == &quot;reference&quot; else &quot;-&quot;, color=COLOR[m], lw=1.6, label=lab[m])
+ax1.set(xlabel=&quot;time [s]&quot;, ylabel=&quot;position&quot;, title=&quot;Feedforward applied to a new system&quot;); ax1.legend(fontsize=8)
+ax2.boxplot([ctrl_err[m] for m in ctrl_err], tick_labels=[&quot;average&quot;, &quot;adapted&quot;, &quot;true η&quot;], widths=0.5)
+ax2.set(ylabel=&quot;tracking RMSE&quot;, title=&quot;15 new systems&quot;)
+plt.tight_layout(); plt.show()
+for m in ctrl_err:
+    print(f&quot;{lab[m]:&gt;22s}: mean tracking RMSE = {np.mean(ctrl_err[m]):.4f}&quot;)</code></pre>
+<figure class="output-figure"><img src="img/08-1.png" alt="Figure 1 produced by the code above" width="1308" height="407" loading="lazy"></figure>
+<pre class="output">  average-system model: mean tracking RMSE = 0.0577
+   adapted model (6 s): mean tracking RMSE = 0.0191
+     true coefficients: mean tracking RMSE = 0.0140</pre>
+</div>
+
+<div class="md">
+<p>Six seconds of well-chosen data, interpreted through the pretrained family, cut the tracking error
+by more than half compared with the average-system model, and match what the true coefficients
+achieve. The adapted model can even be marginally better, because it is fitted to the real
+behaviour and partly absorbs the unmodelled terms. The remaining error comes from the disturbance,
+which only feedback can reject. A feedback controller would reduce all errors, but the ordering,
+and the reason for it, would remain.</p>
+<hr />
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-a-random-experiment-instead-of-a-designed-one">Exercise 1: A random experiment instead of a designed one</h3>
+<p>Repeat the control comparison, but adapt the context from a random 6-second experiment
+(<code>multisine(60, rng)</code>) instead of the D-optimal <code>u_design</code>. Does the &quot;context&quot; tracking error move
+noticeably closer to &quot;average&quot; or stay close to &quot;true η&quot;?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">ctrl_err_random = []
+for n in range(15):
+    s = sample_system(rng)
+    u_random = multisine(60, rng)
+    z_, _, _ = adapt(family, simulate(s, u_random, rng)[1], u_random)
+    q_ctrl, _ = simulate(s, feedforward(family.decode(z_)), rng)
+    ctrl_err_random.append(rmse(q_ctrl, ref))
+np.mean(ctrl_err_random), np.mean(ctrl_err[&quot;context&quot;])
+</code></pre>
+<p>Consistent with chapter 06, the random experiment still gives a usable adapted model (context
+adaptation degrades gracefully), but its mean tracking error sits above the designed experiment's,
+closer to the midpoint between &quot;average&quot; and &quot;true η&quot; rather than matching &quot;true η&quot; outright.</p>
+</details>
+<h3 id="exercise-2-a-heavier-smoothness-penalty">Exercise 2: A heavier smoothness penalty</h3>
+<p>Recompute the feedforward input for the true-coefficient model with <code>lam=0.5</code> instead of <code>0.05</code> (ten
+times more smoothing). How does the resulting input and the tracking error change?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">s = sample_system(rng)
+u_smooth = feedforward(s[&quot;eta&quot;], lam=0.5)
+q_smooth, _ = simulate(s, u_smooth, rng)
+rmse(q_smooth, ref)
+</code></pre>
+<p>A heavier smoothness penalty produces a gentler input that changes less from sample to sample, at
+the cost of tracking the sharp step in the reference less closely: the feedforward optimisation
+trades tracking accuracy for input smoothness exactly as <code>lam</code> dictates, independently of which
+model supplied <code>eta</code>.</p>
+</details></div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="07-when-the-shared-knowledge-does-not-apply.html"><span class="lbl">Previous · 07</span><span class="t">When the Shared Knowledge Does Not Apply</span></a>
+  <a class="next" rel="next" href="09-summary-and-the-road-to-a-foundation-model.html"><span class="lbl">Next · 09</span><span class="t">Summary and the Road to a Foundation Model</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 08 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

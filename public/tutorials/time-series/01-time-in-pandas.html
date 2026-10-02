@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>01 · Working with Time in pandas — Time-series course</title>
+<meta name="description" content="Timestamps from raw columns, index health, missing-data codes, gaps, resampling, trailing windows, lags, calendar features, long and wide tables.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Time-series course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Time-series course · Chapter 01 of 11</span>
+  <h1>Working with Time in pandas</h1>
+  <div class="intro prose">
+<p>A time series is a sequence of measurements whose <strong>order carries information</strong>. Shuffle the rows of an ordinary table and nothing is lost; shuffle a time series and you destroy the very thing you wanted to study.</p>
+<p>Before any modelling, then, we need data whose index <em>is</em> time: sorted, unique, evenly spaced, and with its gaps made visible rather than hidden. This chapter builds that foundation on one real dataset that we will keep using for the rest of the course.</p>
+<p><strong>By the end of this chapter you will be able to</strong></p>
+<ul>
+<li>turn separate date/time columns into a <code>DatetimeIndex</code></li>
+<li>check that an index is sorted, unique and regular, and repair it when it is not</li>
+<li>select data by date using partial strings</li>
+<li>find, measure and fill gaps without fooling yourself</li>
+<li>change frequency with <code>resample</code> and choose a sensible aggregation</li>
+<li>compute rolling windows, lags and differences without leaking the future</li>
+<li>read seasonal patterns from calendar features and seasonal subseries plots</li>
+<li>reshape several series between <strong>wide</strong> and <strong>long</strong> layouts</li>
+</ul>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/01_time_in_pandas.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="time-series-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>tsutils.py</code> and the data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-from-columns-to-timestamps">1. From columns to timestamps</a></li>
+    <li><a href="#2-is-the-index-healthy-three-checks">2. Is the index healthy? Three checks</a></li>
+    <li><a href="#3-selecting-by-time">3. Selecting by time</a></li>
+    <li><a href="#4-gaps-find-them-measure-them-then-decide">4. Gaps: find them, measure them, then decide</a></li>
+    <li><a href="#5-resampling-changing-the-frequency">5. Resampling: changing the frequency</a></li>
+    <li><a href="#6-rolling-windows-trailing-vs-centred">6. Rolling windows: trailing vs. centred</a></li>
+    <li><a href="#7-lags-and-differences">7. Lags and differences</a></li>
+    <li><a href="#8-calendar-features-and-seasonal-profiles">8. Calendar features and seasonal profiles</a></li>
+    <li><a href="#9-several-series-at-once-long-and-wide-tables">9. Several series at once: long and wide tables</a></li>
+    <li><a href="#10-time-zones-briefly">10. Time zones, briefly</a></li>
+    <li><a href="#11-from-here-on-tsutils-load-beijing">11. From here on: <code>tsutils.load_beijing()</code></a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h3 id="the-dataset">The dataset</h3>
+<p>Hourly concentrations of <strong>PM2.5</strong> (fine particulate matter, µg/m³) in Beijing from 2010 to 2015, together with weather measurements. The main series, <code>PM_US Post</code>, comes from the monitor at the US Embassy; three further monitoring stations start reporting in 2013.</p>
+<blockquote>
+<p>Chen, Song (2016). <em>PM2.5 Data of Five Chinese Cities</em>. UCI Machine Learning Repository. https://doi.org/10.24432/C52K58 — licensed CC BY 4.0.</p>
+</blockquote>
+<p>PM2.5 is a good teaching series: it has daily and yearly cycles, sudden pollution episodes, weather drivers and real missing data. That's everything a textbook example leaves out.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import tsutils
+
+tsutils.set_style()
+pd.set_option(&quot;display.precision&quot;, 2)</code></pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="1-from-columns-to-timestamps">1. From columns to timestamps</h2>
+<p>Let's look at the file exactly as it arrives.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">raw = pd.read_csv(&quot;data/beijing_pm25.csv&quot;)
+print(raw.shape)
+raw.head()</code></pre>
+<pre class="output">(52584, 18)
+   No  year  month  day  hour  season  PM_Dongsi  PM_Dongsihuan  \
+0   1  2010      1    1     0       4        NaN            NaN   
+1   2  2010      1    1     1       4        NaN            NaN   
+2   3  2010      1    1     2       4        NaN            NaN   
+3   4  2010      1    1     3       4        NaN            NaN   
+4   5  2010      1    1     4       4        NaN            NaN   
+
+   PM_Nongzhanguan  PM_US Post  DEWP  HUMI    PRES  TEMP cbwd    Iws  \
+0              NaN         NaN -21.0  43.0  1021.0 -11.0   NW   1.79   
+1              NaN         NaN -21.0  47.0  1020.0 -12.0   NW   4.92   
+2              NaN         NaN -21.0  43.0  1019.0 -11.0   NW   6.71   
+3              NaN         NaN -21.0  55.0  1019.0 -14.0   NW   9.84   
+4              NaN         NaN -20.0  51.0  1018.0 -12.0   NW  12.97   
+
+   precipitation  Iprec  
+0            0.0    0.0  
+1            0.0    0.0  
+2            0.0    0.0  
+3            0.0    0.0  
+4            0.0    0.0</pre>
+</div>
+
+<div class="md">
+<p>Time is spread across four integer columns. <code>pd.to_datetime</code> can assemble a timestamp directly from a DataFrame whose columns are named <code>year</code>, <code>month</code>, <code>day</code> (and optionally <code>hour</code>, <code>minute</code>, <code>second</code>):</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">timestamps = pd.to_datetime(raw[[&quot;year&quot;, &quot;month&quot;, &quot;day&quot;, &quot;hour&quot;]])
+timestamps.head()</code></pre>
+<pre class="output">0   2010-01-01 00:00:00
+1   2010-01-01 01:00:00
+2   2010-01-01 02:00:00
+3   2010-01-01 03:00:00
+4   2010-01-01 04:00:00
+dtype: datetime64[us]</pre>
+</div>
+
+<div class="md">
+<p>Now we make those timestamps the index, drop the columns we no longer need and give the rest short, consistent names.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">names = {
+    &quot;PM_US Post&quot;: &quot;pm25&quot;,
+    &quot;PM_Dongsi&quot;: &quot;pm25_dongsi&quot;,
+    &quot;PM_Dongsihuan&quot;: &quot;pm25_dongsihuan&quot;,
+    &quot;PM_Nongzhanguan&quot;: &quot;pm25_nongzhanguan&quot;,
+    &quot;TEMP&quot;: &quot;temp&quot;,
+    &quot;DEWP&quot;: &quot;dew_point&quot;,
+    &quot;HUMI&quot;: &quot;humidity&quot;,
+    &quot;PRES&quot;: &quot;pressure&quot;,
+    &quot;cbwd&quot;: &quot;wind_dir&quot;,
+    &quot;Iws&quot;: &quot;cum_wind_speed&quot;,
+    &quot;precipitation&quot;: &quot;precip&quot;,
+    &quot;Iprec&quot;: &quot;cum_precip&quot;,
+}
+
+df = (
+    raw.set_index(timestamps)
+       .rename_axis(&quot;timestamp&quot;)
+       .rename(columns=names)[list(names.values())]
+)
+df.info()</code></pre>
+<pre class="output">&lt;class &#x27;pandas.DataFrame&#x27;&gt;
+DatetimeIndex: 52584 entries, 2010-01-01 00:00:00 to 2015-12-31 23:00:00
+Data columns (total 12 columns):
+ #   Column             Non-Null Count  Dtype  
+---  ------             --------------  -----  
+ 0   pm25               50387 non-null  float64
+ 1   pm25_dongsi        25052 non-null  float64
+ 2   pm25_dongsihuan    20508 non-null  float64
+ 3   pm25_nongzhanguan  24931 non-null  float64
+ 4   temp               52579 non-null  float64
+ 5   dew_point          52579 non-null  float64
+ 6   humidity           52245 non-null  float64
+ 7   pressure           52245 non-null  float64
+ 8   wind_dir           52579 non-null  str    
+ 9   cum_wind_speed     52579 non-null  float64
+ 10  precip             52100 non-null  float64
+ 11  cum_precip         52100 non-null  float64
+dtypes: float64(11), str(1)
+memory usage: 5.2 MB</pre>
+</div>
+
+<div class="md">
+<p>Why go to this trouble? Once the index holds real timestamps, pandas understands time everywhere: selection by date, resampling, time-based rolling windows, date-aware plot axes and alignment when two series are combined. A plain integer index gives you none of that.</p>
+</div>
+
+<div class="md">
+<h3 id="sanity-check-the-values-not-just-the-types">Sanity-check the values, not just the types</h3>
+<p><code>info()</code> says every column is numeric, but that doesn't mean every number is real. Raw sensor and weather files often use <strong>sentinel codes</strong> such as 999, 9999 or 999990 to mean &quot;missing&quot;. Taking a mean over them quietly produces nonsense. The fastest check is the range of each column:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">df.describe().T[[&quot;min&quot;, &quot;max&quot;]]</code></pre>
+<pre class="output">                      min       max
+pm25                 1.00     994.0
+pm25_dongsi          3.00     737.0
+pm25_dongsihuan      3.00     672.0
+pm25_nongzhanguan    3.00     844.0
+temp               -19.00      42.0
+dew_point          -40.00      28.0
+humidity             2.00     100.0
+pressure           991.00    1046.0
+cum_wind_speed       0.45     585.6
+precip               0.00  999990.0
+cum_precip           0.00  999990.0</pre>
+</div>
+
+<div class="md">
+<p>One value jumps out: an hourly precipitation of <strong>999,990 mm</strong>, a thousand metres of rain in one hour. It's a missing-data code. Let's find it and replace it with <code>NaN</code>, so every later calculation treats it as missing:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">sentinel = df[&quot;precip&quot;] &gt;= 999990
+print(df.loc[sentinel, [&quot;precip&quot;, &quot;cum_precip&quot;]])
+df.loc[sentinel, [&quot;precip&quot;, &quot;cum_precip&quot;]] = np.nan</code></pre>
+<pre class="output">                       precip  cum_precip
+timestamp                                
+2015-11-07 13:00:00  999990.0    999990.0</pre>
+</div>
+
+<div class="md">
+<p>A single bad hour in 52,584 may seem harmless. But it inflates the standard deviation of hourly precipitation from under 1 mm to over 4,000 mm, which silently breaks anything that scales or standardises that column, as we'll see when weather enters the models in chapter 07.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="2-is-the-index-healthy-three-checks">2. Is the index healthy? Three checks</h2>
+<p>Most time-series tools quietly assume three things about the index. It's worth checking them every time you load new data:</p>
+<ol>
+<li><strong>Sorted.</strong> Time moves forward.</li>
+<li><strong>Unique.</strong> Each timestamp appears once.</li>
+<li><strong>Regular.</strong> Observations are evenly spaced, so a frequency can be inferred.</li>
+</ol>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def check_index(frame):
+    idx = frame.index
+    print(f&quot;sorted:    {idx.is_monotonic_increasing}&quot;)
+    print(f&quot;unique:    {idx.is_unique}&quot;)
+    print(f&quot;frequency: {pd.infer_freq(idx) if idx.is_monotonic_increasing else &#x27;n/a (unsorted)&#x27;}&quot;)
+
+check_index(df)</code></pre>
+<pre class="output">sorted:    True
+unique:    True
+frequency: h</pre>
+</div>
+
+<div class="md">
+<p>This file happens to be in good shape. Real data often isn't, so let's damage a copy on purpose and practise the repair. We'll shuffle it, delete 2% of the rows and duplicate a few others.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">damaged = df.sample(frac=0.98, random_state=0)          # shuffled, 2% of rows gone
+damaged = pd.concat([damaged, damaged.iloc[:5]])         # five duplicated timestamps
+check_index(damaged)</code></pre>
+<pre class="output">sorted:    False
+unique:    False
+frequency: n/a (unsorted)</pre>
+</div>
+
+<div class="md">
+<p>The repair takes three steps, <strong>in this order</strong>. <code>asfreq</code> refuses to run while duplicates exist, so they must go first.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">repaired = damaged.sort_index()
+repaired = repaired[~repaired.index.duplicated(keep=&quot;first&quot;)]
+repaired = repaired.asfreq(&quot;h&quot;)          # re-inserts every missing hour as a row of NaN
+
+check_index(repaired)
+print(f&quot;\nrows: {len(damaged):,} damaged -&gt; {len(repaired):,} repaired&quot;)</code></pre>
+<pre class="output">sorted:    True
+unique:    True
+frequency: h
+
+rows: 51,537 damaged -&gt; 52,584 repaired</pre>
+</div>
+
+<div class="md">
+<blockquote>
+<p><strong>Deleted rows don't disappear quietly.</strong> <code>asfreq</code> turns every missing timestamp back into a visible row of <code>NaN</code>. That is exactly what you want: a gap you can see is a gap you can deal with.</p>
+</blockquote>
+<p>We'll finish by fixing the frequency on our real frame as well, so <code>df.index.freq</code> is set.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">df = df.asfreq(&quot;h&quot;)
+df.index.freq</code></pre>
+<pre class="output">&lt;Hour&gt;</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="3-selecting-by-time">3. Selecting by time</h2>
+<p>A <code>DatetimeIndex</code> accepts <strong>partial date strings</strong>. Give it a year, a month or a day, and it returns everything inside that period.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pm = df[&quot;pm25&quot;]
+
+print(len(pm.loc[&quot;2014&quot;]), &quot;hours in 2014&quot;)
+print(len(pm.loc[&quot;2014-02&quot;]), &quot;hours in February 2014&quot;)
+pm.loc[&quot;2014-02-10&quot;:&quot;2014-03-05&quot;].plot(title=&quot;PM2.5, 10 Feb – 5 Mar 2014&quot;, ylabel=&quot;µg/m³&quot;);</code></pre>
+<pre class="output">8760 hours in 2014
+672 hours in February 2014</pre>
+<figure class="output-figure"><img src="img/01-1.png" alt="Figure 1 produced by the code above" width="1006" height="428" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Winter smog in Beijing tends to build up over several days while stagnant air traps pollutants, then clears within hours when a cold northerly wind arrives. Look for that saw-tooth shape: slow climbs followed by sharp drops.</p>
+<p>You can also filter on <strong>components</strong> of the timestamp, or on a time-of-day window:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">weekends = pm[pm.index.dayofweek &gt;= 5]                 # Saturday = 5, Sunday = 6
+rush_hour = pm.between_time(&quot;07:00&quot;, &quot;09:00&quot;)
+
+print(f&quot;weekend hours:   {len(weekends):,}&quot;)
+print(f&quot;07:00-09:00 hours: {len(rush_hour):,}&quot;)</code></pre>
+<pre class="output">weekend hours:   15,024
+07:00-09:00 hours: 6,573</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="4-gaps-find-them-measure-them-then-decide">4. Gaps: find them, measure them, then decide</h2>
+<p>&quot;Fill the missing values&quot; is not a single decision. A one-hour sensor glitch and a week-long outage call for completely different treatment, so start by measuring.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">print(f&quot;{pm.isna().mean():.1%} of hourly readings are missing&quot;)
+
+(df.filter(like=&quot;pm25&quot;)
+   .isna()
+   .resample(&quot;MS&quot;).mean()
+   .mul(100)
+   .plot(title=&quot;Share of hours missing, by month&quot;, ylabel=&quot;%&quot;));</code></pre>
+<pre class="output">4.2% of hourly readings are missing</pre>
+<figure class="output-figure"><img src="img/01-2.png" alt="Figure 2 produced by the code above" width="1006" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The plot shows two kinds of missingness. The US Embassy series (<code>pm25</code>) has scattered gaps. The other three stations are missing <em>everything</em> before 2013, because they didn't exist yet. Treat &quot;not yet measured&quot; separately from &quot;sensor failed&quot;. Never interpolate across it.</p>
+<p>Next, the length of each gap. A gap is a run of consecutive <code>NaN</code>s. The trick is to label each run with a counter that increases every time the series switches between missing and present.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def find_gaps(s):
+    &quot;&quot;&quot;Return one row per run of consecutive NaNs: its start time and length.&quot;&quot;&quot;
+    is_na = s.isna()
+    run_id = (is_na != is_na.shift()).cumsum()
+    runs = pd.DataFrame({&quot;start&quot;: s.index, &quot;run&quot;: run_id.to_numpy(), &quot;na&quot;: is_na.to_numpy()})
+    gaps = (runs[runs[&quot;na&quot;]]
+            .groupby(&quot;run&quot;)
+            .agg(start=(&quot;start&quot;, &quot;first&quot;), hours=(&quot;start&quot;, &quot;size&quot;)))
+    return gaps.sort_values(&quot;hours&quot;, ascending=False).reset_index(drop=True)
+
+gaps = find_gaps(pm)
+print(f&quot;{len(gaps)} gaps; {(gaps[&#x27;hours&#x27;] == 1).mean():.0%} of them last a single hour&quot;)
+gaps.head()</code></pre>
+<pre class="output">253 gaps; 53% of them last a single hour
+                start  hours
+0 2010-09-21 04:00:00    155
+1 2012-12-23 05:00:00    127
+2 2011-10-03 12:00:00     99
+3 2011-03-17 20:00:00     91
+4 2010-09-27 16:00:00     76</pre>
+</div>
+
+<div class="md">
+<h3 id="which-filling-method-works-best-test-it-don-t-guess">Which filling method works best? Test it, don't guess</h3>
+<p>We can test this directly. Take stretches where we <em>know</em> the true values, hide them, fill them back in with each method and measure the error. We'll repeat for gaps of different lengths.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def masking_experiment(s, gap_hours, n_gaps=200, seed=0):
+    &quot;&quot;&quot;Hide blocks of known values, refill them, and report each method&#x27;s MAE.&quot;&quot;&quot;
+    rng = np.random.default_rng(seed)
+    values = s.to_numpy()
+    starts = rng.choice(np.arange(24, len(s) - gap_hours), size=n_gaps, replace=False)
+    starts = [i for i in starts if not np.isnan(values[i:i + gap_hours]).any()]
+
+    hidden = s.copy()
+    for i in starts:
+        hidden.iloc[i:i + gap_hours] = np.nan
+    mask = hidden.isna() &amp; s.notna()
+
+    fills = {
+        &quot;forward fill&quot;: hidden.ffill(),
+        &quot;time interpolation&quot;: hidden.interpolate(method=&quot;time&quot;),
+        &quot;same hour yesterday&quot;: hidden.fillna(hidden.shift(24)),
+    }
+    return pd.Series({name: (f[mask] - s[mask]).abs().mean() for name, f in fills.items()})
+
+results = pd.DataFrame({h: masking_experiment(pm.loc[&quot;2014&quot;], h) for h in [1, 3, 6, 12, 24]}).T
+results.index.name = &quot;gap length (hours)&quot;
+results</code></pre>
+<pre class="output">                    forward fill  time interpolation  same hour yesterday
+gap length (hours)                                                       
+1                          11.28                7.51                63.63
+3                          19.10               10.74                64.32
+6                          28.45               17.50                63.76
+12                         37.78               24.51                65.05
+24                         58.53               41.97                68.86</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">results.plot(marker=&quot;o&quot;, title=&quot;Error when refilling hidden values&quot;, ylabel=&quot;MAE (µg/m³)&quot;);</code></pre>
+<figure class="output-figure"><img src="img/01-3.png" alt="Figure 3 produced by the code above" width="1001" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>What the experiment shows:</p>
+<ul>
+<li><strong>Every method gets worse as the gap grows.</strong> Interpolation's error rises several-fold between a 1-hour and a 24-hour gap. Past a few hours you are no longer recovering data; you are inventing it.</li>
+<li><strong>Time interpolation wins at every length here</strong>, because it uses the readings on <em>both</em> sides of the gap.</li>
+<li><strong>&quot;Same hour yesterday&quot; is poor even for one-hour gaps.</strong> In this series, a smog episode arriving or clearing changes the level from one day to the next far more than the daily cycle does. This is a data-specific result. On a series dominated by its daily cycle, such as electricity demand, the ranking could flip. That's why you test instead of assuming.</li>
+</ul>
+<p>So a sensible policy is: interpolate short gaps and leave long ones as <code>NaN</code>. <code>limit_area=&quot;inside&quot;</code> stops pandas from extrapolating past the first or last real value.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">pm_filled = pm.interpolate(method=&quot;time&quot;, limit=3, limit_area=&quot;inside&quot;)
+print(f&quot;missing before: {pm.isna().sum():,}   after: {pm_filled.isna().sum():,}&quot;)</code></pre>
+<pre class="output">missing before: 2,197   after: 1,743</pre>
+</div>
+
+<div class="md">
+<blockquote>
+<p>⚠️ Two caveats:</p>
+<ol>
+<li><code>limit=3</code> fills <em>up to</em> three values inside <strong>any</strong> gap, including the first three hours of the six-day outage we found above. Exercise 2 asks you to write a stricter version.</li>
+<li>Interpolation uses values from <em>after</em> the gap. That is fine for cleaning history you want to describe, but it is <strong>leakage</strong> if you later build forecasting features from the filled series. We'll come back to this in the forecasting chapters.</li>
+</ol>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="5-resampling-changing-the-frequency">5. Resampling: changing the frequency</h2>
+<p><code>resample</code> groups the index into time bins and then needs to know how to <strong>summarise</strong> each bin. The choice of summary is a modelling decision, not a formality.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">daily = pm_filled.resample(&quot;D&quot;).agg([&quot;mean&quot;, &quot;max&quot;, &quot;count&quot;])
+daily.head()</code></pre>
+<pre class="output">              mean    max  count
+timestamp                       
+2010-01-01  129.00  129.0      1
+2010-01-02  144.33  181.0     24
+2010-01-03   78.38  107.0     24
+2010-01-04   29.29   58.0     24
+2010-01-05   43.54  106.0     24</pre>
+</div>
+
+<div class="md">
+<p>The <code>count</code> column earns its place here. A daily mean built from only three readings is not comparable with one built from twenty-four. A common rule is to require most of the day to be present:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">daily_mean = daily[&quot;mean&quot;].where(daily[&quot;count&quot;] &gt;= 18)
+print(f&quot;days rejected for too few readings: {daily_mean.isna().sum() - daily[&#x27;mean&#x27;].isna().sum()}&quot;)</code></pre>
+<pre class="output">days rejected for too few readings: 56</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">monthly_mean = pm_filled.resample(&quot;MS&quot;).mean()
+
+fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+pm_filled.plot(ax=axes[0], lw=0.3, title=&quot;hourly&quot;)
+daily_mean.plot(ax=axes[1], lw=0.6, title=&quot;daily mean&quot;)
+monthly_mean.plot(ax=axes[2], marker=&quot;o&quot;, title=&quot;monthly mean&quot;)
+for ax in axes:
+    ax.set_ylabel(&quot;µg/m³&quot;)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/01-4.png" alt="Figure 4 produced by the code above" width="1190" height="790" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Each level of aggregation shows something different. The hourly data shows individual episodes, the daily series shows their rhythm, and the monthly means show a rough <strong>annual rhythm</strong>, with higher peaks in the cold months. It's noisy from year to year, though, and section 8 shows it's less simple than &quot;winters are dirtier&quot;.</p>
+<p><strong>Going the other way (upsampling)</strong> creates empty slots that you have to fill yourself. Remember that upsampling can't create information. It only spreads out what you already had.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">monthly_mean.loc[&quot;2014&quot;].resample(&quot;D&quot;).asfreq().head(3)       # new days are NaN</code></pre>
+<pre class="output">timestamp
+2014-01-01    118.46
+2014-01-02       NaN
+2014-01-03       NaN
+Freq: D, Name: pm25, dtype: float64</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">monthly_mean.loc[&quot;2014&quot;].resample(&quot;D&quot;).interpolate().head(3)  # ...unless you fill them</code></pre>
+<pre class="output">timestamp
+2014-01-01    118.46
+2014-01-02    120.27
+2014-01-03    122.08
+Freq: D, Name: pm25, dtype: float64</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="6-rolling-windows-trailing-vs-centred">6. Rolling windows: trailing vs. centred</h2>
+<p>A rolling window summarises the last <em>n</em> observations (or the last <em>n</em> hours, when you pass a time string like <code>&quot;24h&quot;</code>). The detail that matters most is <strong>where the window sits relative to the point it describes</strong>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">nov = pm_filled.loc[&quot;2014-11&quot;]
+
+ax = nov.plot(alpha=0.35, label=&quot;hourly&quot;)
+nov.rolling(&quot;24h&quot;).mean().plot(ax=ax, label=&quot;trailing 24 h mean&quot;)
+nov.rolling(24, center=True).mean().plot(ax=ax, label=&quot;centred 24 h mean&quot;)
+ax.set(title=&quot;November 2014&quot;, ylabel=&quot;µg/m³&quot;)
+ax.legend();</code></pre>
+<figure class="output-figure"><img src="img/01-5.png" alt="Figure 5 produced by the code above" width="1006" height="445" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The centred window follows the data more closely because it can <strong>see the future</strong>. Each value averages twelve hours before <em>and twelve hours after</em>. That's fine for describing history, but at forecast time those future hours don't exist yet, so any feature a forecasting model uses must come from a <strong>trailing</strong> window. The trailing line lags behind the data, and that lag is the honest price of using only the past.</p>
+<p>Rolling windows aren't limited to the mean. A rolling standard deviation shows when a series becomes more volatile:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">ax = daily_mean.rolling(30, min_periods=20).std().plot(title=&quot;30-day rolling standard deviation of daily PM2.5&quot;)
+ax.set_ylabel(&quot;µg/m³&quot;);</code></pre>
+<figure class="output-figure"><img src="img/01-6.png" alt="Figure 6 produced by the code above" width="1006" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="7-lags-and-differences">7. Lags and differences</h2>
+<p><code>shift(k)</code> moves the values <em>k</em> steps later in time, so each row lines up with the value from <em>k</em> steps before it. That's all a <strong>lag</strong> is. <code>diff(k)</code> is the change over <em>k</em> steps: <code>x - x.shift(k)</code>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">lags = pd.DataFrame({
+    &quot;pm25&quot;: pm_filled,
+    &quot;lag_1h&quot;: pm_filled.shift(1),
+    &quot;lag_24h&quot;: pm_filled.shift(24),
+    &quot;lag_168h&quot;: pm_filled.shift(168),     # one week
+}).dropna()
+
+lags.corr()[&quot;pm25&quot;].round(2)</code></pre>
+<pre class="output">pm25        1.00
+lag_1h      0.97
+lag_24h     0.41
+lag_168h    0.04
+Name: pm25, dtype: float64</pre>
+</div>
+
+<div class="md">
+<p>The value one hour ago is an excellent predictor of the value now. The value 24 hours ago is much weaker, and the value one week ago tells you almost nothing: this series has no weekly rhythm. This correlation between a series and its own past is called <strong>autocorrelation</strong>, and much of forecasting is about exploiting it. Chapter 06 studies it properly.</p>
+<p>A lag plot shows the same relationship as a picture:</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
+for ax, k in zip(axes, [1, 24]):
+    ax.scatter(pm_filled.shift(k), pm_filled, s=1, alpha=0.1)
+    ax.set(title=f&quot;lag {k} h&quot;, xlabel=f&quot;PM2.5 at t − {k}&quot;, ylabel=&quot;PM2.5 at t&quot;)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/01-7.png" alt="Figure 7 produced by the code above" width="986" height="390" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<blockquote>
+<p><strong>Two kinds of shift.</strong> <code>shift(1)</code> moves the <em>values</em> and keeps the index; <code>shift(freq=&quot;1D&quot;)</code> moves the <em>index</em> and keeps the values. The second is handy for aligning two series recorded on different clocks.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="8-calendar-features-and-seasonal-profiles">8. Calendar features and seasonal profiles</h2>
+<p>Timestamp components such as hour, weekday and month let you group the data and ask where the regular patterns are. PM2.5 is right-skewed (a few extreme episodes), so we summarise with the <strong>median</strong>, which those episodes can't drag around.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">cal = pd.DataFrame({
+    &quot;pm25&quot;: pm_filled,
+    &quot;hour&quot;: pm_filled.index.hour,
+    &quot;weekday&quot;: pm_filled.index.day_name(),
+    &quot;month&quot;: pm_filled.index.month,
+    &quot;year&quot;: pm_filled.index.year,
+})
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+cal.groupby(&quot;hour&quot;)[&quot;pm25&quot;].median().plot(ax=axes[0], marker=&quot;o&quot;,
+                                          title=&quot;Median by hour of day&quot;, ylabel=&quot;µg/m³&quot;)
+sns.boxplot(data=cal, x=&quot;month&quot;, y=&quot;pm25&quot;, showfliers=False, ax=axes[1], color=&quot;#1f6feb&quot;)
+axes[1].set_title(&quot;Distribution by month (outliers hidden)&quot;)
+fig.tight_layout();</code></pre>
+<figure class="output-figure"><img src="img/01-8.png" alt="Figure: Distribution by month (outliers hidden)" width="1290" height="390" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The monthly boxes have similar <strong>medians</strong>, but their upper halves are very different. A median-only summary would miss the seasonal story entirely, so let's put several summaries side by side.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">by_month = cal.groupby(&quot;month&quot;)[&quot;pm25&quot;].agg(
+    median=&quot;median&quot;,
+    mean=&quot;mean&quot;,
+    p90=lambda s: s.quantile(0.9),
+    pct_above_250=lambda s: (s &gt; 250).mean() * 100,
+)
+by_month.round(0)</code></pre>
+<pre class="output">       median   mean    p90  pct_above_250
+month                                     
+1        69.0  114.0  294.0           12.0
+2        84.0  121.0  292.0           14.0
+3        71.0   97.0  227.0            7.0
+4        68.0   83.0  171.0            2.0
+5        66.0   77.0  148.0            1.0
+6        76.0   89.0  180.0            1.0
+7        71.0   87.0  182.0            2.0
+8        64.0   74.0  145.0            1.0
+9        60.0   78.0  166.0            3.0
+10       72.0  113.0  283.0           15.0
+11       73.0  109.0  257.0           11.0
+12       62.0  109.0  282.0           13.0</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">severe = cal.assign(severe=cal[&quot;pm25&quot;] &gt; 250).pivot_table(
+    index=&quot;year&quot;, columns=&quot;month&quot;, values=&quot;severe&quot;, aggfunc=&quot;mean&quot;) * 100
+ax = sns.heatmap(severe, cmap=&quot;rocket_r&quot;, annot=True, fmt=&quot;.0f&quot;, cbar_kws={&quot;label&quot;: &quot;% of hours&quot;})
+ax.set_title(&quot;Share of hours above 250 µg/m³, by year and month&quot;);</code></pre>
+<figure class="output-figure"><img src="img/01-9.png" alt="Figure: Share of hours above 250 µg/m³, by year and month" width="916" height="392" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Things to notice:</p>
+<ul>
+<li>A <strong>daily cycle</strong>: concentrations are lowest in mid-afternoon and highest around midnight. Sunshine warms the ground during the day and mixes pollution up through a deep layer of air. At night that layer collapses and traps pollution near the surface.</li>
+<li>A <strong>seasonal cycle in the extremes, not the typical level.</strong> Median concentrations are similar all year round. What changes from October to February, Beijing's heating season, is how often severe episodes happen: hours above 250 µg/m³ are several times more common than in summer. (For scale, the WHO's 24-hour guideline is 15 µg/m³.) The <strong>mean</strong> captures this because it's pulled up by the extremes. The <strong>median</strong> ignores them.</li>
+<li><strong>Variation between years</strong> on top of both cycles. The heatmap lets you compare the same month across years, and 2015 stands out as cleaner than the years before.</li>
+</ul>
+<p>Seasonality that changes the <em>size of fluctuations</em> rather than the typical level is a key idea in chapter 02, where we separate a series into <em>trend</em>, <em>seasonality</em> and <em>remainder</em> and ask whether those parts <strong>add</strong> or <strong>multiply</strong>.</p>
+</div>
+
+<div class="md">
+<h3 id="seasonal-subseries-plot">Seasonal subseries plot</h3>
+<p>A <strong>seasonal subseries plot</strong> separates two questions a single line chart mixes together: <em>what does the typical year look like?</em> and <em>how has each part of the year changed?</em> Each calendar month gets its own mini time series (January 2010, January 2011, …, January 2015), with a horizontal bar at that month's average. statsmodels draws it with <code>month_plot</code> (and <code>quarter_plot</code> for quarterly data).</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from statsmodels.graphics.tsaplots import month_plot
+
+fig, ax = plt.subplots(figsize=(12, 4))
+month_plot(monthly_mean, ax=ax)
+ax.set(title=&quot;Monthly mean PM2.5: each month&#x27;s values from 2010 to 2015&quot;, ylabel=&quot;µg/m³&quot;);</code></pre>
+<figure class="output-figure"><img src="img/01-10.png" alt="Figure 10 produced by the code above" width="1006" height="373" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The bars trace the seasonal shape of the <strong>monthly means</strong>: higher from October to February, lower in late summer. The mini-lines show how each month has changed over the years, and they tell two stories a single line chart hides:</p>
+<ul>
+<li><strong>Winter months swing about twice as widely</strong> from year to year as summer months. A winter monthly mean depends heavily on how many severe episodes that particular winter happened to have, which is the &quot;seasonality in the extremes&quot; from above, seen from a different angle.</li>
+<li><strong>Every summer month, June to September, falls steadily</strong> across the six years, roughly halving from 2010 to 2015. The winter months show no such clear trend. The long-run improvement shows up first in the months without heating-season smog.</li>
+</ul>
+<hr />
+<h2 id="9-several-series-at-once-long-and-wide-tables">9. Several series at once: long and wide tables</h2>
+<p>Our file holds <strong>four</strong> PM2.5 series, one per monitoring station, side by side. That's the <strong>wide</strong> layout: one row per timestamp, one column per series. The alternative is the <strong>long</strong> layout: one row per (timestamp, series) pair, with a column saying which series it is. Neither is better. Different tools want different shapes, and converting between them is routine.</p>
+<table>
+<thead>
+<tr>
+<th>Layout</th>
+<th>Good for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Wide</strong> (a column per series)</td>
+<td>aligning series on the same timestamps, correlations, arithmetic across series</td>
+</tr>
+<tr>
+<td><strong>Long</strong> (a row per observation)</td>
+<td><code>groupby</code> per series, plotting with <code>hue=</code>, stacking many series for one &quot;global&quot; model</td>
+</tr>
+</tbody>
+</table>
+<p><code>melt</code> goes from wide to long, and <code>pivot</code> goes back. We use 2013–2015, when all four stations report.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">stations = df.filter(like=&quot;pm25&quot;).loc[&quot;2013&quot;:&quot;2015&quot;]
+
+long = (stations.reset_index()
+        .melt(id_vars=&quot;timestamp&quot;, var_name=&quot;station&quot;, value_name=&quot;concentration&quot;))
+print(long.shape)
+long.head()</code></pre>
+<pre class="output">(105120, 3)
+            timestamp station  concentration
+0 2013-01-01 00:00:00    pm25           31.0
+1 2013-01-01 01:00:00    pm25           32.0
+2 2013-01-01 02:00:00    pm25           21.0
+3 2013-01-01 03:00:00    pm25           16.0
+4 2013-01-01 04:00:00    pm25           15.0</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># per-series summaries are one groupby away in the long layout
+long.groupby(&quot;station&quot;)[&quot;concentration&quot;].agg([&quot;count&quot;, &quot;median&quot;, &quot;max&quot;])</code></pre>
+<pre class="output">                   count  median    max
+station                                
+pm25               25970    66.0  886.0
+pm25_dongsi        25052    64.0  737.0
+pm25_dongsihuan    20508    68.0  672.0
+pm25_nongzhanguan  24931    62.0  844.0</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># resampling each series separately: group by station, then resample within each group
+monthly_by_station = (long.set_index(&quot;timestamp&quot;)
+                      .groupby(&quot;station&quot;)[&quot;concentration&quot;]
+                      .resample(&quot;MS&quot;).mean()
+                      .reset_index())
+ax = sns.lineplot(data=monthly_by_station, x=&quot;timestamp&quot;, y=&quot;concentration&quot;, hue=&quot;station&quot;, marker=&quot;o&quot;)
+ax.set(title=&quot;Monthly mean PM2.5 by station&quot;, xlabel=&quot;&quot;, ylabel=&quot;µg/m³&quot;);</code></pre>
+<figure class="output-figure"><img src="img/01-11.png" alt="Figure 11 produced by the code above" width="1018" height="372" loading="lazy"></figure>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># and back to wide
+wide = long.pivot(index=&quot;timestamp&quot;, columns=&quot;station&quot;, values=&quot;concentration&quot;)
+print(&quot;round trip reproduces the original:&quot;, wide.equals(stations[wide.columns]))</code></pre>
+<pre class="output">round trip reproduces the original: True</pre>
+</div>
+
+<div class="md">
+<p>The four stations track each other closely, as Exercise 1 quantifies, so pollution in Beijing is largely a city-wide phenomenon. The two months that stand out have different causes. Dongsihuan's dip in October 2015 rests on just <strong>68 of 744 hours</strong>, section 5's thin-bin problem again. Dongsi's low November 2014 is based on almost complete data, so it's a genuine disagreement between monitors, and those happen too. When one series departs from the others, check the counts before believing it. Keep the long layout in mind for chapter 09: machine-learning forecasters are often trained on many series at once, stacked in long form, which is one way to give them more data.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="10-time-zones-briefly">10. Time zones, briefly</h2>
+<p>Our timestamps are <strong>naive</strong>: they carry no time zone. That's fine for a single-city dataset, but combining sources recorded in different zones needs <em>aware</em> timestamps.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">local = pm_filled.tz_localize(&quot;Asia/Shanghai&quot;)    # declare what the clock already meant
+print(local.index[:2])
+print(local.tz_convert(&quot;UTC&quot;).index[:2])          # same instants, different wall-clock labels</code></pre>
+<pre class="output">DatetimeIndex([&#x27;2010-01-01 00:00:00+08:00&#x27;, &#x27;2010-01-01 01:00:00+08:00&#x27;], dtype=&#x27;datetime64[us, Asia/Shanghai]&#x27;, name=&#x27;timestamp&#x27;, freq=None)
+DatetimeIndex([&#x27;2009-12-31 16:00:00+00:00&#x27;, &#x27;2009-12-31 17:00:00+00:00&#x27;], dtype=&#x27;datetime64[us, UTC]&#x27;, name=&#x27;timestamp&#x27;, freq=None)</pre>
+</div>
+
+<div class="md">
+<p>China doesn't observe daylight saving time, so this conversion is clean. In zones that do, one hour disappears each spring and one repeats each autumn. <code>tz_localize</code> then needs the <code>ambiguous=</code> and <code>nonexistent=</code> arguments to know what you mean.</p>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="11-from-here-on-tsutils-load-beijing">11. From here on: <code>tsutils.load_beijing()</code></h2>
+<p>Sections 1–2 (including the sentinel fix) are packaged in <code>tsutils.load_beijing()</code>, so later chapters can start from a clean hourly frame in one line. Gaps are deliberately left as <code>NaN</code>, because each chapter decides for itself how to handle them.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">check = tsutils.load_beijing()
+pd.testing.assert_frame_equal(check, df)
+print(&quot;tsutils.load_beijing() reproduces this chapter&#x27;s frame exactly.&quot;)</code></pre>
+<pre class="output">tsutils.load_beijing() reproduces this chapter&#x27;s frame exactly.</pre>
+</div>
+
+<div class="md">
+<hr />
+<h2 id="exercises">Exercises</h2>
+<p>Try each one before opening the solution.</p>
+<h3 id="exercise-1-four-monitors-one-city">Exercise 1: Four monitors, one city</h3>
+<p>Using 2013–2015 (when all four stations report), resample the four PM2.5 columns to daily medians.</p>
+<ol>
+<li>Which station has the highest overall median?</li>
+<li>How strongly are the stations correlated with each other? What does that suggest about whether pollution in Beijing is local or city-wide?</li>
+</ol>
+<details><summary>Solution</summary>
+<pre><code class="language-python">stations = df.filter(like=&quot;pm25&quot;).loc[&quot;2013&quot;:&quot;2015&quot;].resample(&quot;D&quot;).median()
+print(stations.median().sort_values(ascending=False))
+stations.corr().round(2)
+</code></pre>
+<p>Daily correlations between stations are typically very high (well above 0.9). Most day-to-day variation is shared across the city and driven by regional weather, not by anything happening near a single monitor.</p>
+</details>
+<h3 id="exercise-2-a-stricter-gap-filler">Exercise 2: A stricter gap filler</h3>
+<p>Write <code>fill_short_gaps(s, max_hours)</code>. It should interpolate gaps of <strong>at most</strong> <code>max_hours</code> completely and leave longer gaps <strong>entirely</strong> as <code>NaN</code>. Unlike <code>interpolate(limit=...)</code>, it must not nibble at the edges of long gaps.</p>
+<p><em>Hint:</em> reuse the run-labelling trick from <code>find_gaps</code>, then use <code>groupby(...).transform(&quot;size&quot;)</code> to give every row the length of the run it belongs to.</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">def fill_short_gaps(s, max_hours):
+    is_na = s.isna()
+    run_id = (is_na != is_na.shift()).cumsum()
+    run_len = is_na.groupby(run_id).transform(&quot;size&quot;)
+    short_gap = is_na &amp; (run_len &lt;= max_hours)
+    filled = s.interpolate(method=&quot;time&quot;, limit_area=&quot;inside&quot;)
+    return s.where(~short_gap, filled)
+
+strict = fill_short_gaps(pm, 3)
+print(pm_filled.isna().sum(), &quot;vs&quot;, strict.isna().sum())   # strict leaves more NaNs
+</code></pre>
+</details>
+<h3 id="exercise-3-is-there-a-weekend-effect">Exercise 3: Is there a weekend effect?</h3>
+<p>Compare the median hourly profile (as in section 8) for weekdays and weekends on one plot. Is the difference large compared with the monthly differences? What else, besides traffic, could make weekends look different?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">cal[&quot;day_type&quot;] = np.where(pm_filled.index.dayofweek &gt;= 5, &quot;weekend&quot;, &quot;weekday&quot;)
+cal.pivot_table(index=&quot;hour&quot;, columns=&quot;day_type&quot;, values=&quot;pm25&quot;, aggfunc=&quot;median&quot;).plot(
+    marker=&quot;o&quot;, title=&quot;Median PM2.5 by hour&quot;, ylabel=&quot;µg/m³&quot;)
+</code></pre>
+<p>If anything, weekends come out slightly <em>higher</em>, by a few µg/m³. That's the opposite of what a &quot;less traffic at weekends&quot; story predicts, and the gap is small next to the seasonal differences in severe episodes. With only about 300 weekends in the data, a handful of multi-day smog episodes that happen to overlap weekends can create or hide a difference like this on their own. Weather is a <strong>confounder</strong> here. Comparing raw group medians can't separate a weekend effect from which weekends happened to be smoggy.</p>
+</details>
+<h3 id="exercise-4-which-way-is-the-wind-blowing">Exercise 4: Which way is the wind blowing?</h3>
+<p><code>wind_dir</code> holds the combined wind direction (<code>NW</code>, <code>NE</code>, <code>SE</code>, or <code>cv</code> for calm/variable). Compute the median PM2.5 for each direction. Which wind brings the cleanest air, and why might that be?</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">df.assign(pm25=pm_filled).groupby(&quot;wind_dir&quot;)[&quot;pm25&quot;].median().sort_values()
+</code></pre>
+<p>Northwesterly winds usually bring the cleanest air: dry, fast-moving air from the less populated north and west. Calm conditions and southerly winds let pollution build up. This is a first hint that <strong>external variables</strong> can help a forecast, an idea we use in the SARIMAX and machine-learning chapters.</p>
+</details></div>
+
+<div class="md">
+<hr />
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>Put time <strong>in the index</strong>. Everything time-aware in pandas depends on it.</li>
+<li>Check every column's <strong>range</strong> for sentinel codes like 999990 before trusting it.</li>
+<li>Check <strong>sorted → unique → regular</strong>, and repair in that order: <code>sort_index</code>, drop duplicates, <code>asfreq</code>.</li>
+<li><strong>Measure gaps before filling them.</strong> Short gaps can be interpolated; long gaps should usually stay missing.</li>
+<li><code>resample</code> needs an aggregation, and the choice matters. Track <strong>counts</strong> so thin bins don't masquerade as full ones.</li>
+<li>Anything a forecast will use must come from <strong>trailing</strong> windows and <strong>lags</strong>. Centred windows and interpolation peek at the future.</li>
+<li>Several series can live <strong>wide</strong> (a column each) or <strong>long</strong> (a row per observation). <code>melt</code> and <code>pivot</code> convert between them.</li>
+</ul>
+<p><strong>Next:</strong> <em>02 · Anatomy of a Time Series</em>. We'll split a series into trend, seasonality and remainder, and learn when those components add and when they multiply.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <span></span>
+  <a class="next" rel="next" href="02-anatomy-of-a-time-series.html"><span class="lbl">Next · 02</span><span class="t">Anatomy of a time series</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 01 of the Time-series course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

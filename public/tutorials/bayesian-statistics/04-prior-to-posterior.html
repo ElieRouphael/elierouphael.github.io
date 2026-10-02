@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>04 · From prior to posterior — Bayesian statistics course</title>
+<meta name="description" content="Continuous Bayes by grid approximation, point estimates and credible intervals, the posterior predictive, sequential updating.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Bayesian statistics course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Bayesian statistics course · Chapter 04 of 09</span>
+  <h1>From prior to posterior</h1>
+  <div class="intro prose">
+<p><strong>Goal.</strong> Apply Bayes' theorem to a continuous parameter. We compute posteriors
+numerically on a grid (which works for any prior), summarise them with point
+estimates and credible intervals, predict future data with the posterior predictive
+distribution, and prove that updating one observation at a time gives the same
+answer as updating on everything at once.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/04_prior_to_posterior.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="bayesian-statistics-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-from-a-few-hypotheses-to-a-continuum">1. From a few hypotheses to a continuum</a></li>
+    <li><a href="#2-proportionality">2. Proportionality</a></li>
+    <li><a href="#3-grid-approximation-and-the-role-of-the-prior">3. Grid approximation, and the role of the prior</a></li>
+    <li><a href="#4-summarising-a-posterior">4. Summarising a posterior</a></li>
+    <li><a href="#5-predicting-new-data">5. Predicting new data</a></li>
+    <li><a href="#6-updating-one-observation-at-a-time">6. Updating one observation at a time</a></li>
+    <li><a href="#7-the-limits-of-the-grid">7. The limits of the grid</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-from-a-few-hypotheses-to-a-continuum">1. From a few hypotheses to a continuum</h2>
+<p>Return to the free-throw shooter of chapter 03: 13 made out of 20. In chapter 01 we
+applied Bayes' theorem to a short list of hypotheses. Nothing stops us from doing the
+same here with a list of candidate values for <span class="math inline">\theta</span>, say
+<span class="math inline">\theta\in\{0.05, 0.15, \dots, 0.95\}</span>, each with equal prior probability. The
+likelihood of each candidate is <span class="math inline">\theta^{13}(1-\theta)^7</span> and the posterior is prior
+times likelihood, normalised.</p>
+<p>Make the list finer and finer and the bars of the posterior trace out a smooth curve.
+In the limit, the prior probabilities become a density <span class="math inline">p(\theta)</span> and the sum in
+the denominator becomes an integral:
+<span class="math display"> p(\theta\mid y) = \frac{p(y\mid\theta)\,p(\theta)}{p(y)},\qquad
+   p(y) = \int_0^1 p(y\mid\theta)\,p(\theta)\,\mathrm d\theta. </span></p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+
+plt.rcParams.update({&quot;figure.dpi&quot;: 120, &quot;figure.figsize&quot;: (7.5, 3.4), &quot;axes.grid&quot;: True,
+                     &quot;grid.alpha&quot;: 0.3, &quot;axes.spines.top&quot;: False, &quot;axes.spines.right&quot;: False})
+PRIOR, LIK, POST = &quot;#8a949e&quot;, &quot;#eb6834&quot;, &quot;#2a78d6&quot;
+rng = np.random.default_rng(4)
+
+n, y = 20, 13
+
+def bayes(prior, likelihood):
+    unnorm = prior * likelihood
+    return unnorm / unnorm.sum()
+
+fig, ax = plt.subplots(1, 3, figsize=(10, 2.9), sharey=False)
+for a, k in zip(ax, [10, 40, 1000]):
+    theta = (np.arange(k) + 0.5) / k                  # k equally spaced candidate values
+    post = bayes(np.ones(k) / k, theta**y * (1 - theta)**(n - y))
+    if k &lt;= 40:
+        a.bar(theta, post, width=0.8 / k, color=POST)
+    else:
+        a.plot(theta, post, color=POST, lw=2)
+    a.set_title(f&quot;{k} candidate values of θ&quot;); a.set_xlabel(&quot;θ&quot;)
+ax[0].set_ylabel(&quot;posterior probability&quot;)
+fig.suptitle(&quot;A finer and finer grid of hypotheses becomes a posterior density&quot;, y=1.04)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/04-1.png" alt="Figure: … candidate values of θ; A finer and finer grid of hypotheses becomes a posterior density" width="1181" height="367" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="2-proportionality">2. Proportionality</h2>
+<p>The denominator <span class="math inline">p(y)</span> is a single number: it does not depend on <span class="math inline">\theta</span>. So we can
+write
+<span class="math display"> p(\theta\mid y) \;\propto\; p(y\mid\theta)\,p(\theta), </span>
+where <span class="math inline">\propto</span> means &quot;equal up to a constant factor that does not involve <span class="math inline">\theta</span>&quot;.
+This is more than a notational shortcut:</p>
+<ul>
+<li>Any factor of the likelihood or prior that does not contain <span class="math inline">\theta</span> can be dropped.
+The <span class="math inline">\binom{20}{13}</span> in the binomial likelihood is irrelevant to the posterior.</li>
+<li>The shape of the posterior is fully determined by the product. The constant can be
+recovered at the end, because the posterior must integrate to one.</li>
+<li>If the product is recognisable as a known density up to a constant, we have the
+posterior in closed form without doing any integral. Chapter 05 is built on this.</li>
+</ul>
+<p>The constant <span class="math inline">p(y)</span>, the <strong>marginal likelihood</strong> or <strong>evidence</strong>, is still
+meaningful: it is how probable the data were under the model as a whole, averaged
+over the prior. It is what you compare when you compare different models.</p>
+</div>
+
+<div class="md">
+<h2 id="3-grid-approximation-and-the-role-of-the-prior">3. Grid approximation, and the role of the prior</h2>
+<p>Numerically, the recipe is:</p>
+<ol>
+<li>choose a fine grid of <span class="math inline">\theta</span> values;</li>
+<li>evaluate prior <span class="math inline">\times</span> likelihood at each point;</li>
+<li>divide by the sum (times the grid spacing, to get a density).</li>
+</ol>
+<p>This works for <strong>any</strong> prior shape, which makes it perfect for building intuition.
+We compare three priors for the shooter:</p>
+<ul>
+<li><strong>flat</strong>: every <span class="math inline">\theta</span> equally plausible;</li>
+<li><strong>informed</strong>: from records of similar players, <span class="math inline">\theta</span> is usually 0.7 to 0.8
+(here a normal shape centred at 0.75 with standard deviation 0.05);</li>
+<li><strong>sceptical</strong>: a strange prior that thinks the player is either poor (around 0.3)
+or excellent (around 0.9), but not in between.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">theta = np.linspace(0, 1, 2001)
+dtheta = theta[1] - theta[0]
+likelihood = stats.binom.pmf(y, n, theta)
+
+def normalise(f):
+    return f / (f.sum() * dtheta)               # so that it integrates to 1 on the grid
+
+priors = {
+    &quot;flat&quot;: np.ones_like(theta),
+    &quot;informed&quot;: stats.norm.pdf(theta, 0.75, 0.05),
+    &quot;sceptical&quot;: stats.norm.pdf(theta, 0.3, 0.06) + stats.norm.pdf(theta, 0.9, 0.04),
+}
+fig, ax = plt.subplots(1, 3, figsize=(10, 3), sharey=True)
+posteriors = {}
+for a, (name, pr) in zip(ax, priors.items()):
+    pr = normalise(pr)
+    post = normalise(pr * likelihood)
+    posteriors[name] = post
+    a.fill_between(theta, pr, color=PRIOR, alpha=0.35, label=&quot;prior&quot;)
+    a.plot(theta, normalise(likelihood), color=LIK, lw=1.5, ls=&quot;--&quot;, label=&quot;likelihood (scaled)&quot;)
+    a.plot(theta, post, color=POST, lw=2.2, label=&quot;posterior&quot;)
+    a.set_title(f&quot;{name} prior&quot;); a.set_xlabel(&quot;θ&quot;)
+ax[0].legend(fontsize=8); ax[0].set_ylabel(&quot;density&quot;)
+plt.tight_layout(); plt.show()</code></pre>
+<figure class="output-figure"><img src="img/04-2.png" alt="Figure: … prior" width="1181" height="347" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>The posterior is always a compromise between the prior and the likelihood. With the
+flat prior it has exactly the likelihood's shape. With the informed prior it sits
+between the data (0.65) and the prior (0.75), and it is narrower than either, because
+two sources of information agree roughly. With the sceptical prior the posterior
+keeps both of the prior's bumps: the prior insists the player is either poor or
+excellent, and 20 throws are not enough to overrule that, so the data can only move
+each bump towards 0.65 and shift weight to the &quot;excellent&quot; one, which is closer.
+Twenty throws is not much data, so the prior matters here.</p>
+</div>
+
+<div class="md">
+<h2 id="4-summarising-a-posterior">4. Summarising a posterior</h2>
+<p>The posterior is the full answer, but we usually report a few numbers.</p>
+<p><strong>Point estimates.</strong> The posterior <strong>mean</strong> <span class="math inline">\mathbb E[\theta\mid y]</span> (it minimises
+expected squared error), the posterior <strong>median</strong> (minimises expected absolute
+error) and the posterior <strong>mode</strong>, also called the MAP estimate (maximum a
+posteriori). With a flat prior the mode equals the MLE.</p>
+<p><strong>Credible intervals.</strong> A 95% credible interval is any interval <span class="math inline">(a,b)</span> with
+<span class="math inline">P(a&lt;\theta&lt;b\mid y) = 0.95</span>. Two common choices:</p>
+<ul>
+<li><strong>equal-tailed</strong>: cut 2.5% off each end, i.e. between the 0.025 and 0.975 quantiles;</li>
+<li><strong>highest posterior density (HPD)</strong>: the shortest such interval. Every point inside
+has higher density than every point outside [5].</li>
+</ul>
+<p>Unlike a confidence interval, a credible interval means exactly what it sounds like:
+given the model and the data, <span class="math inline">\theta</span> is in the interval with probability 0.95.</p>
+<p><strong>Probabilities of statements.</strong> Anything of the form &quot;<span class="math inline">P(\theta &gt; 0.5\mid y)</span>&quot; is just
+an integral of the posterior, which on a grid is a sum.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def summarise(post, level=0.95):
+    w = post * dtheta                                   # probability of each grid cell
+    cdf = np.cumsum(w)
+    mean = (theta * w).sum()
+    median = theta[np.searchsorted(cdf, 0.5)]
+    mode = theta[np.argmax(post)]
+    sd = np.sqrt(((theta - mean) ** 2 * w).sum())
+    et = theta[np.searchsorted(cdf, (1 - level) / 2)], theta[np.searchsorted(cdf, (1 + level) / 2)]
+    order = np.argsort(post)[::-1]                      # HPD: add the highest-density cells first
+    inside = order[: np.searchsorted(np.cumsum(w[order]), level) + 1]
+    hpd = theta[inside].min(), theta[inside].max()      # (valid for a unimodal posterior)
+    p_above_half = w[theta &gt; 0.5].sum()
+    return mean, median, mode, sd, et, hpd, p_above_half
+
+print(f&quot;{&#x27;prior&#x27;:&lt;10} {&#x27;mean&#x27;:&gt;6} {&#x27;median&#x27;:&gt;7} {&#x27;mode&#x27;:&gt;6} {&#x27;sd&#x27;:&gt;6}   {&#x27;95% equal-tailed&#x27;:&gt;17}   {&#x27;95% HPD&#x27;:&gt;15}   P(θ&gt;0.5)&quot;)
+for name in [&quot;flat&quot;, &quot;informed&quot;]:
+    mean, median, mode, sd, et, hpd, p = summarise(posteriors[name])
+    print(f&quot;{name:&lt;10} {mean:6.3f} {median:7.3f} {mode:6.3f} {sd:6.3f}   ({et[0]:.3f}, {et[1]:.3f})   ({hpd[0]:.3f}, {hpd[1]:.3f})   {p:.3f}&quot;)
+print(&quot;\nWald 95% confidence interval from chapter 03: (0.441, 0.859)&quot;)</code></pre>
+<pre class="output">prior        mean  median   mode     sd    95% equal-tailed           95% HPD   P(θ&gt;0.5)
+flat        0.636   0.640  0.650  0.100   (0.430, 0.819)   (0.440, 0.827)   0.905
+informed    0.729   0.729  0.730  0.044   (0.642, 0.812)   (0.643, 0.814)   1.000
+
+Wald 95% confidence interval from chapter 03: (0.441, 0.859)</pre>
+</div>
+
+<div class="md">
+<p>With the flat prior the credible interval is numerically close to the Wald
+confidence interval, but the two answer different questions. The credible interval
+is a probability statement about <span class="math inline">\theta</span>; the confidence interval is a statement
+about the method. The table also answers a question chapter 03 could not: the
+probability that this player makes more than half of their free throws.</p>
+</div>
+
+<div class="md">
+<h2 id="5-predicting-new-data">5. Predicting new data</h2>
+<p>Suppose the player takes 10 more throws. How many will go in? If we knew <span class="math inline">\theta</span>,
+the answer would be Binomial<span class="math inline">(10,\theta)</span>. We do not, so we average over what we
+believe about <span class="math inline">\theta</span>. The <strong>posterior predictive distribution</strong> is
+<span class="math display"> p(\tilde y\mid y) = \int p(\tilde y\mid\theta)\,p(\theta\mid y)\,\mathrm d\theta. </span>
+It carries two kinds of uncertainty: the randomness of the future throws given
+<span class="math inline">\theta</span>, and our remaining uncertainty about <span class="math inline">\theta</span> itself. Plugging in a single
+estimate, as in Binomial<span class="math inline">(10, 0.65)</span>, ignores the second and is overconfident.</p>
+<p>The same idea applied before seeing any data, with the prior in place of the
+posterior, gives the <strong>prior predictive</strong> distribution: what data the model expects.
+It is a useful check that a prior makes sense.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">k = np.arange(11)
+w = posteriors[&quot;flat&quot;] * dtheta
+predictive = np.array([(stats.binom.pmf(kk, 10, theta) * w).sum() for kk in k])
+plug_in = stats.binom.pmf(k, 10, y / n)
+print(f&quot;predictive mean {np.sum(k * predictive):.2f}, sd {np.sqrt(np.sum(k**2 * predictive) - np.sum(k * predictive)**2):.2f}&quot;)
+print(f&quot;plug-in    mean {np.sum(k * plug_in):.2f}, sd {np.sqrt(np.sum(k**2 * plug_in) - np.sum(k * plug_in)**2):.2f}&quot;)
+
+plt.bar(k - 0.2, plug_in, width=0.4, color=PRIOR, label=&quot;plug-in Binomial(10, 0.65)&quot;)
+plt.bar(k + 0.2, predictive, width=0.4, color=POST, label=&quot;posterior predictive&quot;)
+plt.xticks(k); plt.xlabel(&quot;made out of the next 10 throws&quot;); plt.ylabel(&quot;probability&quot;)
+plt.title(&quot;The posterior predictive is wider: it also admits we do not know θ&quot;)
+plt.legend(); plt.show()</code></pre>
+<pre class="output">predictive mean 6.36, sd 1.79
+plug-in    mean 6.50, sd 1.51</pre>
+<figure class="output-figure"><img src="img/04-3.png" alt="Figure: The posterior predictive is wider: it also admits we do not know θ" width="794" height="417" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="6-updating-one-observation-at-a-time">6. Updating one observation at a time</h2>
+<p>If observations are <strong>conditionally independent given</strong> <span class="math inline">\theta</span>, so that
+<span class="math inline">p(y_1,y_2\mid\theta) = p(y_1\mid\theta)\,p(y_2\mid\theta)</span>, then
+<span class="math display"> p(\theta\mid y_1,y_2) \propto p(y_2\mid\theta)\,\underbrace{p(y_1\mid\theta)\,p(\theta)}_{\propto\, p(\theta\mid y_1)}
+   \;\propto\; p(y_2\mid\theta)\,p(\theta\mid y_1). </span>
+The posterior after <span class="math inline">y_1</span> acts as the prior for <span class="math inline">y_2</span>. By induction, feeding the data
+in one at a time, in any order, gives exactly the posterior from all the data at
+once. Learning is cumulative and does not need the data to be stored, only the
+current posterior. The check below updates throw by throw, in a shuffled order.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">throws = np.array([1] * y + [0] * (n - y))
+rng.shuffle(throws)
+belief = normalise(np.ones_like(theta))
+for t in throws:
+    belief = normalise(belief * (theta if t else 1 - theta))
+print(&quot;throws in the order seen:&quot;, &quot;&quot;.join(&quot;X&quot; if t else &quot;.&quot; for t in throws))
+print(f&quot;largest difference from the all-at-once posterior: {np.abs(belief - posteriors[&#x27;flat&#x27;]).max():.1e}&quot;)</code></pre>
+<pre class="output">throws in the order seen: X.XX.XXXX.X.X..XXXX.
+largest difference from the all-at-once posterior: 1.1e-14</pre>
+</div>
+
+<div class="md">
+<h2 id="7-the-limits-of-the-grid">7. The limits of the grid</h2>
+<p>The grid is exact up to discretisation and works with any prior, so why do anything
+else? Because it scales badly. With <span class="math inline">d</span> parameters and 100 grid points per
+parameter, the grid has <span class="math inline">100^d</span> points: fine for <span class="math inline">d=1</span> or <span class="math inline">2</span>, hopeless for <span class="math inline">d=10</span>.
+Two ways out organise the rest of the course:</p>
+<ul>
+<li><strong>Conjugate priors</strong> (chapters 05 and 06): pairs of likelihood and prior for which the
+posterior has a known closed form, so no numerical integration is needed.</li>
+<li><strong>Monte Carlo sampling</strong> (chapter 09): draw samples from the posterior instead of
+evaluating it everywhere.</li>
+</ul>
+</div>
+
+<div class="md exercises">
+<h3 id="exercises">Exercises</h3>
+<ol>
+<li>Compute the marginal likelihood <span class="math inline">p(y)</span> for the flat and the informed prior on the
+grid. Which prior &quot;predicted&quot; 13 out of 20 better? Relate the ratio to the idea of
+a likelihood ratio from chapter 01.</li>
+<li>Replace the informed prior's standard deviation 0.05 by 0.02 and by 0.2. Describe how
+the posterior mean moves in each case, and explain why.</li>
+<li>Prove that the posterior mean minimises <span class="math inline">\mathbb E[(\theta-a)^2\mid y]</span> over <span class="math inline">a</span>.</li>
+<li>Compute the prior predictive distribution of the number made in 20 throws under the
+sceptical prior. What does it say about the kind of data this prior expects?</li>
+<li>Using the flat-prior posterior, find <span class="math inline">P(\tilde y \ge 8)</span> for the next 10 throws,
+both from the posterior predictive and from the plug-in binomial.</li>
+</ol>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<ol>
+<li>P. D. Hoff. <em>A First Course in Bayesian Statistical Methods.</em> Springer, 2009. (Chapters 2-3.)</li>
+<li>A. Gelman, J. B. Carlin, H. S. Stern, D. B. Dunson, A. Vehtari, D. B. Rubin. <em>Bayesian Data Analysis</em>, 3rd ed. CRC Press, 2013. (Chapters 1-2.)</li>
+<li>R. McElreath. <em>Statistical Rethinking</em>, 2nd ed. CRC Press, 2020. (Chapters 2-3 use grid approximation to teach exactly this.)</li>
+<li>A. B. Downey. <em>Think Bayes</em>, 2nd ed. O'Reilly, 2021.</li>
+<li>R. J. Hyndman. <em>Computing and graphing highest density regions.</em> The American Statistician, 50(2):120-126, 1996. <a href="https://doi.org/10.1080/00031305.1996.10474359">doi:10.1080/00031305.1996.10474359</a></li>
+<li>J. O. Berger. <em>Statistical Decision Theory and Bayesian Analysis</em>, 2nd ed. Springer, 1985. (Point estimates as decisions under a loss function.)</li>
+</ol>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="03-likelihood-and-frequentist.html"><span class="lbl">Previous · 03</span><span class="t">Likelihood and frequentist inference</span></a>
+  <a class="next" rel="next" href="05-discrete-conjugate.html"><span class="lbl">Next · 05</span><span class="t">Counts and proportions</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 04 of the Bayesian statistics course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

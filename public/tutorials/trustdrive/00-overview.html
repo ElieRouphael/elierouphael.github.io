@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>00 · Introduction and Overview — TrustDrive course</title>
+<meta name="description" content="The closed-loop problem, why self-reported confidence is not enough, and the notation used throughout.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; TrustDrive course</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">TrustDrive course · Chapter 00 of 09</span>
+  <h1>Introduction and Overview</h1>
+  <div class="intro prose">
+<h2 id="trustworthy-ai-perception-in-a-control-loop">Trustworthy AI perception in a control loop</h2>
+<p>Modern driver-assistance and automated-driving systems increasingly replace
+hand-engineered perception with <em>learned</em> components: a neural network maps camera
+pixels to the quantities a controller needs (lane offset, obstacles, other
+agents). This works well inside the conditions the network was trained on - its
+<strong>operational design domain (ODD)</strong> [1] - and can fail <em>silently</em> outside it. A
+blurred lens, low sun, an unusual road geometry, or simply an input unlike
+anything in the training set can make the network confidently wrong.</p>
+<p>The danger is specific to a <strong>closed loop</strong>. A wrong perception estimate is not
+just a bad number on a screen; it is fed straight into a controller that acts on
+it, and the vehicle moves. So the question this course studies is not &quot;how
+accurate is the perception?&quot; but:</p>
+<blockquote>
+<p>Given an imperfect, learned perception system, <strong>when should we trust it enough
+to close the control loop on it</strong>, and what should happen when we should not?</p>
+</blockquote>
+<p>We answer it with three ingredients, each in its own notebook: a way to <em>quantify</em>
+perception uncertainty (04-05), a way to <em>decide</em> whether the system is inside its
+competence (06), and a way to <em>act</em> on that decision by sharing authority with a
+human driver (07). The same monitoring theme appears in recent work on
+perception-system fault detection [9], integrity monitoring of learned detectors
+[10], and ODD monitoring under uncertainty [11].</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/00_overview.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
+  </div>
+  
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#trustworthy-ai-perception-in-a-control-loop">Trustworthy AI perception in a control loop</a></li>
+    <li><a href="#the-system-as-equations">The system as equations</a></li>
+    <li><a href="#why-the-network-is-confident-is-not-enough">Why &quot;the network is confident&quot; is not enough</a></li>
+    <li><a href="#a-first-look-the-phenomenon-in-one-experiment">A first look: the phenomenon in one experiment</a></li>
+    <li><a href="#the-three-architectures-precisely">The three architectures, precisely</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#notation">Notation</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="the-system-as-equations">The system as equations</h2>
+<p>We study the smallest closed loop that still contains the real difficulty. Symbols
+are collected in the notation table near the end.</p>
+<p><strong>Plant.</strong> A vehicle tracking a lane, written in <em>error coordinates</em>
+<span class="math inline">x=[e_y,\,e_\psi]^\top</span> (lateral offset [m], heading error [rad]), driven by the
+steering angle <span class="math inline">u=\delta</span>, with road curvature <span class="math inline">\kappa</span> as a measured disturbance:</p>
+<div class="math display"> x_{k+1} = f(x_k,\,u_k,\,\kappa_k). \tag{1} </div>
+<p><strong>Perception.</strong> A camera produces an image <span class="math inline">\mathcal{I}_k = g(x_k,\,c_k)</span> that also
+depends on the conditions <span class="math inline">c_k</span> (brightness, blur, occlusion, curvature). A learned
+estimator <span class="math inline">h_\theta</span> inverts it into an estimate of the state together with a
+<em>self-reported</em> covariance <span class="math inline">R_k^{AI}</span> (how uncertain the network believes it is):</p>
+<div class="math display"> \hat y_k = h_\theta(\mathcal{I}_k) \approx C\,x_k, \qquad
+   \mathrm{Cov}[\hat y_k] \approx R_k^{AI}. \tag{2} </div>
+<p><strong>Controller.</strong> A feedback law acts on an <em>estimate</em> of the state,</p>
+<div class="math display"> u_k = \pi(\hat x_k), \tag{3} </div>
+<p>and the naive choice is <span class="math inline">\hat x_k = \hat y_k</span>: trust the network completely.</p>
+<p><strong>The missing layer.</strong> Between (2) and (3) we insert a <em>monitor</em> that outputs an
+<strong>integrity score</strong> <span class="math inline">I_k\in[0,1]</span> and an <strong>authority</strong> <span class="math inline">\lambda_k\in[0,1]</span> - how
+much of the automation command to apply, versus the human. Constructing <span class="math inline">I_k</span> and
+<span class="math inline">\lambda_k</span> well is what the rest of the course is about.</p>
+</div>
+
+<div class="md">
+<h2 id="why-the-network-is-confident-is-not-enough">Why &quot;the network is confident&quot; is not enough</h2>
+<p>A prediction can be uncertain for two very different reasons [7]:</p>
+<ul>
+<li><strong>Aleatoric</strong> uncertainty is irreducible sensor noise; it is what <span class="math inline">R_k^{AI}</span> is
+meant to capture, and more data does not remove it.</li>
+<li><strong>Epistemic</strong> uncertainty is the model's <em>ignorance</em> - largest where it saw
+little training data, i.e. out of distribution. A <strong>deep ensemble</strong> [6] estimates
+it from the disagreement between independently trained models (notebook 04).</li>
+</ul>
+<p>Both can be reported as a covariance, and both share one failure mode: in a
+genuinely novel regime a network can be <strong>confidently wrong</strong> - every ensemble
+member agrees, <span class="math inline">R_k^{AI}</span> stays small, yet the estimate is biased. Uncertainty
+reported by the model <em>alone</em> cannot detect this, because the model is the thing
+that is wrong.</p>
+<p>The classical remedy, from estimation and fault-detection theory [2,3,4,5], is an
+<strong>independent, model-based</strong> check. Run a Kalman predictor from the physics (1) to
+predict what the measurement should be, then test the <strong>innovation</strong>
+<span class="math inline">\nu_k=\hat y_k - C\hat x_{k|k-1}</span> against its own covariance
+<span class="math inline">S_k = C P_{k|k-1} C^\top + R_k^{AI}</span> via the <strong>normalised innovation squared</strong>:</p>
+<div class="math display"> \boxed{\;\mathrm{NIS}_k = \nu_k^\top S_k^{-1}\,\nu_k\;} \tag{4} </div>
+<p>Under the hypothesis that model and measurement are consistent, <span class="math inline">S_k^{-1/2}\nu_k</span>
+is standard normal, so <span class="math inline">\mathrm{NIS}_k \sim \chi^2_m</span> with <span class="math inline">m=\dim(\hat y)</span> degrees
+of freedom [3]. A value above the <span class="math inline">\chi^2</span> threshold flags a mismatch <strong>even when
+<span class="math inline">R_k^{AI}</span> is small</strong> - that clause is the entire point, and the experiment below
+demonstrates it. (The term <em>integrity monitoring</em> itself comes from aviation and
+GNSS receiver autonomous integrity monitoring [16], where deciding when an estimate
+must not be trusted is safety-critical.)</p>
+<p>Finally we fuse three complementary signals into a single score so that <em>any one</em>
+of them can veto trust (notebook 06):</p>
+<div class="math display"> I_k = s_{unc}\!\big(\Sigma^{AI}_k\big)\;\cdot\;s_{NIS}\!\big(\mathrm{NIS}_k\big)\;\cdot\;s_{ODD}(c_k). \tag{5} </div>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Environment check
+import numpy as np, matplotlib
+print(&quot;numpy&quot;, np.__version__, &quot;| matplotlib&quot;, matplotlib.__version__)</code></pre>
+<pre class="output">numpy 2.5.1 | matplotlib 3.11.0</pre>
+</div>
+
+<div class="md">
+<h2 id="a-first-look-the-phenomenon-in-one-experiment">A first look: the phenomenon in one experiment</h2>
+<p>Here is the central effect, before we build anything. We feed a monitor a stream
+of perception measurements of a smoothly moving state. For the first half they are
+consistent; then we inject an <em>out-of-distribution bias</em> - the measurement becomes
+systematically wrong, but its reported uncertainty <span class="math inline">R^{AI}</span> does <strong>not</strong> grow (the
+network stays confident). Watch which signal reacts. This is exactly the mechanism
+of notebook 05, shown here only to motivate the course.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+L, Ts, V, CHI2 = 2.7, 0.05, 15.0, 9.210
+A = np.array([[1, V*Ts], [0, 1]]); E = np.array([0, -V*Ts]); Q = np.diag([1e-4, 1e-4])
+rng = np.random.default_rng(1)
+x = np.zeros(2); P = np.diag([0.05, 0.02]); true = np.zeros(2)
+srep = np.array([0.02, 0.01])                      # reported std - CONSTANT throughout
+N = 300; sig, nis = [], []
+for k in range(N):
+    kappa = 0.012*np.sin(2*np.pi*k*Ts/6)
+    true = np.array([true[0] + V*np.sin(true[1])*Ts, true[1] - V*kappa*Ts])
+    bias = np.zeros(2) if k &lt; 150 else np.array([0.22, 0.06])   # OOD bias for k &gt;= 150
+    y = true + bias + rng.normal(0, srep)
+    x = A @ x + E*kappa; P = A @ P @ A.T + Q                     # KF predict (delta = 0)
+    S = P + np.diag(srep**2); nu = y - x
+    nis.append(float(nu @ np.linalg.solve(S, nu))); sig.append(np.sqrt((srep**2).sum()))
+    Kg = P @ np.linalg.inv(S); x = x + Kg @ nu; P = (np.eye(2) - Kg) @ P
+
+t = np.arange(N)*Ts
+fig, ax = plt.subplots(2, 1, figsize=(8, 4.2), sharex=True)
+ax[0].plot(t, sig, color=&quot;#8e44ad&quot;); ax[0].set_ylim(0, 0.05)
+ax[0].set_ylabel(&quot;reported\n$\\sqrt{tr\\,R^{AI}}$&quot;)
+ax[0].set_title(&quot;Self-reported uncertainty stays flat - it never sees the failure&quot;)
+ax[1].plot(t, nis, color=&quot;#e67e22&quot;)
+ax[1].axhline(CHI2, ls=&quot;--&quot;, color=&quot;k&quot;, label=&quot;$\\chi^2_{2,\\,0.99}=9.21$&quot;)
+ax[1].axvspan(150*Ts, N*Ts, color=&quot;red&quot;, alpha=0.06, label=&quot;out-of-distribution bias&quot;)
+ax[1].set_ylabel(&quot;NIS&quot;); ax[1].set_xlabel(&quot;t [s]&quot;); ax[1].legend(loc=&quot;upper left&quot;)
+for a in ax: a.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
+print(&quot;mean NIS  in-distribution: %.1f   |   out-of-distribution: %.1f&quot;
+      % (np.mean(nis[:150]), np.mean(nis[150:])))</code></pre>
+<figure class="output-figure"><img src="img/00-1.png" alt="Figure: Self-reported uncertainty stays flat - it never sees the failure" width="869" height="450" loading="lazy"></figure>
+<pre class="output">mean NIS  in-distribution: 1.3   |   out-of-distribution: 13.6</pre>
+</div>
+
+<div class="md">
+<p>The top panel is what an uncertainty-threshold rule watches: it never moves, so
+that rule stays silent through the entire failure. The bottom panel is the
+model-based NIS - it crosses the <span class="math inline">\chi^2</span> line as soon as the measurement stops
+agreeing with the physics. A monitor built only on the network's self-reported
+confidence is blind here; a monitor that also checks <em>consistency with a model</em> is
+not. Everything else in the course - the controller, the ODD, the integrity score,
+the shared control - exists to turn this detection into safe <em>action</em>.</p>
+</div>
+
+<div class="md">
+<h2 id="the-three-architectures-precisely">The three architectures, precisely</h2>
+<p>The capstone (notebook 08) compares three ways of using the <em>same</em> perception,
+stated here as decision rules.</p>
+<p><strong>Naive AI</strong> - trust completely:
+<span class="math display"> \hat x_k = \hat y_k,\qquad u_k = \pi(\hat x_k),\qquad \lambda_k = 1. </span></p>
+<p><strong>Hard handover</strong> - switch fully to the driver when the <em>reported</em> uncertainty
+crosses a threshold <span class="math inline">\tau</span>:
+<span class="math display"> \lambda_k = \begin{cases} 1 &amp; \mathrm{tr}\,R_k^{AI} \le \tau \\[2pt] 0 &amp; \text{otherwise.} \end{cases} </span>
+As the experiment above shows, this never triggers on the confident-but-wrong
+out-of-distribution case.</p>
+<p><strong>Proposed (integrity-aware)</strong> - filter the estimate, fuse the integrity score (5),
+then share authority smoothly and contract the operating envelope:
+<span class="math display"> u_k = \delta^{ff}_k + \lambda_k\,\mathrm{fb}_A(\hat x_k) + (1-\lambda_k)\,\delta^{H}_k,
+   \qquad \lambda_k = \Phi(I_k, W_k),\qquad v^{ref}_k = v_{nom}\,(0.4 + 0.6\,I_k), </span>
+where <span class="math inline">W_k</span> is the driver workload and <span class="math inline">\delta^{H}_k</span> the human command (notebook 07).
+The map-based feed-forward <span class="math inline">\delta^{ff}_k</span> is always applied; only the <em>feedback</em>
+authority is arbitrated (notebook 02 explains why).</p>
+</div>
+
+<div class="md">
+<h2 id="roadmap">Roadmap</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Notebook</th>
+<th>You build / learn</th>
+<th>Key equations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01</td>
+<td><code>01_vehicle_model</code></td>
+<td>Kinematic lane-error model; discretisation; linearisation; controllability</td>
+<td>(1)</td>
+</tr>
+<tr>
+<td>02</td>
+<td><code>02_lqr_control</code></td>
+<td>LQR from the Riccati equation; curvature feed-forward; gain scheduling</td>
+<td>(3)</td>
+</tr>
+<tr>
+<td>03</td>
+<td><code>03_perception_and_rendering</code></td>
+<td>Pinhole camera; synthetic lane images; realistic degradation</td>
+<td>(2)</td>
+</tr>
+<tr>
+<td>04</td>
+<td><code>04_uncertainty_ensembles</code></td>
+<td>Aleatoric vs epistemic uncertainty; deep ensembles</td>
+<td><span class="math inline">\Sigma^{AI}</span></td>
+</tr>
+<tr>
+<td>05</td>
+<td><code>05_kalman_and_nis</code></td>
+<td>Kalman filter; innovation; the NIS consistency test</td>
+<td>(4)</td>
+</tr>
+<tr>
+<td>06</td>
+<td><code>06_odd_and_integrity</code></td>
+<td>Operational design domain; fusing signals into integrity</td>
+<td>(5)</td>
+</tr>
+<tr>
+<td>07</td>
+<td><code>07_shared_control</code></td>
+<td>Human driver model; authority arbitration; speed contraction</td>
+<td><span class="math inline">\lambda_k</span></td>
+</tr>
+<tr>
+<td>08</td>
+<td><code>08_capstone_closed_loop</code></td>
+<td>Everything together: 3 methods x 4 scenarios</td>
+<td>all</td>
+</tr>
+<tr>
+<td>09</td>
+<td><code>09_advanced_ideas</code></td>
+<td>CUSUM change detection; conformal prediction; research directions</td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<p>Each concept notebook ends with short exercises. <strong>Prerequisites:</strong> basic linear
+algebra, probability, and Python. No prior control-theory or deep-learning
+background is assumed. <strong>Setup:</strong> <code>pip install -r requirements.txt</code>, then open the
+notebooks in order.</p>
+</div>
+
+<div class="md">
+<h2 id="notation">Notation</h2>
+<table>
+<thead>
+<tr>
+<th>symbol</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math inline">x=[e_y,\,e_\psi]^\top</span></td>
+<td>lateral offset [m], heading error [rad]</td>
+</tr>
+<tr>
+<td><span class="math inline">u=\delta</span></td>
+<td>steering angle [rad]</td>
+</tr>
+<tr>
+<td><span class="math inline">\kappa</span></td>
+<td>road curvature [1/m]</td>
+</tr>
+<tr>
+<td><span class="math inline">v,\;L,\;T_s</span></td>
+<td>speed [m/s], wheelbase [m], sample time [s]</td>
+</tr>
+<tr>
+<td><span class="math inline">\mathcal{I}_k,\;c_k</span></td>
+<td>camera image and its conditions</td>
+</tr>
+<tr>
+<td><span class="math inline">\hat y_k</span></td>
+<td>perception estimate of the state</td>
+</tr>
+<tr>
+<td><span class="math inline">R^{AI}_k,\;\Sigma^{AI}_k</span></td>
+<td>reported / ensemble (epistemic) covariance</td>
+</tr>
+<tr>
+<td><span class="math inline">\hat x_{k\mid k-1},\;P_{k\mid k-1}</span></td>
+<td>Kalman one-step prediction and its covariance</td>
+</tr>
+<tr>
+<td><span class="math inline">\nu_k,\;S_k</span></td>
+<td>innovation and innovation covariance</td>
+</tr>
+<tr>
+<td><span class="math inline">\mathrm{NIS}_k</span></td>
+<td>normalised innovation squared, eq. (4)</td>
+</tr>
+<tr>
+<td><span class="math inline">I_k\in[0,1]</span></td>
+<td>integrity score, eq. (5)</td>
+</tr>
+<tr>
+<td><span class="math inline">\lambda_k\in[0,1]</span></td>
+<td>automation authority</td>
+</tr>
+<tr>
+<td><span class="math inline">W_k</span></td>
+<td>driver workload</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="md refs">
+<h2 id="references">References</h2>
+<p><strong>Automation levels and operational domain</strong></p>
+<ol>
+<li>SAE International. <em>Taxonomy and Definitions for Terms Related to Driving Automation Systems for On-Road Motor Vehicles.</em> Standard J3016_202104, 2021.</li>
+</ol>
+<p><strong>Estimation, innovations and fault detection</strong>
+2. R. E. Kalman. <em>A New Approach to Linear Filtering and Prediction Problems.</em> Journal of Basic Engineering, 82(1):35-45, 1960. <a href="https://doi.org/10.1115/1.3662552">doi:10.1115/1.3662552</a>
+3. Y. Bar-Shalom, X.-R. Li, T. Kirubarajan. <em>Estimation with Applications to Tracking and Navigation.</em> Wiley, 2001. (NIS / measurement consistency and chi-square gating.)
+4. R. K. Mehra, J. Peschon. <em>An innovations approach to fault detection and diagnosis in dynamic systems.</em> Automatica, 7(5):637-640, 1971. <a href="https://doi.org/10.1016/0005-1098(71)90028-8">doi:10.1016/0005-1098(71)90028-8</a>
+5. A. S. Willsky. <em>A survey of design methods for failure detection in dynamic systems.</em> Automatica, 12(6):601-611, 1976. <a href="https://doi.org/10.1016/0005-1098(76)90041-8">doi:10.1016/0005-1098(76)90041-8</a></p>
+<p><strong>Uncertainty in learned models</strong>
+6. B. Lakshminarayanan, A. Pritzel, C. Blundell. <em>Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles.</em> NeurIPS, 2017. <a href="https://arxiv.org/abs/1612.01474">arXiv:1612.01474</a>
+7. A. Kendall, Y. Gal. <em>What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?</em> NeurIPS, 2017. <a href="https://arxiv.org/abs/1703.04977">arXiv:1703.04977</a>
+8. A. N. Angelopoulos, S. Bates. <em>A Gentle Introduction to Conformal Prediction and Distribution-Free Uncertainty Quantification.</em> Foundations and Trends in ML, 2023. <a href="https://arxiv.org/abs/2107.07511">arXiv:2107.07511</a> (see also V. Vovk, A. Gammerman, G. Shafer, <em>Algorithmic Learning in a Random World</em>, Springer, 2005.)</p>
+<p><strong>Monitoring for automated driving</strong>
+9. P. Antonante, H. Nilsen, L. Carlone. <em>Monitoring of Perception Systems: Deterministic, Probabilistic, and Learning-based Fault Detection and Identification.</em> Artificial Intelligence, 2022. <a href="https://arxiv.org/abs/2205.10906">arXiv:2205.10906</a>
+10. H. Y. Yatbaz, M. Dianati, K. Koufos, R. Woodman. <em>Integrity Monitoring of 3D Object Detection in Automated Driving Systems.</em> IEEE ITSC, 2024. <a href="https://arxiv.org/abs/2405.07600">arXiv:2405.07600</a>
+11. T. Charmet, V. Berge-Cherfaoui, J. Guzman, A. Armand. <em>Operational Design Domain Monitoring with Uncertain Measurements.</em> IEEE ITSC, 2024. <a href="https://doi.org/10.1109/ITSC58415.2024.10919733">doi:10.1109/ITSC58415.2024.10919733</a></p>
+<p><strong>Shared human-vehicle control and trust</strong>
+12. R. Luo et al. <em>A Workload Adaptive Haptic Shared Control Scheme for Semi-Autonomous Driving.</em> Accident Analysis &amp; Prevention, 2020. <a href="https://arxiv.org/abs/2004.00167">arXiv:2004.00167</a>
+13. D. A. Abbink, M. Mulder, E. R. Boer. <em>Haptic shared control: smoothly shifting control authority?</em> Cognition, Technology &amp; Work, 14:19-28, 2012. <a href="https://doi.org/10.1007/s10111-011-0192-5">doi:10.1007/s10111-011-0192-5</a>
+14. N. Monsaingeon, L. Caroux, S. Langlois, C. Lemercier. <em>Multimodal interface and reliability displays: effect on attention, mode awareness, and trust in partially automated vehicles.</em> Frontiers in Psychology, 2023. <a href="https://doi.org/10.3389/fpsyg.2023.1107847">doi:10.3389/fpsyg.2023.1107847</a></p>
+<p><strong>Change detection and the origin of &quot;integrity&quot;</strong>
+15. E. S. Page. <em>Continuous Inspection Schemes.</em> Biometrika, 41(1/2):100-115, 1954. (CUSUM; used in notebook 09.)
+16. R. G. Brown. <em>A Baseline GPS RAIM Scheme and a Note on the Equivalence of Three RAIM Methods.</em> Navigation, 39(3):301-316, 1992. (Integrity monitoring in aviation/GNSS.)</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <span></span>
+  <a class="next" rel="next" href="01-vehicle-model.html"><span class="lbl">Next · 01</span><span class="t">The vehicle model</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 00 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

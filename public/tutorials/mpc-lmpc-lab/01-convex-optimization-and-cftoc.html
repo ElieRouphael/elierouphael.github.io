@@ -1,0 +1,2149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>01 · Convex Optimization and Constrained Finite-Time Optimal Control — Advanced MPC and Learning MPC</title>
+<meta name="description" content="Convex sets and functions, KKT conditions and duality, then a constrained finite-time optimal-control problem condensed into a QP.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Chapter 01 of 09</span>
+  <h1>Convex Optimization and Constrained Finite-Time Optimal Control</h1>
+  <div class="intro prose">
+<h2 id="from-geometry-and-kkt-conditions-to-an-optimal-control-problem-a-solver-can-actually-solve">From geometry and KKT conditions to an optimal-control problem a solver can actually solve</h2>
+<p>Optimization is the computational engine behind predictive control. Before discussing
+receding-horizon feedback, invariant terminal sets, Learning MPC, or autonomous racing,
+we need to understand <strong>what optimization problem is being solved</strong>, why some formulations
+are tractable, what the solver is certifying, and how a dynamical system becomes a finite-dimensional
+optimization problem.</p>
+<p>This notebook develops that layer carefully.</p>
+<p>The central chain is</p>
+<div class="math display">
+\boxed{
+\text{geometry}
+\rightarrow
+\text{convexity}
+\rightarrow
+\text{optimality}
+\rightarrow
+\text{duality/KKT}
+\rightarrow
+\text{QP}
+\rightarrow
+\text{CFTOC}
+}
+</div>
+<p>and then, for linear dynamics with quadratic costs,</p>
+<div class="math display">
+\boxed{
+\text{CFTOC}
+\rightarrow
+\text{sparse QP}
+\quad\text{or}\quad
+\text{condensed QP}.
+}
+</div>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/01_convex_optimization_and_cftoc.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need the <code>advanced_mpc_lmpc</code> package: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#from-geometry-and-kkt-conditions-to-an-optimal-control-problem-a-solver-can-actually-solve">From geometry and KKT conditions to an optimal-control problem a solver can actually solve</a></li>
+    <li><a href="#scope-of-this-notebook">Scope of this notebook</a></li>
+    <li><a href="#learning-objectives">Learning objectives</a></li>
+    <li><a href="#table-of-contents">Table of Contents</a></li>
+    <li><a href="#part-i-optimization-as-geometry">Part I — Optimization as geometry</a></li>
+    <li><a href="#i-1-the-generic-constrained-optimization-problem">I.1 The generic constrained optimization problem</a></li>
+    <li><a href="#i-2-convex-sets">I.2 Convex sets</a></li>
+    <li><a href="#i-3-convex-functions">I.3 Convex functions</a></li>
+    <li><a href="#i-4-convex-optimization-problems">I.4 Convex optimization problems</a></li>
+    <li><a href="#i-5-lp-convex-qp-nonconvex-qp-and-mixed-integer-problems">I.5 LP, convex QP, nonconvex QP, and mixed-integer problems</a></li>
+    <li><a href="#part-ii-optimality-duality-and-kkt-conditions">Part II — Optimality, duality, and KKT conditions</a></li>
+    <li><a href="#ii-1-unconstrained-optimality">II.1 Unconstrained optimality</a></li>
+    <li><a href="#ii-2-the-lagrangian">II.2 The Lagrangian</a></li>
+    <li><a href="#ii-3-the-dual-function-and-weak-duality">II.3 The dual function and weak duality</a></li>
+    <li><a href="#ii-4-karush-kuhn-tucker-conditions">II.4 Karush–Kuhn–Tucker conditions</a></li>
+    <li><a href="#ii-5-a-qp-we-can-solve-analytically">II.5 A QP we can solve analytically</a></li>
+    <li><a href="#ii-6-lagrange-multipliers-as-sensitivity-information">II.6 Lagrange multipliers as sensitivity information</a></li>
+    <li><a href="#ii-7-dual-of-a-strictly-convex-qp">II.7 Dual of a strictly convex QP</a></li>
+    <li><a href="#ii-8-hard-and-soft-constraints">II.8 Hard and soft constraints</a></li>
+    <li><a href="#ii-9-solver-classes-and-what-they-mean">II.9 Solver classes and what they mean</a></li>
+    <li><a href="#part-iii-constrained-finite-time-optimal-control">Part III — Constrained finite-time optimal control</a></li>
+    <li><a href="#iii-1-plant-dynamics-versus-prediction-dynamics">III.1 Plant dynamics versus prediction dynamics</a></li>
+    <li><a href="#iii-2-the-cftoc-problem">III.2 The CFTOC problem</a></li>
+    <li><a href="#iii-3-direct-transcription-keep-states-and-inputs-as-decision-variables">III.3 Direct transcription: keep states and inputs as decision variables</a></li>
+    <li><a href="#iii-4-condensing-eliminate-all-predicted-states">III.4 Condensing: eliminate all predicted states</a></li>
+    <li><a href="#iii-5-condensing-a-quadratic-cost">III.5 Condensing a quadratic cost</a></li>
+    <li><a href="#iii-6-condensing-constraints">III.6 Condensing constraints</a></li>
+    <li><a href="#part-iv-a-complete-linear-quadratic-cftoc">Part IV — A complete linear-quadratic CFTOC</a></li>
+    <li><a href="#iv-1-the-same-cftoc-in-sparse-form">IV.1 The same CFTOC in sparse form</a></li>
+    <li><a href="#iv-2-sparse-versus-condensed-formulations">IV.2 Sparse versus condensed formulations</a></li>
+    <li><a href="#part-v-a-nonlinear-cftoc-the-unicycle">Part V — A nonlinear CFTOC: the unicycle</a></li>
+    <li><a href="#v-1-model">V.1 Model</a></li>
+    <li><a href="#v-2-nonlinear-terminal-pose-problem">V.2 Nonlinear terminal-pose problem</a></li>
+    <li><a href="#v-3-what-changed-when-the-dynamics-became-nonlinear">V.3 What changed when the dynamics became nonlinear?</a></li>
+    <li><a href="#part-vi-numerical-and-modeling-habits">Part VI — Numerical and modeling habits</a></li>
+    <li><a href="#vi-1-never-report-only-the-solver-converged">VI.1 Never report only “the solver converged”</a></li>
+    <li><a href="#vi-2-scaling">VI.2 Scaling</a></li>
+    <li><a href="#vi-3-modeling-decisions-are-optimization-decisions">VI.3 Modeling decisions are optimization decisions</a></li>
+    <li><a href="#part-vii-check-your-understanding">Part VII — Check your understanding</a></li>
+    <li><a href="#part-viii-exercises">Part VIII — Exercises</a></li>
+    <li><a href="#part-ix-where-the-repository-goes-next">Part IX — Where the repository goes next</a></li>
+    <li><a href="#part-x-scope-and-further-reading">Part X — Scope and further reading</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="scope-of-this-notebook">Scope of this notebook</h2>
+<p>This chapter is intentionally narrower than the full repository.</p>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th style="text-align:right">Here?</th>
+<th>Where it is developed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Convex sets and convex functions</td>
+<td style="text-align:right"><strong>Yes</strong></td>
+<td>01</td>
+</tr>
+<tr>
+<td>LPs, QPs, KKT conditions, duality</td>
+<td style="text-align:right"><strong>Yes</strong></td>
+<td>01</td>
+</tr>
+<tr>
+<td>Finite-horizon optimal control / CFTOC</td>
+<td style="text-align:right"><strong>Yes</strong></td>
+<td>01</td>
+</tr>
+<tr>
+<td>Sparse and condensed optimal-control formulations</td>
+<td style="text-align:right"><strong>Yes</strong></td>
+<td>01</td>
+</tr>
+<tr>
+<td>Nonlinear finite-horizon control example</td>
+<td style="text-align:right"><strong>Yes</strong></td>
+<td>01</td>
+</tr>
+<tr>
+<td>Polytope reachability and invariant-set algorithms</td>
+<td style="text-align:right">No</td>
+<td>02</td>
+</tr>
+<tr>
+<td>Recursive feasibility and MPC stability proofs</td>
+<td style="text-align:right">No</td>
+<td>03</td>
+</tr>
+<tr>
+<td>Vehicle–bike mixed-integer collision avoidance</td>
+<td style="text-align:right">No</td>
+<td>04</td>
+</tr>
+<tr>
+<td>Learning MPC safe sets and learned terminal costs</td>
+<td style="text-align:right">No</td>
+<td>05</td>
+</tr>
+<tr>
+<td>Minimum-time racing in Frenet coordinates</td>
+<td style="text-align:right">No</td>
+<td>06</td>
+</tr>
+<tr>
+<td>Local data-driven prediction models</td>
+<td style="text-align:right">No</td>
+<td>07</td>
+</tr>
+<tr>
+<td>Dynamic programming and reinforcement learning</td>
+<td style="text-align:right">No</td>
+<td>08</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Important:</strong> a CFTOC problem is a finite-horizon optimization problem.<br />
+<strong>MPC is the feedback strategy obtained by repeatedly solving such a problem, applying the
+first action, measuring the new state, and solving again.</strong></p>
+<p>We stop before the receding-horizon stability theory; that belongs to Notebook 03.</p>
+</blockquote>
+</div>
+
+<div class="md">
+<h2 id="learning-objectives">Learning objectives</h2>
+<p>After working through this notebook, you should be able to:</p>
+<ol>
+<li>write an optimization problem in standard constrained form;</li>
+<li>recognize common convex sets used in control;</li>
+<li>test convexity of a quadratic objective using its Hessian;</li>
+<li>explain why convexity changes the meaning of a local optimum;</li>
+<li>derive the Lagrangian, dual function, and KKT conditions;</li>
+<li>interpret Lagrange multipliers as <strong>constraint shadow prices</strong>;</li>
+<li>distinguish LP, convex QP, nonconvex QP, NLP, and mixed-integer formulations;</li>
+<li>formulate a constrained finite-time optimal-control problem;</li>
+<li>distinguish the <strong>prediction model</strong> from the plant/test model;</li>
+<li>derive the stacked prediction equation</li>
+</ol>
+<div class="math display">
+X=S_xx_0+S_uU;
+</div>
+<ol start="11">
+<li>derive the condensed QP Hessian and linear term;</li>
+<li>translate state, input, terminal, and input-rate constraints into matrix inequalities;</li>
+<li>construct equivalent sparse and condensed QPs and verify that they agree;</li>
+<li>understand why a nonlinear unicycle CFTOC becomes a nonconvex nonlinear program.</li>
+</ol>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from pathlib import Path
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+
+from scipy.linalg import block_diag
+from scipy.optimize import minimize, minimize_scalar, NonlinearConstraint, Bounds
+
+ROOT = Path.cwd().resolve()
+if ROOT.name == &quot;notebooks&quot;:
+    ROOT = ROOT.parent
+
+sys.path.insert(0, str(ROOT / &quot;src&quot;))
+
+from advanced_mpc_lmpc.qp import solve_qp
+from advanced_mpc_lmpc.linear import prediction_matrices, rollout
+
+np.set_printoptions(precision=5, suppress=True)
+plt.rcParams.update({
+    &quot;figure.figsize&quot;: (8, 4.8),
+    &quot;axes.grid&quot;: True,
+})
+</code></pre>
+</div>
+
+<div class="md">
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><strong><a href="#part-1">Part I — Optimization as geometry</a></strong> — I.1 The generic constrained optimization problem · I.2 Convex sets · I.3 Convex functions · I.4 Convex optimization problems · I.5 LP, convex QP, nonconvex QP, and mixed-integer problems</li>
+<li><strong><a href="#part-2">Part II — Optimality, duality, and KKT conditions</a></strong> — II.1 Unconstrained optimality · II.2 The Lagrangian · II.3 The dual function and weak duality · II.4 Karush–Kuhn–Tucker conditions · II.5 A QP we can solve analytically · II.6 Lagrange multipliers as sensitivity information · II.7 Dual of a strictly convex QP · II.8 Hard and soft constraints · II.9 Solver classes and what they mean</li>
+<li><strong><a href="#part-3">Part III — Constrained finite-time optimal control</a></strong> — III.1 Plant dynamics versus prediction dynamics · III.2 The CFTOC problem · III.3 Direct transcription: keep states and inputs as decision variables · III.4 Condensing: eliminate all predicted states · III.5 Condensing a quadratic cost · III.6 Condensing constraints</li>
+<li><strong><a href="#part-4">Part IV — A complete linear-quadratic CFTOC</a></strong> — IV.1 The same CFTOC in sparse form · IV.2 Sparse versus condensed formulations</li>
+<li><strong><a href="#part-5">Part V — A nonlinear CFTOC: the unicycle</a></strong> — V.1 Model · V.2 Nonlinear terminal-pose problem · V.3 What changed when the dynamics became nonlinear?</li>
+<li><strong><a href="#part-6">Part VI — Numerical and modeling habits</a></strong> — VI.1 Never report only “the solver converged” · VI.2 Scaling · VI.3 Modeling decisions are optimization decisions</li>
+<li><strong><a href="#part-7">Part VII — Check your understanding</a></strong></li>
+<li><strong><a href="#part-8">Part VIII — Exercises</a></strong></li>
+<li><strong><a href="#part-9">Part IX — Where the repository goes next</a></strong></li>
+<li><strong><a href="#part-10">Part X — Scope and further reading</a></strong></li>
+</ul>
+</div>
+
+<div class="md">
+<p><a id="part-1"></a></p>
+<h2 id="part-i-optimization-as-geometry">Part I — Optimization as geometry</h2>
+<h2 id="i-1-the-generic-constrained-optimization-problem">I.1 The generic constrained optimization problem</h2>
+<p>A broad class of optimization problems can be written as</p>
+<div class="math display">
+\begin{aligned}
+\min_{z\in\mathbb R^n}\quad &amp; f(z)\\
+\text{subject to}\quad
+&amp; g_i(z)\le 0,\qquad i=1,\ldots,m,\\
+&amp; h_j(z)=0,\qquad j=1,\ldots,p.
+\end{aligned}
+</div>
+<p>The vector <span class="math inline">z</span> contains the <strong>decision variables</strong>.</p>
+<p>The set</p>
+<div class="math display">
+\mathcal F
+=
+\left\{
+z:
+g_i(z)\le 0,\;
+h_j(z)=0
+\right\}
+</div>
+<p>is the <strong>feasible set</strong>.</p>
+<p>The optimizer is</p>
+<div class="math display">
+z^\star\in\arg\min_{z\in\mathcal F}f(z),
+</div>
+<p>and the optimal value is</p>
+<div class="math display">
+f^\star=f(z^\star).
+</div>
+<p>This distinction matters:</p>
+<ul>
+<li>the <strong>optimizer</strong> is a point (or a set of points);</li>
+<li>the <strong>optimal value</strong> is a scalar;</li>
+<li>a point can be feasible without being optimal;</li>
+<li>a problem can be infeasible, unbounded, or have multiple minimizers.</li>
+</ul>
+<p>In control, <span class="math inline">z</span> will often contain an entire predicted state/input trajectory.</p>
+</div>
+
+<div class="md">
+<h2 id="i-2-convex-sets">I.2 Convex sets</h2>
+<p>A set <span class="math inline">\mathcal C\subseteq\mathbb R^n</span> is convex if, for every <span class="math inline">x,y\in\mathcal C</span>
+and every <span class="math inline">\theta\in[0,1]</span>,</p>
+<div class="math display">
+\theta x+(1-\theta)y\in\mathcal C.
+</div>
+<p>Geometrically: the full line segment joining any two feasible points remains feasible.</p>
+<p>Several sets appear constantly in optimization and MPC.</p>
+<h3 id="affine-set">Affine set</h3>
+<div class="math display">
+\mathcal A=\{z:Az=b\}.
+</div>
+<h3 id="hyperplane">Hyperplane</h3>
+<div class="math display">
+\mathcal H=\{z:a^\top z=b\}.
+</div>
+<h3 id="half-space">Half-space</h3>
+<div class="math display">
+\mathcal H_-=\{z:a^\top z\le b\}.
+</div>
+<h3 id="polyhedron">Polyhedron</h3>
+<p>An intersection of finitely many half-spaces:</p>
+<div class="math display">
+\mathcal P=\{z:Gz\le h\}.
+</div>
+<p>A bounded polyhedron is a <strong>polytope</strong>.</p>
+<p>State constraints, actuator limits, rate limits, and many terminal constraints in linear MPC
+are naturally represented by these objects.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># A 2-D convex feasible set defined by linear inequalities.
+x1 = np.linspace(-0.5, 3.0, 500)
+x2 = np.linspace(-0.5, 3.0, 500)
+X1, X2 = np.meshgrid(x1, x2)
+
+mask = (
+    (X1 &gt;= 0.0)
+    &amp; (X2 &gt;= 0.0)
+    &amp; (X1 + X2 &lt;= 2.4)
+    &amp; (X1 &lt;= 2.0)
+    &amp; (X2 &lt;= 1.8)
+)
+
+plt.figure()
+plt.contourf(X1, X2, mask.astype(float), levels=[0.5, 1.5], alpha=0.25)
+plt.contour(X1, X2, mask.astype(float), levels=[0.5], linewidths=1.5)
+
+a = np.array([0.25, 0.30])
+b = np.array([1.70, 0.45])
+theta = np.linspace(0.0, 1.0, 100)
+segment = theta[:, None] * a + (1.0 - theta[:, None]) * b
+
+plt.plot(segment[:, 0], segment[:, 1], linewidth=2, label=&quot;convex combination&quot;)
+plt.scatter([a[0], b[0]], [a[1], b[1]], s=55, label=&quot;two feasible points&quot;)
+plt.xlabel(r&quot;$z_1$&quot;)
+plt.ylabel(r&quot;$z_2$&quot;)
+plt.title(&quot;Convexity: the segment between feasible points stays feasible&quot;)
+plt.axis(&quot;equal&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/01-1.png" alt="Figure: Convexity: the segment between feasible points stays feasible" width="703" height="455" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="why-convexity-matters-geometrically">Why convexity matters geometrically</h3>
+<p>If <span class="math inline">\mathcal F</span> is convex, there are no disconnected feasible “islands.”
+This does <strong>not</strong> by itself guarantee that optimization is easy—the objective matters too—but
+it gives the feasible geometry needed by convex optimization theory.</p>
+<p>Useful closure properties:</p>
+<ul>
+<li>the intersection of convex sets is convex;</li>
+<li>affine images of convex sets are convex;</li>
+<li>inverse images of convex sets under affine maps are convex;</li>
+<li>a Cartesian product of convex sets is convex.</li>
+</ul>
+<p>These facts explain why stacking many linear state/input constraints over a horizon still yields
+a convex feasible set.</p>
+</div>
+
+<div class="md">
+<h2 id="i-3-convex-functions">I.3 Convex functions</h2>
+<p>A function <span class="math inline">f:\mathcal C\to\mathbb R</span> on a convex domain is convex if</p>
+<div class="math display">
+f(\theta x+(1-\theta)y)
+\le
+\theta f(x)+(1-\theta)f(y)
+</div>
+<p>for all <span class="math inline">x,y\in\mathcal C</span> and <span class="math inline">\theta\in[0,1]</span>.</p>
+<p>For a differentiable convex function,</p>
+<div class="math display">
+f(y)\ge f(x)+\nabla f(x)^\top(y-x).
+</div>
+<p>So every tangent hyperplane is a <strong>global lower bound</strong>.</p>
+<p>For a twice continuously differentiable function,</p>
+<div class="math display">
+\nabla^2 f(z)\succeq0
+</div>
+<p>everywhere on a convex domain is sufficient for convexity.</p>
+<p>For the quadratic function</p>
+<div class="math display">
+f(z)=\frac12 z^\top Pz+q^\top z+r,
+</div>
+<p>the Hessian is simply</p>
+<div class="math display">
+\nabla^2 f=P.
+</div>
+<p>Therefore</p>
+<div class="math display">
+\boxed{
+f\text{ is convex}
+\iff
+P\succeq0.
+}
+</div>
+<p>If <span class="math inline">P\succ0</span>, the function is strictly convex.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Compare a convex quadratic with an indefinite (nonconvex) quadratic.
+
+P_convex = np.array([[3.0, 0.8],
+                     [0.8, 1.5]])
+
+P_nonconvex = np.array([[1.0, 0.0],
+                        [0.0, -0.6]])
+
+print(&quot;Convex quadratic eigenvalues:   &quot;, np.linalg.eigvalsh(P_convex))
+print(&quot;Nonconvex quadratic eigenvalues:&quot;, np.linalg.eigvalsh(P_nonconvex))
+
+g = np.linspace(-2.0, 2.0, 250)
+Z1, Z2 = np.meshgrid(g, g)
+
+F1 = 0.5 * (
+    P_convex[0, 0] * Z1**2
+    + 2 * P_convex[0, 1] * Z1 * Z2
+    + P_convex[1, 1] * Z2**2
+)
+
+F2 = 0.5 * (
+    P_nonconvex[0, 0] * Z1**2
+    + 2 * P_nonconvex[0, 1] * Z1 * Z2
+    + P_nonconvex[1, 1] * Z2**2
+)
+
+plt.figure()
+plt.contour(Z1, Z2, F1, levels=12)
+plt.xlabel(r&quot;$z_1$&quot;)
+plt.ylabel(r&quot;$z_2$&quot;)
+plt.title(&quot;Convex quadratic: elliptical level sets&quot;)
+plt.axis(&quot;equal&quot;)
+plt.show()
+
+plt.figure()
+plt.contour(Z1, Z2, F2, levels=12)
+plt.xlabel(r&quot;$z_1$&quot;)
+plt.ylabel(r&quot;$z_2$&quot;)
+plt.title(&quot;Indefinite quadratic: nonconvex saddle geometry&quot;)
+plt.axis(&quot;equal&quot;)
+plt.show()
+</code></pre>
+<pre class="output">Convex quadratic eigenvalues:    [1.15341 3.34659]
+Nonconvex quadratic eigenvalues: [-0.6  1. ]</pre>
+<figure class="output-figure"><img src="img/01-2.png" alt="Figure: Convex quadratic: elliptical level sets; Indefinite quadratic: nonconvex saddle geometry" width="703" height="455" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/01-3.png" alt="Figure: Convex quadratic: elliptical level sets; Indefinite quadratic: nonconvex saddle geometry" width="703" height="455" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="i-4-convex-optimization-problems">I.4 Convex optimization problems</h2>
+<p>A standard differentiable convex optimization problem has the form</p>
+<div class="math display">
+\begin{aligned}
+\min_z\quad &amp; f_0(z)\\
+\text{s.t.}\quad
+&amp; f_i(z)\le0,\qquad i=1,\ldots,m,\\
+&amp; Az=b,
+\end{aligned}
+</div>
+<p>where</p>
+<ul>
+<li><span class="math inline">f_0</span> is convex;</li>
+<li>every inequality function <span class="math inline">f_i</span> is convex;</li>
+<li>equality constraints are affine.</li>
+</ul>
+<p>The key consequence is</p>
+<div class="math display">
+\boxed{
+\text{every local optimum is a global optimum.}
+}
+</div>
+<p>If, in addition, the objective is strictly convex on the feasible set, there is at most one
+optimizer.</p>
+<p>This is the main reason convexity is so valuable in control: it changes optimization from
+“search for a good local solution” into “solve a problem with global optimality structure.”</p>
+</div>
+
+<div class="md">
+<h2 id="i-5-lp-convex-qp-nonconvex-qp-and-mixed-integer-problems">I.5 LP, convex QP, nonconvex QP, and mixed-integer problems</h2>
+<h3 id="linear-program-lp">Linear program (LP)</h3>
+<div class="math display">
+\begin{aligned}
+\min_z\quad &amp; c^\top z\\
+\text{s.t.}\quad &amp; Gz\le h,\\
+&amp; Az=b.
+\end{aligned}
+</div>
+<h3 id="convex-quadratic-program-qp">Convex quadratic program (QP)</h3>
+<div class="math display">
+\begin{aligned}
+\min_z\quad
+&amp;\frac12z^\top Pz+q^\top z\\
+\text{s.t.}\quad
+&amp;Gz\le h,\\
+&amp;Az=b,
+\end{aligned}
+</div>
+<p>with</p>
+<div class="math display">
+P\succeq0.
+</div>
+<p>A linear optimal-control problem with quadratic costs and polyhedral constraints is typically a QP.</p>
+<h3 id="nonconvex-qp">Nonconvex QP</h3>
+<p>The same quadratic form becomes nonconvex if <span class="math inline">P</span> is indefinite.</p>
+<h3 id="mixed-integer-optimization">Mixed-integer optimization</h3>
+<p>If some decision variables satisfy conditions such as</p>
+<div class="math display">
+s_i\in\{0,1\},
+</div>
+<p>the feasible set becomes discrete/nonconvex. This is the mechanism used later to encode
+logical alternatives such as “pass before an obstacle” versus “remain behind it.”</p>
+<p>We postpone the vehicle–bike mixed-integer example to Notebook 04.</p>
+</div>
+
+<div class="md">
+<p><a id="part-2"></a></p>
+<h2 id="part-ii-optimality-duality-and-kkt-conditions">Part II — Optimality, duality, and KKT conditions</h2>
+<h2 id="ii-1-unconstrained-optimality">II.1 Unconstrained optimality</h2>
+<p>For</p>
+<div class="math display">
+\min_z f(z),
+</div>
+<p>a differentiable local optimum <span class="math inline">z^\star</span> in the interior of the domain must satisfy</p>
+<div class="math display">
+\nabla f(z^\star)=0.
+</div>
+<p>For a twice differentiable function, a local minimum also requires the Hessian to be
+positive semidefinite at that point:</p>
+<div class="math display">
+\nabla^2 f(z^\star)\succeq0.
+</div>
+<p>For a <strong>convex differentiable</strong> function, the condition</p>
+<div class="math display">
+\nabla f(z^\star)=0
+</div>
+<p>is not merely local—it is sufficient for global optimality.</p>
+</div>
+
+<div class="md">
+<h2 id="ii-2-the-lagrangian">II.2 The Lagrangian</h2>
+<p>For</p>
+<div class="math display">
+\begin{aligned}
+\min_z\quad &amp;f(z)\\
+\text{s.t.}\quad &amp;g(z)\le0,\\
+&amp;h(z)=0,
+\end{aligned}
+</div>
+<p>introduce multipliers</p>
+<div class="math display">
+\lambda\ge0,\qquad \nu\in\mathbb R^p
+</div>
+<p>and define</p>
+<div class="math display">
+\boxed{
+L(z,\lambda,\nu)
+=
+f(z)+\lambda^\top g(z)+\nu^\top h(z).
+}
+</div>
+<p>The multipliers quantify how strongly the active constraints influence the optimum.</p>
+<p>This interpretation becomes very useful in control:</p>
+<ul>
+<li>a multiplier on steering saturation tells us how costly that limit is;</li>
+<li>a multiplier on a state boundary tells us how strongly it shapes the optimal trajectory;</li>
+<li>a zero multiplier usually indicates that the corresponding inequality is locally inactive.</li>
+</ul>
+</div>
+
+<div class="md">
+<h2 id="ii-3-the-dual-function-and-weak-duality">II.3 The dual function and weak duality</h2>
+<p>The Lagrange dual function is</p>
+<div class="math display">
+d(\lambda,\nu)
+=
+\inf_z L(z,\lambda,\nu).
+</div>
+<p>For any dual-feasible <span class="math inline">\lambda\ge0</span>,</p>
+<div class="math display">
+d(\lambda,\nu)\le f^\star.
+</div>
+<p>This is <strong>weak duality</strong>: every dual-feasible point provides a lower bound on the primal optimum.</p>
+<p>The dual problem is</p>
+<div class="math display">
+\max_{\lambda\ge0,\nu}d(\lambda,\nu).
+</div>
+<p>If its optimum equals the primal optimum,</p>
+<div class="math display">
+d^\star=f^\star,
+</div>
+<p>we have <strong>strong duality</strong>.</p>
+<p>For convex problems, a standard sufficient constraint qualification is <strong>Slater's condition</strong>:
+roughly, there exists a feasible point that satisfies every non-affine inequality strictly
+and lies in the relative interior of the domain.</p>
+<p>When strong duality holds, primal/dual solutions provide an optimality certificate through the
+primal-dual gap.</p>
+</div>
+
+<div class="md">
+<h2 id="ii-4-karush-kuhn-tucker-conditions">II.4 Karush–Kuhn–Tucker conditions</h2>
+<p>Under the usual differentiability assumptions, and in particular for convex problems satisfying
+an appropriate constraint qualification such as Slater's condition, an optimum satisfies:</p>
+<h3 id="1-stationarity">1. Stationarity</h3>
+<div class="math display">
+\nabla f(z^\star)
++
+\sum_{i=1}^m\lambda_i^\star\nabla g_i(z^\star)
++
+\sum_{j=1}^p\nu_j^\star\nabla h_j(z^\star)
+=0.
+</div>
+<h3 id="2-primal-feasibility">2. Primal feasibility</h3>
+<div class="math display">
+g_i(z^\star)\le0,\qquad h_j(z^\star)=0.
+</div>
+<h3 id="3-dual-feasibility">3. Dual feasibility</h3>
+<div class="math display">
+\lambda_i^\star\ge0.
+</div>
+<h3 id="4-complementary-slackness">4. Complementary slackness</h3>
+<div class="math display">
+\boxed{
+\lambda_i^\star g_i(z^\star)=0.
+}
+</div>
+<p>This last relation has an immediate interpretation:</p>
+<ul>
+<li>if <span class="math inline">g_i(z^\star)&lt;0</span>, then <span class="math inline">\lambda_i^\star=0</span>;</li>
+<li>if <span class="math inline">\lambda_i^\star&gt;0</span>, then the constraint must be active.</li>
+</ul>
+<p>For differentiable convex problems with strong duality, the KKT conditions are also sufficient
+for global optimality.</p>
+</div>
+
+<div class="md">
+<h2 id="ii-5-a-qp-we-can-solve-analytically">II.5 A QP we can solve analytically</h2>
+<p>Consider</p>
+<div class="math display">
+\min_z \|z-c\|_2^2,
+\qquad
+c=
+\begin{bmatrix}
+1.2\\0.8
+\end{bmatrix},
+</div>
+<p>subject to</p>
+<div class="math display">
+z_1+z_2\le1.
+</div>
+<p>The unconstrained minimizer is <span class="math inline">z=c</span>, but</p>
+<div class="math display">
+1.2+0.8=2&gt;1,
+</div>
+<p>so the constraint is active at the constrained optimum.</p>
+<p>Dropping the constant <span class="math inline">c^\top c</span>, the objective is</p>
+<div class="math display">
+\frac12z^\top Pz+q^\top z,
+</div>
+<p>with</p>
+<div class="math display">
+P=2I,
+\qquad
+q=-2c.
+</div>
+<p>Let</p>
+<div class="math display">
+a=
+\begin{bmatrix}1\\1\end{bmatrix}.
+</div>
+<p>The KKT stationarity condition is</p>
+<div class="math display">
+2z-2c+\lambda a=0,
+</div>
+<p>so</p>
+<div class="math display">
+z=c-\frac{\lambda}{2}a.
+</div>
+<p>Since the inequality is active,</p>
+<div class="math display">
+a^\top z=1,
+</div>
+<p>hence</p>
+<div class="math display">
+\lambda^\star=1
+</div>
+<p>and</p>
+<div class="math display">
+\boxed{
+z^\star=
+\begin{bmatrix}
+0.7\\0.3
+\end{bmatrix}.
+}
+</div>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">c = np.array([1.2, 0.8])
+P_qp = 2.0 * np.eye(2)
+q_qp = -2.0 * c
+
+A_qp = np.array([[1.0, 1.0]])
+b_qp = np.array([1.0])
+
+qp = solve_qp(P_qp, q_qp, A_ub=A_qp, b_ub=b_qp)
+
+z_star = qp.x
+lambda_star = 1.0  # obtained analytically above
+
+print(&quot;Solver success:&quot;, qp.success)
+print(&quot;z*             :&quot;, z_star)
+print(&quot;expected       :&quot;, np.array([0.7, 0.3]))
+print(&quot;constraint     :&quot;, A_qp @ z_star, &quot;&lt;=&quot;, b_qp)
+print(&quot;lambda*        :&quot;, lambda_star)
+</code></pre>
+<pre class="output">Solver success: True
+z*             : [0.7 0.3]
+expected       : [0.7 0.3]
+constraint     : [1.] &lt;= [1.]
+lambda*        : 1.0</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Verify the four KKT ingredients numerically.
+
+grad_f = P_qp @ z_star + q_qp
+g = float((A_qp @ z_star - b_qp)[0])
+stationarity = grad_f + A_qp.T.ravel() * lambda_star
+complementarity = lambda_star * g
+
+print(&quot;gradient of objective :&quot;, grad_f)
+print(&quot;stationarity residual :&quot;, stationarity)
+print(&quot;primal residual g(z*) :&quot;, g)
+print(&quot;dual feasibility      :&quot;, lambda_star &gt;= 0.0)
+print(&quot;complementarity       :&quot;, complementarity)
+</code></pre>
+<pre class="output">gradient of objective : [-1. -1.]
+stationarity residual : [0. 0.]
+primal residual g(z*) : 1.1102230246251565e-15
+dual feasibility      : True
+complementarity       : 1.1102230246251565e-15</pre>
+</div>
+
+<div class="md">
+<h2 id="ii-6-lagrange-multipliers-as-sensitivity-information">II.6 Lagrange multipliers as sensitivity information</h2>
+<p>Now replace the bound <span class="math inline">1</span> with a parameter <span class="math inline">b</span>:</p>
+<div class="math display">
+z_1+z_2\le b.
+</div>
+<p>When this constraint remains active, the sensitivity relation is</p>
+<div class="math display">
+\frac{d f^\star}{db}=-\lambda^\star.
+</div>
+<p>So the multiplier is a <strong>shadow price</strong>:</p>
+<blockquote>
+<p>how much would the optimal cost improve if the constraint were relaxed slightly?</p>
+</blockquote>
+<p>For the present QP,</p>
+<div class="math display">
+\lambda^\star=2-b
+</div>
+<p>while the constraint is active.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">bs = np.linspace(0.7, 2.2, 80)
+values = []
+lambdas = []
+
+for b in bs:
+    res = solve_qp(P_qp, q_qp, A_ub=A_qp, b_ub=np.array([b]))
+    values.append(res.objective)
+    lambdas.append(max(2.0 - b, 0.0))
+
+values = np.asarray(values)
+lambdas = np.asarray(lambdas)
+dv_db = np.gradient(values, bs)
+
+plt.figure()
+plt.plot(bs, dv_db, label=r&quot;numerical $d f^\star/db$&quot;)
+plt.plot(bs, -lambdas, &quot;--&quot;, label=r&quot;$-\lambda^\star$&quot;)
+plt.axvline(2.0, linestyle=&quot;:&quot;, label=&quot;constraint becomes inactive&quot;)
+plt.xlabel(r&quot;constraint bound $b$&quot;)
+plt.ylabel(&quot;sensitivity&quot;)
+plt.title(&quot;The active multiplier is a local constraint shadow price&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/01-4.png" alt="Figure: The active multiplier is a local constraint shadow price" width="702" height="456" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="ii-7-dual-of-a-strictly-convex-qp">II.7 Dual of a strictly convex QP</h2>
+<p>Consider</p>
+<div class="math display">
+\begin{aligned}
+\min_z\quad
+&amp;\frac12z^\top Pz+q^\top z\\
+\text{s.t.}\quad
+&amp;Az\le b,
+\end{aligned}
+</div>
+<p>with <span class="math inline">P\succ0</span>.</p>
+<p>The Lagrangian is</p>
+<div class="math display">
+L(z,\lambda)
+=
+\frac12z^\top Pz+q^\top z+\lambda^\top(Az-b),
+\qquad
+\lambda\ge0.
+</div>
+<p>Minimization with respect to <span class="math inline">z</span> gives</p>
+<div class="math display">
+Pz+q+A^\top\lambda=0,
+</div>
+<p>hence</p>
+<div class="math display">
+z(\lambda)
+=
+-P^{-1}(q+A^\top\lambda).
+</div>
+<p>Substituting back,</p>
+<div class="math display">
+\boxed{
+d(\lambda)
+=
+-\frac12
+(q+A^\top\lambda)^\top
+P^{-1}
+(q+A^\top\lambda)
+-b^\top\lambda.
+}
+</div>
+<p>The dual problem is</p>
+<div class="math display">
+\max_{\lambda\ge0}d(\lambda).
+</div>
+<p>This gives a second way to see the same multiplier and allows us to inspect the primal-dual gap.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">P_inv = np.linalg.inv(P_qp)
+
+def dual_value(lam):
+    lam = float(lam)
+    y = q_qp + A_qp.T.ravel() * lam
+    return -0.5 * y @ P_inv @ y - b_qp[0] * lam
+
+dual_res = minimize_scalar(
+    lambda lam: -dual_value(lam),
+    bounds=(0.0, 10.0),
+    method=&quot;bounded&quot;,
+)
+
+lam_dual = dual_res.x
+d_star = dual_value(lam_dual)
+p_star = qp.objective
+
+print(&quot;primal optimum       :&quot;, p_star)
+print(&quot;dual optimum         :&quot;, d_star)
+print(&quot;primal-dual gap      :&quot;, p_star - d_star)
+print(&quot;dual multiplier      :&quot;, lam_dual)
+print(&quot;analytical multiplier:&quot;, lambda_star)
+</code></pre>
+<pre class="output">primal optimum       : -1.5800000000000012
+dual optimum         : -1.58
+primal-dual gap      : -1.1102230246251565e-15
+dual multiplier      : 1.0000000000000004
+analytical multiplier: 1.0</pre>
+</div>
+
+<div class="md">
+<h2 id="ii-8-hard-and-soft-constraints">II.8 Hard and soft constraints</h2>
+<p>A <strong>hard constraint</strong></p>
+<div class="math display">
+a^\top z\le b
+</div>
+<p>must always be satisfied.</p>
+<p>Sometimes feasibility is more important than exact enforcement. Introduce a slack variable</p>
+<div class="math display">
+\epsilon\ge0
+</div>
+<p>and write</p>
+<div class="math display">
+a^\top z\le b+\epsilon.
+</div>
+<p>Then penalize the violation:</p>
+<div class="math display">
+J_{\text{soft}}
+=
+J+\rho\epsilon
+</div>
+<p>or</p>
+<div class="math display">
+J_{\text{soft}}
+=
+J+\rho\epsilon^2.
+</div>
+<p>This produces a <strong>soft constraint</strong>.</p>
+<p>The distinction is an engineering decision:</p>
+<ul>
+<li>physical actuator limits are usually hard;</li>
+<li>collision constraints should normally be treated as hard safety requirements;</li>
+<li>comfort or tracking envelopes may sometimes be softened;</li>
+<li>a slack variable can prevent numerical infeasibility, but it does <strong>not</strong> make a safety
+violation acceptable.</li>
+</ul>
+<p>Always document which constraints are hard and which are soft.</p>
+</div>
+
+<div class="md">
+<h2 id="ii-9-solver-classes-and-what-they-mean">II.9 Solver classes and what they mean</h2>
+<p>The mathematical structure determines the solver class.</p>
+<table>
+<thead>
+<tr>
+<th>Structure</th>
+<th>Typical class</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>linear objective + linear constraints</td>
+<td>LP</td>
+</tr>
+<tr>
+<td>convex quadratic objective + linear constraints</td>
+<td>convex QP</td>
+</tr>
+<tr>
+<td>nonlinear smooth objective/constraints</td>
+<td>NLP</td>
+</tr>
+<tr>
+<td>integer/binary decisions</td>
+<td>MILP / MIQP / MINLP</td>
+</tr>
+<tr>
+<td>indefinite quadratic objective</td>
+<td>nonconvex QP</td>
+</tr>
+</tbody>
+</table>
+<p>This repository deliberately uses SciPy-based routines so that the examples run without an
+external solver runtime.</p>
+<p>For large real-time MPC problems, dedicated solvers are often more appropriate, for example
+OSQP, qpOASES, HPIPM, FORCES, GUROBI, MOSEK, or other problem-specific tools.</p>
+<p>The solver name is less important than understanding the structure of the problem it is given.</p>
+</div>
+
+<div class="md">
+<p><a id="part-3"></a></p>
+<h2 id="part-iii-constrained-finite-time-optimal-control">Part III — Constrained finite-time optimal control</h2>
+<h2 id="iii-1-plant-dynamics-versus-prediction-dynamics">III.1 Plant dynamics versus prediction dynamics</h2>
+<p>Let the physical/test system evolve as</p>
+<div class="math display">
+x[t+1]
+=
+f_{\mathrm{test}}(x[t],u[t]).
+</div>
+<p>Inside the optimizer we use a prediction model</p>
+<div class="math display">
+x_{k+1}
+=
+f(x_k,u_k).
+</div>
+<p>The two functions need not be identical.</p>
+<p>This notation distinction is important:</p>
+<ul>
+<li><span class="math inline">t</span> denotes real closed-loop time;</li>
+<li><span class="math inline">k</span> denotes prediction time inside the optimization;</li>
+<li><span class="math inline">f_{\mathrm{test}}</span> represents the system being controlled;</li>
+<li><span class="math inline">f</span> is the model used to predict its future.</li>
+</ul>
+<p>If <span class="math inline">f=f_{\mathrm{test}}</span>, we have a nominal perfect-model simulation.
+If they differ, prediction errors and robustness become relevant.</p>
+<p>We will later study more sophisticated handling of uncertainty; here we first formulate the
+nominal optimization problem correctly.</p>
+</div>
+
+<div class="md">
+<h2 id="iii-2-the-cftoc-problem">III.2 The CFTOC problem</h2>
+<p>Given the measured/current state</p>
+<div class="math display">
+x_0=\bar x,
+</div>
+<p>consider</p>
+<div class="math display">
+\begin{aligned}
+\min_{u_0,\ldots,u_{N-1}}
+\quad&amp;
+p(x_N)
++
+\sum_{k=0}^{N-1}q(x_k,u_k)\\
+\text{subject to}\quad
+&amp;
+x_{k+1}=f(x_k,u_k),
+\\
+&amp;
+x_k\in\mathcal X,
+\qquad
+u_k\in\mathcal U,
+\\
+&amp;
+x_N\in\mathcal X_T,
+\\
+&amp;
+x_0=\bar x.
+\end{aligned}
+</div>
+<p>where</p>
+<ul>
+<li><span class="math inline">q(x,u)</span> is the <strong>stage cost</strong>;</li>
+<li><span class="math inline">p(x_N)</span> is the <strong>terminal cost</strong>;</li>
+<li><span class="math inline">\mathcal X</span> is the admissible state set;</li>
+<li><span class="math inline">\mathcal U</span> is the admissible input set;</li>
+<li><span class="math inline">\mathcal X_T</span> is a terminal target/set.</li>
+</ul>
+<p>This is a <strong>constrained finite-time optimal-control problem (CFTOC)</strong>.</p>
+<h3 id="cftoc-is-not-yet-mpc">CFTOC is not yet MPC</h3>
+<p>A one-shot CFTOC gives an open-loop optimal sequence</p>
+<div class="math display">
+U^\star=
+\{u_0^\star,\ldots,u_{N-1}^\star\}.
+</div>
+<p>MPC will later solve a related problem repeatedly in feedback.</p>
+</div>
+
+<div class="md">
+<h2 id="iii-3-direct-transcription-keep-states-and-inputs-as-decision-variables">III.3 Direct transcription: keep states and inputs as decision variables</h2>
+<p>For a horizon <span class="math inline">N</span>, define</p>
+<div class="math display">
+X=
+\begin{bmatrix}
+x_1\\x_2\\\vdots\\x_N
+\end{bmatrix},
+\qquad
+U=
+\begin{bmatrix}
+u_0\\u_1\\\vdots\\u_{N-1}
+\end{bmatrix}.
+</div>
+<p>A <strong>sparse/direct</strong> formulation uses</p>
+<div class="math display">
+z=
+\begin{bmatrix}
+X\\U
+\end{bmatrix}
+</div>
+<p>as the optimization variable.</p>
+<p>The dynamics are equality constraints.</p>
+<p>For the LTI system</p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k,
+</div>
+<p>they become</p>
+<div class="math display">
+\begin{aligned}
+x_1-Bu_0 &amp;= Ax_0,\\
+x_2-Ax_1-Bu_1 &amp;=0,\\
+&amp;\vdots\\
+x_N-Ax_{N-1}-Bu_{N-1}&amp;=0.
+\end{aligned}
+</div>
+<p>This formulation contains many variables, but its matrices are highly sparse.</p>
+<p>That sparsity is valuable for large horizons and specialized optimal-control solvers.</p>
+</div>
+
+<div class="md">
+<h2 id="iii-4-condensing-eliminate-all-predicted-states">III.4 Condensing: eliminate all predicted states</h2>
+<p>Because the linear dynamics can be propagated analytically,</p>
+<div class="math display">
+x_1=Ax_0+Bu_0,
+</div>
+<div class="math display">
+x_2
+=
+A^2x_0+ABu_0+Bu_1,
+</div>
+<div class="math display">
+x_3
+=
+A^3x_0+A^2Bu_0+ABu_1+Bu_2.
+</div>
+<p>Stacking the predictions gives</p>
+<div class="math display">
+\boxed{
+X=S_xx_0+S_uU,
+}
+</div>
+<p>where</p>
+<div class="math display">
+S_x=
+\begin{bmatrix}
+A\\
+A^2\\
+\vdots\\
+A^N
+\end{bmatrix}
+</div>
+<p>and</p>
+<div class="math display">
+S_u=
+\begin{bmatrix}
+B &amp; 0 &amp; \cdots &amp; 0\\
+AB &amp; B &amp; \cdots &amp; 0\\
+A^2B &amp; AB &amp; \ddots &amp; \vdots\\
+\vdots &amp; \vdots &amp; \ddots &amp; B
+\end{bmatrix}.
+</div>
+<p>Now the state sequence is no longer an independent decision variable.</p>
+<p>The optimizer can work only with <span class="math inline">U</span>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># Build and verify prediction matrices on a double integrator.
+
+Ts = 0.5
+
+A = np.array([
+    [1.0, Ts],
+    [0.0, 1.0],
+])
+
+B = np.array([
+    [0.5 * Ts**2],
+    [Ts],
+])
+
+N = 6
+Sx, Su = prediction_matrices(A, B, N)
+
+x0 = np.array([-2.0, 0.25])
+U_test = np.array([[0.4], [0.2], [0.0], [-0.2], [-0.3], [0.1]])
+
+X_condensed = (Sx @ x0 + Su @ U_test.ravel()).reshape(N, 2)
+X_rollout = rollout(A, B, x0, U_test)[1:]
+
+print(&quot;max |stacked prediction - direct rollout| =&quot;,
+      np.max(np.abs(X_condensed - X_rollout)))
+print(&quot;\nPredicted states:&quot;)
+print(X_condensed)
+</code></pre>
+<pre class="output">max |stacked prediction - direct rollout| = 2.220446049250313e-16
+
+Predicted states:
+[[-1.825   0.45  ]
+ [-1.575   0.55  ]
+ [-1.3     0.55  ]
+ [-1.05    0.45  ]
+ [-0.8625  0.3   ]
+ [-0.7     0.35  ]]</pre>
+</div>
+
+<div class="md">
+<h2 id="iii-5-condensing-a-quadratic-cost">III.5 Condensing a quadratic cost</h2>
+<p>Consider the quadratic finite-horizon cost</p>
+<div class="math display">
+J
+=
+\sum_{k=1}^{N-1}x_k^\top Qx_k
++
+x_N^\top Px_N
++
+\sum_{k=0}^{N-1}u_k^\top Ru_k.
+</div>
+<p>Define</p>
+<div class="math display">
+\bar Q
+=
+\operatorname{blkdiag}(Q,\ldots,Q,P),
+</div>
+<p>and</p>
+<div class="math display">
+\bar R
+=
+\operatorname{blkdiag}(R,\ldots,R).
+</div>
+<p>Then</p>
+<div class="math display">
+J
+=
+X^\top\bar QX+U^\top\bar RU.
+</div>
+<p>Substitute</p>
+<div class="math display">
+X=S_xx_0+S_uU.
+</div>
+<p>Expanding,</p>
+<div class="math display">
+\begin{aligned}
+J
+={}&amp;
+U^\top
+\left(
+S_u^\top\bar QS_u+\bar R
+\right)U
+\\
+&amp;+
+2x_0^\top S_x^\top\bar QS_uU
+\\
+&amp;+
+x_0^\top S_x^\top\bar QS_xx_0.
+\end{aligned}
+</div>
+<p>The last term is constant with respect to <span class="math inline">U</span>.</p>
+<p>Using the standard QP convention</p>
+<div class="math display">
+\frac12U^\top HU+f^\top U,
+</div>
+<p>we obtain</p>
+<div class="math display">
+\boxed{
+H
+=
+2\left(
+S_u^\top\bar QS_u+\bar R
+\right)
+}
+</div>
+<p>and</p>
+<div class="math display">
+\boxed{
+f(x_0)
+=
+2S_u^\top\bar QS_xx_0.
+}
+</div>
+<p>Notice that the current state <span class="math inline">x_0</span> enters the QP as a <strong>parameter</strong>.</p>
+</div>
+
+<div class="md">
+<h2 id="iii-6-condensing-constraints">III.6 Condensing constraints</h2>
+<p>Suppose the state set is polyhedral:</p>
+<div class="math display">
+F_xx_k\le g_x.
+</div>
+<p>Stacking gives</p>
+<div class="math display">
+\bar F_xX\le\bar g_x.
+</div>
+<p>Using</p>
+<div class="math display">
+X=S_xx_0+S_uU,
+</div>
+<p>we obtain</p>
+<div class="math display">
+\boxed{
+\bar F_xS_uU
+\le
+\bar g_x-\bar F_xS_xx_0.
+}
+</div>
+<p>Input constraints</p>
+<div class="math display">
+F_uu_k\le g_u
+</div>
+<p>can be stacked directly as linear inequalities in <span class="math inline">U</span>.</p>
+<p>A terminal equality</p>
+<div class="math display">
+x_N=x_f
+</div>
+<p>becomes</p>
+<div class="math display">
+\boxed{
+S_{u,N}U
+=
+x_f-S_{x,N}x_0.
+}
+</div>
+<h3 id="input-rate-constraints">Input-rate constraints</h3>
+<p>For</p>
+<div class="math display">
+\Delta u_k=u_k-u_{k-1},
+</div>
+<p>we can build a block difference matrix <span class="math inline">D</span> such that</p>
+<div class="math display">
+\Delta U=DU+d(u_{-1}).
+</div>
+<p>Therefore</p>
+<div class="math display">
+-\Delta u_{\max}
+\le
+DU+d(u_{-1})
+\le
+\Delta u_{\max}
+</div>
+<p>is again a pair of linear inequalities.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">def difference_matrix(N, m):
+    # D such that [u0, u1-u0, ..., uN-1-uN-2] = D U.
+    D = np.zeros((N * m, N * m))
+    I = np.eye(m)
+
+    D[:m, :m] = I
+    for k in range(1, N):
+        D[k*m:(k+1)*m, (k-1)*m:k*m] = -I
+        D[k*m:(k+1)*m, k*m:(k+1)*m] = I
+
+    return D
+
+D_demo = difference_matrix(5, 1)
+print(D_demo)
+</code></pre>
+<pre class="output">[[ 1.  0.  0.  0.  0.]
+ [-1.  1.  0.  0.  0.]
+ [ 0. -1.  1.  0.  0.]
+ [ 0.  0. -1.  1.  0.]
+ [ 0.  0.  0. -1.  1.]]</pre>
+</div>
+
+<div class="md">
+<p><a id="part-4"></a></p>
+<h2 id="part-iv-a-complete-linear-quadratic-cftoc">Part IV — A complete linear-quadratic CFTOC</h2>
+<p>We now solve one finite-horizon regulation problem end to end.</p>
+<p>The plant model is the sampled double integrator</p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k,
+</div>
+<p>with</p>
+<div class="math display">
+x=
+\begin{bmatrix}
+p\\v
+\end{bmatrix},
+</div>
+<p>where <span class="math inline">p</span> is position and <span class="math inline">v</span> is velocity.</p>
+<p>We impose:</p>
+<div class="math display">
+|p_k|\le5,
+\qquad
+|v_k|\le2,
+</div>
+<div class="math display">
+|u_k|\le0.8,
+</div>
+<p>and</p>
+<div class="math display">
+|\Delta u_k|\le0.5.
+</div>
+<p>The terminal state must satisfy</p>
+<div class="math display">
+x_N=0.
+</div>
+<p>This is a convex QP.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">Ts = 0.5
+
+A = np.array([
+    [1.0, Ts],
+    [0.0, 1.0],
+])
+
+B = np.array([
+    [0.5 * Ts**2],
+    [Ts],
+])
+
+n, m = B.shape
+N = 12
+x0 = np.array([-4.0, 0.0])
+
+Q = np.diag([1.0, 0.2])
+P = np.diag([8.0, 1.0])
+R = np.array([[0.10]])
+
+Sx, Su = prediction_matrices(A, B, N)
+
+Qbar = block_diag(*([Q] * (N - 1) + [P]))
+Rbar = block_diag(*([R] * N))
+
+H = 2.0 * (Su.T @ Qbar @ Su + Rbar)
+f = 2.0 * Su.T @ Qbar @ Sx @ x0
+
+print(&quot;Smallest eigenvalue of H:&quot;, np.min(np.linalg.eigvalsh(H)))
+</code></pre>
+<pre class="output">Smallest eigenvalue of H: 0.22561029149792766</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># State constraints: |position| &lt;= 5, |velocity| &lt;= 2.
+
+Fx = np.array([
+    [ 1.0,  0.0],
+    [-1.0,  0.0],
+    [ 0.0,  1.0],
+    [ 0.0, -1.0],
+])
+
+gx = np.array([5.0, 5.0, 2.0, 2.0])
+
+Fbar = block_diag(*([Fx] * N))
+gbar = np.tile(gx, N)
+
+A_state = Fbar @ Su
+b_state = gbar - Fbar @ Sx @ x0
+
+# Input-rate constraints.
+D = difference_matrix(N, m)
+u_previous = np.array([0.0])
+
+d_offset = np.zeros(N * m)
+d_offset[:m] = -u_previous
+
+du_max = 0.5
+
+A_rate = np.vstack([D, -D])
+b_rate = np.hstack([
+    du_max * np.ones(N * m) - d_offset,
+    du_max * np.ones(N * m) + d_offset,
+])
+
+A_ub = np.vstack([A_state, A_rate])
+b_ub = np.hstack([b_state, b_rate])
+
+# Terminal equality x_N = 0.
+Sx_N = Sx[-n:, :]
+Su_N = Su[-n:, :]
+
+A_eq = Su_N
+b_eq = -Sx_N @ x0
+
+result_condensed = solve_qp(
+    H,
+    f,
+    A_ub=A_ub,
+    b_ub=b_ub,
+    A_eq=A_eq,
+    b_eq=b_eq,
+    lb=-0.8 * np.ones(N * m),
+    ub= 0.8 * np.ones(N * m),
+)
+
+qp_constant = float(x0 @ Sx.T @ Qbar @ Sx @ x0)
+true_cost_condensed = result_condensed.objective + qp_constant
+
+print(&quot;solver success                  :&quot;, result_condensed.success)
+print(&quot;max constraint violation        :&quot;, result_condensed.max_violation)
+print(&quot;condensed objective (no constant):&quot;, result_condensed.objective)
+print(&quot;dropped constant                :&quot;, qp_constant)
+print(&quot;physical finite-horizon cost    :&quot;, true_cost_condensed)
+</code></pre>
+<pre class="output">solver success                  : True
+max constraint violation        : 2.6201263381153694e-13
+condensed objective (no constant): -248.90720110161092
+dropped constant                : 304.0
+physical finite-horizon cost    : 55.09279889838908</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">U_star = result_condensed.x.reshape(N, m)
+X_star = (Sx @ x0 + Su @ result_condensed.x).reshape(N, n)
+trajectory = np.vstack([x0, X_star])
+
+t_x = Ts * np.arange(N + 1)
+t_u = Ts * np.arange(N)
+
+plt.figure()
+plt.plot(t_x, trajectory[:, 0], marker=&quot;o&quot;, label=&quot;position&quot;)
+plt.axhline(5.0, linestyle=&quot;:&quot;)
+plt.axhline(-5.0, linestyle=&quot;:&quot;)
+plt.xlabel(&quot;time [s]&quot;)
+plt.ylabel(&quot;position&quot;)
+plt.title(&quot;Optimal state trajectory — position&quot;)
+plt.legend()
+plt.show()
+
+plt.figure()
+plt.plot(t_x, trajectory[:, 1], marker=&quot;o&quot;, label=&quot;velocity&quot;)
+plt.axhline(2.0, linestyle=&quot;:&quot;)
+plt.axhline(-2.0, linestyle=&quot;:&quot;)
+plt.xlabel(&quot;time [s]&quot;)
+plt.ylabel(&quot;velocity&quot;)
+plt.title(&quot;Optimal state trajectory — velocity&quot;)
+plt.legend()
+plt.show()
+
+plt.figure()
+plt.step(t_u, U_star[:, 0], where=&quot;post&quot;, label=&quot;input&quot;)
+plt.axhline(0.8, linestyle=&quot;:&quot;)
+plt.axhline(-0.8, linestyle=&quot;:&quot;)
+plt.xlabel(&quot;time [s]&quot;)
+plt.ylabel(&quot;acceleration&quot;)
+plt.title(&quot;Optimal constrained input&quot;)
+plt.legend()
+plt.show()
+
+print(&quot;terminal state:&quot;, X_star[-1])
+print(&quot;maximum |u|  :&quot;, np.max(np.abs(U_star)))
+print(&quot;maximum |Δu| :&quot;, np.max(np.abs(np.diff(np.r_[u_previous, U_star[:, 0]]))))
+</code></pre>
+<figure class="output-figure"><img src="img/01-5.png" alt="Figure: Optimal state trajectory — position; Optimal state trajectory — velocity; Optimal constrained input" width="689" height="455" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/01-6.png" alt="Figure: Optimal state trajectory — position; Optimal state trajectory — velocity; Optimal constrained input" width="702" height="455" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/01-7.png" alt="Figure: Optimal state trajectory — position; Optimal state trajectory — velocity; Optimal constrained input" width="702" height="455" loading="lazy"></figure>
+<pre class="output">terminal state: [-0. -0.]
+maximum |u|  : 0.8
+maximum |Δu| : 0.500000000000262</pre>
+</div>
+
+<div class="md">
+<h2 id="iv-1-the-same-cftoc-in-sparse-form">IV.1 The same CFTOC in sparse form</h2>
+<p>The condensed formulation eliminated <span class="math inline">X</span>.</p>
+<p>Now we solve the <strong>same optimization problem</strong> with the sparse decision vector</p>
+<div class="math display">
+z=
+\begin{bmatrix}
+X\\U
+\end{bmatrix}.
+</div>
+<p>The cost matrix becomes block diagonal:</p>
+<div class="math display">
+H_{\mathrm{sparse}}
+=
+2
+\begin{bmatrix}
+\bar Q &amp; 0\\
+0 &amp; \bar R
+\end{bmatrix}.
+</div>
+<p>The dynamics reappear as equality constraints.</p>
+<p>Mathematically, the sparse and condensed problems are equivalent.
+Computationally, they expose different structures to the solver.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">nz = N * n + N * m
+
+H_sparse = block_diag(2.0 * Qbar, 2.0 * Rbar)
+f_sparse = np.zeros(nz)
+
+# Dynamics equalities.
+Aeq_dyn = np.zeros((N * n, nz))
+beq_dyn = np.zeros(N * n)
+
+for k in range(N):
+    row = slice(k*n, (k+1)*n)
+
+    x_next_col = slice(k*n, (k+1)*n)
+    Aeq_dyn[row, x_next_col] = np.eye(n)
+
+    u_col = slice(N*n + k*m, N*n + (k+1)*m)
+    Aeq_dyn[row, u_col] = -B
+
+    if k == 0:
+        beq_dyn[row] = A @ x0
+    else:
+        x_prev_col = slice((k-1)*n, k*n)
+        Aeq_dyn[row, x_prev_col] = -A
+
+# Terminal equality x_N = 0.
+Aeq_terminal = np.zeros((n, nz))
+Aeq_terminal[:, (N-1)*n:N*n] = np.eye(n)
+
+A_eq_sparse = np.vstack([Aeq_dyn, Aeq_terminal])
+b_eq_sparse = np.hstack([beq_dyn, np.zeros(n)])
+
+# State and rate inequalities.
+A_state_sparse = np.hstack([
+    Fbar,
+    np.zeros((Fbar.shape[0], N*m)),
+])
+
+A_rate_sparse = np.hstack([
+    np.zeros((A_rate.shape[0], N*n)),
+    A_rate,
+])
+
+A_ub_sparse = np.vstack([A_state_sparse, A_rate_sparse])
+b_ub_sparse = np.hstack([gbar, b_rate])
+
+lb_sparse = np.hstack([
+    -np.inf * np.ones(N*n),
+    -0.8 * np.ones(N*m),
+])
+
+ub_sparse = np.hstack([
+     np.inf * np.ones(N*n),
+     0.8 * np.ones(N*m),
+])
+
+z0_sparse = np.hstack([X_star.reshape(-1), result_condensed.x])
+
+result_sparse = solve_qp(
+    H_sparse,
+    f_sparse,
+    A_ub=A_ub_sparse,
+    b_ub=b_ub_sparse,
+    A_eq=A_eq_sparse,
+    b_eq=b_eq_sparse,
+    lb=lb_sparse,
+    ub=ub_sparse,
+    x0=z0_sparse,
+)
+
+U_sparse = result_sparse.x[N*n:].reshape(N, m)
+X_sparse = result_sparse.x[:N*n].reshape(N, n)
+
+print(&quot;sparse solver success:&quot;, result_sparse.success)
+print(&quot;max |U_sparse - U_condensed|:&quot;,
+      np.max(np.abs(U_sparse - U_star)))
+print(&quot;max |X_sparse - X_condensed|:&quot;,
+      np.max(np.abs(X_sparse - X_star)))
+print(&quot;sparse physical cost           :&quot;, result_sparse.objective)
+print(&quot;condensed physical cost        :&quot;, true_cost_condensed)
+</code></pre>
+<pre class="output">sparse solver success: True
+max |U_sparse - U_condensed|: 0.0
+max |X_sparse - X_condensed|: 0.0
+sparse physical cost           : 55.09279889838899
+condensed physical cost        : 55.09279889838908</pre>
+</div>
+
+<div class="md">
+<h2 id="iv-2-sparse-versus-condensed-formulations">IV.2 Sparse versus condensed formulations</h2>
+<p>They solve the same finite-horizon control problem, but they expose different numerical structures.</p>
+<h3 id="condensed-formulation">Condensed formulation</h3>
+<p>Decision variable:</p>
+<div class="math display">
+U\in\mathbb R^{Nm}.
+</div>
+<p>Advantages:</p>
+<ul>
+<li>fewer decision variables;</li>
+<li>elegant derivation;</li>
+<li>useful for small/medium dense QPs;</li>
+<li>ideal for understanding how <span class="math inline">x_0</span> parameterizes the optimization.</li>
+</ul>
+<p>Disadvantages:</p>
+<ul>
+<li>elimination can destroy sparsity;</li>
+<li>the condensed Hessian is often dense.</li>
+</ul>
+<h3 id="sparse-formulation">Sparse formulation</h3>
+<p>Decision variable:</p>
+<div class="math display">
+(X,U)\in\mathbb R^{Nn+Nm}.
+</div>
+<p>Advantages:</p>
+<ul>
+<li>dynamics remain sparse equality constraints;</li>
+<li>sparse linear algebra scales well;</li>
+<li>natural for large systems, nonlinear transcription, and structure-exploiting solvers.</li>
+</ul>
+<p>Disadvantages:</p>
+<ul>
+<li>more explicit variables and constraints.</li>
+</ul>
+<p>There is no universal winner. The better representation depends on problem size, horizon,
+solver technology, and real-time requirements.</p>
+</div>
+
+<div class="md">
+<p><a id="part-5"></a></p>
+<h2 id="part-v-a-nonlinear-cftoc-the-unicycle">Part V — A nonlinear CFTOC: the unicycle</h2>
+<h2 id="v-1-model">V.1 Model</h2>
+<p>Consider</p>
+<div class="math display">
+\dot x=v\cos\theta,
+</div>
+<div class="math display">
+\dot y=v\sin\theta,
+</div>
+<div class="math display">
+\dot\theta=\omega.
+</div>
+<p>The state is</p>
+<div class="math display">
+z=
+\begin{bmatrix}
+x\\y\\\theta
+\end{bmatrix},
+</div>
+<p>and the input is</p>
+<div class="math display">
+u=
+\begin{bmatrix}
+v\\\omega
+\end{bmatrix}.
+</div>
+<p>With forward Euler discretization,</p>
+<div class="math display">
+x_{k+1}
+=
+x_k+T_sv_k\cos\theta_k,
+</div>
+<div class="math display">
+y_{k+1}
+=
+y_k+T_sv_k\sin\theta_k,
+</div>
+<div class="math display">
+\theta_{k+1}
+=
+\theta_k+T_s\omega_k.
+</div>
+<p>Unlike the linear double integrator, the prediction map contains sine and cosine terms.
+The resulting finite-horizon optimization is therefore a <strong>nonlinear program</strong> and is generally
+nonconvex.</p>
+</div>
+
+<div class="md">
+<h2 id="v-2-nonlinear-terminal-pose-problem">V.2 Nonlinear terminal-pose problem</h2>
+<p>We ask the unicycle to move from</p>
+<div class="math display">
+z_0=
+\begin{bmatrix}
+0\\0\\0
+\end{bmatrix}
+</div>
+<p>to</p>
+<div class="math display">
+z_f=
+\begin{bmatrix}
+2\\1\\0
+\end{bmatrix}
+</div>
+<p>while satisfying</p>
+<div class="math display">
+|v_k|\le1,
+\qquad
+|\omega_k|\le1,
+</div>
+<p>and smooth input-rate bounds.</p>
+<p>The cost penalizes control effort and changes in the control:</p>
+<div class="math display">
+J
+=
+\alpha\sum_{k=0}^{N-1}\|u_k\|_2^2
++
+\beta\sum_{k=1}^{N-1}\|u_k-u_{k-1}\|_2^2.
+</div>
+<p>The terminal pose is imposed as a nonlinear equality constraint.</p>
+<p>This example is deliberately small: its purpose is to show how CFTOC extends beyond QPs.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">Ts_u = 0.2
+N_u = 30
+
+z0 = np.array([0.0, 0.0, 0.0])
+zf = np.array([2.0, 1.0, 0.0])
+
+def rollout_unicycle(Uvec):
+    U = np.asarray(Uvec).reshape(N_u, 2)
+    z = z0.copy()
+    states = [z.copy()]
+
+    for v, omega in U:
+        z = z + Ts_u * np.array([
+            v * np.cos(z[2]),
+            v * np.sin(z[2]),
+            omega,
+        ])
+        states.append(z.copy())
+
+    return np.asarray(states)
+
+def unicycle_cost(Uvec):
+    U = np.asarray(Uvec).reshape(N_u, 2)
+    dU = np.diff(U, axis=0)
+
+    effort = 0.05 * np.sum(U**2)
+    smoothness = 0.10 * np.sum(dU**2)
+    return effort + smoothness
+
+def terminal_residual(Uvec):
+    return rollout_unicycle(Uvec)[-1] - zf
+
+terminal_constraint = NonlinearConstraint(
+    terminal_residual,
+    lb=np.zeros(3),
+    ub=np.zeros(3),
+)
+
+def rate_map(Uvec):
+    U = np.asarray(Uvec).reshape(N_u, 2)
+    return np.diff(U, axis=0).reshape(-1)
+
+rate_constraint = NonlinearConstraint(
+    rate_map,
+    lb=-0.20 * np.ones(2 * (N_u - 1)),
+    ub= 0.20 * np.ones(2 * (N_u - 1)),
+)
+
+input_bounds = Bounds(
+    np.tile([-1.0, -1.0], N_u),
+    np.tile([ 1.0,  1.0], N_u),
+)
+
+# Initial guess: move forward, turn, then unwind the heading.
+U0 = np.zeros((N_u, 2))
+U0[:, 0] = np.sqrt(5.0) / (N_u * Ts_u)
+U0[:10, 1] =  0.25
+U0[20:, 1] = -0.25
+
+unicycle_result = minimize(
+    unicycle_cost,
+    U0.reshape(-1),
+    method=&quot;SLSQP&quot;,
+    bounds=input_bounds,
+    constraints=[terminal_constraint, rate_constraint],
+    options={
+        &quot;ftol&quot;: 1e-10,
+        &quot;maxiter&quot;: 2000,
+        &quot;disp&quot;: False,
+    },
+)
+
+print(&quot;success :&quot;, unicycle_result.success)
+print(&quot;message :&quot;, unicycle_result.message)
+print(&quot;cost    :&quot;, unicycle_result.fun)
+print(&quot;terminal residual:&quot;, terminal_residual(unicycle_result.x))
+</code></pre>
+<pre class="output">success : True
+message : Optimization terminated successfully
+cost    : 0.3166970313324845
+terminal residual: [-0.  0. -0.]</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">U_uni = unicycle_result.x.reshape(N_u, 2)
+Z_uni = rollout_unicycle(unicycle_result.x)
+
+t_uni = Ts_u * np.arange(N_u)
+
+plt.figure()
+plt.plot(Z_uni[:, 0], Z_uni[:, 1], marker=&quot;.&quot;)
+plt.scatter([z0[0], zf[0]], [z0[1], zf[1]], s=70)
+plt.xlabel(r&quot;$x$&quot;)
+plt.ylabel(r&quot;$y$&quot;)
+plt.title(&quot;Nonlinear CFTOC — optimized unicycle path&quot;)
+plt.axis(&quot;equal&quot;)
+plt.show()
+
+plt.figure()
+plt.step(t_uni, U_uni[:, 0], where=&quot;post&quot;, label=r&quot;$v$&quot;)
+plt.step(t_uni, U_uni[:, 1], where=&quot;post&quot;, label=r&quot;$\omega$&quot;)
+plt.axhline(1.0, linestyle=&quot;:&quot;)
+plt.axhline(-1.0, linestyle=&quot;:&quot;)
+plt.xlabel(&quot;time [s]&quot;)
+plt.ylabel(&quot;input&quot;)
+plt.title(&quot;Optimized unicycle inputs&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/01-8.png" alt="Figure: Nonlinear CFTOC — optimized unicycle path; Optimized unicycle inputs" width="692" height="455" loading="lazy"></figure>
+<figure class="output-figure"><img src="img/01-9.png" alt="Figure: Nonlinear CFTOC — optimized unicycle path; Optimized unicycle inputs" width="711" height="455" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="v-3-what-changed-when-the-dynamics-became-nonlinear">V.3 What changed when the dynamics became nonlinear?</h2>
+<p>For the linear-quadratic problem:</p>
+<ul>
+<li>dynamics were affine;</li>
+<li>constraints were linear;</li>
+<li>objective was convex quadratic;</li>
+<li>the problem was a convex QP.</li>
+</ul>
+<p>For the unicycle:</p>
+<ul>
+<li>the dynamics contain <span class="math inline">\sin\theta</span> and <span class="math inline">\cos\theta</span>;</li>
+<li>terminal constraints depend nonlinearly on the control sequence;</li>
+<li>the optimization is a nonlinear program;</li>
+<li>the solution returned by a local NLP solver may depend on the initial guess.</li>
+</ul>
+<p>Therefore,</p>
+<div class="math display">
+\boxed{
+\text{solver convergence}
+\neq
+\text{certificate of global optimality}
+}
+</div>
+<p>for a generic nonconvex nonlinear problem.</p>
+<p>This distinction is fundamental when moving from linear MPC to nonlinear MPC.</p>
+</div>
+
+<div class="md">
+<p><a id="part-6"></a></p>
+<h2 id="part-vi-numerical-and-modeling-habits">Part VI — Numerical and modeling habits</h2>
+<h2 id="vi-1-never-report-only-the-solver-converged">VI.1 Never report only “the solver converged”</h2>
+<p>For every numerical optimal-control solution, inspect at least:</p>
+<ol>
+<li><strong>solver status</strong>;</li>
+<li><strong>constraint violation</strong>;</li>
+<li><strong>terminal residual</strong>;</li>
+<li><strong>active constraints</strong>;</li>
+<li><strong>cost value</strong>;</li>
+<li><strong>sensitivity to initialization</strong> for nonconvex problems;</li>
+<li><strong>conditioning/scaling</strong> of states and inputs;</li>
+<li><strong>whether the prediction model matches the simulated/physical plant</strong>.</li>
+</ol>
+<p>A beautiful trajectory from an infeasible solution is not a valid control result.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-2-scaling">VI.2 Scaling</h2>
+<p>Suppose one state is measured in millimeters and another in hundreds of meters per second.
+The corresponding optimization matrices can have very different numerical scales.</p>
+<p>Poor scaling can produce:</p>
+<ul>
+<li>slow convergence;</li>
+<li>inaccurate KKT residuals;</li>
+<li>unreliable active-set identification;</li>
+<li>unnecessary sensitivity to solver tolerances.</li>
+</ul>
+<p>A common remedy is to introduce scaled variables</p>
+<div class="math display">
+\tilde x=D_x^{-1}x,
+\qquad
+\tilde u=D_u^{-1}u,
+</div>
+<p>with diagonal scaling matrices chosen so typical values are of order one.</p>
+<p>Weights and constraints must be transformed consistently.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-3-modeling-decisions-are-optimization-decisions">VI.3 Modeling decisions are optimization decisions</h2>
+<p>Before writing code, answer:</p>
+<ul>
+<li>What is the decision variable?</li>
+<li>What model predicts the future?</li>
+<li>Which constraints are physical?</li>
+<li>Which constraints are safety-critical?</li>
+<li>Which can be softened?</li>
+<li>Is the terminal condition an equality, a set, or only a cost?</li>
+<li>Is the formulation convex?</li>
+<li>Are there discrete logical decisions?</li>
+<li>Is the model exact or approximate?</li>
+<li>Is the problem solved once, or repeatedly in feedback?</li>
+</ul>
+<p>These questions determine the mathematics before they determine the software.</p>
+</div>
+
+<div class="md">
+<p><a id="part-7"></a></p>
+<h2 id="part-vii-check-your-understanding">Part VII — Check your understanding</h2>
+<p>Try answering each question without looking back.</p>
+<h3 id="q1-what-makes-a-quadratic-program-convex">Q1. What makes a quadratic program convex?</h3>
+<details><summary>Answer</summary>
+<p>The Hessian of its quadratic objective must be positive semidefinite and the feasible set must
+be convex. For the standard QP with affine equality and inequality constraints, this reduces to
+<span class="math inline">P\succeq0</span>.</p>
+</details>
+<h3 id="q2-why-are-equality-constraints-required-to-be-affine-in-the-standard-convex-form">Q2. Why are equality constraints required to be affine in the standard convex form?</h3>
+<details><summary>Answer</summary>
+<p>A nonlinear equality <span class="math inline">h(z)=0</span> generally produces a nonconvex feasible set. An affine equality
+preserves convexity.</p>
+</details>
+<h3 id="q3-what-does-complementary-slackness-tell-you">Q3. What does complementary slackness tell you?</h3>
+<details><summary>Answer</summary>
+<p>For each inequality, <span class="math inline">\lambda_i^\star g_i(z^\star)=0</span>. An inactive inequality has zero
+multiplier; a positive multiplier implies the constraint is active.</p>
+</details>
+<h3 id="q4-what-is-the-engineering-meaning-of-a-lagrange-multiplier">Q4. What is the engineering meaning of a Lagrange multiplier?</h3>
+<details><summary>Answer</summary>
+<p>It is a local shadow price: it measures the sensitivity of the optimal value to a small relaxation
+of the associated constraint.</p>
+</details>
+<h3 id="q5-what-is-the-difference-between-weak-and-strong-duality">Q5. What is the difference between weak and strong duality?</h3>
+<details><summary>Answer</summary>
+<p>Weak duality always gives <span class="math inline">d^\star\le f^\star</span>. Strong duality means equality, so the dual
+optimum certifies the primal optimum.</p>
+</details>
+<h3 id="q6-what-is-cftoc">Q6. What is CFTOC?</h3>
+<details><summary>Answer</summary>
+<p>A constrained finite-time optimal-control problem: optimize a finite input sequence subject to
+predicted dynamics, state/input constraints, and possibly terminal constraints.</p>
+</details>
+<h3 id="q7-why-is-cftoc-not-the-same-thing-as-mpc">Q7. Why is CFTOC not the same thing as MPC?</h3>
+<details><summary>Answer</summary>
+<p>CFTOC is one finite-horizon optimization. MPC repeatedly solves a finite-horizon problem in
+closed loop and applies only the first optimized action before re-solving.</p>
+</details>
+<h3 id="q8-what-does-condensing-do">Q8. What does condensing do?</h3>
+<details><summary>Answer</summary>
+<p>It eliminates predicted state variables using the dynamics, yielding
+<span class="math inline">X=S_xx_0+S_uU</span>, so the optimization can be written only in terms of the input sequence <span class="math inline">U</span>.</p>
+</details>
+<h3 id="q9-why-can-sparse-and-condensed-formulations-return-the-same-control">Q9. Why can sparse and condensed formulations return the same control?</h3>
+<details><summary>Answer</summary>
+<p>They are algebraically equivalent representations of the same dynamics, cost, and constraints;
+the difference is numerical representation, not the underlying optimization problem.</p>
+</details>
+<h3 id="q10-why-is-the-unicycle-problem-nonconvex">Q10. Why is the unicycle problem nonconvex?</h3>
+<details><summary>Answer</summary>
+<p>The state predictions depend nonlinearly on the decision variables through trigonometric terms
+such as <span class="math inline">\sin\theta</span> and <span class="math inline">\cos\theta</span>, so the feasible mapping is nonlinear and does not generally
+define a convex optimization problem.</p>
+</details>
+</div>
+
+<div class="md">
+<p><a id="part-8"></a></p>
+<h2 id="part-viii-exercises">Part VIII — Exercises</h2>
+<h3 id="exercise-1-convexity-of-a-quadratic">Exercise 1 — Convexity of a quadratic</h3>
+<p>For</p>
+<div class="math display">
+P=
+\begin{bmatrix}
+2 &amp; \alpha\\
+\alpha &amp; 1
+\end{bmatrix},
+</div>
+<p>find the range of <span class="math inline">\alpha</span> for which</p>
+<div class="math display">
+f(z)=\frac12z^\top Pz
+</div>
+<p>is convex.</p>
+<hr />
+<h3 id="exercise-2-kkt-by-hand">Exercise 2 — KKT by hand</h3>
+<p>Solve</p>
+<div class="math display">
+\min_{z_1,z_2}
+(z_1-3)^2+(z_2-1)^2
+</div>
+<p>subject to</p>
+<div class="math display">
+z_1+z_2\le2.
+</div>
+<p>Derive <span class="math inline">z^\star</span> and <span class="math inline">\lambda^\star</span> from the KKT conditions.</p>
+<hr />
+<h3 id="exercise-3-prediction-matrices">Exercise 3 — Prediction matrices</h3>
+<p>For</p>
+<div class="math display">
+x_{k+1}=Ax_k+Bu_k,
+</div>
+<p>write <span class="math inline">x_4</span> explicitly as a function of <span class="math inline">x_0,u_0,u_1,u_2,u_3</span>.
+Then identify the fourth block row of <span class="math inline">S_x</span> and <span class="math inline">S_u</span>.</p>
+<hr />
+<h3 id="exercise-4-state-constraint-condensation">Exercise 4 — State-constraint condensation</h3>
+<p>Starting from</p>
+<div class="math display">
+F_xx_k\le g_x,
+</div>
+<p>derive the inequality in <span class="math inline">U</span> for a stacked horizon.</p>
+<hr />
+<h3 id="exercise-5-rate-constraints">Exercise 5 — Rate constraints</h3>
+<p>Construct <span class="math inline">D</span> for <span class="math inline">N=4</span> and a scalar input, and verify that</p>
+<div class="math display">
+DU+
+\begin{bmatrix}
+-u_{-1}\\0\\0\\0
+\end{bmatrix}
+=
+\begin{bmatrix}
+u_0-u_{-1}\\
+u_1-u_0\\
+u_2-u_1\\
+u_3-u_2
+\end{bmatrix}.
+</div>
+<hr />
+<h3 id="exercise-6-sparse-versus-condensed-size">Exercise 6 — Sparse versus condensed size</h3>
+<p>For <span class="math inline">n=8</span>, <span class="math inline">m=2</span>, and <span class="math inline">N=30</span>, compare the number of decision variables in the sparse and
+fully condensed formulations.</p>
+<p>What computational property may make the larger sparse problem faster anyway?</p>
+<hr />
+<h3 id="exercise-7-nonlinear-cftoc">Exercise 7 — Nonlinear CFTOC</h3>
+<p>Change the unicycle target pose and initial guess.</p>
+<p>Do you always obtain the same local solution?
+What does that tell you about nonconvex optimization?</p>
+</div>
+
+<div class="md">
+<p><a id="part-9"></a></p>
+<h2 id="part-ix-where-the-repository-goes-next">Part IX — Where the repository goes next</h2>
+<p>This notebook established the optimization machinery.</p>
+<p>The next chapters separate the remaining ideas instead of hiding them inside one giant notebook:</p>
+<ul>
+<li><strong>02 — Polytopes, reachability, and invariance:</strong> geometry of feasible/safe sets;</li>
+<li><strong>03 — MPC stability and terminal sets:</strong> recursive feasibility, shifted sequences, Lyapunov arguments;</li>
+<li><strong>04 — Collision avoidance CFTOC:</strong> logical maneuver choices and mixed-integer structure;</li>
+<li><strong>05 — Learning MPC:</strong> safe sets and terminal value functions learned from successful repetitions;</li>
+<li><strong>06 — Racing in Frenet coordinates:</strong> minimum-time control and track geometry;</li>
+<li><strong>07 — Data-driven local models:</strong> learning local prediction dynamics;</li>
+<li><strong>08 — Dynamic programming to reinforcement learning:</strong> Bellman recursion, values, policies;</li>
+<li><strong>09 — Capstone:</strong> synthesis and extensions.</li>
+</ul>
+<p>The roadmap in Notebook 00 shows how these chapters fit together.</p>
+</div>
+
+<div class="md">
+<p><a id="part-10"></a></p>
+<h2 id="part-x-scope-and-further-reading">Part X — Scope and further reading</h2>
+<p><strong>Scope.</strong> This notebook covers the optimization layer that the rest of the series builds on: convex
+sets and functions, LP and QP structure, Lagrangian duality and the KKT conditions, solver classes,
+hard and soft constraints, the constrained finite-time optimal-control problem, its sparse and
+condensed QP forms for linear systems, and a small nonlinear (unicycle) example. It assumes linear
+algebra and multivariable calculus. Receding-horizon feedback and its feasibility and stability theory
+are developed in Notebook 03.</p>
+<p><strong>Further reading.</strong></p>
+<ul>
+<li>S. Boyd and L. Vandenberghe, <em>Convex Optimization</em>, Cambridge University Press, 2004: convex sets
+and functions, duality, KKT conditions.</li>
+<li>J. Nocedal and S. J. Wright, <em>Numerical Optimization</em>, 2nd ed., Springer, 2006: algorithms for
+quadratic and nonlinear programs.</li>
+<li>F. Borrelli, A. Bemporad and M. Morari, <em>Predictive Control for Linear and Hybrid Systems</em>,
+Cambridge University Press, 2017: constrained finite-time optimal control and its QP formulations.</li>
+<li>D. P. Bertsekas, <em>Dynamic Programming and Optimal Control</em>, Vol. I, 4th ed., Athena Scientific, 2017.</li>
+</ul>
+<p>The repository file <code>docs/references.md</code> collects the references for the whole series.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="00-roadmap-and-math-primer.html"><span class="lbl">Previous · 00</span><span class="t">Roadmap and Mathematical Primer</span></a>
+  <a class="next" rel="next" href="02-polytopes-reachability-invariance.html"><span class="lbl">Next · 02</span><span class="t">Polytopes, Reachability and Invariant Sets</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 01 of the Advanced MPC and Learning MPC by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

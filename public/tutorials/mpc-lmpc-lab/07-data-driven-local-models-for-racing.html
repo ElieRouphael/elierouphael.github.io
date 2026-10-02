@@ -1,0 +1,2996 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>07 · Data-Driven Local Models for Autonomous Racing — Advanced MPC and Learning MPC</title>
+<meta name="description" content="Kernel-weighted local regression of the vehicle dynamics from recorded laps, structured affine models and time-varying predictions for MPC.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Chapter 07 of 09</span>
+  <h1>Data-Driven Local Models for Autonomous Racing</h1>
+  <div class="intro prose">
+<h2 id="from-nonlinear-vehicle-data-to-an-affine-ltv-prediction-model">From nonlinear vehicle data to an affine LTV prediction model</h2>
+<p>Learning MPC for autonomous racing deliberately separates two systems:</p>
+<ol>
+<li>the <strong>real/simulated vehicle</strong>, represented by a nonlinear dynamic bicycle model;</li>
+<li>the <strong>prediction model inside the controller</strong>, estimated from data.</li>
+</ol>
+<p>The central idea is not to identify one global linear model and hope that it remains valid around
+the entire track.</p>
+<p>Instead, at each operating point, previous racing data are used to construct</p>
+<div class="math display">
+\boxed{
+x_{k+1}
+\approx
+A_k x_k+B_k u_k+c_k
+}
+</div>
+<p>where the matrices vary with the local state/input neighborhood.</p>
+<p>This gives a <strong>local affine time-varying (LTV) model</strong> suitable for a short-horizon MPC/LMPC
+optimization.</p>
+<p>The most interesting feature of this prediction model is that it is <strong>hybrid
+physics/data-driven</strong>:</p>
+<ul>
+<li>nonlinear vehicle dynamics for <span class="math inline">v_x,v_y,r</span> are learned locally from data;</li>
+<li>Frenet kinematics for <span class="math inline">e_\psi,s,e_y</span> are linearized analytically.</li>
+</ul>
+<p>This notebook develops that structure from first principles.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/07_data_driven_local_models_for_racing.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need the <code>advanced_mpc_lmpc</code> package: the full course download has it.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#from-nonlinear-vehicle-data-to-an-affine-ltv-prediction-model">From nonlinear vehicle data to an affine LTV prediction model</a></li>
+    <li><a href="#scope">Scope</a></li>
+    <li><a href="#learning-objectives">Learning objectives</a></li>
+    <li><a href="#table-of-contents">Table of Contents</a></li>
+    <li><a href="#part-i-plant-model-versus-prediction-model">Part I — Plant model versus prediction model</a></li>
+    <li><a href="#i-1-the-nonlinear-real-system">I.1 The nonlinear “real” system</a></li>
+    <li><a href="#i-2-nonlinear-lateral-tire-forces">I.2 Nonlinear lateral tire forces</a></li>
+    <li><a href="#i-3-why-not-put-that-full-nonlinear-model-directly-inside-every-qp">I.3 Why not put that full nonlinear model directly inside every QP?</a></li>
+    <li><a href="#part-ii-generate-racing-data">Part II — Generate racing data</a></li>
+    <li><a href="#ii-1-small-rc-car-scale-track">II.1 Small RC-car-scale track</a></li>
+    <li><a href="#ii-2-exploratory-seed-controller">II.2 Exploratory seed controller</a></li>
+    <li><a href="#ii-3-four-training-laps-and-one-held-out-validation-lap">II.3 Four training laps and one held-out validation lap</a></li>
+    <li><a href="#part-iii-what-does-the-data-cloud-contain">Part III — What does the data cloud contain?</a></li>
+    <li><a href="#iii-1-transition-tuples">III.1 Transition tuples</a></li>
+    <li><a href="#part-iv-local-neighborhood-metric">Part IV — Local-neighborhood metric</a></li>
+    <li><a href="#iv-1-raw-distance-would-mix-incompatible-units">IV.1 Raw distance would mix incompatible units</a></li>
+    <li><a href="#iv-2-the-epanechnikov-kernel">IV.2 The Epanechnikov kernel</a></li>
+    <li><a href="#iv-3-why-select-per-lap">IV.3 Why select per lap?</a></li>
+    <li><a href="#part-v-weighted-affine-regression">Part V — Weighted affine regression</a></li>
+    <li><a href="#v-1-scalar-regression-problem">V.1 Scalar regression problem</a></li>
+    <li><a href="#v-2-matrix-form">V.2 Matrix form</a></li>
+    <li><a href="#v-3-normal-equations">V.3 Normal equations</a></li>
+    <li><a href="#v-4-why-the-affine-constant-is-necessary">V.4 Why the affine constant is necessary</a></li>
+    <li><a href="#part-vi-structure-of-the-learned-model">Part VI — Structure of the learned model</a></li>
+    <li><a href="#vi-1-learned-longitudinal-row">VI.1 Learned longitudinal row</a></li>
+    <li><a href="#vi-2-learned-lateral-rows">VI.2 Learned lateral rows</a></li>
+    <li><a href="#vi-3-sparse-structure-of-the-learned-block">VI.3 Sparse structure of the learned block</a></li>
+    <li><a href="#part-vii-analytical-frenet-rows">Part VII — Analytical Frenet rows</a></li>
+    <li><a href="#vii-1-why-not-regress-all-six-state-equations">VII.1 Why not regress all six state equations?</a></li>
+    <li><a href="#vii-2-discrete-heading-error-equation">VII.2 Discrete heading-error equation</a></li>
+    <li><a href="#vii-3-jacobian-of-e-psi">VII.3 Jacobian of <span class="math inline">e_\psi^+</span></a></li>
+    <li><a href="#vii-4-progress-equation">VII.4 Progress equation</a></li>
+    <li><a href="#vii-5-lateral-deviation-equation">VII.5 Lateral-deviation equation</a></li>
+    <li><a href="#vii-6-affine-remainder">VII.6 Affine remainder</a></li>
+    <li><a href="#part-viii-one-step-validation-on-a-different-lap">Part VIII — One-step validation on a different lap</a></li>
+    <li><a href="#viii-1-why-training-residual-is-insufficient">VIII.1 Why training residual is insufficient</a></li>
+    <li><a href="#part-ix-why-local-models-help">Part IX — Why local models help</a></li>
+    <li><a href="#ix-1-a-nonlinear-plant-has-operating-point-dependent-derivatives">IX.1 A nonlinear plant has operating-point-dependent derivatives</a></li>
+    <li><a href="#part-x-model-support-versus-prediction-error">Part X — Model support versus prediction error</a></li>
+    <li><a href="#x-1-distance-to-the-database">X.1 Distance to the database</a></li>
+    <li><a href="#part-xi-conditioning-and-regularization">Part XI — Conditioning and regularization</a></li>
+    <li><a href="#xi-1-why-the-normal-equations-can-become-ill-conditioned">XI.1 Why the normal equations can become ill-conditioned</a></li>
+    <li><a href="#xi-2-ridge-regularization">XI.2 Ridge regularization</a></li>
+    <li><a href="#part-xii-feature-design-of-the-learned-rows">Part XII — Feature design of the learned rows</a></li>
+    <li><a href="#xii-1-why-does-v-x-use-acceleration-but-not-steering">XII.1 Why does <span class="math inline">v_x^+</span> use acceleration but not steering?</a></li>
+    <li><a href="#xii-2-why-do-v-y-and-r-use-steering-but-not-acceleration">XII.2 Why do <span class="math inline">v_y^+</span> and <span class="math inline">r^+</span> use steering but not acceleration?</a></li>
+    <li><a href="#part-xiii-building-an-affine-ltv-horizon">Part XIII — Building an affine LTV horizon</a></li>
+    <li><a href="#xiii-1-from-one-local-model-to-a-sequence">XIII.1 From one local model to a sequence</a></li>
+    <li><a href="#xiii-2-closed-loop-versus-prediction-model">XIII.2 Closed-loop versus prediction model</a></li>
+    <li><a href="#part-xiv-horizon-14-prediction-experiment">Part XIV — Horizon-14 prediction experiment</a></li>
+    <li><a href="#xiv-1-use-actual-future-inputs-only-to-test-the-model">XIV.1 Use actual future inputs only to test the model</a></li>
+    <li><a href="#part-xv-why-it-is-called-ltv">Part XV — Why it is called LTV</a></li>
+    <li><a href="#xv-1-the-matrices-change-along-the-predicted-trajectory">XV.1 The matrices change along the predicted trajectory</a></li>
+    <li><a href="#part-xvi-local-model-support-inside-an-mpc-horizon">Part XVI — Local model support inside an MPC horizon</a></li>
+    <li><a href="#xvi-1-one-model-fit-diagnostic-is-not-enough">XVI.1 One model-fit diagnostic is not enough</a></li>
+    <li><a href="#part-xvii-out-of-distribution-query">Part XVII — Out-of-distribution query</a></li>
+    <li><a href="#xvii-1-deliberately-ask-for-an-unfamiliar-operating-point">XVII.1 Deliberately ask for an unfamiliar operating point</a></li>
+    <li><a href="#xvii-2-interpretation">XVII.2 Interpretation</a></li>
+    <li><a href="#part-xviii-bias-variance-trade-off-in-bandwidth-and-neighborhood-size">Part XVIII — Bias–variance trade-off in bandwidth and neighborhood size</a></li>
+    <li><a href="#xviii-1-small-bandwidth">XVIII.1 Small bandwidth</a></li>
+    <li><a href="#xviii-2-large-bandwidth">XVIII.2 Large bandwidth</a></li>
+    <li><a href="#part-xix-why-local-validation-must-be-trajectory-based">Part XIX — Why local validation must be trajectory-based</a></li>
+    <li><a href="#xix-1-random-train-test-splits-can-be-misleading">XIX.1 Random train/test splits can be misleading</a></li>
+    <li><a href="#part-xx-how-this-enters-lmpc">Part XX — How this enters LMPC</a></li>
+    <li><a href="#xx-1-two-distinct-forms-of-learning">XX.1 Two distinct forms of learning</a></li>
+    <li><a href="#xx-2-structure-of-a-racing-lmpc">XX.2 Structure of a racing LMPC</a></li>
+    <li><a href="#part-xxi-the-racing-lmpc-cost-an-important-detail">Part XXI — The racing LMPC cost: an important detail</a></li>
+    <li><a href="#xxi-1-no-conventional-state-tracking-cost-for-racing">XXI.1 No conventional state-tracking cost for racing</a></li>
+    <li><a href="#xxi-2-local-safe-set-sizing">XXI.2 Local safe-set sizing</a></li>
+    <li><a href="#part-xxii-a-subtle-geometry-issue-convex-hulls-in-frenet-coordinates">Part XXII — A subtle geometry issue: convex hulls in Frenet coordinates</a></li>
+    <li><a href="#xxii-1-is-a-convex-local-safe-set-automatically-inside-the-lane">XXII.1 Is a convex local safe set automatically inside the lane?</a></li>
+    <li><a href="#part-xxiii-why-a-learned-ltv-model-can-work-on-a-highly-nonlinear-vehicle">Part XXIII — Why a learned LTV model can work on a highly nonlinear vehicle</a></li>
+    <li><a href="#xxiii-1-the-key-is-not-that-the-plant-became-linear">XXIII.1 The key is not that the plant became linear</a></li>
+    <li><a href="#xxiii-2-why-this-does-not-automatically-imply-robustness">XXIII.2 Why this does not automatically imply robustness</a></li>
+    <li><a href="#part-xxiv-common-pitfalls">Part XXIV — Common pitfalls</a></li>
+    <li><a href="#xxiv-1-pitfall-local-linear-model-means-the-real-system-is-linear">XXIV.1 Pitfall: local linear model means the real system is linear</a></li>
+    <li><a href="#xxiv-2-pitfall-nearest-neighbors-are-selected-using-s-e-y">XXIV.2 Pitfall: nearest neighbors are selected using <span class="math inline">(s,e_y)</span></a></li>
+    <li><a href="#xxiv-3-pitfall-the-regression-learns-all-six-state-equations">XXIV.3 Pitfall: the regression learns all six state equations</a></li>
+    <li><a href="#xxiv-4-pitfall-c-k-can-be-omitted-because-the-model-is-linearized">XXIV.4 Pitfall: <span class="math inline">c_k</span> can be omitted because the model is “linearized”</a></li>
+    <li><a href="#xxiv-5-pitfall-low-training-residual-proves-predictive-accuracy">XXIV.5 Pitfall: low training residual proves predictive accuracy</a></li>
+    <li><a href="#xxiv-6-pitfall-large-bandwidth-is-always-safer-because-it-uses-more-data">XXIV.6 Pitfall: large bandwidth is always safer because it uses more data</a></li>
+    <li><a href="#xxiv-7-pitfall-ridge-regularization-is-free-accuracy">XXIV.7 Pitfall: ridge regularization is free accuracy</a></li>
+    <li><a href="#xxiv-8-pitfall-an-extrapolated-model-is-trustworthy-because-the-solver-returns-coefficients">XXIV.8 Pitfall: an extrapolated model is trustworthy because the solver returns coefficients</a></li>
+    <li><a href="#part-xxv-check-your-understanding">Part XXV — Check your understanding</a></li>
+    <li><a href="#part-xxvi-exercises">Part XXVI — Exercises</a></li>
+    <li><a href="#part-xxvii-references">Part XXVII — References</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="scope">Scope</h2>
+<p>This notebook builds and validates the data-driven prediction model of a Learning MPC racing
+controller, following U. Rosolia and F. Borrelli, “Learning How to Autonomously Race a Car: A
+Predictive Control Approach,” <em>IEEE Transactions on Control Systems Technology</em>, 28(6), 2020. Its
+ingredients are:</p>
+<ul>
+<li>state</li>
+</ul>
+<div class="math display">
+x=
+[v_x,v_y,r,e_\psi,s,e_y]^\top;
+</div>
+<ul>
+<li>input ordering in the racing simulator</li>
+</ul>
+<div class="math display">
+u=
+[\delta,a_x]^\top;
+</div>
+<ul>
+<li>the dynamic bicycle model of a 1:10-scale RC car (BARC parameters) as the simulated vehicle;</li>
+<li>feasible exploratory laps driven by a noisy PID path-following controller;</li>
+<li>local model identification from stored laps;</li>
+<li>nearest-data selection with a scaled <span class="math inline">\ell_1</span> distance;</li>
+<li>at most seven local points per stored lap;</li>
+<li>bandwidth <span class="math inline">h=5</span>;</li>
+<li>Epanechnikov (compact-support quadratic) kernel weights;</li>
+<li>structured weighted ridge regression of <span class="math inline">v_x,v_y,r</span>;</li>
+<li>analytical linearization of <span class="math inline">e_\psi,s,e_y</span>;</li>
+<li>a flagged fallback when a lap has no point inside the bandwidth;</li>
+<li>an affine prediction model</li>
+</ul>
+<div class="math display">
+x^+=Ax+Bu+c;
+</div>
+<ul>
+<li>prediction horizon <span class="math inline">N=14</span> for the multi-step test.</li>
+</ul>
+<p>The closed-loop LMPC controller itself is not implemented here; Parts XX–XXIII explain how the
+learned model enters it.</p>
+<p>For system-identification and validation methodology, the notebook uses standard ideas from
+L. Ljung, <em>System Identification: Theory for the User</em>; for kernel-weighted local regression, from
+T. Hastie, R. Tibshirani and J. Friedman, <em>The Elements of Statistical Learning</em>. See also
+U. Rosolia, A. Carvalho and F. Borrelli, “Autonomous Racing using Learning Model Predictive
+Control,” American Control Conference (ACC), 2017.</p>
+</div>
+
+<div class="md">
+<h2 id="learning-objectives">Learning objectives</h2>
+<p>After completing this notebook, you should be able to:</p>
+<ol>
+<li>distinguish the nonlinear plant from the learned predictive model;</li>
+<li>explain why one global linear model is inadequate over a nonlinear racing envelope;</li>
+<li>define the local regression query vector</li>
+</ol>
+<div class="math display">
+z=[v_x,v_y,r,\delta,a_x]^\top;
+</div>
+<ol start="4">
+<li>explain why feature scaling is necessary before nearest-neighbor selection;</li>
+<li>derive the scaled <span class="math inline">\ell_1</span> distance used for neighbor selection;</li>
+<li>derive the Epanechnikov (compact-support) kernel weights;</li>
+<li>formulate weighted affine regression;</li>
+<li>derive the weighted least-squares normal equations;</li>
+<li>understand the role of ridge regularization and condition number;</li>
+<li>explain why the affine offset <span class="math inline">c</span> is essential;</li>
+<li>reconstruct the structured regression rows for <span class="math inline">v_x,v_y,r</span>;</li>
+<li>derive the analytic linearization of the Frenet kinematics;</li>
+<li>assemble the complete <span class="math inline">6\times6</span> matrix <span class="math inline">A_k</span>, <span class="math inline">6\times2</span> matrix <span class="math inline">B_k</span>, and offset <span class="math inline">c_k</span>;</li>
+<li>validate the learned model on a <strong>different lap</strong>, rather than the fitting samples;</li>
+<li>compare local and global structured models;</li>
+<li>construct a horizon-<span class="math inline">14</span> affine LTV rollout;</li>
+<li>interpret how <span class="math inline">A_k</span> and <span class="math inline">B_k</span> change along the horizon;</li>
+<li>relate prediction error to distance from the training data;</li>
+<li>detect extrapolation / missing local support;</li>
+<li>understand what this model-learning layer contributes to LMPC—and what it does not guarantee.</li>
+</ol>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">from pathlib import Path
+import sys
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+ROOT = Path.cwd().resolve()
+if ROOT.name == &quot;notebooks&quot;:
+    ROOT = ROOT.parent
+
+sys.path.insert(0, str(ROOT / &quot;src&quot;))
+
+from advanced_mpc_lmpc.racing import (
+    build_demo_track,
+    scale_track_geometry,
+    track_global_position,
+    pid_control,
+    simulate_pid_lap,
+    kinematic_affine_linearization,
+    LocalRacingModel,
+    GlobalRacingModel,
+    rollout_affine_predictive_model,
+)
+
+np.set_printoptions(
+    precision=6,
+    suppress=True,
+)
+
+plt.rcParams.update({
+    &quot;figure.figsize&quot;: (8, 5),
+    &quot;axes.grid&quot;: True,
+})
+</code></pre>
+</div>
+
+<div class="md">
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><strong><a href="#part-1">Part I — Plant model versus prediction model</a></strong> — I.1 The nonlinear “real” system · I.2 Nonlinear lateral tire forces · I.3 Why not put that full nonlinear model directly inside every QP?</li>
+<li><strong><a href="#part-2">Part II — Generate racing data</a></strong> — II.1 Small RC-car-scale track · II.2 Exploratory seed controller · II.3 Four training laps and one held-out validation lap</li>
+<li><strong><a href="#part-3">Part III — What does the data cloud contain?</a></strong> — III.1 Transition tuples</li>
+<li><strong><a href="#part-4">Part IV — Local-neighborhood metric</a></strong> — IV.1 Raw distance would mix incompatible units · IV.2 The Epanechnikov kernel · IV.3 Why select per lap?</li>
+<li><strong><a href="#part-5">Part V — Weighted affine regression</a></strong> — V.1 Scalar regression problem · V.2 Matrix form · V.3 Normal equations · V.4 Why the affine constant is necessary</li>
+<li><strong><a href="#part-6">Part VI — Structure of the learned model</a></strong> — VI.1 Learned longitudinal row · VI.2 Learned lateral rows · VI.3 Sparse structure of the learned block</li>
+<li><strong><a href="#part-7">Part VII — Analytical Frenet rows</a></strong> — VII.1 Why not regress all six state equations? · VII.2 Discrete heading-error equation · VII.3 Jacobian of <span class="math inline">e_\psi^+</span> · VII.4 Progress equation · VII.5 Lateral-deviation equation · VII.6 Affine remainder</li>
+<li><strong><a href="#part-8">Part VIII — One-step validation on a different lap</a></strong> — VIII.1 Why training residual is insufficient</li>
+<li><strong><a href="#part-9">Part IX — Why local models help</a></strong> — IX.1 A nonlinear plant has operating-point-dependent derivatives</li>
+<li><strong><a href="#part-10">Part X — Model support versus prediction error</a></strong> — X.1 Distance to the database</li>
+<li><strong><a href="#part-11">Part XI — Conditioning and regularization</a></strong> — XI.1 Why the normal equations can become ill-conditioned · XI.2 Ridge regularization</li>
+<li><strong><a href="#part-12">Part XII — Feature design of the learned rows</a></strong> — XII.1 Why does <span class="math inline">v_x^+</span> use acceleration but not steering? · XII.2 Why do <span class="math inline">v_y^+</span> and <span class="math inline">r^+</span> use steering but not acceleration?</li>
+<li><strong><a href="#part-13">Part XIII — Building an affine LTV horizon</a></strong> — XIII.1 From one local model to a sequence · XIII.2 Closed-loop versus prediction model</li>
+<li><strong><a href="#part-14">Part XIV — Horizon-14 prediction experiment</a></strong> — XIV.1 Use actual future inputs only to test the model</li>
+<li><strong><a href="#part-15">Part XV — Why it is called LTV</a></strong> — XV.1 The matrices change along the predicted trajectory</li>
+<li><strong><a href="#part-16">Part XVI — Local model support inside an MPC horizon</a></strong> — XVI.1 One model-fit diagnostic is not enough</li>
+<li><strong><a href="#part-17">Part XVII — Out-of-distribution query</a></strong> — XVII.1 Deliberately ask for an unfamiliar operating point · XVII.2 Interpretation</li>
+<li><strong><a href="#part-18">Part XVIII — Bias–variance trade-off in bandwidth and neighborhood size</a></strong> — XVIII.1 Small bandwidth · XVIII.2 Large bandwidth</li>
+<li><strong><a href="#part-19">Part XIX — Why local validation must be trajectory-based</a></strong> — XIX.1 Random train/test splits can be misleading</li>
+<li><strong><a href="#part-20">Part XX — How this enters LMPC</a></strong> — XX.1 Two distinct forms of learning · XX.2 Structure of a racing LMPC</li>
+<li><strong><a href="#part-21">Part XXI — The racing LMPC cost: an important detail</a></strong> — XXI.1 No conventional state-tracking cost for racing · XXI.2 Local safe-set sizing</li>
+<li><strong><a href="#part-22">Part XXII — A subtle geometry issue: convex hulls in Frenet coordinates</a></strong> — XXII.1 Is a convex local safe set automatically inside the lane?</li>
+<li><strong><a href="#part-23">Part XXIII — Why a learned LTV model can work on a highly nonlinear vehicle</a></strong> — XXIII.1 The key is not that the plant became linear · XXIII.2 Why this does not automatically imply robustness</li>
+<li><strong><a href="#part-24">Part XXIV — Common pitfalls</a></strong> — XXIV.1 Pitfall: local linear model means the real system is linear · XXIV.2 Pitfall: nearest neighbors are selected using <span class="math inline">(s,e_y)</span> · XXIV.3 Pitfall: the regression learns all six state equations · XXIV.4 Pitfall: <span class="math inline">c_k</span> can be omitted because the model is “linearized” · XXIV.5 Pitfall: low training residual proves predictive accuracy · XXIV.6 Pitfall: large bandwidth is always safer because it uses more data · XXIV.7 Pitfall: ridge regularization is free accuracy · XXIV.8 Pitfall: an extrapolated model is trustworthy because the solver returns coefficients</li>
+<li><strong><a href="#part-25">Part XXV — Check your understanding</a></strong></li>
+<li><strong><a href="#part-26">Part XXVI — Exercises</a></strong></li>
+<li><strong><a href="#part-27">Part XXVII — References</a></strong></li>
+</ul>
+</div>
+
+<div class="md">
+<p><a id="part-1"></a></p>
+<h2 id="part-i-plant-model-versus-prediction-model">Part I — Plant model versus prediction model</h2>
+<h2 id="i-1-the-nonlinear-real-system">I.1 The nonlinear “real” system</h2>
+<p>The vehicle is simulated with the dynamic bicycle model of a 1:10-scale RC car (BARC parameters)
+in curvilinear coordinates, as written out in notebook 06 (Part VIII).</p>
+<p>The state is</p>
+<div class="math display">
+\boxed{
+x=
+\begin{bmatrix}
+v_x&amp;
+v_y&amp;
+r&amp;
+e_\psi&amp;
+s&amp;
+e_y
+\end{bmatrix}^{\!\top}
+}
+</div>
+<p>where:</p>
+<ul>
+<li><span class="math inline">v_x</span>: longitudinal velocity;</li>
+<li><span class="math inline">v_y</span>: lateral velocity;</li>
+<li><span class="math inline">r</span>: yaw rate;</li>
+<li><span class="math inline">e_\psi</span>: heading error relative to the track;</li>
+<li><span class="math inline">s</span>: curvilinear progress;</li>
+<li><span class="math inline">e_y</span>: lateral deviation.</li>
+</ul>
+<p>The simulator input is</p>
+<div class="math display">
+\boxed{
+u=
+\begin{bmatrix}
+\delta\\
+a_x
+\end{bmatrix},
+}
+</div>
+<p>with steering first and longitudinal acceleration second.</p>
+</div>
+
+<div class="md">
+<h2 id="i-2-nonlinear-lateral-tire-forces">I.2 Nonlinear lateral tire forces</h2>
+<p>The model uses slip angles</p>
+<div class="math display">
+\alpha_f
+=
+\delta
+-
+\operatorname{atan2}
+\left(
+v_y+l_fr,
+v_x
+\right),
+</div>
+<div class="math display">
+\alpha_r
+=
+-
+\operatorname{atan2}
+\left(
+v_y-l_rr,
+v_x
+\right),
+</div>
+<p>and smooth saturating lateral forces</p>
+<div class="math display">
+F_{y,f}
+=
+D_f
+\sin
+\left(
+C_f
+\arctan(B_f\alpha_f)
+\right),
+</div>
+<div class="math display">
+F_{y,r}
+=
+D_r
+\sin
+\left(
+C_r
+\arctan(B_r\alpha_r)
+\right).
+</div>
+<p>This is the simplified Pacejka formula; with the BARC parameters, both axles share <span class="math inline">B=1</span>,
+<span class="math inline">C=1.25</span> and <span class="math inline">D=0.8\,mg/2</span>.</p>
+<p>The resulting state transition is nonlinear in both state and steering.</p>
+</div>
+
+<div class="md">
+<h2 id="i-3-why-not-put-that-full-nonlinear-model-directly-inside-every-qp">I.3 Why not put that full nonlinear model directly inside every QP?</h2>
+<p>One could formulate a nonlinear MPC, but then the online problem would be a nonlinear program.</p>
+<p>Learning MPC racing (Rosolia and Borrelli, 2020) instead builds a short-horizon affine
+approximation</p>
+<div class="math display">
+\boxed{
+x_{k+1}
+=
+A_kx_k+B_ku_k+c_k.
+}
+</div>
+<p>This enables the online controller to use a quadratic-program structure while allowing the model
+matrices to change with the operating point.</p>
+<p>That is the role of local identification:</p>
+<div class="math display">
+\boxed{
+\text{nonlinear plant}
+\quad\longrightarrow\quad
+\text{sequence of local affine models}.
+}
+</div>
+</div>
+
+<div class="md">
+<p><a id="part-2"></a></p>
+<h2 id="part-ii-generate-racing-data">Part II — Generate racing data</h2>
+<h2 id="ii-1-small-rc-car-scale-track">II.1 Small RC-car-scale track</h2>
+<p>The vehicle is a 1:10-scale RC car, so the track must be RC-car sized as well.</p>
+<p>We geometrically scale the smooth closed track of notebook 06 by <span class="math inline">\alpha=0.08</span> and give it a
+half-width of <span class="math inline">0.4</span> m.</p>
+<p>Scaling geometry by <span class="math inline">\alpha</span> gives</p>
+<div class="math display">
+s_{\mathrm{new}}=\alpha s,
+</div>
+<p>but curvature scales inversely:</p>
+<div class="math display">
+\boxed{
+K_{\mathrm{new}}
+=
+\frac{K}{\alpha}.
+}
+</div>
+<p>This preserves the geometry up to scale.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">base_track = build_demo_track(
+    n=400,
+    half_width=3.0,
+)
+
+track = scale_track_geometry(
+    base_track,
+    factor=0.08,
+    half_width=0.4,
+)
+
+print(
+    f&quot;track length = {track.length:.3f} m&quot;
+)
+
+print(
+    &quot;curvature range =&quot;,
+    (
+        float(track.curvature.min()),
+        float(track.curvature.max()),
+    ),
+)
+
+print(
+    &quot;minimum Frenet margin 1-|K|W =&quot;,
+    float(
+        np.min(
+            1.0
+            - np.abs(track.curvature)
+            * track.half_width
+        )
+    ),
+)
+</code></pre>
+<pre class="output">track length = 20.187 m
+curvature range = (-0.15691865602519606, 1.6264394896759422)
+minimum Frenet margin 1-|K|W = 0.34942420412962305</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">inner = track.to_global(
+    -track.half_width
+)
+
+outer = track.to_global(
+    track.half_width
+)
+
+plt.figure(figsize=(8, 6))
+
+plt.plot(
+    track.xy[:, 0],
+    track.xy[:, 1],
+    &quot;--&quot;,
+    label=&quot;centerline&quot;,
+)
+
+plt.plot(
+    inner[:, 0],
+    inner[:, 1],
+    label=&quot;track boundary&quot;,
+)
+
+plt.plot(
+    outer[:, 0],
+    outer[:, 1],
+    label=&quot;track boundary&quot;,
+)
+
+plt.axis(&quot;equal&quot;)
+plt.xlabel(&quot;X [m]&quot;)
+plt.ylabel(&quot;Y [m]&quot;)
+plt.title(&quot;Identification track&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-1.png" alt="Figure: Identification track" width="689" height="547" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="ii-2-exploratory-seed-controller">II.2 Exploratory seed controller</h2>
+<p>Learning starts from suboptimal but feasible laps driven by a simple centerline controller, the
+noisy PID path-following controller <code>pid_control</code>.</p>
+<p>Its structure is</p>
+<div class="math display">
+\boxed{
+\delta
+=
+-0.6e_y
+-
+0.9e_\psi
++
+\text{steering dither},
+}
+</div>
+<div class="math display">
+\boxed{
+a_x
+=
+1.5(v_t-v_x)
++
+\text{acceleration dither}.
+}
+</div>
+<p>Here <span class="math inline">v_t</span> is the target speed: <span class="math inline">0.8</span> m/s for the training laps and <span class="math inline">0.85</span> m/s for the validation
+lap. The dither is clipped Gaussian noise, drawn independently at every step.</p>
+<p>The dither is important for identification: if the vehicle repeats exactly the same constant-input
+behavior, many local parameters become poorly excited.</p>
+<p>One safety choice is made explicitly:</p>
+<blockquote>
+<p>the exploratory action is clipped to the input bounds of the Learning MPC racing controller,
+<span class="math inline">|\delta|\le0.5</span> and <span class="math inline">|a_x|\le10</span>.</p>
+</blockquote>
+<p>The dither is added before clipping, so every recorded input satisfies the bounds that the
+controller will later impose.</p>
+</div>
+
+<div class="md">
+<h2 id="ii-3-four-training-laps-and-one-held-out-validation-lap">II.3 Four training laps and one held-out validation lap</h2>
+<p>A Learning MPC racing controller starts from data recorded with such a simple feasible controller.</p>
+<p>For identification diagnostics, we generate <strong>four exploratory training laps with the same
+controller and different deterministic random seeds</strong>.</p>
+<p>This gives the regression a richer data cloud and makes train-versus-validation analysis
+meaningful.</p>
+<p>A fifth lap is kept completely out of the fit.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">training_laps = []
+
+for seed in range(4):
+    X, U = simulate_pid_lap(
+        track,
+        seed=seed,
+        target_speed=0.8,
+        inner_dt=0.001,
+        enforce_lmpc_bounds=True,
+    )
+
+    training_laps.append(
+        (X, U)
+    )
+
+    print(
+        f&quot;training lap {seed}: &quot;
+        f&quot;{len(U):3d} samples, &quot;
+        f&quot;time={0.1*len(U):5.2f} s, &quot;
+        f&quot;max |ey|={np.max(np.abs(X[:,5])):.3f} m&quot;
+    )
+
+X_val, U_val = simulate_pid_lap(
+    track,
+    seed=20,
+    target_speed=0.85,
+    inner_dt=0.001,
+    enforce_lmpc_bounds=True,
+)
+
+print(
+    &quot;\nvalidation lap:&quot;,
+    len(U_val),
+    &quot;samples, time=&quot;,
+    0.1 * len(U_val),
+    &quot;s&quot;,
+)
+</code></pre>
+<pre class="output">training lap 0: 304 samples, time=30.40 s, max |ey|=0.355 m
+training lap 1: 304 samples, time=30.40 s, max |ey|=0.307 m
+training lap 2: 304 samples, time=30.40 s, max |ey|=0.290 m
+training lap 3: 304 samples, time=30.40 s, max |ey|=0.242 m
+
+validation lap: 295 samples, time= 29.5 s</pre>
+</div>
+
+<div class="md">
+<h3 id="why-is-the-validation-lap-different">Why is the validation lap different?</h3>
+<p>It uses a different exploration realization and a slightly different target speed.</p>
+<p>The validation samples therefore remain close to the racing operating domain but are not identical
+copies of the training transitions.</p>
+<p>This is more informative than reporting the residual on the points used to compute the regression.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure(figsize=(8, 6))
+
+plt.plot(
+    inner[:, 0],
+    inner[:, 1],
+    label=&quot;boundary&quot;,
+)
+
+plt.plot(
+    outer[:, 0],
+    outer[:, 1],
+    label=&quot;boundary&quot;,
+)
+
+for j, (X, U) in enumerate(training_laps):
+    xy = track_global_position(
+        track,
+        X[:, 4],
+        X[:, 5],
+    )
+
+    plt.plot(
+        xy[:, 0],
+        xy[:, 1],
+        linewidth=1.3,
+        alpha=0.75,
+        label=f&quot;training lap {j+1}&quot;,
+    )
+
+xy_val = track_global_position(
+    track,
+    X_val[:, 4],
+    X_val[:, 5],
+)
+
+plt.plot(
+    xy_val[:, 0],
+    xy_val[:, 1],
+    linewidth=2.2,
+    label=&quot;held-out validation lap&quot;,
+)
+
+plt.axis(&quot;equal&quot;)
+plt.xlabel(&quot;X [m]&quot;)
+plt.ylabel(&quot;Y [m]&quot;)
+plt.title(&quot;Training trajectories and held-out validation trajectory&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-2.png" alt="Figure: Training trajectories and held-out validation trajectory" width="689" height="547" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-this-figure">How to read this figure</h3>
+<p>Every curve is a complete lap of the nonlinear simulator.</p>
+<p>The four training curves provide the identification database.</p>
+<p>The validation curve is <strong>not</strong> included in that database.</p>
+<p>The curves are close because they solve the same centerline-following task, but the random
+steering and acceleration dither (a different seed for every lap) makes the state/input samples
+different.</p>
+</div>
+
+<div class="md">
+<p><a id="part-3"></a></p>
+<h2 id="part-iii-what-does-the-data-cloud-contain">Part III — What does the data cloud contain?</h2>
+<h2 id="iii-1-transition-tuples">III.1 Transition tuples</h2>
+<p>Every stored lap provides samples</p>
+<div class="math display">
+\boxed{
+(x_i,u_i,x_i^+)
+}
+</div>
+<p>with</p>
+<div class="math display">
+x_i^+
+=
+x_{i+1}.
+</div>
+<p>For model learning, only selected parts of these vectors are used.</p>
+<p>The local operating-point query is</p>
+<div class="math display">
+\boxed{
+z
+=
+\begin{bmatrix}
+v_x&amp;
+v_y&amp;
+r&amp;
+\delta&amp;
+a_x
+\end{bmatrix}^{\!\top}.
+}
+</div>
+<p>Notice what is <strong>not</strong> in the neighbor metric:</p>
+<div class="math display">
+e_\psi,\quad s,\quad e_y.
+</div>
+<p>The dynamic regression therefore searches for similar vehicle dynamic states and inputs independent
+of where they occurred on the track.</p>
+<p>Track geometry is then reintroduced analytically in the Frenet kinematic rows.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">X_train = np.vstack([
+    X[:-1]
+    for X, U in training_laps
+])
+
+U_train = np.vstack([
+    U
+    for X, U in training_laps
+])
+
+print(&quot;total training transitions:&quot;, len(X_train))
+
+labels = [
+    &quot;vx&quot;,
+    &quot;vy&quot;,
+    &quot;r&quot;,
+    &quot;delta&quot;,
+    &quot;ax&quot;,
+]
+
+mins = np.r_[
+    X_train[:, :3].min(axis=0),
+    U_train.min(axis=0),
+]
+
+maxs = np.r_[
+    X_train[:, :3].max(axis=0),
+    U_train.max(axis=0),
+]
+
+for label, lo, hi in zip(
+    labels,
+    mins,
+    maxs,
+):
+    print(
+        f&quot;{label:6s}: &quot;
+        f&quot;[{lo: .5f}, {hi: .5f}]&quot;
+    )
+</code></pre>
+<pre class="output">total training transitions: 1216
+vx    : [ 0.47474,  0.79958]
+vy    : [-0.10650,  0.10877]
+r     : [-1.33800,  1.39914]
+delta : [-0.50000,  0.50000]
+ax    : [-0.17487,  0.57892]</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">fig = plt.figure(figsize=(8, 5))
+ax = fig.gca()
+
+ax.scatter(
+    X_train[:, 0],
+    U_train[:, 0],
+    s=10,
+    alpha=0.45,
+    label=&quot;training transitions&quot;,
+)
+
+ax.scatter(
+    X_val[:-1, 0],
+    U_val[:, 0],
+    s=10,
+    alpha=0.45,
+    label=&quot;validation transitions&quot;,
+)
+
+ax.set_xlabel(r&quot;$v_x$ [m/s]&quot;)
+ax.set_ylabel(r&quot;steering $\delta$ [rad]&quot;)
+ax.set_title(&quot;A two-dimensional view of the identification data cloud&quot;)
+ax.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-3.png" alt="Figure: A two-dimensional view of the identification data cloud" width="716" height="473" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-the-data-cloud-figure">How to read the data-cloud figure</h3>
+<p>Each point is one transition.</p>
+<p>The axes show only two of the five variables used for neighbor selection.</p>
+<p>Overlap in this projection does <strong>not</strong> imply two transitions are identical in</p>
+<div class="math display">
+[v_x,v_y,r,\delta,a_x].
+</div>
+<p>The purpose of the figure is only to show that the held-out lap lives in approximately the same
+operating envelope. Because of its higher target speed, a few validation transitions reach slightly
+higher <span class="math inline">v_x</span> than any training transition.</p>
+<p>The dense rows at <span class="math inline">\delta=\pm0.5</span> rad are transitions where the dithered steering command was
+clipped to the input bound.</p>
+</div>
+
+<div class="md">
+<p><a id="part-4"></a></p>
+<h2 id="part-iv-local-neighborhood-metric">Part IV — Local-neighborhood metric</h2>
+<h2 id="iv-1-raw-distance-would-mix-incompatible-units">IV.1 Raw distance would mix incompatible units</h2>
+<p>The query vector contains:</p>
+<ul>
+<li>velocity;</li>
+<li>yaw rate;</li>
+<li>steering angle;</li>
+<li>acceleration.</li>
+</ul>
+<p>A direct Euclidean or <span class="math inline">\ell_1</span> norm would depend strongly on their numerical units and scales.</p>
+<p>The implementation uses</p>
+<div class="math display">
+\boxed{
+D
+=
+\operatorname{diag}
+(0.1,1,1,1,1)
+}
+</div>
+<p>and computes a scaled <span class="math inline">\ell_1</span> distance</p>
+<div class="math display">
+\boxed{
+d_i
+=
+\left\|
+D(z_i-z_q)
+\right\|_1.
+}
+</div>
+<p>The smaller coefficient on <span class="math inline">v_x</span> reduces the dominance of longitudinal-speed differences.</p>
+</div>
+
+<div class="md">
+<h2 id="iv-2-the-epanechnikov-kernel">IV.2 The Epanechnikov kernel</h2>
+<p>The implementation uses bandwidth</p>
+<div class="math display">
+\boxed{
+h=5
+}
+</div>
+<p>and the Epanechnikov kernel weight</p>
+<div class="math display">
+\boxed{
+w_i
+=
+\frac34
+\left[
+1-
+\left(
+\frac{d_i}{h}
+\right)^2
+\right]
+}
+</div>
+<p>for points satisfying</p>
+<div class="math display">
+d_i&lt;h.
+</div>
+<p>Thus:</p>
+<ul>
+<li>the query-nearest points receive the largest weight;</li>
+<li>weight decreases quadratically with distance;</li>
+<li>points outside the bandwidth are excluded.</li>
+</ul>
+<p>At most</p>
+<div class="math display">
+\boxed{
+7
+}
+</div>
+<p>points are retained from each stored lap: the nearest ones inside the bandwidth.</p>
+<p>If a lap has no point inside the bandwidth, its seven nearest transitions are used instead, the
+bandwidth is widened for that lap just enough to cover them, and the lap is flagged as a support
+fallback (Part XVII).</p>
+</div>
+
+<div class="md">
+<h2 id="iv-3-why-select-per-lap">IV.3 Why select per lap?</h2>
+<p>If all samples were pooled and the nearest points selected globally, one dense trajectory could
+dominate the regression.</p>
+<p>Selecting a small local subset <strong>from each lap</strong> ensures that several successful executions
+contribute.</p>
+<p>Here four training laps are stored, so at most</p>
+<div class="math display">
+4\times7=28
+</div>
+<p>samples enter one local regression.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">local_model = LocalRacingModel(
+    track,
+    dt=0.1,
+    max_points_per_lap=7,
+    bandwidth=5.0,
+    ridge=1e-8,
+)
+
+global_model = GlobalRacingModel(
+    track,
+    dt=0.1,
+    ridge=1e-8,
+)
+
+for X, U in training_laps:
+    local_model.add_trajectory(
+        X,
+        U,
+    )
+
+    global_model.add_trajectory(
+        X,
+        U,
+    )
+
+query_index = 120
+
+xq = X_val[query_index]
+uq = U_val[query_index]
+
+Aq, Bq, cq, diag_q = local_model.fit(
+    xq,
+    uq,
+)
+
+print(&quot;query state:&quot;)
+print(xq)
+
+print(&quot;\nquery input:&quot;)
+print(uq)
+
+print(
+    &quot;\nlocal curvature:&quot;,
+    diag_q.curvature,
+)
+</code></pre>
+<pre class="output">query state:
+[ 0.749705  0.093364  1.369887 -0.231015  8.111228 -0.312796]
+
+query input:
+[0.290176 0.227437]
+
+local curvature: 1.4302861700213083</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">all_distances = np.concatenate(
+    diag_q.selected_distances
+)
+
+all_weights = np.concatenate(
+    diag_q.selected_weights
+)
+
+lap_id = np.concatenate([
+    np.full(
+        len(d),
+        j,
+    )
+    for j, d
+    in enumerate(
+        diag_q.selected_distances
+    )
+])
+
+plt.figure()
+
+for j in range(4):
+    mask = lap_id == j
+
+    plt.scatter(
+        all_distances[mask],
+        all_weights[mask],
+        label=f&quot;training lap {j+1}&quot;,
+    )
+
+distance_curve = np.linspace(
+    0.0,
+    5.0,
+    200,
+)
+
+kernel_curve = (
+    0.75
+    * (
+        1.0
+        - (distance_curve / 5.0) ** 2
+    )
+)
+
+plt.plot(
+    distance_curve,
+    kernel_curve,
+    &quot;--&quot;,
+    linewidth=2,
+    label=&quot;Epanechnikov kernel&quot;,
+)
+
+plt.xlabel(&quot;scaled local distance&quot;)
+plt.ylabel(&quot;kernel weight&quot;)
+plt.title(&quot;Selected local data and kernel weights&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-4.png" alt="Figure: Selected local data and kernel weights" width="691" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-the-kernel-figure">How to read the kernel figure</h3>
+<p>A point near the left side is dynamically/input-wise similar to the current query.</p>
+<p>Its regression weight is therefore high.</p>
+<p>Points near the bandwidth edge</p>
+<div class="math display">
+d=h=5
+</div>
+<p>would have almost zero influence.</p>
+<p>In this figure, however, all selected points (seven from each of the four stored laps) lie very
+close to the query compared with the bandwidth, so their weights are all close to the maximum
+<span class="math inline">3/4</span>. On this RC-car-scale data, the ranges of the five features printed in Part III, weighted by
+<span class="math inline">(0.1,1,1,1,1)</span>, add up to less than <span class="math inline">h</span>: for any query inside the data envelope, every stored transition lies inside the
+bandwidth. The seven-points-per-lap rule therefore does the actual selection, and the kernel
+weights are nearly uniform. A smaller bandwidth would be needed for the shape of the kernel to
+matter (Exercise 3).</p>
+</div>
+
+<div class="md">
+<p><a id="part-5"></a></p>
+<h2 id="part-v-weighted-affine-regression">Part V — Weighted affine regression</h2>
+<h2 id="v-1-scalar-regression-problem">V.1 Scalar regression problem</h2>
+<p>For one state component, write</p>
+<div class="math display">
+y_i
+=
+x_{i+1,j}.
+</div>
+<p>Let</p>
+<div class="math display">
+\phi_i
+=
+\begin{bmatrix}
+\text{selected regressors}\\
+1
+\end{bmatrix}.
+</div>
+<p>The final constant <span class="math inline">1</span> creates an affine offset.</p>
+<p>The local model solves</p>
+<div class="math display">
+\boxed{
+\theta^\star
+=
+\arg\min_\theta
+\sum_i
+w_i
+\left(
+y_i-\phi_i^\top\theta
+\right)^2
++
+\lambda
+\|\theta\|_2^2.
+}
+</div>
+</div>
+
+<div class="md">
+<h2 id="v-2-matrix-form">V.2 Matrix form</h2>
+<p>Stack the regressors:</p>
+<div class="math display">
+\Phi
+=
+\begin{bmatrix}
+\phi_1^\top\\
+\vdots\\
+\phi_m^\top
+\end{bmatrix},
+</div>
+<p>outputs</p>
+<div class="math display">
+y=
+[y_1,\ldots,y_m]^\top,
+</div>
+<p>and weights</p>
+<div class="math display">
+W=
+\operatorname{diag}
+(w_1,\ldots,w_m).
+</div>
+<p>Then</p>
+<div class="math display">
+\boxed{
+\theta^\star
+=
+\arg\min_\theta
+(y-\Phi\theta)^\top
+W
+(y-\Phi\theta)
++
+\lambda\theta^\top\theta.
+}
+</div>
+</div>
+
+<div class="md">
+<h2 id="v-3-normal-equations">V.3 Normal equations</h2>
+<p>Set the gradient to zero:</p>
+<div class="math display">
+-2\Phi^\top W
+(y-\Phi\theta)
++
+2\lambda\theta
+=
+0.
+</div>
+<p>Therefore</p>
+<div class="math display">
+\boxed{
+\left(
+\Phi^\top W\Phi
++
+\lambda I
+\right)
+\theta^\star
+=
+\Phi^\top Wy.
+}
+</div>
+<p>If the matrix is nonsingular,</p>
+<div class="math display">
+\boxed{
+\theta^\star
+=
+\left(
+\Phi^\top W\Phi
++
+\lambda I
+\right)^{-1}
+\Phi^\top Wy.
+}
+</div>
+<p>Setting</p>
+<div class="math display">
+\lambda=0
+</div>
+<p>gives ordinary weighted least squares. The implementation here uses a tiny ridge value,
+<span class="math inline">\lambda=10^{-8}</span>, only as a safeguard against an exactly singular normal matrix.</p>
+</div>
+
+<div class="md">
+<h2 id="v-4-why-the-affine-constant-is-necessary">V.4 Why the affine constant is necessary</h2>
+<p>Suppose the nonlinear transition is</p>
+<div class="math display">
+x^+=f(x,u).
+</div>
+<p>Linearization around</p>
+<div class="math display">
+(x_q,u_q)
+</div>
+<p>gives</p>
+<div class="math display">
+x^+
+\approx
+f(x_q,u_q)
++
+A_q(x-x_q)
++
+B_q(u-u_q).
+</div>
+<p>Rearrange:</p>
+<div class="math display">
+\boxed{
+x^+
+\approx
+A_qx+B_qu+c_q,
+}
+</div>
+<p>where</p>
+<div class="math display">
+c_q
+=
+f(x_q,u_q)
+-
+A_qx_q
+-
+B_qu_q.
+</div>
+<p>Unless the operating point is the origin and the map passes through the origin, forcing</p>
+<div class="math display">
+c_q=0
+</div>
+<p>creates a systematic bias.</p>
+</div>
+
+<div class="md">
+<p><a id="part-6"></a></p>
+<h2 id="part-vi-structure-of-the-learned-model">Part VI — Structure of the learned model</h2>
+<h2 id="vi-1-learned-longitudinal-row">VI.1 Learned longitudinal row</h2>
+<p>The learned model predicts</p>
+<div class="math display">
+v_x^+
+</div>
+<p>from</p>
+<div class="math display">
+[v_x,v_y,r,a_x].
+</div>
+<p>Thus</p>
+<div class="math display">
+\boxed{
+v_x^+
+\approx
+a_{11}v_x
++
+a_{12}v_y
++
+a_{13}r
++
+b_{12}a_x
++
+c_1.
+}
+</div>
+<p>Only the acceleration column of <span class="math inline">B</span> is identified for this row.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-2-learned-lateral-rows">VI.2 Learned lateral rows</h2>
+<p>It predicts</p>
+<div class="math display">
+v_y^+
+</div>
+<p>and</p>
+<div class="math display">
+r^+
+</div>
+<p>from</p>
+<div class="math display">
+[v_x,v_y,r,\delta].
+</div>
+<p>Therefore</p>
+<div class="math display">
+\boxed{
+v_y^+
+\approx
+a_{21}v_x
++
+a_{22}v_y
++
+a_{23}r
++
+b_{21}\delta
++
+c_2,
+}
+</div>
+<div class="math display">
+\boxed{
+r^+
+\approx
+a_{31}v_x
++
+a_{32}v_y
++
+a_{33}r
++
+b_{31}\delta
++
+c_3.
+}
+</div>
+<p>This is a <strong>structured model choice</strong>.</p>
+<p>The full nonlinear plant contains additional couplings, but the restricted regressors reduce the
+number of parameters and encode prior physical knowledge.</p>
+</div>
+
+<div class="md">
+<h2 id="vi-3-sparse-structure-of-the-learned-block">VI.3 Sparse structure of the learned block</h2>
+<p>Before adding Frenet kinematics, the learned matrices have the pattern</p>
+<div class="math display">
+A_{\mathrm{dyn}}
+=
+\begin{bmatrix}
+* &amp; * &amp; * &amp; 0 &amp; 0 &amp; 0\\
+* &amp; * &amp; * &amp; 0 &amp; 0 &amp; 0\\
+* &amp; * &amp; * &amp; 0 &amp; 0 &amp; 0
+\end{bmatrix},
+</div>
+<p>and</p>
+<div class="math display">
+B_{\mathrm{dyn}}
+=
+\begin{bmatrix}
+0 &amp; *\\
+* &amp; 0\\
+* &amp; 0
+\end{bmatrix}.
+</div>
+<p>The stars are estimated locally by weighted ridge least squares (Part V): the <span class="math inline">v_x</span> row on its own,
+and the <span class="math inline">v_y</span> and <span class="math inline">r</span> rows together, since they share the same regressors.</p>
+<p>When reading the printed <span class="math inline">A(q)</span> below, remember that these entries are regression coefficients, not
+derivatives of the plant. Entries such as <span class="math inline">a_{11}&gt;1</span> or the large <span class="math inline">a_{12}</span> are not physical
+properties of the car: over the selected transitions <span class="math inline">v_y</span> varies very little, so its coefficient is
+poorly determined, and coefficients close to the true local derivatives fit the same data almost
+equally well (see the conditioning discussion in Part XI). What Part VIII validates is the
+prediction, not the individual coefficients.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">print(&quot;A(q) =&quot;)
+print(Aq)
+
+print(&quot;\nB(q) =&quot;)
+print(Bq)
+
+print(&quot;\nc(q) =&quot;)
+print(cq)
+</code></pre>
+<pre class="output">A(q) =
+[[ 1.203838  2.017363 -0.119453  0.        0.        0.      ]
+ [-0.017762  0.247144 -0.013085  0.        0.        0.      ]
+ [ 0.957852 -0.290672  0.161325  0.        0.        0.      ]
+ [-0.096193 -0.022626  0.1       0.992018  0.       -0.073352]
+ [ 0.067255  0.015819  0.        0.005581  1.        0.051285]
+ [-0.022897  0.097343  0.        0.075117  0.        1.      ]]
+
+B(q) =
+[[0.       0.072241]
+ [0.198869 0.      ]
+ [2.315927 0.      ]
+ [0.       0.      ]
+ [0.       0.      ]
+ [0.       0.      ]]
+
+c(q) =
+[-0.183686  0.011162 -0.607532 -0.024788  0.017331  0.017353]</pre>
+</div>
+
+<div class="md">
+<p><a id="part-7"></a></p>
+<h2 id="part-vii-analytical-frenet-rows">Part VII — Analytical Frenet rows</h2>
+<h2 id="vii-1-why-not-regress-all-six-state-equations">VII.1 Why not regress all six state equations?</h2>
+<p>The model uses known geometry for</p>
+<div class="math display">
+e_\psi,\quad s,\quad e_y.
+</div>
+<p>This is a valuable hybrid-modeling principle:</p>
+<blockquote>
+<p>learn the dynamics that are difficult to model accurately; keep exact/known kinematics where
+physics is trustworthy.</p>
+</blockquote>
+<p>It reduces data requirements and improves interpretability.</p>
+</div>
+
+<div class="md">
+<h2 id="vii-2-discrete-heading-error-equation">VII.2 Discrete heading-error equation</h2>
+<p>Freezing the local curvature at the query point,</p>
+<div class="math display">
+\kappa=K(s_q),
+</div>
+<p>the one-step Euler model is</p>
+<div class="math display">
+e_\psi^+
+=
+e_\psi
++
+T_s
+\left[
+r
+-
+\kappa
+\frac{
+v_x\cos e_\psi-v_y\sin e_\psi
+}{
+1-\kappa e_y
+}
+\right].
+</div>
+<p>Define</p>
+<div class="math display">
+q
+=
+v_x\cos e_\psi-v_y\sin e_\psi,
+</div>
+<div class="math display">
+d
+=
+1-\kappa e_y.
+</div>
+</div>
+
+<div class="md">
+<h2 id="vii-3-jacobian-of-e-psi">VII.3 Jacobian of <span class="math inline">e_\psi^+</span></h2>
+<p>The derivatives at the query point are</p>
+<div class="math display">
+\frac{\partial e_\psi^+}{\partial v_x}
+=
+-
+T_s
+\frac{\kappa\cos e_\psi}{d},
+</div>
+<div class="math display">
+\frac{\partial e_\psi^+}{\partial v_y}
+=
++
+T_s
+\frac{\kappa\sin e_\psi}{d},
+</div>
+<div class="math display">
+\frac{\partial e_\psi^+}{\partial r}
+=
+T_s,
+</div>
+<div class="math display">
+\frac{\partial e_\psi^+}{\partial e_\psi}
+=
+1
+-
+T_s
+\frac{
+\kappa
+(-v_x\sin e_\psi-v_y\cos e_\psi)
+}{
+d
+},
+</div>
+<p>and</p>
+<div class="math display">
+\frac{\partial e_\psi^+}{\partial e_y}
+=
+-
+T_s
+\frac{
+q\kappa^2
+}{
+d^2
+}.
+</div>
+<p>As in <code>kinematic_affine_linearization</code>, the derivative of curvature with respect to <span class="math inline">s</span> is neglected
+in this local linearization.</p>
+</div>
+
+<div class="md">
+<h2 id="vii-4-progress-equation">VII.4 Progress equation</h2>
+<p>The one-step progress model is</p>
+<div class="math display">
+s^+
+=
+s
++
+T_s
+\frac{q}{d}.
+</div>
+<p>Its principal derivatives are</p>
+<div class="math display">
+\frac{\partial s^+}{\partial v_x}
+=
+T_s\frac{\cos e_\psi}{d},
+</div>
+<div class="math display">
+\frac{\partial s^+}{\partial v_y}
+=
+-
+T_s\frac{\sin e_\psi}{d},
+</div>
+<div class="math display">
+\frac{\partial s^+}{\partial e_\psi}
+=
+T_s
+\frac{
+-v_x\sin e_\psi-v_y\cos e_\psi
+}{
+d
+},
+</div>
+<div class="math display">
+\frac{\partial s^+}{\partial e_y}
+=
+T_s
+\frac{
+q\kappa
+}{
+d^2
+}.
+</div>
+</div>
+
+<div class="md">
+<h2 id="vii-5-lateral-deviation-equation">VII.5 Lateral-deviation equation</h2>
+<p>The one-step model is</p>
+<div class="math display">
+e_y^+
+=
+e_y
++
+T_s
+\left(
+v_x\sin e_\psi
++
+v_y\cos e_\psi
+\right).
+</div>
+<p>Thus</p>
+<div class="math display">
+\frac{\partial e_y^+}{\partial v_x}
+=
+T_s\sin e_\psi,
+</div>
+<div class="math display">
+\frac{\partial e_y^+}{\partial v_y}
+=
+T_s\cos e_\psi,
+</div>
+<div class="math display">
+\frac{\partial e_y^+}{\partial e_\psi}
+=
+T_s
+\left(
+v_x\cos e_\psi
+-
+v_y\sin e_\psi
+\right),
+</div>
+<p>and</p>
+<div class="math display">
+\frac{\partial e_y^+}{\partial e_y}=1.
+</div>
+</div>
+
+<div class="md">
+<h2 id="vii-6-affine-remainder">VII.6 Affine remainder</h2>
+<p>For each analytically linearized row, the offset is chosen as</p>
+<div class="math display">
+\boxed{
+c_q
+=
+f(x_q)
+-
+A_qx_q.
+}
+</div>
+<p>Therefore the affine approximation is <strong>exact at the linearization point</strong> for the discrete
+kinematic map used to build it.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">Akin, ckin, kappa_q = (
+    kinematic_affine_linearization(
+        xq,
+        track,
+        dt=0.1,
+    )
+)
+
+print(&quot;analytic kinematic A rows:&quot;)
+print(Akin)
+
+print(&quot;\nkinematic affine offset:&quot;)
+print(ckin)
+
+print(&quot;\nlocal curvature:&quot;)
+print(kappa_q)
+</code></pre>
+<pre class="output">analytic kinematic A rows:
+[[-0.096193 -0.022626  0.1       0.992018  0.       -0.073352]
+ [ 0.067255  0.015819  0.        0.005581  1.        0.051285]
+ [-0.022897  0.097343  0.        0.075117  0.        1.      ]]
+
+kinematic affine offset:
+[-0.024788  0.017331  0.017353]
+
+local curvature:
+1.4302861700213083</pre>
+</div>
+
+<div class="md">
+<p><a id="part-8"></a></p>
+<h2 id="part-viii-one-step-validation-on-a-different-lap">Part VIII — One-step validation on a different lap</h2>
+<h2 id="viii-1-why-training-residual-is-insufficient">VIII.1 Why training residual is insufficient</h2>
+<p>A local regression can fit its selected points very well and still predict poorly on new
+transitions.</p>
+<p>The meaningful experiment is:</p>
+<ol>
+<li>fit only on the four stored training laps;</li>
+<li>query the model at every point of the held-out lap;</li>
+<li>predict one step;</li>
+<li>compare with the nonlinear simulator's actual next state.</li>
+</ol>
+<p>We compare two models:</p>
+<ul>
+<li><strong>global structured model:</strong> one set of learned dynamic coefficients for the whole data set;</li>
+<li><strong>local structured model:</strong> coefficients re-estimated around every query.</li>
+</ul>
+<p>Both use the same analytical Frenet kinematics.</p>
+<p>This isolates the value of locality.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">local_predictions = []
+global_predictions = []
+
+support_distance = []
+condition_numbers = []
+fallback_flags = []
+
+for k in range(len(U_val)):
+    x = X_val[k]
+    u = U_val[k]
+
+    x_local, diag = local_model.predict(
+        x,
+        u,
+    )
+
+    x_global = global_model.predict(
+        x,
+        u,
+    )
+
+    local_predictions.append(
+        x_local
+    )
+
+    global_predictions.append(
+        x_global
+    )
+
+    support_distance.append(
+        local_model.support_distance(
+            x,
+            u,
+        )
+    )
+
+    condition_numbers.append(
+        np.max(
+            diag.normal_condition_numbers
+        )
+    )
+
+    fallback_flags.append(
+        any(
+            diag.support_fallback
+        )
+    )
+
+local_predictions = np.asarray(
+    local_predictions
+)
+
+global_predictions = np.asarray(
+    global_predictions
+)
+
+truth_next = X_val[1:]
+
+local_error = (
+    local_predictions
+    - truth_next
+)
+
+global_error = (
+    global_predictions
+    - truth_next
+)
+
+support_distance = np.asarray(
+    support_distance
+)
+
+condition_numbers = np.asarray(
+    condition_numbers
+)
+
+fallback_flags = np.asarray(
+    fallback_flags
+)
+
+state_names = [
+    &quot;vx&quot;,
+    &quot;vy&quot;,
+    &quot;r&quot;,
+    &quot;epsi&quot;,
+    &quot;s&quot;,
+    &quot;ey&quot;,
+]
+
+local_rmse = np.sqrt(
+    np.mean(
+        local_error**2,
+        axis=0,
+    )
+)
+
+global_rmse = np.sqrt(
+    np.mean(
+        global_error**2,
+        axis=0,
+    )
+)
+
+for name, e_local, e_global in zip(
+    state_names,
+    local_rmse,
+    global_rmse,
+):
+    print(
+        f&quot;{name:6s}: &quot;
+        f&quot;local RMSE={e_local:.6e}   &quot;
+        f&quot;global RMSE={e_global:.6e}&quot;
+    )
+
+print(
+    &quot;\nvalidation points requiring support fallback:&quot;,
+    int(fallback_flags.sum()),
+)
+</code></pre>
+<pre class="output">vx    : local RMSE=1.208744e-02   global RMSE=2.104407e-02
+vy    : local RMSE=8.998712e-04   global RMSE=1.882463e-03
+r     : local RMSE=1.436913e-02   global RMSE=4.203806e-02
+epsi  : local RMSE=4.606384e-02   global RMSE=4.606384e-02
+s     : local RMSE=1.353534e-03   global RMSE=1.353534e-03
+ey    : local RMSE=4.318400e-03   global RMSE=4.318400e-03
+
+validation points requiring support fallback: 0</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">dynamic_idx = np.arange(3)
+
+x_bar = np.arange(3)
+width = 0.36
+
+plt.figure()
+
+plt.bar(
+    x_bar - width/2,
+    local_rmse[dynamic_idx],
+    width=width,
+    label=&quot;local structured model&quot;,
+)
+
+plt.bar(
+    x_bar + width/2,
+    global_rmse[dynamic_idx],
+    width=width,
+    label=&quot;global structured model&quot;,
+)
+
+plt.xticks(
+    x_bar,
+    [
+        r&quot;$v_x$&quot;,
+        r&quot;$v_y$&quot;,
+        r&quot;$r$&quot;,
+    ],
+)
+
+plt.ylabel(&quot;one-step RMSE&quot;)
+plt.title(&quot;Held-out dynamic-state prediction error&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-5.png" alt="Figure: Held-out dynamic-state prediction error" width="708" height="453" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-the-rmse-figure">How to read the RMSE figure</h3>
+<p>Lower bars are better.</p>
+<p>Only the three <strong>learned dynamic states</strong> are shown because the other three rows use the same
+analytical kinematic construction in both models.</p>
+<p>The comparison therefore answers a clean question:</p>
+<blockquote>
+<p>does fitting the dynamic coefficients locally improve prediction relative to one global set of
+coefficients?</p>
+</blockquote>
+<p>Here it does: the local model has a lower held-out one-step RMSE for all three learned states, and
+the largest gain is in the yaw rate <span class="math inline">r</span>, where the error drops by about a factor of three.</p>
+</div>
+
+<div class="md">
+<p><a id="part-9"></a></p>
+<h2 id="part-ix-why-local-models-help">Part IX — Why local models help</h2>
+<h2 id="ix-1-a-nonlinear-plant-has-operating-point-dependent-derivatives">IX.1 A nonlinear plant has operating-point-dependent derivatives</h2>
+<p>For a nonlinear transition</p>
+<div class="math display">
+x^+=f(x,u),
+</div>
+<p>the best first-order coefficients are</p>
+<div class="math display">
+A_q
+=
+\left.
+\frac{\partial f}{\partial x}
+\right|_{(x_q,u_q)},
+</div>
+<div class="math display">
+B_q
+=
+\left.
+\frac{\partial f}{\partial u}
+\right|_{(x_q,u_q)}.
+</div>
+<p>Those derivatives change with the operating point.</p>
+<p>A single global affine regression effectively averages incompatible local behaviors.</p>
+<p>Local regression attempts to estimate the derivative-like behavior only where the MPC is currently
+planning to operate.</p>
+</div>
+
+<div class="md">
+<p><a id="part-10"></a></p>
+<h2 id="part-x-model-support-versus-prediction-error">Part X — Model support versus prediction error</h2>
+<h2 id="x-1-distance-to-the-database">X.1 Distance to the database</h2>
+<p>For every validation query, compute</p>
+<div class="math display">
+d_{\min}(z_q)
+=
+\min_i
+\left\|
+D(z_i-z_q)
+\right\|_1.
+</div>
+<p>This is not a probabilistic uncertainty estimate.</p>
+<p>It is a simple geometric indicator of how close the query is to stored experience.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">dynamic_error_norm = np.linalg.norm(
+    local_error[:, :3],
+    axis=1,
+)
+
+plt.figure()
+
+plt.scatter(
+    support_distance,
+    dynamic_error_norm,
+    s=18,
+    alpha=0.65,
+)
+
+plt.xlabel(&quot;nearest scaled training-data distance&quot;)
+plt.ylabel(
+    r&quot;$\|[\tilde v_x,\tilde v_y,\tilde r]\|_2$&quot;
+)
+plt.title(&quot;Prediction error versus distance from stored racing data&quot;)
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-6.png" alt="Figure: Prediction error versus distance from stored racing data" width="715" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-this-figure-2">How to read this figure</h3>
+<p>Points near the left are well supported by stored experience.</p>
+<p>Points farther right are less well supported.</p>
+<p>In this experiment, larger errors are somewhat more frequent at larger distances, but the scatter is
+large. A perfectly monotone relationship should not be expected because:</p>
+<ul>
+<li>local nonlinearities differ;</li>
+<li>the selected neighbors excite the regressors more or less well;</li>
+<li>regression conditioning varies;</li>
+<li>distance is only a geometric proxy.</li>
+</ul>
+<p>But a large support distance is a useful warning that the local model is being asked to predict
+outside familiar data.</p>
+<p>Note the horizontal scale: every validation query has a stored transition within a small fraction
+of the bandwidth <span class="math inline">h=5</span>, so the held-out lap tests interpolation inside familiar data rather than
+extrapolation. Part XVII shows a query far outside the data.</p>
+</div>
+
+<div class="md">
+<p><a id="part-11"></a></p>
+<h2 id="part-xi-conditioning-and-regularization">Part XI — Conditioning and regularization</h2>
+<h2 id="xi-1-why-the-normal-equations-can-become-ill-conditioned">XI.1 Why the normal equations can become ill-conditioned</h2>
+<p>Local regression intentionally keeps only nearby points.</p>
+<p>Those points can be nearly collinear in regressor space.</p>
+<p>Then</p>
+<div class="math display">
+\Phi^\top W\Phi
+</div>
+<p>can have a large condition number.</p>
+<p>This makes fitted coefficients sensitive to noise and floating-point perturbations.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+
+plt.semilogy(
+    condition_numbers,
+)
+
+plt.xlabel(&quot;validation sample&quot;)
+plt.ylabel(
+    r&quot;condition number of local normal matrix&quot;
+)
+plt.title(&quot;Numerical conditioning of the local regressions&quot;)
+plt.show()
+
+print(
+    &quot;median condition number:&quot;,
+    float(
+        np.median(
+            condition_numbers
+        )
+    ),
+)
+
+print(
+    &quot;95th percentile:&quot;,
+    float(
+        np.quantile(
+            condition_numbers,
+            0.95,
+        )
+    ),
+)
+</code></pre>
+<figure class="output-figure"><img src="img/07-7.png" alt="Figure: Numerical conditioning of the local regressions" width="694" height="470" loading="lazy"></figure>
+<pre class="output">median condition number: 109890.47575768639
+95th percentile: 925523.1365296915</pre>
+</div>
+
+<div class="md">
+<h2 id="xi-2-ridge-regularization">XI.2 Ridge regularization</h2>
+<p>Replacing</p>
+<div class="math display">
+\Phi^\top W\Phi
+</div>
+<p>by</p>
+<div class="math display">
+\boxed{
+\Phi^\top W\Phi+\lambda I
+}
+</div>
+<p>improves numerical conditioning.</p>
+<p>But regularization also biases the coefficient estimate.</p>
+<p>Therefore <span class="math inline">\lambda</span> is not “free accuracy.”</p>
+<p>Setting</p>
+<div class="math display">
+\lambda=0,
+</div>
+<p>recovers unregularized weighted least squares. The value <span class="math inline">\lambda=10^{-8}</span> used here is only a
+numerical safeguard against an exactly singular normal matrix, far too small to bias these fits
+noticeably; the notebook makes the conditioning visible instead of hiding it behind a large
+<span class="math inline">\lambda</span>.</p>
+</div>
+
+<div class="md">
+<p><a id="part-12"></a></p>
+<h2 id="part-xii-feature-design-of-the-learned-rows">Part XII — Feature design of the learned rows</h2>
+<h2 id="xii-1-why-does-v-x-use-acceleration-but-not-steering">XII.1 Why does <span class="math inline">v_x^+</span> use acceleration but not steering?</h2>
+<p>The regression imposes</p>
+<div class="math display">
+v_x^+
+=
+f_{\mathrm{loc}}
+(v_x,v_y,r,a_x).
+</div>
+<p>Yet the nonlinear simulator contains the term</p>
+<div class="math display">
+-\frac{F_{y,f}}{m}\sin\delta,
+</div>
+<p>so steering can influence longitudinal dynamics.</p>
+<p>The restricted regression is therefore an <strong>approximate structured model</strong>, not an exact statement
+of physical decoupling.</p>
+<p>Advantages:</p>
+<ul>
+<li>fewer regression parameters;</li>
+<li>lower data requirement;</li>
+<li>easier numerical conditioning;</li>
+<li>direct use of obvious physical input channels.</li>
+</ul>
+<p>Cost:</p>
+<ul>
+<li>neglected cross-coupling must be absorbed locally by the remaining state dependence and affine
+offset.</li>
+</ul>
+</div>
+
+<div class="md">
+<h2 id="xii-2-why-do-v-y-and-r-use-steering-but-not-acceleration">XII.2 Why do <span class="math inline">v_y^+</span> and <span class="math inline">r^+</span> use steering but not acceleration?</h2>
+<p>The same logic is used in the lateral dynamics:</p>
+<div class="math display">
+v_y^+,r^+
+=
+f_{\mathrm{loc}}
+(v_x,v_y,r,\delta).
+</div>
+<p>Acceleration affects lateral behavior indirectly through changing <span class="math inline">v_x</span> over time, but it is not an
+explicit regressor in those two one-step rows.</p>
+<p>This is a <strong>grey-box identification</strong> choice: physics determines the model structure, data determine
+the local coefficients.</p>
+</div>
+
+<div class="md">
+<p><a id="part-13"></a></p>
+<h2 id="part-xiii-building-an-affine-ltv-horizon">Part XIII — Building an affine LTV horizon</h2>
+<h2 id="xiii-1-from-one-local-model-to-a-sequence">XIII.1 From one local model to a sequence</h2>
+<p>An MPC horizon of length <span class="math inline">N</span> requires models</p>
+<div class="math display">
+(A_0,B_0,c_0),
+\ldots,
+(A_{N-1},B_{N-1},c_{N-1}).
+</div>
+<p>The horizon experiment below uses</p>
+<div class="math display">
+\boxed{
+N=14,
+}
+</div>
+<p>that is, <span class="math inline">1.4</span> s of prediction at <span class="math inline">T_s=0.1</span> s.</p>
+<p>At each prediction step, local data are selected around the current predicted state/input pair.</p>
+<p>Thus the model is <strong>linear at each step but time-varying across the horizon</strong>.</p>
+</div>
+
+<div class="md">
+<h2 id="xiii-2-closed-loop-versus-prediction-model">XIII.2 Closed-loop versus prediction model</h2>
+<p>A subtle but important architecture is:</p>
+<div class="math display">
+\boxed{
+\text{nonlinear simulator}
+\overset{\text{data}}{\longrightarrow}
+\text{local affine model}
+\overset{\text{QP}}{\longrightarrow}
+u
+\overset{\text{apply}}{\longrightarrow}
+\text{nonlinear simulator}.
+}
+</div>
+<p>The affine model is never claimed to be the true vehicle.</p>
+<p>It is a computational surrogate used inside the optimizer.</p>
+</div>
+
+<div class="md">
+<p><a id="part-14"></a></p>
+<h2 id="part-xiv-horizon-14-prediction-experiment">Part XIV — Horizon-14 prediction experiment</h2>
+<h2 id="xiv-1-use-actual-future-inputs-only-to-test-the-model">XIV.1 Use actual future inputs only to test the model</h2>
+<p>To isolate model accuracy, take a length-14 segment of the held-out validation lap.</p>
+<p>We provide both predictive models with the <strong>actual input sequence that was applied to the nonlinear
+simulator</strong>.</p>
+<p>This is not a controller experiment.</p>
+<p>It asks only:</p>
+<blockquote>
+<p>starting from the same initial state and using the same inputs, how accurately does the learned
+model predict the next 14 states?</p>
+</blockquote>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">H = 14
+start = 145
+
+U_horizon = U_val[
+    start:start+H
+]
+
+X_true_horizon = X_val[
+    start:start+H+1
+]
+
+X_local_horizon, local_diags = (
+    rollout_affine_predictive_model(
+        local_model,
+        X_val[start],
+        U_horizon,
+    )
+)
+
+X_global_horizon, _ = (
+    rollout_affine_predictive_model(
+        global_model,
+        X_val[start],
+        U_horizon,
+    )
+)
+
+local_horizon_error = (
+    X_local_horizon
+    - X_true_horizon
+)
+
+global_horizon_error = (
+    X_global_horizon
+    - X_true_horizon
+)
+
+print(
+    &quot;local horizon dynamic RMSE:&quot;,
+    np.sqrt(
+        np.mean(
+            local_horizon_error[:, :3]**2
+        )
+    ),
+)
+
+print(
+    &quot;global horizon dynamic RMSE:&quot;,
+    np.sqrt(
+        np.mean(
+            global_horizon_error[:, :3]**2
+        )
+    ),
+)
+</code></pre>
+<pre class="output">local horizon dynamic RMSE: 0.020550129036448882
+global horizon dynamic RMSE: 0.04075049509819846</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">steps = np.arange(
+    H + 1
+)
+
+plt.figure()
+
+plt.plot(
+    steps,
+    X_true_horizon[:, 0],
+    &quot;-o&quot;,
+    label=&quot;nonlinear simulator&quot;,
+)
+
+plt.plot(
+    steps,
+    X_local_horizon[:, 0],
+    &quot;--o&quot;,
+    label=&quot;local LTV prediction&quot;,
+)
+
+plt.plot(
+    steps,
+    X_global_horizon[:, 0],
+    &quot;:o&quot;,
+    label=&quot;global affine prediction&quot;,
+)
+
+plt.xlabel(&quot;prediction step&quot;)
+plt.ylabel(r&quot;$v_x$ [m/s]&quot;)
+plt.title(&quot;Fourteen-step longitudinal-velocity prediction&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-8.png" alt="Figure: Fourteen-step longitudinal-velocity prediction" width="711" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="how-to-read-the-horizon-figure">How to read the horizon figure</h3>
+<p>The nonlinear-simulator curve is the held-out ground truth.</p>
+<p>Both prediction models start from exactly the same state at step zero.</p>
+<p>After that, prediction errors feed back into their own future model queries.</p>
+<p>This is harder than one-step prediction because errors propagate along the horizon.</p>
+<p>In this segment the local LTV prediction follows the simulated <span class="math inline">v_x</span> closely over the first steps
+and reproduces the sharp dip around step 8 in shape, though not in depth, so it stays above the
+true speed afterwards; the global model smooths the dip out.</p>
+<p>The error-norm plot below shows that the errors do not grow monotonically: they jump where the true
+trajectory has a sharp transient (around step 8) and can shrink again when the predicted and true
+trajectories come back together. Over the whole horizon the local model's dynamic-state RMSE is
+about half that of the global model, although in the last few steps the two error norms are
+comparable.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">plt.figure()
+
+plt.plot(
+    steps,
+    np.linalg.norm(
+        local_horizon_error[:, :3],
+        axis=1,
+    ),
+    &quot;-o&quot;,
+    label=&quot;local LTV&quot;,
+)
+
+plt.plot(
+    steps,
+    np.linalg.norm(
+        global_horizon_error[:, :3],
+        axis=1,
+    ),
+    &quot;-o&quot;,
+    label=&quot;global structured&quot;,
+)
+
+plt.xlabel(&quot;prediction step&quot;)
+plt.ylabel(&quot;dynamic-state prediction error norm&quot;)
+plt.title(&quot;Error accumulation over the prediction horizon&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-9.png" alt="Figure: Error accumulation over the prediction horizon" width="700" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p><a id="part-15"></a></p>
+<h2 id="part-xv-why-it-is-called-ltv">Part XV — Why it is called LTV</h2>
+<h2 id="xv-1-the-matrices-change-along-the-predicted-trajectory">XV.1 The matrices change along the predicted trajectory</h2>
+<p>For each local horizon step, compute</p>
+<div class="math display">
+\|A_k-A_0\|_F
+</div>
+<p>and</p>
+<div class="math display">
+\|B_k-B_0\|_F.
+</div>
+<p>If these values are nonzero, the controller is not using one fixed linear model.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">A_list = []
+B_list = []
+
+x_tmp = X_val[start].copy()
+
+for u_tmp in U_horizon:
+    A_tmp, B_tmp, c_tmp, diag_tmp = (
+        local_model.fit(
+            x_tmp,
+            u_tmp,
+        )
+    )
+
+    A_list.append(A_tmp)
+    B_list.append(B_tmp)
+
+    x_tmp = (
+        A_tmp @ x_tmp
+        + B_tmp @ u_tmp
+        + c_tmp
+    )
+
+A_list = np.asarray(A_list)
+B_list = np.asarray(B_list)
+
+A_variation = np.array([
+    np.linalg.norm(
+        A_k - A_list[0],
+        ord=&quot;fro&quot;,
+    )
+    for A_k in A_list
+])
+
+B_variation = np.array([
+    np.linalg.norm(
+        B_k - B_list[0],
+        ord=&quot;fro&quot;,
+    )
+    for B_k in B_list
+])
+
+plt.figure()
+
+plt.plot(
+    np.arange(H),
+    A_variation,
+    &quot;-o&quot;,
+    label=r&quot;$\|A_k-A_0\|_F$&quot;,
+)
+
+plt.plot(
+    np.arange(H),
+    B_variation,
+    &quot;-o&quot;,
+    label=r&quot;$\|B_k-B_0\|_F$&quot;,
+)
+
+plt.xlabel(&quot;prediction step k&quot;)
+plt.ylabel(&quot;matrix variation&quot;)
+plt.title(&quot;The learned affine prediction model is time varying&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-10.png" alt="Figure: The learned affine prediction model is time varying" width="691" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h3 id="interpretation">Interpretation</h3>
+<p>The variation comes from two mechanisms:</p>
+<ol>
+<li>the regression neighborhood changes as <span class="math inline">(v_x,v_y,r,\delta,a_x)</span> changes;</li>
+<li>the analytic Frenet rows change with <span class="math inline">e_\psi,e_y</span> and track curvature <span class="math inline">K(s)</span>.</li>
+</ol>
+<p>So even if the optimization problem is linear/quadratic after the matrices are fixed, the matrices
+themselves encode local nonlinear behavior.</p>
+<p>The variation is not smooth. Each fit keeps the seven nearest transitions of every lap with almost
+equal weights, so a small change of the query can swap neighbors and, with nearly collinear data,
+change the coefficients abruptly. <span class="math inline">B_k</span> varies only through the regression, since the kinematic
+rows of <span class="math inline">B</span> are zero.</p>
+</div>
+
+<div class="md">
+<p><a id="part-16"></a></p>
+<h2 id="part-xvi-local-model-support-inside-an-mpc-horizon">Part XVI — Local model support inside an MPC horizon</h2>
+<h2 id="xvi-1-one-model-fit-diagnostic-is-not-enough">XVI.1 One model-fit diagnostic is not enough</h2>
+<p>An MPC may begin in a well-supported region and predict into a poorly supported region several steps
+ahead.</p>
+<p>Therefore model-support diagnostics should be evaluated <strong>along the complete prediction horizon</strong>.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">horizon_support = []
+horizon_condition = []
+
+x_tmp = X_val[start].copy()
+
+for u_tmp in U_horizon:
+    horizon_support.append(
+        local_model.support_distance(
+            x_tmp,
+            u_tmp,
+        )
+    )
+
+    A_tmp, B_tmp, c_tmp, diag_tmp = (
+        local_model.fit(
+            x_tmp,
+            u_tmp,
+        )
+    )
+
+    horizon_condition.append(
+        np.max(
+            diag_tmp.normal_condition_numbers
+        )
+    )
+
+    x_tmp = (
+        A_tmp @ x_tmp
+        + B_tmp @ u_tmp
+        + c_tmp
+    )
+
+plt.figure()
+
+plt.plot(
+    np.arange(H),
+    horizon_support,
+    &quot;-o&quot;,
+)
+
+plt.axhline(
+    5.0,
+    linestyle=&quot;--&quot;,
+    label=&quot;kernel bandwidth&quot;,
+)
+
+plt.xlabel(&quot;prediction step&quot;)
+plt.ylabel(&quot;nearest scaled data distance&quot;)
+plt.title(&quot;Data support along the local-model prediction horizon&quot;)
+plt.legend()
+plt.show()
+</code></pre>
+<figure class="output-figure"><img src="img/07-11.png" alt="Figure: Data support along the local-model prediction horizon" width="678" height="470" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>In this experiment the whole predicted horizon stays far inside the bandwidth: every predicted
+state-input pair has stored transitions close by.</p>
+<p>A horizon point approaching or crossing the bandwidth would be an explicit warning:</p>
+<div class="math display">
+\boxed{
+\text{the optimizer is planning where the identified local dynamics are poorly supported.}
+}
+</div>
+<p>The local regression used here does not turn this distance into a formal uncertainty set.</p>
+<p>Doing so would be an additional robust/learning-control extension.</p>
+</div>
+
+<div class="md">
+<p><a id="part-17"></a></p>
+<h2 id="part-xvii-out-of-distribution-query">Part XVII — Out-of-distribution query</h2>
+<h2 id="xvii-1-deliberately-ask-for-an-unfamiliar-operating-point">XVII.1 Deliberately ask for an unfamiliar operating point</h2>
+<p>Consider a query with much larger speed, lateral velocity, yaw rate and acceleration than anything
+in the stored training laps.</p>
+<p>We do <strong>not</strong> present the resulting extrapolated model as trustworthy.</p>
+<p>Instead, we inspect its support distance.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">x_ood = np.array([
+    4.0,   # vx
+    1.0,   # vy
+    4.0,   # yaw rate
+    0.2,   # epsi
+    5.0,   # s
+    0.2,   # ey
+])
+
+u_ood = np.array([
+    0.5,   # delta
+    5.0,   # ax
+])
+
+ood_distance = local_model.support_distance(
+    x_ood,
+    u_ood,
+)
+
+A_ood, B_ood, c_ood, diag_ood = (
+    local_model.fit(
+        x_ood,
+        u_ood,
+    )
+)
+
+print(
+    &quot;nearest scaled data distance:&quot;,
+    ood_distance,
+)
+
+print(
+    &quot;kernel bandwidth:&quot;,
+    local_model.bandwidth,
+)
+
+print(
+    &quot;fallback used on laps:&quot;,
+    diag_ood.support_fallback,
+)
+</code></pre>
+<pre class="output">nearest scaled data distance: 8.546040889652584
+kernel bandwidth: 5.0
+fallback used on laps: [True, True, True, True]</pre>
+</div>
+
+<div class="md">
+<h2 id="xvii-2-interpretation">XVII.2 Interpretation</h2>
+<p>The nearest distance exceeds the bandwidth</p>
+<div class="math display">
+h=5,
+</div>
+<p>so the compact-support Epanechnikov kernel contains no training sample of any lap.</p>
+<p><code>LocalRacingModel</code> then falls back to the seven nearest transitions of each lap, widens the
+bandwidth for that lap just enough to cover them, and flags the lap in <code>support_fallback</code>; here all
+four laps are flagged. The numerical object remains inspectable, but the fallback is marked
+explicitly.</p>
+<p>The correct engineering conclusion is not</p>
+<blockquote>
+<p>“the model can still return a number, therefore it is valid.”</p>
+</blockquote>
+<p>It is</p>
+<div class="math display">
+\boxed{
+\text{the query is extrapolative and model reliability is unverified.}
+}
+</div>
+</div>
+
+<div class="md">
+<p><a id="part-18"></a></p>
+<h2 id="part-xviii-bias-variance-trade-off-in-bandwidth-and-neighborhood-size">Part XVIII — Bias–variance trade-off in bandwidth and neighborhood size</h2>
+<h2 id="xviii-1-small-bandwidth">XVIII.1 Small bandwidth</h2>
+<p>A small <span class="math inline">h</span> gives a very local fit.</p>
+<p>Potential benefit:</p>
+<ul>
+<li>lower nonlinear-model bias.</li>
+</ul>
+<p>Potential problems:</p>
+<ul>
+<li>too few points;</li>
+<li>large coefficient variance;</li>
+<li>ill-conditioning;</li>
+<li>no support.</li>
+</ul>
+<hr />
+<h2 id="xviii-2-large-bandwidth">XVIII.2 Large bandwidth</h2>
+<p>A large <span class="math inline">h</span> includes more data.</p>
+<p>Potential benefit:</p>
+<ul>
+<li>lower variance;</li>
+<li>better conditioning.</li>
+</ul>
+<p>Potential problem:</p>
+<ul>
+<li>points from substantially different dynamics are averaged together;</li>
+<li>the model starts behaving like a global affine approximation.</li>
+</ul>
+<p>The bandwidth is therefore a genuine identification hyperparameter, not merely a speed setting.</p>
+<p>With the data of this notebook, <span class="math inline">h=5</span> exceeds the spread of the whole data set in the scaled
+metric (Part IV), so locality is set by the neighborhood size of seven points per lap rather than
+by <span class="math inline">h</span>.</p>
+</div>
+
+<div class="md">
+<p><a id="part-19"></a></p>
+<h2 id="part-xix-why-local-validation-must-be-trajectory-based">Part XIX — Why local validation must be trajectory-based</h2>
+<h2 id="xix-1-random-train-test-splits-can-be-misleading">XIX.1 Random train/test splits can be misleading</h2>
+<p>Consecutive racing samples are strongly correlated:</p>
+<div class="math display">
+x_{k+1}
+\approx x_k.
+</div>
+<p>If one randomly assigns individual time samples to training and validation, nearly identical
+neighbors from the same lap can appear on both sides.</p>
+<p>That can produce an overly optimistic validation error.</p>
+<p>Using a <strong>whole held-out lap</strong> is a more meaningful first validation strategy for an iterative racing
+task.</p>
+</div>
+
+<div class="md">
+<p><a id="part-20"></a></p>
+<h2 id="part-xx-how-this-enters-lmpc">Part XX — How this enters LMPC</h2>
+<h2 id="xx-1-two-distinct-forms-of-learning">XX.1 Two distinct forms of learning</h2>
+<p>Racing LMPC can learn two different things.</p>
+<h3 id="terminal-learning">Terminal learning</h3>
+<p>Previous successful laps provide:</p>
+<ul>
+<li>a local safe set;</li>
+<li>a terminal cost / cost-to-go.</li>
+</ul>
+<h3 id="model-learning">Model learning</h3>
+<p>Previous transition data provide:</p>
+<div class="math display">
+(A_k,B_k,c_k).
+</div>
+<p>These mechanisms are complementary.</p>
+<p>One learns <strong>where it is useful/safe to terminate the finite horizon and what the continuation
+costs</strong>.</p>
+<p>The other learns <strong>how the vehicle is expected to move during the finite horizon</strong>.</p>
+</div>
+
+<div class="md">
+<h2 id="xx-2-structure-of-a-racing-lmpc">XX.2 Structure of a racing LMPC</h2>
+<p>A racing LMPC built on this model combines:</p>
+<ul>
+<li>prediction horizon</li>
+</ul>
+<div class="math display">
+N=14;
+</div>
+<ul>
+<li>a few stored trajectories for model learning (four here);</li>
+<li>a few stored trajectories for the local safe set;</li>
+<li>local safe-set point selection;</li>
+<li>local model regression;</li>
+<li>analytical Frenet linearization;</li>
+<li>a QP solved at every control step.</li>
+</ul>
+<p>The controller's optimized input is then applied to the nonlinear dynamic bicycle simulator.</p>
+<p>That closes the learning loop:</p>
+<div class="math display">
+\boxed{
+\text{experience}
+\rightarrow
+\text{prediction model + terminal data}
+\rightarrow
+\text{new control}
+\rightarrow
+\text{new experience}.
+}
+</div>
+</div>
+
+<div class="md">
+<p><a id="part-21"></a></p>
+<h2 id="part-xxi-the-racing-lmpc-cost-an-important-detail">Part XXI — The racing LMPC cost: an important detail</h2>
+<h2 id="xxi-1-no-conventional-state-tracking-cost-for-racing">XXI.1 No conventional state-tracking cost for racing</h2>
+<p>A racing LMPC does not need a conventional state-tracking cost, because its performance objective is
+lap time; the nominal state and input costs can be set to zero:</p>
+<div class="math display">
+Q_{\mathrm{LMPC}}=0,
+</div>
+<div class="math display">
+R_{\mathrm{LMPC}}=0.
+</div>
+<p>Smoothness then comes from an input-rate penalty, for example</p>
+<div class="math display">
+\boxed{
+\Delta u^\top
+\operatorname{diag}
+\left(
+5,\;50
+\right)
+\Delta u
+}
+</div>
+<p>written in code as</p>
+<div class="math display">
+dR=5[1,10].
+</div>
+<p>The learned terminal cost counts remaining samples to the lap finish.</p>
+<p>Therefore the principal performance objective is lap completion/time, with smoothing and slack
+penalties supporting numerical/control behavior.</p>
+</div>
+
+<div class="md">
+<h2 id="xxi-2-local-safe-set-sizing">XXI.2 Local safe-set sizing</h2>
+<p>The local safe set is sized by the number of stored laps it draws from and the number of points it
+selects, for example</p>
+<div class="math display">
+\texttt{numSS\_it}=4,
+</div>
+<p>and</p>
+<div class="math display">
+\texttt{numSS\_Points}
+=
+12\times4
+=
+48.
+</div>
+<p>The controller selects local safe-set samples from the best/fastest stored laps around a predicted
+terminal point.</p>
+<p>This is different from taking the convex hull of <strong>all states from all laps</strong>.</p>
+<p>Locality reduces the optimization dimension and avoids combining unrelated parts of a closed racing
+track.</p>
+</div>
+
+<div class="md">
+<p><a id="part-22"></a></p>
+<h2 id="part-xxii-a-subtle-geometry-issue-convex-hulls-in-frenet-coordinates">Part XXII — A subtle geometry issue: convex hulls in Frenet coordinates</h2>
+<h2 id="xxii-1-is-a-convex-local-safe-set-automatically-inside-the-lane">XXII.1 Is a convex local safe set automatically inside the lane?</h2>
+<p>The lane constraint is</p>
+<div class="math display">
+|e_y|\le W.
+</div>
+<p>If two stored points use the <strong>same local Frenet chart</strong> and both satisfy the interval constraint,
+then convex combinations preserve the scalar <span class="math inline">e_y</span> bound because an interval is convex.</p>
+<p>However, a closed track creates an additional issue:</p>
+<div class="math display">
+s=0
+</div>
+<p>and</p>
+<div class="math display">
+s=L
+</div>
+<p>represent neighboring physical positions but numerically distant curvilinear coordinates.</p>
+<p>A careless convex combination across the finish-line discontinuity can therefore be geometrically
+misleading.</p>
+<p>A practical remedy is to shift the progress coordinate of stored states by the track length <span class="math inline">L</span>
+around the finish line when constructing terminal data, so that physically neighboring points also
+have neighboring <span class="math inline">s</span> values.</p>
+</div>
+
+<div class="md">
+<p><a id="part-23"></a></p>
+<h2 id="part-xxiii-why-a-learned-ltv-model-can-work-on-a-highly-nonlinear-vehicle">Part XXIII — Why a learned LTV model can work on a highly nonlinear vehicle</h2>
+<h2 id="xxiii-1-the-key-is-not-that-the-plant-became-linear">XXIII.1 The key is not that the plant became linear</h2>
+<p>The nonlinear bicycle dynamics remain nonlinear.</p>
+<p>The approach relies on:</p>
+<ol>
+<li><strong>short prediction horizons</strong>;</li>
+<li><strong>receding-horizon feedback</strong>;</li>
+<li><strong>local regression around operating points already visited</strong>;</li>
+<li><strong>recomputation of the model as the operating point changes</strong>;</li>
+<li><strong>analytical kinematics where reliable physics is available</strong>;</li>
+<li>successful iterative data keeping the controller near progressively relevant regions.</li>
+</ol>
+<p>Thus the useful approximation is local:</p>
+<div class="math display">
+f(x,u)
+\approx
+A_qx+B_qu+c_q
+</div>
+<p>for</p>
+<div class="math display">
+(x,u)\approx(x_q,u_q),
+</div>
+<p>not globally over the entire state space.</p>
+</div>
+
+<div class="md">
+<h2 id="xxiii-2-why-this-does-not-automatically-imply-robustness">XXIII.2 Why this does not automatically imply robustness</h2>
+<p>A good nominal local prediction model does not by itself guarantee:</p>
+<ul>
+<li>recursive feasibility under model mismatch;</li>
+<li>probabilistic safety;</li>
+<li>bounded closed-loop error;</li>
+<li>protection against sudden friction changes;</li>
+<li>safety under perception/localization errors.</li>
+</ul>
+<p>Those require additional robust/stochastic/adaptive constructions.</p>
+<p>Learning MPC racing is an effective learning-control architecture; it should not be relabelled as
+a formal robust-MPC certificate.</p>
+</div>
+
+<div class="md">
+<p><a id="part-24"></a></p>
+<h2 id="part-xxiv-common-pitfalls">Part XXIV — Common pitfalls</h2>
+<h2 id="xxiv-1-pitfall-local-linear-model-means-the-real-system-is-linear">XXIV.1 Pitfall: local linear model means the real system is linear</h2>
+<p>No.</p>
+<p>The plant remains nonlinear. Only the optimizer's short-horizon surrogate is locally affine.</p>
+<hr />
+<h2 id="xxiv-2-pitfall-nearest-neighbors-are-selected-using-s-e-y">XXIV.2 Pitfall: nearest neighbors are selected using <span class="math inline">(s,e_y)</span></h2>
+<p>Not in the metric of this predictive model.</p>
+<p>It searches in</p>
+<div class="math display">
+[v_x,v_y,r,\delta,a_x].
+</div>
+<p>Track geometry enters separately through the analytic Frenet equations.</p>
+<hr />
+<h2 id="xxiv-3-pitfall-the-regression-learns-all-six-state-equations">XXIV.3 Pitfall: the regression learns all six state equations</h2>
+<p>No.</p>
+<p>Only <span class="math inline">v_x,v_y,r</span> are locally regressed.</p>
+<p>The Frenet kinematics are analytically linearized.</p>
+<hr />
+<h2 id="xxiv-4-pitfall-c-k-can-be-omitted-because-the-model-is-linearized">XXIV.4 Pitfall: <span class="math inline">c_k</span> can be omitted because the model is “linearized”</h2>
+<p>No.</p>
+<p>A local approximation around a nonzero operating point is generally affine.</p>
+<hr />
+<h2 id="xxiv-5-pitfall-low-training-residual-proves-predictive-accuracy">XXIV.5 Pitfall: low training residual proves predictive accuracy</h2>
+<p>No.</p>
+<p>Validation should use unseen trajectories/operating points and multi-step rollout tests.</p>
+<hr />
+<h2 id="xxiv-6-pitfall-large-bandwidth-is-always-safer-because-it-uses-more-data">XXIV.6 Pitfall: large bandwidth is always safer because it uses more data</h2>
+<p>No.</p>
+<p>It can reduce variance but increase nonlinear-model bias.</p>
+<hr />
+<h2 id="xxiv-7-pitfall-ridge-regularization-is-free-accuracy">XXIV.7 Pitfall: ridge regularization is free accuracy</h2>
+<p>No.</p>
+<p>It improves conditioning but biases the coefficients. The tiny <span class="math inline">\lambda=10^{-8}</span> used here is only a
+safeguard against an exactly singular normal matrix; a larger <span class="math inline">\lambda</span> must be validated on
+held-out data, like the bandwidth.</p>
+<hr />
+<h2 id="xxiv-8-pitfall-an-extrapolated-model-is-trustworthy-because-the-solver-returns-coefficients">XXIV.8 Pitfall: an extrapolated model is trustworthy because the solver returns coefficients</h2>
+<p>No.</p>
+<p>A model outside the data-support region is numerically defined but empirically unvalidated.</p>
+</div>
+
+<div class="md">
+<p><a id="part-25"></a></p>
+<h2 id="part-xxv-check-your-understanding">Part XXV — Check your understanding</h2>
+<p>Try to answer each question before opening its answer.</p>
+<p><strong>1. What is the main difference between the nonlinear simulator and the LMPC predictive model?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The simulator propagates nonlinear dynamic-bicycle/Frenet dynamics. The controller uses a locally
+identified affine time-varying surrogate
+<span class="math inline">x^+=A_kx+B_ku+c_k</span>.</p>
+</details>
+<p><strong>2. Which states are learned from data?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The next-step longitudinal velocity, lateral velocity, and yaw rate:
+<span class="math inline">v_x^+,v_y^+,r^+</span>.</p>
+</details>
+<p><strong>3. Which states use analytical kinematics?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Heading error <span class="math inline">e_\psi</span>, curvilinear progress <span class="math inline">s</span>, and lateral deviation <span class="math inline">e_y</span>.</p>
+</details>
+<p><strong>4. What query vector is used to select local data?</strong></p>
+<details>
+<summary>Answer</summary>
+<div class="math display">
+z=[v_x,v_y,r,\delta,a_x]^\top.
+</div>
+</details>
+<p><strong>5. Why is <span class="math inline">v_x</span> scaled by 0.1 in the distance metric?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>To prevent its numerical range/units from dominating the local-neighbor distance relative to the
+other features.</p>
+</details>
+<p><strong>6. What kernel is used?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The Epanechnikov kernel, a compact-support quadratic kernel
+<span class="math inline">w=(3/4)[1-(d/h)^2]</span> for selected points inside bandwidth <span class="math inline">h=5</span>.</p>
+</details>
+<p><strong>7. Why fit an affine rather than homogeneous linear model?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The local expansion point is generally nonzero, so the intercept
+<span class="math inline">c=f(x_q,u_q)-A_qx_q-B_qu_q</span> is required.</p>
+</details>
+<p><strong>8. Why does the model use only acceleration in the <span class="math inline">v_x</span> input row?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>It is a structured grey-box modeling choice that reduces parameters and encodes the principal
+longitudinal actuation channel, even though the full nonlinear model contains additional coupling.</p>
+</details>
+<p><strong>9. What makes the model LTV?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The local data neighborhood and the analytical Frenet Jacobian change along the predicted
+trajectory, so <span class="math inline">(A_k,B_k,c_k)</span> vary with prediction step <span class="math inline">k</span>.</p>
+</details>
+<p><strong>10. Why validate on a held-out lap instead of random samples?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Time-adjacent racing data are strongly correlated. A random split can leak almost identical
+neighbors into both train and test sets.</p>
+</details>
+<p><strong>11. What does the nearest-data distance tell us?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>It is a geometric support diagnostic: large distance indicates extrapolation. It is not a calibrated
+probabilistic uncertainty measure.</p>
+</details>
+<p><strong>12. Why can ridge regularization help?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Local samples can make <span class="math inline">\Phi^\top W\Phi</span> nearly singular. Adding <span class="math inline">\lambda I</span> improves conditioning
+but introduces bias.</p>
+</details>
+<p><strong>13. How can a local LTV model control a nonlinear vehicle?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>The approximation only needs to be useful locally over a short horizon. Receding-horizon feedback
+and repeated model updates prevent the controller from relying on one global approximation.</p>
+</details>
+<p><strong>14. What are the two separate learning mechanisms in racing LMPC?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>Model learning provides the finite-horizon dynamics. Safe-set/value learning provides terminal
+geometry and terminal cost from successful laps.</p>
+</details>
+<p><strong>15. Does good local prediction prove closed-loop safety?</strong></p>
+<details>
+<summary>Answer</summary>
+<p>No. Prediction validation is necessary but not a robust/stochastic safety guarantee.</p>
+</details>
+</div>
+
+<div class="md">
+<p><a id="part-26"></a></p>
+<h2 id="part-xxvi-exercises">Part XXVI — Exercises</h2>
+<h3 id="exercise-1-weighted-normal-equations">Exercise 1 — weighted normal equations</h3>
+<p>Starting from</p>
+<div class="math display">
+\sum_i w_i(y_i-\phi_i^\top\theta)^2+\lambda\|\theta\|_2^2,
+</div>
+<p>derive the normal equations.</p>
+<hr />
+<h3 id="exercise-2-scaling">Exercise 2 — scaling</h3>
+<p>Remove the <span class="math inline">0.1</span> scale factor on <span class="math inline">v_x</span>.</p>
+<p>Compare the selected neighbors for several queries and explain which feature dominates.</p>
+<hr />
+<h3 id="exercise-3-bandwidth-sweep">Exercise 3 — bandwidth sweep</h3>
+<p>Repeat validation for</p>
+<div class="math display">
+h\in\{1,2,5,10\}.
+</div>
+<p>Report:</p>
+<ul>
+<li>one-step RMSE;</li>
+<li>support failures;</li>
+<li>condition-number statistics.</li>
+</ul>
+<p>Explain the bias–variance trade-off.</p>
+<hr />
+<h3 id="exercise-4-maximum-points-per-lap">Exercise 4 — maximum points per lap</h3>
+<p>Repeat with</p>
+<div class="math display">
+N_{\mathrm{local}}
+\in
+\{3,7,15\}.
+</div>
+<p>Does more data always improve the local model?</p>
+<hr />
+<h3 id="exercise-5-ridge-regularization">Exercise 5 — ridge regularization</h3>
+<p>Evaluate several values of <span class="math inline">\lambda</span>.</p>
+<p>Plot coefficient conditioning and held-out prediction error.</p>
+<hr />
+<h3 id="exercise-6-remove-the-affine-offset">Exercise 6 — remove the affine offset</h3>
+<p>Force</p>
+<div class="math display">
+c=0.
+</div>
+<p>Compare held-out errors with the affine model.</p>
+<p>Explain the result using local linearization around a nonzero operating point.</p>
+<hr />
+<h3 id="exercise-7-add-steering-to-the-v-x-regression">Exercise 7 — add steering to the <span class="math inline">v_x</span> regression</h3>
+<p>Fit</p>
+<div class="math display">
+v_x^+
+</div>
+<p>using both <span class="math inline">\delta</span> and <span class="math inline">a_x</span>.</p>
+<p>Does the extra regressor improve validation sufficiently to justify the additional parameter?</p>
+<hr />
+<h3 id="exercise-8-add-acceleration-to-the-lateral-rows">Exercise 8 — add acceleration to the lateral rows</h3>
+<p>Repeat the previous experiment for <span class="math inline">v_y^+</span> and <span class="math inline">r^+</span>.</p>
+<p>Discuss physical coupling versus data efficiency.</p>
+<hr />
+<h3 id="exercise-9-global-versus-local">Exercise 9 — global versus local</h3>
+<p>Compare the global and local structured models over:</p>
+<ul>
+<li>low curvature;</li>
+<li>high curvature;</li>
+<li>low speed;</li>
+<li>high speed.</li>
+</ul>
+<p>Where is locality most useful?</p>
+<hr />
+<h3 id="exercise-10-multi-step-horizon">Exercise 10 — multi-step horizon</h3>
+<p>Repeat the horizon experiment for</p>
+<div class="math display">
+N=5,\;14,\;30.
+</div>
+<p>Explain why one-step accuracy does not directly predict long-horizon accuracy.</p>
+<hr />
+<h3 id="exercise-11-data-support-monitor">Exercise 11 — data-support monitor</h3>
+<p>Design a rule that flags an MPC prediction if any horizon point satisfies</p>
+<div class="math display">
+d_{\min}&gt;d_{\mathrm{warn}}.
+</div>
+<p>What should the controller do after a warning?</p>
+<hr />
+<h3 id="exercise-12-curvature-derivative">Exercise 12 — curvature derivative</h3>
+<p>The local kinematic linearization of Part VII treats curvature as constant around the query.</p>
+<p>Derive the additional terms that would appear if</p>
+<div class="math display">
+\frac{dK}{ds}
+</div>
+<p>were included.</p>
+<hr />
+<h3 id="exercise-13-uncertainty-model">Exercise 13 — uncertainty model</h3>
+<p>Use held-out residuals to estimate a local covariance matrix for model error.</p>
+<p>How could such a covariance be used in stochastic or robust MPC?</p>
+<hr />
+<h3 id="exercise-14-error-dynamics-learning">Exercise 14 — error-dynamics learning</h3>
+<p>Instead of learning the full local dynamic rows, suppose a nominal physics model
+<span class="math inline">f_{\mathrm{nom}}(x,u)</span> is available.</p>
+<p>Define residual data</p>
+<div class="math display">
+e_i
+=
+x_{i+1}
+-
+f_{\mathrm{nom}}(x_i,u_i).
+</div>
+<p>Formulate a local regression model for the residual rather than the complete dynamics.</p>
+<p>Discuss why this can reduce the learning burden.</p>
+</div>
+
+<div class="md">
+<p><a id="part-27"></a></p>
+<h2 id="part-xxvii-references">Part XXVII — References</h2>
+<p>The prediction model follows the local-regression approach of Rosolia and Borrelli (2020). The
+implementation in <code>racing.py</code> uses:</p>
+<ul>
+<li>state <span class="math inline">[v_x,v_y,r,e_\psi,s,e_y]</span>;</li>
+<li>input <span class="math inline">[\delta,a_x]</span>;</li>
+<li>outer sampling time <span class="math inline">T_s=0.1</span> s;</li>
+<li>the nonlinear dynamic bicycle model of a 1:10-scale RC car (BARC parameters);</li>
+<li>local query features <span class="math inline">[v_x,v_y,r,\delta,a_x]</span>;</li>
+<li>feature scaling <span class="math inline">\operatorname{diag}(0.1,1,1,1,1)</span>;</li>
+<li>the Epanechnikov kernel with bandwidth <span class="math inline">h=5</span>;</li>
+<li>maximum seven regression samples per stored lap;</li>
+<li>learned rows for <span class="math inline">v_x,v_y,r</span>;</li>
+<li>analytic Frenet rows for <span class="math inline">e_\psi,s,e_y</span>;</li>
+<li>prediction horizon <span class="math inline">N=14</span>;</li>
+<li>four stored training laps.</li>
+</ul>
+<p>The resulting prediction model has the affine form</p>
+<div class="math display">
+\boxed{
+x_{k+1}=A_kx_k+B_ku_k+c_k.
+}
+</div>
+<p>Further references:</p>
+<ul>
+<li>U. Rosolia and F. Borrelli, “Learning How to Autonomously Race a Car: A Predictive Control
+Approach,” <em>IEEE Transactions on Control Systems Technology</em>, 28(6), 2713–2719, 2020,
+DOI 10.1109/TCST.2019.2948135.</li>
+<li>U. Rosolia, A. Carvalho, and F. Borrelli, “Autonomous Racing using Learning Model Predictive
+Control,” <em>American Control Conference</em>, 2017, DOI 10.23919/ACC.2017.7963748.</li>
+<li>L. Ljung, <em>System Identification: Theory for the User</em>, 2nd ed., Prentice Hall, 1999.</li>
+<li>T. Hastie, R. Tibshirani, J. Friedman, <em>The Elements of Statistical Learning</em>, 2nd ed.,
+Springer, 2009 (Chapter 6 covers kernel smoothing and the Epanechnikov kernel).</li>
+<li>R. Rajamani, <em>Vehicle Dynamics and Control</em>, 2nd ed., Springer, 2012.</li>
+<li>H. B. Pacejka, <em>Tire and Vehicle Dynamics</em>, 3rd ed., Butterworth-Heinemann, 2012.</li>
+</ul>
+<p>A useful modern extension is to learn <strong>error dynamics</strong> around a nominal physics-based model
+instead of learning the whole local model; that idea is left as Exercise 14.</p>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="06-frenet-minimum-time-racing.html"><span class="lbl">Previous · 06</span><span class="t">Frenet Coordinates and Minimum-Time Racing</span></a>
+  <a class="next" rel="next" href="08-dynamic-programming-to-rl.html"><span class="lbl">Next · 08</span><span class="t">From Dynamic Programming to Reinforcement Learning</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 07 of the Advanced MPC and Learning MPC by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>

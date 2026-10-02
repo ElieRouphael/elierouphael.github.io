@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>02 · Finding Minima and Maxima — A Tour of Machine Learning</title>
+<meta name="description" content="Critical points and the second-derivative test with sympy, then the same calculus behind a training loop, checked against gradient descent.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; A Tour of Machine Learning</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">A Tour of Machine Learning · Chapter 02 of 11</span>
+  <h1>Finding Minima and Maxima</h1>
+  <div class="intro prose">
+<p>Chapter 01 fit a line by calling <code>.fit()</code> and trusting scikit-learn to find the best
+coefficients. This chapter opens that box: the calculus that finds a function's
+minima and maxima is <em>exactly</em> what every training loop in this course is doing,
+whether it's ordinary least squares, gradient descent, or backpropagation.</p>
+<p><strong>Objectives:</strong> find critical points with derivatives, classify them with the
+second-derivative test, and connect this to how a model is &quot;trained&quot; at all.</p>
+
+  </div>
+  <div class="downloads">
+    <a class="btn" href="notebooks/02_minima_and_maxima.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
+  </div>
+  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
+</header>
+
+<nav class="col chapter-toc" aria-label="In this chapter">
+  <span class="eyebrow">In this chapter</span>
+  <ol>
+    <li><a href="#1-slopes-critical-points-and-curvature">1. Slopes, critical points and curvature</a></li>
+    <li><a href="#2-several-variables-gradient-and-hessian">2. Several variables: gradient and Hessian</a></li>
+    <li><a href="#3-training-as-minimisation-gradient-descent">3. Training as minimisation: gradient descent</a></li>
+    <li><a href="#4-critical-points-by-hand">4. Critical points, by hand</a></li>
+    <li><a href="#5-the-second-derivative-test">5. The second-derivative test</a></li>
+    <li><a href="#6-the-same-idea-trains-a-model">6. The same idea trains a model</a></li>
+    <li><a href="#exercises">Exercises</a></li>
+    <li><a href="#key-takeaways">Key takeaways</a></li>
+  </ol>
+</nav>
+
+<main class="col notebook">
+<div class="md">
+<h2 id="1-slopes-critical-points-and-curvature">1. Slopes, critical points and curvature</h2>
+<p>Picture walking along the graph of a function <span class="math inline">f(x)</span>. The <strong>derivative</strong> measures how steep the ground is at each point: the rise over the run of a tiny step <span class="math inline">h</span>, in the limit where the step shrinks to nothing:</p>
+<div class="math display">f&#x27;(x) = \lim_{h \to 0} \frac{f(x+h) - f(x)}{h}</div>
+<p>The fraction is the slope of the chord between <span class="math inline">x</span> and <span class="math inline">x+h</span>; as <span class="math inline">h</span> shrinks, the chord becomes the tangent. For <span class="math inline">f(x) = x^2</span> at <span class="math inline">x = 3</span> the fraction is <span class="math inline">\big((3+h)^2 - 9\big)/h = (6h + h^2)/h = 6 + h</span>. For <span class="math inline">h = 1, 0.1, 0.01</span> it equals <span class="math inline">7, 6.1, 6.01</span>, closing in on <span class="math inline">f&#x27;(3) = 6</span>, which matches the rule <span class="math inline">f&#x27;(x) = 2x</span>.</p>
+<p>At the top of a hill or the bottom of a valley the ground is flat. So every smooth local maximum or minimum <span class="math inline">x^*</span> satisfies</p>
+<div class="math display">f&#x27;(x^*) = 0</div>
+<p>Points where the derivative vanishes are called <strong>critical points</strong>. They are only candidates: <span class="math inline">f(x) = x^3</span> is flat at <span class="math inline">0</span> yet keeps rising on both sides. To sort the candidates, zoom in with a <strong>Taylor expansion</strong>. Near any point <span class="math inline">x</span>, a smooth function is well described by its value, its slope and its curvature:</p>
+<div class="math display">f(x + h) \approx f(x) + f&#x27;(x)\,h + \tfrac12 f&#x27;&#x27;(x)\,h^2</div>
+<p>Here <span class="math inline">f&#x27;&#x27;(x)</span>, the second derivative, is the slope of the slope: it measures how the graph bends. The three terms are a height, a straight tilt, and a parabola bending up or down. At a critical point the tilt is zero, so</p>
+<div class="math display">f(x^* + h) - f(x^*) \approx \tfrac12 f&#x27;&#x27;(x^*)\,h^2</div>
+<p>Since <span class="math inline">h^2 &gt; 0</span> for every small step, left or right, the sign of <span class="math inline">f&#x27;&#x27;(x^*)</span> decides everything. This is the <strong>second-derivative test</strong>:</p>
+<ul>
+<li><span class="math inline">f&#x27;&#x27;(x^*) &gt; 0</span>: every nearby point is higher, so <span class="math inline">x^*</span> is a <strong>local minimum</strong>.</li>
+<li><span class="math inline">f&#x27;&#x27;(x^*) &lt; 0</span>: every nearby point is lower, so <span class="math inline">x^*</span> is a <strong>local maximum</strong>.</li>
+<li><span class="math inline">f&#x27;&#x27;(x^*) = 0</span>: the parabola term vanishes and the test is silent. Higher-order terms decide: <span class="math inline">x^3</span> has an inflection point at <span class="math inline">0</span>, <span class="math inline">x^4</span> a minimum.</li>
+</ul>
+</div>
+
+<div class="md">
+<h2 id="2-several-variables-gradient-and-hessian">2. Several variables: gradient and Hessian</h2>
+<p>A model usually has many parameters, collected in a vector <span class="math inline">w = (w_1, \dots, w_p)</span>; <span class="math inline">L(w)</span> returns one number. The <strong>partial derivative</strong> <span class="math inline">\partial L/\partial w_j</span> is the ordinary derivative along coordinate <span class="math inline">j</span>, all other coordinates held fixed. Stacking the <span class="math inline">p</span> of them gives the <strong>gradient</strong>, a <span class="math inline">p \times 1</span> vector:</p>
+<div class="math display">\nabla L(w) = \Big(\frac{\partial L}{\partial w_1}, \dots, \frac{\partial L}{\partial w_p}\Big)^{\!\top}</div>
+<p>The gradient points in the direction of steepest ascent, and its length is the slope in that direction. The second derivatives form the symmetric <span class="math inline">p \times p</span> <strong>Hessian</strong> matrix <span class="math inline">H</span>, with entries <span class="math inline">H_{jk} = \partial^2 L / \partial w_j \partial w_k</span>: it records how the surface bends in every direction. For a small step vector <span class="math inline">h</span> (<span class="math inline">p \times 1</span>), the Taylor expansion keeps its shape:</p>
+<div class="math display">L(w + h) \approx L(w) + \nabla L(w)^\top h + \tfrac12\, h^\top H\, h</div>
+<p>A critical point now means <span class="math inline">\nabla L(w^*) = 0</span>: all <span class="math inline">p</span> slopes vanish together. There, <span class="math inline">L(w^* + h) - L(w^*) \approx \tfrac12 h^\top H h</span>. If <span class="math inline">h^\top H h &gt; 0</span> for every nonzero <span class="math inline">h</span> (<span class="math inline">H</span> is <strong>positive definite</strong>), every direction leads uphill and <span class="math inline">w^*</span> is a local minimum. If it is negative for every <span class="math inline">h</span>, a local maximum. If the sign depends on the direction, <span class="math inline">w^*</span> is a <strong>saddle point</strong>.</p>
+<p>Two examples. <span class="math inline">L = w_1^2 + 3w_2^2</span> has gradient <span class="math inline">(2w_1, 6w_2)</span>, zero at the origin, and <span class="math inline">h^\top H h = 2h_1^2 + 6h_2^2 &gt; 0</span>: a minimum, the bottom of a bowl. <span class="math inline">L = w_1^2 - w_2^2</span> gives <span class="math inline">h^\top H h = 2h_1^2 - 2h_2^2</span>, positive along <span class="math inline">w_1</span> and negative along <span class="math inline">w_2</span>: a saddle, shaped like a mountain pass.</p>
+</div>
+
+<div class="md">
+<h2 id="3-training-as-minimisation-gradient-descent">3. Training as minimisation: gradient descent</h2>
+<p>A model's <strong>loss function</strong> <span class="math inline">L(w)</span> measures how wrong its predictions are on the training data, as a function of its parameters <span class="math inline">w</span>; the data stay fixed. <strong>Training</strong> means finding the <span class="math inline">w</span> that makes <span class="math inline">L</span> smallest. Solving <span class="math inline">\nabla L = 0</span> on paper is rarely possible, so we walk downhill instead.</p>
+<p><strong>Deriving the step.</strong> Keep only the first-order Taylor term (one parameter first): <span class="math inline">L(w + h) \approx L(w) + L&#x27;(w)\,h</span>. Choose the step <span class="math inline">h = -\eta\, L&#x27;(w)</span> with a small number <span class="math inline">\eta &gt; 0</span>. Then</p>
+<div class="math display">L\big(w - \eta L&#x27;(w)\big) \approx L(w) - \eta\, L&#x27;(w)^2</div>
+<p>The change <span class="math inline">-\eta L&#x27;(w)^2</span> is negative whenever the slope is not zero, so the step lowers the loss. This gives <strong>gradient descent</strong>:</p>
+<div class="math display">w \leftarrow w - \eta\, L&#x27;(w)</div>
+<p>The positive number <span class="math inline">\eta</span> is the <strong>learning rate</strong>, or step size. With many parameters the rule is <span class="math inline">w \leftarrow w - \eta \nabla L(w)</span>, and the loss drops by about <span class="math inline">\eta \lVert \nabla L \rVert^2</span> per step.</p>
+<p><strong>How big a step?</strong> The Taylor argument only holds for small steps. A quadratic shows exactly what happens. Take <span class="math inline">L(w) = a\,(w - w^*)^2</span> with curvature <span class="math inline">a &gt; 0</span> and minimum at <span class="math inline">w^*</span>. Its slope is <span class="math inline">L&#x27;(w) = 2a(w - w^*)</span>, so one step gives</p>
+<div class="math display">w_{\text{new}} - w^* = (w - w^*) - 2a\eta\,(w - w^*) = (1 - 2a\eta)\,(w - w^*)</div>
+<p>Each step multiplies the signed distance to the minimum by the same number <span class="math inline">1 - 2a\eta</span>, so <span class="math inline">t</span> steps multiply it by <span class="math inline">(1 - 2a\eta)^t</span>. Its size, the <strong>contraction factor</strong> <span class="math inline">\lvert 1 - 2a\eta \rvert</span>, tells the whole story:</p>
+<ul>
+<li><span class="math inline">\eta</span> tiny: the factor is close to 1 and progress is slow.</li>
+<li><span class="math inline">\eta = 1/(2a)</span>: the factor is 0 and one step lands exactly on <span class="math inline">w^*</span>.</li>
+<li><span class="math inline">1/(2a) &lt; \eta &lt; 1/a</span>: <span class="math inline">1 - 2a\eta</span> lies between <span class="math inline">-1</span> and <span class="math inline">0</span>, so <span class="math inline">w</span> overshoots, zig-zags from side to side, and still converges.</li>
+<li><span class="math inline">\eta &gt; 1/a</span>: <span class="math inline">\lvert 1 - 2a\eta \rvert &gt; 1</span>, every step overshoots further than the last, and the loss explodes.</li>
+</ul>
+<p>Near any minimum, Taylor says a smooth loss looks like such a quadratic, with <span class="math inline">a = \tfrac12 L&#x27;&#x27;(w^*)</span>. So the more sharply the loss curves, the smaller the learning rate must be.</p>
+<p><strong>Convexity.</strong> A function is <strong>convex</strong> if the chord between any two points of its graph never passes below the graph; in one variable this means <span class="math inline">L&#x27;&#x27;(w) \ge 0</span> everywhere. Then every local minimum is a global minimum. Suppose <span class="math inline">w</span> were a local minimum but some <span class="math inline">v</span> had <span class="math inline">L(v) &lt; L(w)</span>. On the segment between them convexity gives <span class="math inline">L\big(w + \lambda(v - w)\big) \le (1-\lambda)L(w) + \lambda L(v) &lt; L(w)</span> for every <span class="math inline">0 &lt; \lambda \le 1</span>, even for tiny <span class="math inline">\lambda</span>, right next to <span class="math inline">w</span>: a contradiction. The squared-error loss of linear regression is convex, so gradient descent cannot get stuck there; the loss of a neural network is not.</p>
+<p><strong>Three steps by hand.</strong> Take <span class="math inline">L(w) = (w - 3)^2</span>, so <span class="math inline">a = 1</span> and <span class="math inline">w^* = 3</span>, with <span class="math inline">\eta = 0.25</span> and the start <span class="math inline">w_0 = 0</span>. The slope is <span class="math inline">L&#x27;(w) = 2(w - 3)</span> and the factor is <span class="math inline">1 - 2 \times 1 \times 0.25 = 0.5</span>.</p>
+<table>
+<thead>
+<tr>
+<th>step <span class="math inline">t</span></th>
+<th><span class="math inline">w_t</span></th>
+<th><span class="math inline">L(w_t)</span></th>
+<th><span class="math inline">L&#x27;(w_t)</span></th>
+<th><span class="math inline">-\eta\,L&#x27;(w_t)</span></th>
+<th><span class="math inline">w_{t+1}</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>9</td>
+<td>−6</td>
+<td>+1.5</td>
+<td>1.5</td>
+</tr>
+<tr>
+<td>1</td>
+<td>1.5</td>
+<td>2.25</td>
+<td>−3</td>
+<td>+0.75</td>
+<td>2.25</td>
+</tr>
+<tr>
+<td>2</td>
+<td>2.25</td>
+<td>0.5625</td>
+<td>−1.5</td>
+<td>+0.375</td>
+<td>2.625</td>
+</tr>
+<tr>
+<td>3</td>
+<td>2.625</td>
+<td>0.140625</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>The distance to the minimum goes <span class="math inline">3, 1.5, 0.75, 0.375</span>: halved at every step, as the factor predicts. With <span class="math inline">\eta = 1.25</span> instead, the factor is <span class="math inline">1 - 2.5 = -1.5</span> and the same start gives <span class="math inline">w = 0, 7.5, -3.75, 13.125</span>: the iterates jump across the minimum and fly away.</p>
+<p><strong>In the code below.</strong> <code>sympy</code> computes <code>f_prime</code> and <code>f_double</code> for a cubic, <code>critical_points</code> solves <span class="math inline">f&#x27;(x) = 0</span>, and a loop applies the second-derivative test. Then <code>L</code> is the mean squared error <span class="math inline">L(w) = \frac1n\sum_i (y_i - w x_i)^2</span> of a line through the origin, for <span class="math inline">n = 50</span> simulated points <code>x_data</code>, <code>y_data</code>. Expanding the square and completing it shows that this is exactly the quadratic above, plus a constant that does not affect the steps:</p>
+<div class="math display">L(w) = a\,w^2 - 2b\,w + c = a\Big(w - \frac{b}{a}\Big)^2 + c - \frac{b^2}{a}, \qquad a = \frac1n\sum_i x_i^2,\ \ b = \frac1n\sum_i x_i y_i,\ \ c = \frac1n\sum_i y_i^2</div>
+<p>So <span class="math inline">w^* = b/a</span> is what <code>w_star</code> finds, and <code>w_gd</code> follows the update rule with <span class="math inline">\eta</span> = <code>lr</code> = 0.002. For these data <span class="math inline">a \approx 36</span>, so each step multiplies the error by about <span class="math inline">1 - 2 \times 36 \times 0.002 \approx 0.86</span>, and 200 steps shrink it to less than <span class="math inline">10^{-13}</span> of its starting size.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+import sympy as sp
+
+import mlutils
+mlutils.set_style()</code></pre>
+</div>
+
+<div class="md">
+<h2 id="4-critical-points-by-hand">4. Critical points, by hand</h2>
+<p>A smooth function's slope is zero at each of its local peaks and valleys (Section 1).
+Take a toy cubic:</p>
+<div class="math display">f(x) = x^3 - 6x^2 + 9x + 1</div>
+<p><code>sympy</code> can differentiate it symbolically, the same way you would on paper.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">x = sp.symbols(&quot;x&quot;)
+f = x**3 - 6*x**2 + 9*x + 1
+f_prime = sp.diff(f, x)
+f_double = sp.diff(f_prime, x)
+print(&quot;f (x) =&quot;, f)
+print(&quot;f&#x27;(x) =&quot;, f_prime)
+print(&quot;f&#x27;&#x27;(x) =&quot;, f_double)</code></pre>
+<pre class="output">f (x) = x**3 - 6*x**2 + 9*x + 1
+f&#x27;(x) = 3*x**2 - 12*x + 9
+f&#x27;&#x27;(x) = 6*x - 12</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">critical_points = sp.solve(sp.Eq(f_prime, 0), x)
+critical_points</code></pre>
+<pre class="output">[1, 3]</pre>
+</div>
+
+<div class="md">
+<p><span class="math inline">f&#x27;(x) = 0</span> has two solutions: the slope is flat at <span class="math inline">x=1</span> and <span class="math inline">x=3</span>. Those are the
+only <em>candidates</em> for a local max or min — everywhere else the function is strictly
+increasing or decreasing, so it can't turn around.</p>
+<h2 id="5-the-second-derivative-test">5. The second-derivative test</h2>
+<p>To tell a peak from a valley, look at how the slope itself is changing (Section 1
+derives this from the Taylor expansion):</p>
+<ul>
+<li><span class="math inline">f&#x27;&#x27;(x) &lt; 0</span>: the slope is decreasing through zero → <strong>local maximum</strong>.</li>
+<li><span class="math inline">f&#x27;&#x27;(x) &gt; 0</span>: the slope is increasing through zero → <strong>local minimum</strong>.</li>
+</ul>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">for c in critical_points:
+    second = f_double.subs(x, c)
+    kind = &quot;local maximum&quot; if second &lt; 0 else &quot;local minimum&quot;
+    print(f&quot;x = {c}:  f&#x27;&#x27;(x) = {second}  -&gt;  {kind}  (f({c}) = {f.subs(x, c)})&quot;)</code></pre>
+<pre class="output">x = 1:  f&#x27;&#x27;(x) = -6  -&gt;  local maximum  (f(1) = 5)
+x = 3:  f&#x27;&#x27;(x) = 6  -&gt;  local minimum  (f(3) = 1)</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">f_num = sp.lambdify(x, f, &quot;numpy&quot;)
+xs = np.linspace(-0.5, 4.5, 400)
+fig, ax = plt.subplots(figsize=(6.5, 4.5))
+ax.plot(xs, f_num(xs), color=mlutils.BLUE, lw=2.5)
+for c in critical_points:
+    cv = float(c)
+    ax.scatter([cv], [f_num(cv)], color=mlutils.ORANGE, zorder=5, s=60)
+ax.set(xlabel=&quot;x&quot;, ylabel=&quot;f(x)&quot;, title=&quot;A cubic with one local max and one local min&quot;)</code></pre>
+<pre class="output">[Text(0.5, 0, &#x27;x&#x27;),
+ Text(0, 0.5, &#x27;f(x)&#x27;),
+ Text(0.5, 1.0, &#x27;A cubic with one local max and one local min&#x27;)]</pre>
+<figure class="output-figure"><img src="img/02-1.png" alt="Figure 1 produced by the code above" width="634" height="478" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<h2 id="6-the-same-idea-trains-a-model">6. The same idea trains a model</h2>
+<p>Section 3 described training as minimising a <strong>loss function</strong> — usually a
+high-dimensional version of the picture above. Take the simplest case: fitting a single slope <span class="math inline">w</span> through the origin to minimise
+the mean squared error</p>
+<div class="math display">L(w) = \frac{1}{n}\sum_i (y_i - w x_i)^2</div>
+<p>This is a parabola in <span class="math inline">w</span> (one variable, easy to visualise), and its minimum has a
+closed form — set <span class="math inline">L&#x27;(w) = 0</span> and solve.</p>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python">rng = np.random.default_rng(0)
+n = 50
+x_data = rng.uniform(0, 10, n)
+y_data = 2.3 * x_data + rng.normal(0, 2, n)
+
+w = sp.symbols(&quot;w&quot;)
+L = sum((y_data[i] - w * x_data[i])**2 for i in range(n)) / n
+L_prime = sp.diff(L, w)
+w_star = sp.solve(sp.Eq(L_prime, 0), w)[0]
+print(f&quot;closed-form minimiser: w* = {float(w_star):.4f}&quot;)</code></pre>
+<pre class="output">closed-form minimiser: w* = 2.3342</pre>
+</div>
+
+<div class="cell">
+<pre class="source"><code class="language-python"># gradient descent: repeatedly step &quot;downhill&quot; instead of solving analytically
+L_prime_num = sp.lambdify(w, L_prime, &quot;numpy&quot;)
+w_gd, lr = 0.0, 0.002
+path = [w_gd]
+for _ in range(200):
+    w_gd = w_gd - lr * L_prime_num(w_gd)
+    path.append(w_gd)
+print(f&quot;gradient descent after 200 steps: w = {w_gd:.4f}  (target {float(w_star):.4f})&quot;)
+
+L_num = sp.lambdify(w, L, &quot;numpy&quot;)
+ws = np.linspace(-1, 4, 200)
+fig, ax = plt.subplots(figsize=(6.5, 4.5))
+ax.plot(ws, L_num(ws), color=mlutils.BLUE, lw=2)
+ax.plot(path, [L_num(p) for p in path], color=mlutils.ORANGE, marker=&quot;o&quot;, ms=3, lw=1,
+        label=&quot;gradient descent path&quot;)
+ax.scatter([float(w_star)], [L_num(float(w_star))], color=mlutils.GREEN, zorder=5, s=70,
+           label=&quot;closed-form minimum&quot;)
+ax.set(xlabel=&quot;w&quot;, ylabel=&quot;L(w)&quot;, title=&quot;Gradient descent finds the same minimum as calculus&quot;)
+ax.legend()</code></pre>
+<pre class="output">gradient descent after 200 steps: w = 2.3342  (target 2.3342)
+&lt;matplotlib.legend.Legend at 0x22d29f6c830&gt;</pre>
+<figure class="output-figure"><img src="img/02-2.png" alt="Figure 2 produced by the code above" width="642" height="478" loading="lazy"></figure>
+</div>
+
+<div class="md">
+<p>Both routes land in the same place: solving <span class="math inline">L&#x27;(w)=0</span> directly, or taking small steps
+opposite the gradient until it flattens out. Closed-form solutions exist for linear
+regression; almost nothing else in this course has one, which is why gradient descent
+(chapter 06) and backpropagation (chapter 07 onward) matter.</p>
+<h2 id="exercises">Exercises</h2>
+<h3 id="exercise-1-a-function-with-two-local-minima">Exercise 1: A function with two local minima</h3>
+<p>Let <span class="math inline">g(x) = x^4 - 4x^2</span>. Find all critical points and classify each with the
+second-derivative test. (Hint: the second-derivative test is inconclusive at a
+saddle/inflection point, i.e. when <span class="math inline">f&#x27;&#x27;=0</span> too — check whether that happens here.)</p>
+<details><summary>Solution</summary>
+<pre><code class="language-python">g = x**4 - 4*x**2
+g_prime = sp.diff(g, x)
+g_double = sp.diff(g_prime, x)
+pts = sp.solve(sp.Eq(g_prime, 0), x)
+for c in pts:
+    print(c, g_double.subs(x, c))
+# x = -sqrt(2), sqrt(2): f''&gt;0 -&gt; local minima; x = 0: f''&lt;0 -&gt; local maximum
+</code></pre>
+</details>
+<h3 id="exercise-2-learning-rate-too-large">Exercise 2: Learning rate too large</h3>
+<p>Rerun the gradient descent cell with <code>lr = 0.02</code> (10x larger), then with <code>lr = 0.03</code>.
+Before running, predict what happens from the contraction factor <span class="math inline">1 - 2a\eta</span> of
+Section 3, with <span class="math inline">a</span> = <code>np.mean(x_data**2)</code>. Relate the result to what &quot;diverging
+loss&quot; looks like during neural-network training in later chapters.</p>
+<details><summary>Solution</summary>
+<p>Here <span class="math inline">a \approx 36.3</span>, so the threshold is <span class="math inline">\eta = 1/a \approx 0.028</span>. With <code>lr = 0.02</code>
+the factor is about <span class="math inline">-0.45</span>: the path jumps from one side of the minimum to the other
+but still converges. With <code>lr = 0.03</code> the factor is about <span class="math inline">-1.18</span>: each step
+overshoots further than the last and the loss increases every iteration instead of
+decreasing — the numerical analogue of an unstable difference equation. This is exactly what an exploding training loss means
+in chapters 06-09.</p>
+</details>
+<h2 id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A function's local extrema occur where its derivative is zero; the sign of the
+second derivative there tells a maximum from a minimum.</li>
+<li>Training a model is minimising a loss function over its parameters — the same
+calculus, just in (often thousands of) more dimensions.</li>
+<li>Gradient descent — repeatedly stepping opposite the gradient — finds the same
+minimum as solving <span class="math inline">L&#x27;=0</span> directly, without ever writing down a closed form. That's
+the only option once a closed form doesn't exist.</li>
+</ul>
+</div>
+</main>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="01-linear-regression.html"><span class="lbl">Previous · 01</span><span class="t">Linear Regression</span></a>
+  <a class="next" rel="next" href="03-support-vector-machines.html"><span class="lbl">Next · 03</span><span class="t">Support Vector Machines</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 02 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="course.js"></script>
+</body>
+</html>
