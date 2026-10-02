@@ -1,6 +1,6 @@
 # elie-rouphael
 
-Personal portfolio site for Elie Rouphael, built with [Astro](https://astro.build/).
+Personal-portfolio site for Elie Rouphael, built with [Astro](https://astro.build/).
 
 ## Project structure
 
