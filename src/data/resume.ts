@@ -12,7 +12,6 @@ export const sidebar = {
     'elie.rouphael.98@gmail.com',
     'github.com/ElieRouphael',
     'linkedin.com/in/elie-rouphael',
-    '+33 6 04 08 36 44',
     'Grenoble, France',
   ],
   languages: ['Arabic (Native)', 'French (DELF - B2)', 'English (TOEIC 865 / 990)'],
