@@ -9,10 +9,9 @@ export const sidebar = {
   name: 'Elie<br>Rouphael',
   subtitle: 'Postdoctoral Researcher in AI, System Identification & Control',
   contact: [
-    'elie.rouphael.98@gmail.com',
-    'github.com/ElieRouphael',
-    'linkedin.com/in/elie-rouphael',
-    '+33 6 04 08 36 44',
+    '<a href="mailto:elie.rouphael.98@gmail.com">elie.rouphael.98@gmail.com</a>',
+    '<a href="https://github.com/ElieRouphael" target="_blank" rel="noopener noreferrer">github.com/ElieRouphael</a>',
+    '<a href="https://www.linkedin.com/in/elie-rouphael" target="_blank" rel="noopener noreferrer">linkedin.com/in/elie-rouphael</a>',
     'Grenoble, France',
   ],
   languages: ['Arabic (Native)', 'French (DELF - B2)', 'English (TOEIC 865 / 990)'],
@@ -203,21 +202,21 @@ export const references: ResumeEntry[] = [
   {
     title: 'Prof. Lotfi Belkoura',
     org: 'Professor of System Identification, University of Lille',
-    body: 'Email: lotfi.belkoura@univ-lille.fr',
+    body: 'Email: <a href="mailto:lotfi.belkoura@univ-lille.fr">lotfi.belkoura@univ-lille.fr</a>',
   },
   {
     title: 'Dr. Mihaly Petreczky',
     org: 'HDR, CNRS Researcher, Centrale Lille',
-    body: 'Email: mihaly.petreczky@centralelille.fr',
+    body: 'Email: <a href="mailto:mihaly.petreczky@centralelille.fr">mihaly.petreczky@centralelille.fr</a>',
   },
   {
     title: 'Prof. Guillaume Mercère',
     org: 'Professor, LIAS, University of Poitiers',
-    body: 'Email: guillaume.mercere@univ-poitiers.fr',
+    body: 'Email: <a href="mailto:guillaume.mercere@univ-poitiers.fr">guillaume.mercere@univ-poitiers.fr</a>',
   },
   {
     title: 'Prof. John-Jairo Martinez-Molina',
     org: 'Professor, GIPSA-lab, Grenoble',
-    body: 'Email: john-jairo.martinez-molina@grenoble-inp.fr',
+    body: 'Email: <a href="mailto:john-jairo.martinez-molina@grenoble-inp.fr">john-jairo.martinez-molina@grenoble-inp.fr</a>',
   },
 ];
