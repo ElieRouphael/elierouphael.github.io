@@ -125,4 +125,19 @@ export const tutorials: Tutorial[] = [
     },
     draft: false,
   },
+  {
+    title: 'Finding a Lost Robot with a Particle Filter',
+    description:
+      'A beginner\'s tutorial on Monte Carlo localization: a robot with no GPS finds itself on a hilly map using only its wheels, a compass and an altimeter. A warm-up on a loop track, noisy motion, the bell curve, resampling with a comb, jitter and the kidnapped robot, then the whole filter as four short Python functions and experiments that show when it fails. Every idea comes with a live demo in the browser.',
+    topics: ['Particle Filters', 'Localization', 'Robotics', 'Probability', 'NumPy'],
+    prerequisites: 'None: no robotics, probability or programming background needed',
+    level: 'Beginner',
+    added: '2026-10-09T12:00',
+    href: '/tutorials/particle-filter/index.html',
+    cover: {
+      src: '/tutorials/particle-filter/cover.jpg',
+      alt: 'A hilly map with the robot in orange and its guesses in blue, gathered into several clumps that all fit the readings so far',
+    },
+    draft: false,
+  },
 ];

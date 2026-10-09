@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Finding a Lost Robot</title>
+<meta name="description" content="A beginner's tutorial on particle filters: a robot with no GPS finds itself on a hilly map using only a compass, its wheels and an altimeter. Every idea comes with a live demo you can play with.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Fraunces:opsz,wght@9..144,500;9..144,650;9..144,700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Probabilistic robotics from scratch · Monte Carlo localization</span>
+  <h1>Finding a lost robot with a particle filter</h1>
+  <p class="lede">A robot is dropped somewhere on a hilly map. It has no GPS, only a compass and an altimeter that tells it how high the ground is. The blue dots below are its guesses about where it might be. Drive it around and watch two thousand guesses turn into one answer. This tutorial explains how, one small idea at a time.</p>
+  <p class="byline">Elie Rouphael · For complete beginners: no robotics, probability or programming background needed</p>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div class="map-wrap">
+        <canvas id="map" tabindex="0" aria-label="Hilly map with the robot and its guesses. Click it, then drive with the arrow keys or W, A, D." aria-describedby="status"></canvas>
+        <span class="map-overlay" id="mapOverlay" aria-hidden="true">click the map, then use ← ↑ →</span>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw robot"></span>real robot</span>
+        <span class="key"><span class="sw guess"></span>guesses</span>
+        <span class="key"><span class="sw ring"></span>best guess</span>
+        <span class="height-key">low <span class="bar"></span> high ground</span>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div>
+        <span class="lbl">Drive</span>
+        <div class="drive" role="group" aria-label="Drive the robot">
+          <button class="btn" id="left" type="button" title="Turn left (← or A)">⟲ left</button>
+          <button class="btn primary" id="fwd" type="button" title="Drive forward 4 m (↑ or W)">↑ forward</button>
+          <button class="btn" id="right" type="button" title="Turn right (→ or D)">right ⟳</button>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="auto" type="button" aria-pressed="false">▶ auto-drive</button>
+        <button class="btn" id="resetF" type="button" title="Scatter the guesses over the whole map again">scatter guesses</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="kidnap" type="button" title="Pick the robot up and drop it somewhere else">kidnap the robot</button>
+        <button class="btn" id="newMap" type="button">new map</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>steps</span><span class="v" id="rStep">0</span>
+        <span>altimeter reading</span><span class="v" id="rAlt">–</span>
+        <span>spread of the guesses</span><span class="v" id="rSpread">–</span>
+        <span>error of the best guess</span><span class="v" id="rErr">–</span>
+      </div>
+      <div>
+        <span class="lbl">The last 120 steps</span>
+        <div class="legend" aria-hidden="true" style="font-size:0.8rem">
+          <span class="key"><span class="sw line" style="background:var(--guess)"></span>spread</span>
+          <span class="key"><span class="sw line" style="background:var(--robot)"></span>error</span>
+        </div>
+        <div class="chart-box">
+          <canvas id="chart" aria-label="Line chart of the spread of the guesses and the error of the best guess over the last steps"></canvas>
+          <div class="tip" id="chartTip"></div>
+        </div>
+      </div>
+      <details class="settings" id="settings">
+        <summary>Settings</summary>
+        <div class="settings-grid">
+          <label class="field">Number of guesses
+            <select id="setN">
+              <option value="100">100</option>
+              <option value="500">500</option>
+              <option value="2000" selected>2,000</option>
+              <option value="5000">5,000</option>
+              <option value="10000">10,000</option>
+            </select>
+          </label>
+          <label class="field">Terrain
+            <select id="setTerrain">
+              <option value="hilly" selected>Hilly (100 m from lowest to highest)</option>
+              <option value="gentle">Gentle (big smooth hills only)</option>
+              <option value="flat">Almost flat (4 m from lowest to highest)</option>
+            </select>
+          </label>
+          <label class="field">Altimeter noise the filter assumes
+            <select id="setNoise">
+              <option value="0.5">0.5 m (overconfident)</option>
+              <option value="1.5">1.5 m (exactly the real noise)</option>
+              <option value="2.5" selected>2.5 m (a little humble)</option>
+              <option value="8">8 m (very humble)</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="setCompass" checked> Robot has a compass</label>
+          <label class="check"><input type="checkbox" id="setExplorers"> Random explorers (1% per step)</label>
+          <label class="check"><input type="checkbox" id="setShow" checked> Show the real robot</label>
+        </div>
+      </details>
+      <p class="hint">Keys work once the map has focus: <kbd>↑</kbd>/<kbd>W</kbd> forward 4 m, <kbd>←</kbd>/<kbd>A</kbd> and <kbd>→</kbd>/<kbd>D</kbd> turn 20°. The robot reads its altimeter after every move.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#lost"><span class="n">1</span><span class="t">The lost robot</span><span class="d">What localization means and why it is hard</span></a>
+    <a href="#cloud"><span class="n">2</span><span class="t">A cloud of guesses</span><span class="d">Writing down “I'm not sure”</span></a>
+    <a href="#track"><span class="n">3</span><span class="t">Warm-up on a loop track</span><span class="d">The whole idea in one dimension</span></a>
+    <a href="#predict"><span class="n">4</span><span class="t">Moving makes you less sure</span><span class="d">Step 1: predict</span></a>
+    <a href="#weigh"><span class="n">5</span><span class="t">Sensing makes you more sure</span><span class="d">Step 2: weigh, with the bell curve</span></a>
+    <a href="#resample"><span class="n">6</span><span class="t">Survival of the fittest</span><span class="d">Step 3: resample</span></a>
+    <a href="#open"><span class="n">7</span><span class="t">Keeping an open mind</span><span class="d">Step 4: jitter, and the kidnapped robot</span></a>
+    <a href="#algorithm"><span class="n">8</span><span class="t">The whole algorithm</span><span class="d">In words, in Python and in math</span></a>
+    <a href="#wrong"><span class="n">9</span><span class="t">When it goes wrong</span><span class="d">Experiments to run in the demo</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">Things to try next</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Going further</span><span class="d">Books, papers and real robots</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="lost">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The lost robot</h2>
+  </div>
+  <div class="col prose">
+    <p>Imagine you wake up somewhere in the hills, in thick fog. Your phone is dead. You have a paper map that shows how high the ground is everywhere, and a watch with an altimeter. The watch says <b>412 m</b>. Where are you?</p>
+    <p>You can't say yet. Every point on the map that sits at 412 m is a candidate, and there are hundreds of them, strung along a contour line that winds over many hills. So you walk 100 m north and look again: <b>430 m</b>. Now you only need the places that are at 412 m <em>and</em> have 430 m ground 100 m to their north. That is far fewer. Walk a bit more, read again, and soon only one place on the map fits everything you have seen.</p>
+    <p class="big-idea">One reading fits many places. A sequence of readings, taken while you move, fits only one.</p>
+    <p>That is the whole idea of this tutorial. Our robot is in exactly your situation. Finding out where you are on a map you already have is called <strong>localization</strong>, and it is one of the first problems every mobile robot has to solve.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:1rem">
+    <table>
+      <thead><tr><th>The robot has</th><th>What it tells the robot</th></tr></thead>
+      <tbody>
+        <tr><td>A map</td><td>The height of the ground everywhere. The demo map is 240 m by 160 m; dark is low, light is high.</td></tr>
+        <tr><td>Wheels</td><td>Roughly how far it just drove (about 4 m per step), but never exactly.</td></tr>
+        <tr><td>A compass</td><td>Which way it is facing, to within a couple of degrees.</td></tr>
+        <tr><td>An altimeter</td><td>The height of the ground under it, give or take about 1.5 m.</td></tr>
+        <tr><td>No GPS</td><td>Nothing tells it directly where it is.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>Why this is harder than it sounds</h3>
+    <p>Two things get in the way. First, as you just saw, <b>one reading is ambiguous</b>: it fits a whole contour line. Second, <b>nothing is exact</b>. The wheels slip, so "4 m" is really somewhere between about 3.5 and 4.5 m. The altimeter wobbles by a metre or two from one reading to the next. Engineers call these small random errors <strong>noise</strong>.</p>
+    <p>Because of the noise, the robot can't simply keep one best guess and update it. If that single guess is wrong, nothing would ever tell the robot to look somewhere else. It has to keep track of <em>every</em> place it might be, and how likely each one is. The rest of this tutorial shows a simple and surprisingly powerful way to do that: the <strong>particle filter</strong>.</p>
+    <p class="callout">This is not just a toy. Underwater vehicles find their position by comparing depth readings with maps of the seabed, because GPS signals do not reach under water. Many robot vacuums and warehouse robots run versions of the algorithm you are about to learn, with laser distance sensors in place of an altimeter.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="cloud">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>A cloud of guesses</h2>
+  </div>
+  <div class="col prose">
+    <p>How do you write down "I'm not sure where I am" in a way a computer can work with? The particle filter's answer is beautifully simple: <b>keep lots of guesses</b>.</p>
+    <p>Each guess is a complete answer, "the robot is <em>here</em>", a single point on the map. In the demo at the top there are 2,000 of them, the blue dots. Where the dots crowd together, the robot is probably there. Where there are no dots, it probably isn't. This crowd of guesses is the robot's <strong>belief</strong>: everything it currently thinks about its own position.</p>
+    <p>A cloud of guesses can describe any state of mind:</p>
+    <ul>
+      <li><b>Spread evenly over the map:</b> "I have no idea." That is how every run starts.</li>
+      <li><b>Split into a few clumps:</b> "I'm in one of these three places, I just don't know which."</li>
+      <li><b>One tight clump:</b> "I know where I am."</li>
+    </ul>
+    <p>A single best guess could never say "one of these three places". A cloud can. The guesses are also called <strong>particles</strong>, which is where the name particle filter comes from.</p>
+    <h3>Four steps, repeated forever</h3>
+    <p>Every time the robot moves, the cloud goes through the same four steps:</p>
+  </div>
+  <div class="col" style="margin-top:0.8rem">
+    <ol class="steps">
+      <li><div><b>Predict.</b> The robot drove 4 m north, so move every guess 4 m north, each with a little random error, because the wheels are never exact. <a href="#predict">Part 4</a></div></li>
+      <li><div><b>Weigh.</b> Read the altimeter. Give every guess a score: high if the map height at that guess matches the reading, low if it doesn't. <a href="#weigh">Part 5</a></div></li>
+      <li><div><b>Resample.</b> Make a fresh set of guesses by copying the high-scoring ones and dropping the low-scoring ones. <a href="#resample">Part 6</a></div></li>
+      <li><div><b>Jitter.</b> Shake every guess by a tiny random amount so that copies spread out and keep exploring. <a href="#open">Part 7</a></div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p class="big-idea">Good guesses multiply, bad guesses die out. After a few rounds, the survivors sit where the robot really is.</p>
+    <p class="callout">Why "filter"? In engineering, a filter is anything that takes noisy measurements and turns them into a cleaner estimate, as a coffee filter keeps the grounds out of your cup. This method is also called <strong>Monte Carlo localization</strong>, after the casino: it works by rolling dice, lots of them.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="track">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Warm-up: a robot on a loop track</h2>
+  </div>
+  <div class="col prose">
+    <p>Before the full 2-D map, let's watch the four steps in the simplest possible world. A little robot runs on a circular track, 200 m around, that climbs over several hills. Its position is a single number: how far along the track it is. Below, the track is drawn unrolled, as if you had cut the loop and laid it flat. Leaving on the right brings you back on the left.</p>
+    <p>There are 60 guesses, drawn as blue sticks along the bottom. The taller a stick, the higher that guess's score. Press <b>Next step</b> and read the caption each time.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="w1">
+      <div class="phases" aria-hidden="true">
+        <span class="phase" id="w1p0">1 · weigh</span>
+        <span class="phase" id="w1p1">2 · resample + jitter</span>
+        <span class="phase" id="w1p2">3 · move (predict)</span>
+      </div>
+      <canvas id="w1c" aria-label="Height profile of a loop track, with the robot and 60 guesses"></canvas>
+      <p class="caption" id="w1cap" aria-live="polite"></p>
+      <div class="controls">
+        <button class="btn primary" id="w1next" type="button">Next step ▶</button>
+        <button class="btn" id="w1play" type="button" aria-pressed="false">Play</button>
+        <button class="btn" id="w1reset" type="button">Start over</button>
+      </div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>Three things are worth noticing.</p>
+    <ul>
+      <li><b>The first reading leaves several clumps.</b> The track crosses the same height in several places, so one reading can't tell them apart. The cloud honestly says "one of these".</li>
+      <li><b>Moving smears every clump a little.</b> Each guess moved with its own small random error.</li>
+      <li><b>Wrong clumps die one by one.</b> A wrong clump can match one reading by luck. After the robot moves, it predicts a different height from the one the robot actually reads, and its sticks shrink. Only the clump that agrees with <em>every</em> reading survives.</li>
+    </ul>
+    <p>That last point is the heart of it. No single reading is decisive. It is the agreement with a whole sequence of readings, taken while moving, that singles out the right place.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="predict">
+  <div class="col part-head">
+    <span class="part-num">Part 4 · Step 1</span>
+    <h2>Moving makes you less sure</h2>
+  </div>
+  <div class="col prose">
+    <p>When the robot drives, it moves every guess the same way: "if I was <em>here</em> before driving 4 m north, I am <em>4 m further north</em> now." The whole cloud shifts with the robot.</p>
+    <p>But the wheels slip. The robot asked for 4 m and might have done 3.7 m or 4.4 m. Its compass is off by a degree or two, so the direction is slightly uncertain too. The filter copies this uncertainty: <b>each guess moves by its own slightly different, random amount</b>. Most of these random errors are small and a few are larger, following the bell-shaped pattern you will meet properly in Part 5. Here the typical error is 10% of the distance, so about 0.4 m for a 4 m step.</p>
+    <p>Below, 200 guesses all start at exactly the same spot. Drive them and watch what happens.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="w2">
+      <canvas id="w2c" aria-label="200 guesses starting at the same point and spreading as they move"></canvas>
+      <div class="controls">
+        <button class="btn" id="w2left" type="button">⟲ left</button>
+        <button class="btn primary" id="w2fwd" type="button">↑ forward</button>
+        <button class="btn" id="w2right" type="button">right ⟳</button>
+        <button class="btn" id="w2reset" type="button">start over</button>
+      </div>
+      <div class="controls">
+        <label class="field">wheel error <input type="range" id="w2noise" min="0" max="30" step="1" value="10"> <span class="readout-line" id="w2noiseV">10%</span></label>
+        <label class="check"><input type="checkbox" id="w2compass" checked> compass</label>
+      </div>
+      <p class="caption">The dashed line is where the robot would be if its wheels were perfect. Now untick <b>compass</b>, start over, and drive with a few turns: without a compass, small errors in the heading add up, and the cloud bends into a banana.</p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>Moving alone only ever makes the cloud <em>bigger</em>. That is not a flaw. It is the honest truth: after driving with imprecise wheels, the robot really is less sure where it is. To become more sure, it needs to look at the world. That is the next step.</p>
+    <details class="math">
+      <summary>For the curious: the math of step 1 <span>(optional)</span></summary>
+      <div class="inner">
+        <p>Write a guess as a position <span class="m">(x, y)</span>. The robot commands a distance <span class="m">d</span> and its compass reads a heading <span class="m">\theta</span>. Each guess moves by</p>
+        <div class="math-block">x \leftarrow x + (d + \varepsilon_d)\cos(\theta + \varepsilon_\theta), \qquad y \leftarrow y + (d + \varepsilon_d)\sin(\theta + \varepsilon_\theta)</div>
+        <p>where <span class="m">\varepsilon_d</span> and <span class="m">\varepsilon_\theta</span> are fresh random numbers for every guess, drawn from bell curves (normal distributions) centred on zero: <span class="m">\varepsilon_d \sim \mathcal{N}(0, (0.1\,d)^2)</span> and <span class="m">\varepsilon_\theta \sim \mathcal{N}(0, (0.03 + 0.015\,d)^2)</span>. This rule is the <strong>motion model</strong>. In the textbooks it is written as a probability, <span class="m">p(\mathbf{s}_t \mid \mathbf{u}_t, \mathbf{s}_{t-1})</span>: the chance of being at the new position <span class="m">\mathbf{s}_t</span>, given the old position <span class="m">\mathbf{s}_{t-1}</span> and the command <span class="m">\mathbf{u}_t</span>. A particle filter never needs to write that probability down; it only needs to <em>draw samples</em> from it, which is exactly what the rule above does.</p>
+        <p>The map has <span class="m">y</span> pointing down, as in an image. That is why a positive angle turns clockwise on screen.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="weigh">
+  <div class="col part-head">
+    <span class="part-num">Part 5 · Step 2</span>
+    <h2>Sensing makes you more sure</h2>
+  </div>
+  <div class="col prose">
+    <p>After each move, the robot reads its altimeter, say <b>63.7 m</b>. Now every guess gets a score. For each guess, look up the map height at that spot and compare:</p>
+    <ul>
+      <li>The map says 63 m there? That guess explains the reading very well: <b>high score</b>.</li>
+      <li>The map says 20 m there? If the robot were really there, it would have read about 20 m, not 63.7 m. That guess is almost certainly wrong: <b>score close to zero</b>.</li>
+    </ul>
+    <p>But we must be careful with guesses that are off by only a metre or two. The altimeter itself is off by about 1.5 m, so those guesses could easily be right. We need a <em>soft</em> score that falls off gently for small differences and steeply for big ones.</p>
+    <h3>The bell curve</h3>
+    <p>The tool for this is the <strong>bell curve</strong>, also called the normal or Gaussian distribution. It describes how random errors usually behave: small errors are common, big errors are rare, and very big errors almost never happen. Its width is set by one number, the <strong>standard deviation</strong>, written <span class="m">\sigma</span> ("sigma"). You can read it as "the typical size of the error".</p>
+    <p>The score of a guess is the height of the bell curve at the difference between the reading and the map:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Reading minus map height</th><th>In units of σ</th><th>Score</th><th>In words</th></tr></thead>
+      <tbody>
+        <tr><td>0 m</td><td>0</td><td>1.00</td><td>a perfect match</td></tr>
+        <tr><td>2.5 m</td><td>1</td><td>0.61</td><td>very plausible</td></tr>
+        <tr><td>5 m</td><td>2</td><td>0.14</td><td>possible, but suspicious</td></tr>
+        <tr><td>7.5 m</td><td>3</td><td>0.011</td><td>very unlikely</td></tr>
+        <tr><td>10 m</td><td>4</td><td>0.0003</td><td>practically impossible</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The table uses <span class="m">\sigma = 2.5</span> m, the value our filter uses. In the widget below, <b>click anywhere on the map</b> to put the robot there. It takes a reading, and every point of the map is coloured by the score a guess standing there would get. Try different values of σ.</p>
+  </div>
+  <div class="wide" style="max-width:52rem">
+    <div class="widget" id="w3">
+      <div class="split">
+        <div style="position:relative">
+          <canvas id="w3map" style="cursor:crosshair;border-radius:8px" aria-label="Map coloured by how well each spot explains the altimeter reading. Click to move the robot."></canvas>
+        </div>
+        <div style="display:grid;gap:0.6rem">
+          <p class="readout-line" id="w3info"></p>
+          <div class="chart-box">
+            <canvas id="w3bell" style="height:170px" aria-label="Bell curve: score as a function of ground height"></canvas>
+            <div class="tip" id="w3tip"></div>
+          </div>
+          <label class="field">σ, the error the filter allows <span style="display:flex;gap:0.6rem;align-items:center"><input type="range" id="w3sigma" min="0.5" max="10" step="0.5" value="2.5"> <span class="readout-line" id="w3sigmaV">2.5 m</span></span></label>
+          <button class="btn" id="w3read" type="button">read the altimeter again</button>
+        </div>
+      </div>
+      <p class="caption">Blue = high score. The blue follows a contour line: every spot at roughly the same height as the reading gets a high score, wherever it is. This is the "one reading fits many places" problem, made visible.</p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>Press <b>read the altimeter again</b> a few times: the reading wobbles by a metre or two, and the band shifts with it. That wobble is why σ can't be tiny. With σ = 0.5 m the band becomes a thread, and a guess standing right next to the robot could get a score of zero just because of one unlucky reading.</p>
+    <h3>Why the filter assumes 2.5 m when the altimeter is better than that</h3>
+    <p>The real altimeter error is 1.5 m, but the filter is told 2.5 m. This is a deliberate bit of humility. The map is stored in 1 m squares, the guesses are only a sample of all possible positions, and nothing in the model is perfect. A filter that trusts its sensor <em>exactly</em> tends to kill guesses that are close to the truth but not quite on it, and then it locks onto the wrong place. Giving it a little slack makes it far more reliable. You can test this yourself in <a href="#wrong">Part 9</a>.</p>
+    <details class="math">
+      <summary>For the curious: scores, Bayes' rule and normalizing <span>(optional)</span></summary>
+      <div class="inner">
+        <p>The bell-curve score of guess number <span class="m">i</span>, at position <span class="m">(x_i, y_i)</span>, for the altimeter reading <span class="m">z</span> is</p>
+        <div class="math-block">w_i = \exp\!\left(-\frac{1}{2}\left(\frac{z - m(x_i, y_i)}{\sigma}\right)^{2}\right)</div>
+        <p>where <span class="m">m(x, y)</span> is the map height. Up to a constant, this is the probability of reading <span class="m">z</span> if the robot really were at guess <span class="m">i</span>, written <span class="m">p(z \mid \mathbf{s}_i)</span> and called the <strong>likelihood</strong>. It is the <strong>measurement model</strong>.</p>
+        <p>Why multiply a guess's importance by its likelihood? That is <strong>Bayes' rule</strong>, the basic law of learning from evidence:</p>
+        <div class="math-block">\underbrace{p(\mathbf{s} \mid z)}_{\text{belief after the reading}} \;\propto\; \underbrace{p(z \mid \mathbf{s})}_{\text{likelihood}} \;\times\; \underbrace{p(\mathbf{s})}_{\text{belief before}}</div>
+        <p>Before the reading, the belief is the cloud of guesses. Multiplying each guess by its likelihood gives the belief after the reading. Finally, the scores are divided by their sum, <span class="m">\tilde w_i = w_i / \sum_j w_j</span>, so that they add up to 1 and can be read as probabilities. The code also subtracts the smallest squared error before taking the exponential, so the best guess gets exactly 1 and the numbers never round down to zero.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="resample">
+  <div class="col part-head">
+    <span class="part-num">Part 6 · Step 3</span>
+    <h2>Survival of the fittest</h2>
+  </div>
+  <div class="col prose">
+    <p>After weighing, a few guesses have big scores and most have tiny ones. Carrying around 2,000 guesses of which 1,900 are almost certainly wrong wastes effort, and those few good ones are spread thin. <strong>Resampling</strong> fixes this. It builds a brand-new set of 2,000 guesses by picking from the old set, where each guess's chance of being picked is its score. Strong guesses are picked several times and become several copies. Weak guesses are usually not picked at all and disappear.</p>
+    <p>A neat way to do the picking is the <b>comb</b>. Lay the scores end to end, like segments on a ruler, each segment as long as that guess's share of the total score. Then drop a comb with one evenly spaced tooth per new guess on top of the ruler, shifted by a random amount. Each tooth picks the guess it lands on. A guess holding 25% of the total score gets about 25% of the teeth.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="w4">
+      <canvas id="w4c" aria-label="Eight guesses as segments of a ruler, with a comb of eight teeth picking the new set"></canvas>
+      <p class="caption" id="w4cap" aria-live="polite"></p>
+      <div class="controls">
+        <button class="btn primary" id="w4go" type="button">drop the comb</button>
+        <button class="btn" id="w4new" type="button">new scores</button>
+      </div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>After resampling, every guess counts the same again. The information hasn't vanished, though: it now lives in <em>where the guesses crowd</em>. A place that scored well is now covered by many copies.</p>
+    <p class="callout warm">Notice what resampling cannot do: it never creates a new position. It only copies existing guesses. If no guess was near the robot to begin with, resampling cannot put one there. Keep this in mind for the next part.</p>
+    <details class="math">
+      <summary>For the curious: why the comb and not a lottery <span>(optional)</span></summary>
+      <div class="inner">
+        <p>The simplest way to resample is a lottery: draw 2,000 times at random, each time picking guess <span class="m">i</span> with probability <span class="m">\tilde w_i</span>. That works, but it is needlessly noisy: by bad luck a strong guess can get no copies at all. The comb, known as <strong>systematic resampling</strong>, uses a single random number <span class="m">u</span> between 0 and <span class="m">1/N</span> and places teeth at <span class="m">u, u + 1/N, u + 2/N, \dots</span>. A guess with weight <span class="m">\tilde w_i</span> then gets either <span class="m">\lfloor N \tilde w_i \rfloor</span> or <span class="m">\lceil N \tilde w_i \rceil</span> copies, never wildly more or fewer. It is also fast: one pass through the list.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="open">
+  <div class="col part-head">
+    <span class="part-num">Part 7 · Step 4</span>
+    <h2>Keeping an open mind</h2>
+  </div>
+  <div class="col prose">
+    <h3>Jitter: spreading the copies</h3>
+    <p>After resampling, copies sit exactly on top of each other. Repeat that for many steps and the 2,000 guesses could end up as just a handful of distinct points stacked on top of each other, a problem called <strong>sample impoverishment</strong>. The fix is the fourth step: shake every guess by a small random amount, 0.5 m in the demo. Each stack of copies becomes a small local cloud that can explore the neighbourhood and find a slightly better spot.</p>
+    <h3>The kidnapped robot</h3>
+    <p>Now a harder case. Suppose the robot knows exactly where it is, and someone picks it up and puts it down somewhere else. All the guesses are still at the old place. None are near the new one, and as we just saw, resampling cannot create guesses where there are none. The filter is stuck. It keeps believing in the old place, because the old guesses, bad as they are, are the best it has.</p>
+    <p>Roboticists call this the <strong>kidnapped robot problem</strong>. It sounds contrived, but it is a good test of something real: can the filter recover after it has become confident about the wrong answer?</p>
+    <p>A simple fix is to keep a few <strong>explorers</strong>. At every step, a small fraction of the guesses (1% in the demo) is thrown to completely random places on the map. While the robot is where the filter thinks it is, the explorers score badly and die. But if the robot is somewhere unexpected, sooner or later an explorer lands near it, matches the readings better than anything else, and multiplies.</p>
+  </div>
+  <div class="col tryit" style="margin-top:1rem">
+    <button class="btn" type="button" data-preset="kidnap">Try it: kidnap without explorers</button>
+    <button class="btn" type="button" data-preset="explorers">Try it: kidnap with explorers</button>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p class="hint">Each button first lets the filter find the robot, then kidnaps it and starts auto-drive. Watch the chart: the orange error line jumps up. Without explorers, the blue spread stays small, so the filter is confident and wrong, and it usually stays that way. With explorers, the cloud reappears at the new place after a while. In 30 simulated kidnappings, the filter without explorers recovered only twice in the next 60 steps; with explorers it recovered 27 times, typically within about 23 steps.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="algorithm">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The whole algorithm</h2>
+  </div>
+  <div class="col prose">
+    <p>Here is everything together. At the start, scatter the guesses evenly over the map. Then, every time the robot moves:</p>
+  </div>
+  <div class="col" style="margin-top:0.8rem">
+    <ol class="steps">
+      <li><div><b>Predict:</b> move every guess the way the robot moved, each with its own random error.</div></li>
+      <li><div><b>Weigh:</b> score every guess with the bell curve, by how well its map height matches the altimeter.</div></li>
+      <li><div><b>Resample:</b> pick a new set of guesses with the comb, copying in proportion to the scores.</div></li>
+      <li><div><b>Jitter:</b> shake every guess a little.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The robot's <b>best single guess</b> is the average position of all the guesses, the white ring in the demo. The <b>spread</b>, the typical distance of a guess from that average, says how sure the robot is. Be careful with the average while the cloud is split into several clumps: it can land in the empty space between them. It only becomes trustworthy once the cloud is a single clump.</p>
+    <h3>The code</h3>
+    <p>The whole filter is four short functions in Python, using the <a href="https://numpy.org/" rel="noopener">NumPy</a> library, which works on all 2,000 guesses at once. This is an excerpt from the complete program, which also makes the map, drives the robot and draws the plots.</p>
+    <pre><code class="language-python">N = 2000                 # number of guesses
+ASSUMED_NOISE = 2.5      # the filter assumes a slightly worse altimeter than the real one
+JITTER = 0.5             # metres of shake after resampling
+
+
+def predict(px, py, compass, distance):
+    """1. Move every guess the way the robot thinks it moved, plus random errors."""
+    heading = compass + rng.normal(0, COMPASS_NOISE + DRIFT * distance, N)
+    travelled = distance + rng.normal(0, STEP_NOISE * distance, N)
+    px = np.clip(px + travelled * np.cos(heading), 0, WIDTH - 1)
+    py = np.clip(py + travelled * np.sin(heading), 0, HEIGHT - 1)
+    return px, py
+
+
+def weigh(px, py, reading):
+    """2. Bell-curve score: how well does each guess explain the reading?"""
+    surprise = ((reading - height_at(px, py)) / ASSUMED_NOISE) ** 2
+    weights = np.exp(-0.5 * (surprise - surprise.min()))   # best guess gets weight 1
+    return weights / weights.sum()                          # weights now add up to 1
+
+
+def resample(px, py, weights):
+    """3. Copy guesses in proportion to their weight; unlikely ones disappear."""
+    comb = (rng.random() + np.arange(N)) / N               # N evenly spaced teeth
+    chosen = np.searchsorted(np.cumsum(weights), comb)
+    chosen = np.minimum(chosen, N - 1)                      # guard against rounding
+    return px[chosen], py[chosen]
+
+
+def jitter(px, py):
+    """4. A small shake, so that copies do not sit exactly on top of each other."""
+    return px + rng.normal(0, JITTER, N), py + rng.normal(0, JITTER, N)</code></pre>
+    <p>And the loop that runs it, once per step of the drive:</p>
+    <pre><code class="language-python">for step in range(1, STEPS + 1):
+    distance, turn = 4.0, 0.2 * np.cos(step / 4)           # weave left and right
+
+    rx, ry, rh = robot_step(rx, ry, rh, distance, turn)    # the real robot moves
+    compass = read_compass(rh)                              # and reads its sensors
+    reading = read_altimeter(rx, ry)
+
+    px, py = predict(px, py, compass, distance)             # 1. predict
+    weights = weigh(px, py, reading)                        # 2. weigh
+    px, py = resample(px, py, weights)                      # 3. resample
+    px, py = jitter(px, py)                                 # 4. jitter</code></pre>
+    <h3>Run it yourself</h3>
+    <ol>
+      <li>Install Python 3 from <a href="https://www.python.org/downloads/" rel="noopener">python.org</a> if you don't have it.</li>
+      <li>Open a terminal and install the two libraries: <code>pip install numpy matplotlib</code></li>
+      <li>Download <a class="download" href="particle_filter.py" download>particle_filter.py</a> (about 160 lines, with plenty of comments) and run <code>python particle_filter.py</code></li>
+    </ol>
+    <p>It prints one line per step, with the altimeter reading, the error of the best guess and the spread, and then shows the cloud at four moments plus a plot of error and spread over time. With the seed in the file, the cloud first settles on a look-alike place around step 13, changes its mind two steps later, and locks onto the robot at step 21. Change the seed to get a new map and a new drive.</p>
+    <details class="math">
+      <summary>For the curious: the Bayes filter behind it all <span>(optional)</span></summary>
+      <div class="inner">
+        <p>Call the robot's position at step <span class="m">t</span> <span class="m">\mathbf{s}_t</span>, its commands <span class="m">\mathbf{u}_{1:t}</span> and its readings <span class="m">z_{1:t}</span>. What we want is the <strong>belief</strong>, the probability distribution of the position given everything so far, <span class="m">\operatorname{bel}(\mathbf{s}_t) = p(\mathbf{s}_t \mid z_{1:t}, \mathbf{u}_{1:t})</span>. It obeys a two-line recursion, the <strong>Bayes filter</strong>:</p>
+        <div class="math-block">\overline{\operatorname{bel}}(\mathbf{s}_t) = \int p(\mathbf{s}_t \mid \mathbf{u}_t, \mathbf{s}_{t-1})\, \operatorname{bel}(\mathbf{s}_{t-1})\, \mathrm{d}\mathbf{s}_{t-1} \qquad \text{(predict)}</div>
+        <div class="math-block">\operatorname{bel}(\mathbf{s}_t) = \eta\, p(z_t \mid \mathbf{s}_t)\, \overline{\operatorname{bel}}(\mathbf{s}_t) \qquad \text{(update)}</div>
+        <p>where <span class="m">\eta</span> makes everything add up to 1. For a hilly map these integrals have no formula. The particle filter replaces the belief by <span class="m">N</span> samples, <span class="m">\operatorname{bel}(\mathbf{s}_t) \approx \frac{1}{N}\sum_{i=1}^{N} \delta(\mathbf{s}_t - \mathbf{s}_t^{(i)})</span>. Then the predict line becomes "move each sample with the motion model", the update line becomes "weigh each sample by the likelihood", and resampling turns the weighted samples back into equally weighted ones. With more and more samples, the approximation becomes exact.</p>
+      </div>
+    </details>
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Localization</td><td>Working out where you are on a map you already have.</td></tr>
+        <tr><td>Noise</td><td>Small random errors in movements and measurements.</td></tr>
+        <tr><td>Particle (guess)</td><td>One candidate position for the robot.</td></tr>
+        <tr><td>Belief</td><td>Everything the robot thinks about where it is: here, the whole cloud of guesses.</td></tr>
+        <tr><td>Motion model</td><td>The rule for moving guesses, including random errors (Part 4).</td></tr>
+        <tr><td>Bell curve</td><td>The normal distribution: small errors common, big errors rare. Its width is σ.</td></tr>
+        <tr><td>Likelihood, weight</td><td>The score of a guess: how well it explains the reading (Part 5).</td></tr>
+        <tr><td>Resampling</td><td>Making a new set of guesses by copying in proportion to the weights (Part 6).</td></tr>
+        <tr><td>Jitter</td><td>A small random shake after resampling, so copies spread out (Part 7).</td></tr>
+        <tr><td>Estimate</td><td>The single best guess: the average of all guesses.</td></tr>
+        <tr><td>Spread</td><td>How far the guesses sit from the estimate: the robot's uncertainty.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="wrong">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>When it goes wrong</h2>
+  </div>
+  <div class="col prose">
+    <p>The best way to understand a method is to break it. Each button below changes one setting in the demo at the top, scatters the guesses and starts auto-drive. Use <b>scatter guesses</b> to rerun the same experiment, and keep an eye on the chart.</p>
+    <p>How often does each setting work? The table below comes from running this page's filter on 40 simulated drives per setting, each on a different random map, with the same auto-drive as the demo. A drive counts as a success if the best guess is within 5 m of the robot after 60 steps.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.8rem">
+    <table>
+      <thead><tr><th>Setting (others at default)</th><th>Found the robot</th><th>Typical steps to lock on</th></tr></thead>
+      <tbody>
+        <tr><td>Default: 2,000 guesses, σ = 2.5 m</td><td>40 of 40</td><td>12</td></tr>
+        <tr><td>500 guesses</td><td>32 of 40</td><td>13</td></tr>
+        <tr><td>100 guesses</td><td>14 of 40</td><td>14</td></tr>
+        <tr><td>σ = 0.5 m (overconfident)</td><td>16 of 40</td><td>8</td></tr>
+        <tr><td>σ = 1.5 m (the true noise)</td><td>37 of 40</td><td>9</td></tr>
+        <tr><td>σ = 8 m (very humble)</td><td>40 of 40</td><td>22</td></tr>
+        <tr><td>Gentle hills</td><td>40 of 40</td><td>15</td></tr>
+        <tr><td>Almost flat</td><td>6 of 40</td><td>54</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p class="hint">"Typical" is the median over the successful drives. "Lock on" means the error drops below 5 m and stays there.</p>
+
+    <h3>Too few guesses</h3>
+    <p>With 100 guesses spread over 38,400 m², each guess has to cover almost 400 m². Often no guess starts anywhere near the robot. The filter then picks the best of a bad bunch and becomes confident about the wrong place. In the simulated drives, 100 guesses found the robot only 14 times out of 40, and in most of the failures the cloud was a tight clump in the wrong place.</p>
+    <div class="tryit"><button class="btn" type="button" data-preset="few">Try it: 100 guesses</button></div>
+
+    <h3>Flat ground</h3>
+    <p>On almost flat ground the heights differ by only 4 m across the whole map, just a few times the altimeter's own error. Every reading fits almost everywhere, and the cloud never shrinks. However clever the algorithm, it can only find the robot if what the sensor measures actually <em>changes</em> from place to place. The gentle terrain sits in between: big smooth hills give fewer clues per step, so finding the robot takes longer.</p>
+    <div class="tryit"><button class="btn" type="button" data-preset="flat">Try it: almost flat</button> <button class="btn" type="button" data-preset="gentle">Try it: gentle hills</button></div>
+
+    <h3>An overconfident filter</h3>
+    <p>Tell the filter its altimeter is perfect to within 0.5 m. Now a guess that is 2 m off scores almost zero, even though the real altimeter is often 2 m off. Good guesses get killed by unlucky readings. The cloud collapses fast, often onto the wrong place: in the table it locks on quickest of all, but onto the right place only 16 times out of 40. At the other extreme, σ = 8 m never fails but needs almost twice as many steps as the default. Being a little humble about your sensors (Part 5) is the sweet spot.</p>
+    <div class="tryit"><button class="btn" type="button" data-preset="overconfident">Try it: σ = 0.5 m</button></div>
+
+    <h3>No compass</h3>
+    <p>Without a compass, each guess must also guess which way the robot is facing: three unknowns instead of two. A guess in the right place but facing the wrong way drives off in the wrong direction and dies. There are far more possibilities to cover, so the filter needs more guesses (5,000 here) and more driving. In 30 simulated drives it found the robot 25 times within 60 steps, typically after about 30 steps, and even then the cloud now and then wanders off for a few steps before settling again.</p>
+    <div class="tryit"><button class="btn" type="button" data-preset="nocompass">Try it: no compass, 5,000 guesses</button></div>
+
+    <h3>Hide and seek</h3>
+    <p>Finally, a game. Hide the real robot, drive it yourself, and decide when you trust the guesses. Then reveal the robot and see whether the filter was right. When the cloud is a single tight clump, it almost always is.</p>
+    <div class="tryit"><button class="btn" type="button" data-preset="hide">Hide the robot</button> <button class="btn" type="button" data-preset="default">Back to the default settings</button></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>The first four use only the demo. The others change a line or two of <a href="particle_filter.py" download>particle_filter.py</a>; run each change with a few different seeds before drawing a conclusion.</p>
+    <ol class="exercises">
+      <li><div><b>Count the steps.</b> With the default settings, press <b>new map</b>, then <b>auto-drive</b>, five times. How many steps does it take until the spread drops below 5 m? Is it always about the same?</div></li>
+      <li><div><b>Watch the clumps.</b> Drive by hand, one step at a time, from a fresh scatter. How many separate clumps are there after 3 steps? After 6? Can you explain from the map why the wrong ones died?</div></li>
+      <li><div><b>Read the chart.</b> In a normal run, the blue spread line and the orange error line come down together. In the "kidnap without explorers" experiment they don't. Explain in one sentence why a filter's spread is not always a trustworthy measure of its error.</div></li>
+      <li><div><b>Turning in place.</b> Turn left ten times without moving forward. The robot reads its altimeter each time, at the same spot. What happens to the cloud? Is that what you would expect?</div></li>
+      <li><div><b>No jitter.</b> Set <code>JITTER = 0</code>. Print <code>len(np.unique(px))</code> at each step: the number of distinct guesses. What happens to it, and does the filter still find the robot?</div></li>
+      <li><div><b>Humble or overconfident?</b> Try <code>ASSUMED_NOISE</code> = 0.5, 1.5, 2.5 and 10 with seeds 0 to 9. For each value, count the runs that end with an error under 5 m, and note how many steps the successful runs took. What is the trade-off?</div></li>
+      <li><div><b>Flatten the world.</b> After <code>terrain = make_terrain(...)</code>, add <code>terrain = 50 + 0.04 * (terrain - 50)</code>. What happens to the spread, and why?</div></li>
+      <li><div><b>Kidnap the robot in Python.</b> At step 25, move the robot: <code>rx, ry = 200.0, 120.0</code>. Then add explorers: at the start of every step, before <code>predict</code>, replace a random 1% of the guesses with new random positions. Does the filter recover? Why is it better to add them before weighing than after?</div></li>
+      <li><div><b>Take the compass away</b> (harder). Give every guess its own heading <code>ph</code>, scattered at random at the start. In <code>predict</code>, turn each guess with <code>ph = ph + turn + noise</code> and drive it along <code>ph</code> instead of the compass. How many guesses and steps do you need now?</div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <p>You now know the core of one of the most widely used algorithms in robotics. Real systems add refinements: better sensors (laser scanners and cameras instead of one altimeter), smarter ways to decide how many guesses to keep, and maps that the robot builds for itself while it explores, which is called SLAM. The sources below are good next steps, roughly from gentlest to most technical.</p>
+    <div class="ref-group">Books</div>
+    <ul class="refs">
+      <li id="ref-tbf"><span class="rn">[TBF05]</span><div>Sebastian Thrun, Wolfram Burgard and Dieter Fox. <em>Probabilistic Robotics</em>. MIT Press, 2005. <span class="note">The standard textbook. Chapter 4 covers particle filters, chapter 5 motion models, chapter 6 measurement models and chapter 8 Monte Carlo localization, including random explorers for the kidnapped robot.</span></div></li>
+      <li id="ref-ddg"><span class="rn">[DdFG01]</span><div>Arnaud Doucet, Nando de Freitas and Neil Gordon (editors). <em>Sequential Monte Carlo Methods in Practice</em>. Springer, 2001. <span class="note">Particle filters beyond robotics: tracking, finance, signal processing.</span></div></li>
+    </ul>
+    <div class="ref-group">Papers</div>
+    <ul class="refs">
+      <li id="ref-gss"><span class="rn">[GSS93]</span><div>Neil J. Gordon, David J. Salmond and Adrian F. M. Smith. "Novel approach to nonlinear/non-Gaussian Bayesian state estimation". <em>IEE Proceedings F</em> 140(2), 107–113, 1993. <span class="note">The paper that introduced the particle filter as used here, with resampling.</span></div></li>
+      <li id="ref-dfbt"><span class="rn">[DFBT99]</span><div>Frank Dellaert, Dieter Fox, Wolfram Burgard and Sebastian Thrun. "Monte Carlo localization for mobile robots". IEEE International Conference on Robotics and Automation (ICRA), 1999. <span class="note">Brought particle filters to robot localization.</span></div></li>
+      <li id="ref-blg"><span class="rn">[BLG99]</span><div>Niclas Bergman, Lennart Ljung and Fredrik Gustafsson. "Terrain navigation using Bayesian statistics". <em>IEEE Control Systems Magazine</em> 19(3), 33–40, 1999. <span class="note">Finding an aircraft's position by comparing measured ground heights with a terrain map: this tutorial's problem, for real.</span></div></li>
+      <li id="ref-kit"><span class="rn">[Kit96]</span><div>Genshiro Kitagawa. "Monte Carlo filter and smoother for non-Gaussian nonlinear state space models". <em>Journal of Computational and Graphical Statistics</em> 5(1), 1–25, 1996. <span class="note">Includes the low-noise resampling schemes that the comb of Part 6 belongs to.</span></div></li>
+      <li id="ref-amgc"><span class="rn">[AMGC02]</span><div>M. Sanjeev Arulampalam, Simon Maskell, Neil Gordon and Tim Clapp. "A tutorial on particle filters for online nonlinear/non-Gaussian Bayesian tracking". <em>IEEE Transactions on Signal Processing</em> 50(2), 174–188, 2002. <span class="note">The classic next step once the math boxes here feel comfortable.</span></div></li>
+      <li id="ref-fox"><span class="rn">[Fox03]</span><div>Dieter Fox. "Adapting the sample size in particle filters through KLD-sampling". <em>International Journal of Robotics Research</em> 22(12), 985–1003, 2003. <span class="note">How to use many guesses while the robot is lost and few once it knows where it is.</span></div></li>
+    </ul>
+    <div class="ref-group">Software</div>
+    <ul class="refs">
+      <li id="ref-amcl"><span class="rn">[AMCL]</span><div>The <code>amcl</code> package of the Robot Operating System (ROS) and its successor in ROS 2 Nav2: adaptive Monte Carlo localization with laser scanners, running on many real robots.</div></li>
+    </ul>
+  </div>
+</section>
+
+<footer class="col">
+  <p>Everything on this page was made for this tutorial: the terrain is generated from random numbers, and the text, figures and code are original. The demos run the same algorithm as <a href="particle_filter.py" download>particle_filter.py</a>, in plain JavaScript in your browser. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="pf.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
