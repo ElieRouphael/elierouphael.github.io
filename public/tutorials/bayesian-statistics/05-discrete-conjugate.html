@@ -3,13 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>05 · Conjugate models for counts and proportions — Bayesian statistics course</title>
-<meta name="description" content="The beta-binomial and Poisson-gamma models derived, priors as imaginary data, and closed-form predictive distributions.">
+<title>05 · Counts and proportions · Bayesian statistics course</title>
+<meta name="description" content="Conjugate models for discrete data: the beta-binomial and the Poisson-gamma, priors as imaginary data, shrinkage, a Bayesian A/B test and closed-form predictions, with live demos.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .chart-title { font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.2rem; }
+  .params { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr)); gap: 0.5rem 1rem; }
+  .ab { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 0.8rem; }
+  .ab .head { font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .ab input[type="number"] { width: 100%; font: inherit; font-family: var(--font-mono); font-size: 0.85rem; padding: 0.3rem 0.4rem; border-radius: 7px; border: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); }
+  .days { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .days label { display: grid; gap: 0.1rem; font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted); text-align: center; }
+  .days input { width: 3.2rem; font: inherit; font-family: var(--font-mono); font-size: 0.9rem; padding: 0.3rem; border-radius: 7px; border: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); text-align: center; }
+</style>
 </head>
 <body>
 
@@ -17,273 +27,418 @@
 
 <header class="hero col">
   <span class="eyebrow">Bayesian statistics course · Chapter 05 of 09</span>
-  <h1>Conjugate models for counts and proportions</h1>
-  <div class="intro prose">
-<p><strong>Goal.</strong> Derive the two workhorse conjugate models for discrete data, beta-binomial
-for proportions and Poisson-gamma for counts, and use them on real questions: an A/B
-test comparing two conversion rates, and a rate of events per day. Along the way we
-find that the posterior mean is a weighted average of the prior mean and the data,
-and that a prior can be read as a number of imaginary observations.</p>
-
-  </div>
+  <h1>Counts and proportions</h1>
+  <p class="lede">An online shop tests a new checkout page. The old one, A, turned 26 of 240 visitors into buyers; the new one, B, turned 41 of 250. Is B really better, or did it get lucky? Below is a complete Bayesian answer, computed as you type: the probability that B is better, and by how much. Change the numbers and watch it respond. This chapter shows why the answer takes only a few additions, and how to read a prior as data you have already seen.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 02 and 04 · Every number is checked in the chapter's notebook</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/05_discrete_conjugate.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/05_discrete_conjugate.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="bayesian-statistics-course.zip" download>Full course (.zip)</a>
   </div>
-  
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-conjugacy">1. Conjugacy</a></li>
-    <li><a href="#2-the-beta-binomial-model">2. The beta-binomial model</a></li>
-    <li><a href="#3-an-a-b-test">3. An A/B test</a></li>
-    <li><a href="#4-predicting-future-successes">4. Predicting future successes</a></li>
-    <li><a href="#5-the-poisson-gamma-model">5. The Poisson-gamma model</a></li>
-    <li><a href="#6-choosing-the-hyperparameters">6. Choosing the hyperparameters</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-conjugacy">1. Conjugacy</h2>
-<p>A family of priors is <strong>conjugate</strong> to a likelihood if the posterior is in the same
-family as the prior [1]. Then Bayes' theorem reduces to updating a few numbers (the
-prior's parameters, called <strong>hyperparameters</strong>), and every posterior quantity has a
-formula or a one-line scipy call.</p>
-<p>The trick for finding the posterior is the proportionality of chapter 04: write
-likelihood times prior, drop everything that does not involve <span class="math inline">\theta</span>, and
-recognise what is left as the kernel of a known density.</p>
+<!-- ============ LIVE DEMO: an A/B test ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">What each conversion rate could be</p>
+        <canvas id="abC" aria-label="The shared prior and the posteriors of the two conversion rates" aria-describedby="abStatus"></canvas>
+      </div>
+      <div>
+        <p class="chart-title">How much better is B? (relative lift)</p>
+        <canvas id="liftC" aria-label="Histogram of the relative lift of B over A, from Monte Carlo draws"></canvas>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--prior)"></span>shared prior</span>
+        <span class="key"><span class="sw" style="background:var(--lik)"></span>A posterior</span>
+        <span class="key"><span class="sw" style="background:var(--post)"></span>B posterior</span>
+      </div>
+      <p class="status" id="abStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div>
+        <span class="lbl">B is better with probability</span>
+        <span class="big-number" id="bigP">–</span>
+      </div>
+      <div class="ab">
+        <span class="head" style="color:var(--lik)">Version A</span><span class="head" style="color:var(--post)">Version B</span>
+        <label class="field">visitors<input type="number" id="nA" min="1" max="100000" step="1"></label>
+        <label class="field">visitors<input type="number" id="nB" min="1" max="100000" step="1"></label>
+        <label class="field">buyers<input type="number" id="yA" min="0" max="100000" step="1"></label>
+        <label class="field">buyers<input type="number" id="yB" min="0" max="100000" step="1"></label>
+      </div>
+      <label class="field"><span>Shared prior: typical rate</span>
+        <span class="row"><input type="range" id="pm" min="1" max="50" step="1"><span class="readout-line" id="pmV"></span></span>
+      </label>
+      <label class="field"><span>Prior worth (visitors)</span>
+        <span class="row"><input type="range" id="pk" min="2" max="1000" step="1"><span class="readout-line" id="pkV"></span></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>A: mean, 95% interval</span><span class="v" id="rA">–</span>
+        <span>B: mean, 95% interval</span><span class="v" id="rB">–</span>
+        <span>lift: median</span><span class="v" id="rLift">–</span>
+        <span>lift: 95% interval</span><span class="v" id="rLiftCI">–</span>
+        <span>P(lift &gt; 20%)</span><span class="v" id="rLift20">–</span>
+      </div>
+      <p class="hint">The notebook's numbers: 26 of 240 and 41 of 250, with a prior of typical rate 10% worth 30 visitors.</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-the-beta-binomial-model">2. The beta-binomial model</h2>
-<p><strong>Model.</strong> <span class="math inline">y</span> successes in <span class="math inline">n</span> independent trials with success probability
-<span class="math inline">\theta</span>, and a Beta prior:
-<span class="math display"> y\mid\theta\sim \text{Binomial}(n,\theta), \qquad \theta\sim\text{Beta}(\alpha,\beta). </span></p>
-<p><strong>Posterior.</strong> Multiply and keep only what involves <span class="math inline">\theta</span>:
-<span class="math display"> p(\theta\mid y) \;\propto\; \underbrace{\theta^{y}(1-\theta)^{n-y}}_{\text{likelihood}}\;
-   \underbrace{\theta^{\alpha-1}(1-\theta)^{\beta-1}}_{\text{prior}}
-   = \theta^{\alpha+y-1}(1-\theta)^{\beta+n-y-1}. </span>
-That is the kernel of a Beta density, so
-<span class="math display"> \boxed{\;\theta\mid y \sim \text{Beta}(\alpha+y,\ \beta+n-y)\;} </span>
-The update rule is: <strong>add the successes to <span class="math inline">\alpha</span> and the failures to <span class="math inline">\beta</span></strong>.
-The flat prior of chapter 04 is Beta<span class="math inline">(1,1)</span>, and the shooter's posterior was
-Beta<span class="math inline">(14, 8)</span> all along.</p>
-<p><strong>Reading the prior as data.</strong> Beta<span class="math inline">(\alpha,\beta)</span> behaves like having already seen
-<span class="math inline">\alpha</span> successes and <span class="math inline">\beta</span> failures, so <span class="math inline">\alpha+\beta</span> is the prior's <strong>effective
-sample size</strong>. The posterior mean makes this precise:
-<span class="math display"> \mathbb E[\theta\mid y] = \frac{\alpha+y}{\alpha+\beta+n}
-   = \underbrace{\frac{\alpha+\beta}{\alpha+\beta+n}}_{\text{weight on prior}}\cdot\frac{\alpha}{\alpha+\beta}
-   \;+\; \underbrace{\frac{n}{\alpha+\beta+n}}_{\text{weight on data}}\cdot\frac{y}{n}. </span>
-The posterior mean is a weighted average of the prior mean and the sample
-proportion, with weights proportional to the prior's effective sample size and the
-real sample size. As <span class="math inline">n</span> grows, the data win. Pulling an estimate towards a prior
-value in this way is called <strong>shrinkage</strong>.</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#conjugacy"><span class="n">1</span><span class="t">Conjugacy</span><span class="d">When Bayes' theorem is just bookkeeping</span></a>
+    <a href="#betabinomial"><span class="n">2</span><span class="t">The beta-binomial model</span><span class="d">Priors as imaginary data, and shrinkage</span></a>
+    <a href="#abtest"><span class="n">3</span><span class="t">An A/B test</span><span class="d">Is B better, and by how much?</span></a>
+    <a href="#predict"><span class="n">4</span><span class="t">Predicting future successes</span><span class="d">The beta-binomial distribution</span></a>
+    <a href="#poisson"><span class="n">5</span><span class="t">The Poisson-gamma model</span><span class="d">Counting events at an unknown rate</span></a>
+    <a href="#choose"><span class="n">6</span><span class="t">Choosing the prior's numbers</span><span class="d">A mean, and what it is worth</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="md">
-<h2 id="3-an-a-b-test">3. An A/B test</h2>
-<p>An online shop tests a new checkout page. Version A (the current one) is shown to
-240 visitors and 26 buy something. Version B is shown to 250 visitors and 41 buy.
-Is B better, and by how much?</p>
-<p>Past data on this shop say conversion rates are usually between 5% and 20%. A
-Beta<span class="math inline">(3, 27)</span> prior encodes that: its mean is <span class="math inline">0.10</span> and it is worth 30 visitors of
-data, which is weak next to the real 240 and 250. We give both versions the same
-prior, so any difference in the posteriors comes from the data:
-<span class="math display"> \theta_A\mid y \sim \text{Beta}(3+26,\ 27+214), \qquad \theta_B\mid y\sim\text{Beta}(3+41,\ 27+209). </span></p>
-<p>The question &quot;is B better?&quot; is the posterior probability <span class="math inline">P(\theta_B &gt; \theta_A\mid y)</span>.
-There is a closed form, but <strong>Monte Carlo</strong> is simpler and more general: draw many
-<span class="math inline">(\theta_A,\theta_B)</span> pairs from the two posteriors and count how often
-<span class="math inline">\theta_B &gt; \theta_A</span>. The same draws give the whole posterior of the difference
-<span class="math inline">\theta_B-\theta_A</span> and of the relative lift <span class="math inline">\theta_B/\theta_A - 1</span> at no extra cost.</p>
-</div>
+<!-- =================================================================== -->
+<section id="conjugacy">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Conjugacy</h2>
+  </div>
+  <div class="col prose">
+    <p>In chapter 04 the posterior was computed numerically on a grid. For some pairs of likelihood and prior, no computation is needed at all: the posterior turns out to be in the same family as the prior, with updated parameters. Bayes' theorem then reduces to adding a few numbers.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a conjugate prior?</p>
+      <p><b>In plain words:</b> a prior whose shape survives the update. Before the data it is, say, a beta curve; after the data it is still a beta curve, only moved and sharpened.</p>
+      <p><b>More precisely:</b> a family of priors is <strong>conjugate</strong> to a likelihood if, for every data set, the posterior belongs to the same family <a href="#ref-1">[1]</a>. Updating then means updating the family's parameters.</p>
+      <dl>
+        <dt>Hyperparameters</dt><dd>The parameters of the prior, such as <span class="m">\alpha</span> and <span class="m">\beta</span>, as opposed to the model's parameter <span class="m">\theta</span>.</dd>
+        <dt>Kernel</dt><dd>The part of a density that involves the variable, without the constant in front: <span class="m">\theta^{a-1}(1-\theta)^{b-1}</span> is the kernel of a Beta<span class="m">(a, b)</span>.</dd>
+        <dt>Update rule</dt><dd>How the data change the hyperparameters, such as "add the successes to <span class="m">\alpha</span>".</dd>
+      </dl>
+    </div>
+    <p>The way to find a conjugate posterior is the proportionality trick of chapter 04: multiply likelihood and prior, drop every factor that doesn't involve the parameter, and recognise what is left as the kernel of a known density.</p>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
-import matplotlib.pyplot as plt
-from scipy import stats, integrate
+<!-- =================================================================== -->
+<section id="betabinomial">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The beta-binomial model</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The model.</b> <span class="m">y</span> successes in <span class="m">n</span> independent trials with success probability <span class="m">\theta</span>, and a beta prior:</p>
+    <div class="math-block">y \mid \theta \sim \text{Binomial}(n, \theta), \qquad \theta \sim \text{Beta}(\alpha, \beta).</div>
+    <p><b>The posterior.</b> Multiply, and keep only what involves <span class="m">\theta</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} p(\theta \mid y) &amp;\propto \underbrace{\theta^{y}(1-\theta)^{n-y}}_{\text{likelihood}}\; \underbrace{\theta^{\alpha-1}(1-\theta)^{\beta-1}}_{\text{prior}} \\ &amp;= \theta^{\alpha+y-1}(1-\theta)^{\beta+n-y-1}. \end{aligned}">p(\theta \mid y) \;\propto\; \underbrace{\theta^{y}(1-\theta)^{n-y}}_{\text{likelihood}}\; \underbrace{\theta^{\alpha-1}(1-\theta)^{\beta-1}}_{\text{prior}} = \theta^{\alpha+y-1}(1-\theta)^{\beta+n-y-1}.</div>
+    <p>That is the kernel of a beta density, so</p>
+    <div class="math-block">\boxed{\;\theta \mid y \sim \text{Beta}(\alpha + y,\ \beta + n - y)\;}</div>
+    <p class="big-idea">Add the successes to α and the failures to β. That is the whole update.</p>
+    <p>The flat prior of chapter 04 is Beta(1, 1), so the shooter's posterior, 13 makes and 7 misses, was Beta(14, 8) all along: no grid needed.</p>
+    <h3>A prior is data you have already seen</h3>
+    <p>Beta<span class="m">(\alpha, \beta)</span> behaves exactly like having already seen <span class="m">\alpha</span> successes and <span class="m">\beta</span> failures, so <span class="m">\alpha + \beta</span> is the prior's <strong>effective sample size</strong>: what it is worth in observations. The posterior mean makes this precise. It is a weighted average of the prior mean and the observed proportion:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathbb{E}[\theta \mid y] &amp;= \frac{\alpha + y}{\alpha + \beta + n} \\ &amp;= \underbrace{\frac{\alpha + \beta}{\alpha + \beta + n}}_{\text{weight on prior}} \cdot \frac{\alpha}{\alpha + \beta} \\ &amp;\quad + \underbrace{\frac{n}{\alpha + \beta + n}}_{\text{weight on data}} \cdot \frac{y}{n}. \end{aligned}">\mathbb{E}[\theta \mid y] = \frac{\alpha + y}{\alpha + \beta + n} = \underbrace{\frac{\alpha + \beta}{\alpha + \beta + n}}_{\text{weight on prior}} \cdot \frac{\alpha}{\alpha + \beta} \;+\; \underbrace{\frac{n}{\alpha + \beta + n}}_{\text{weight on data}} \cdot \frac{y}{n}.</div>
+    <p>The weights are the prior's worth and the real sample size, each divided by their total. As <span class="m">n</span> grows, the data win. Pulling an estimate towards a prior value like this is called <strong>shrinkage</strong>. Set a prior by its typical value and what it's worth, then add data:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="shrink">
+      <div class="params">
+        <label class="field"><span>Prior: typical rate</span><span class="row"><input type="range" id="sM" min="1" max="99" step="1"><span class="readout-line" id="sMV"></span></span></label>
+        <label class="field"><span>Prior worth (observations)</span><span class="row"><input type="range" id="sK" min="2" max="200" step="1"><span class="readout-line" id="sKV"></span></span></label>
+        <label class="field"><span>Trials <span class="m">n</span></span><span class="row"><input type="range" id="sN" min="0" max="200" step="1"><span class="readout-line" id="sNV"></span></span></label>
+        <label class="field"><span>Successes <span class="m">y</span></span><span class="row"><input type="range" id="sY" min="0" max="200" step="1"><span class="readout-line" id="sYV"></span></span></label>
+      </div>
+      <canvas id="shrinkC" aria-label="Prior, likelihood and posterior, with the posterior mean on a line between the prior mean and the observed proportion"></canvas>
+      <p class="caption" id="shrinkCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <details class="math">
+      <summary>For the curious: the weighted average, and what "worth 2 observations" means <span>(optional)</span></summary>
+      <div class="inner">
+        <p>The weighted-average form is just algebra: write <span class="m">\alpha = \frac{\alpha}{\alpha+\beta}(\alpha+\beta)</span> and <span class="m">y = \frac{y}{n} n</span> in the numerator of <span class="m">\frac{\alpha + y}{\alpha + \beta + n}</span>, and split the fraction in two. The weights are positive and add up to 1, so the posterior mean always lies between the prior mean and <span class="m">y/n</span> (exercise 1).</p>
+        <p>Even the flat Beta(1, 1) prior is "worth" 2 observations: one imaginary success and one imaginary failure. That is why its posterior mean for the shooter is <span class="m">\frac{14}{22} \approx 0.636</span>, not 0.65. Laplace used exactly this in 1774 for his "rule of succession": after <span class="m">y</span> successes in <span class="m">n</span> trials, the probability of a success next time is <span class="m">\frac{y+1}{n+2}</span>.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-plt.rcParams.update({&quot;figure.dpi&quot;: 120, &quot;figure.figsize&quot;: (7.5, 3.4), &quot;axes.grid&quot;: True,
-                     &quot;grid.alpha&quot;: 0.3, &quot;axes.spines.top&quot;: False, &quot;axes.spines.right&quot;: False})
-PRIOR, LIK, POST = &quot;#8a949e&quot;, &quot;#eb6834&quot;, &quot;#2a78d6&quot;
-rng = np.random.default_rng(5)
-
-a0, b0 = 3, 27
+<!-- =================================================================== -->
+<section id="abtest">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>An A/B test</h2>
+  </div>
+  <div class="col prose">
+    <p>Back to the shop of the demo at the top. Version A, the current checkout page, was shown to 240 visitors and 26 bought something. Version B was shown to 250 and 41 bought. Past data say this shop's conversion rates are usually between 5% and 20%, and a Beta(3, 27) prior encodes that: its mean is 0.10 and it is worth 30 visitors, which is weak next to the real 240 and 250. Both versions get the same prior, so any difference between the posteriors comes from the data:</p>
+    <div class="math-block" data-narrow="\begin{gathered} \theta_A \mid y \sim \text{Beta}(3 + 26,\ 27 + 214), \\ \theta_B \mid y \sim \text{Beta}(3 + 41,\ 27 + 209). \end{gathered}">\theta_A \mid y \sim \text{Beta}(3 + 26,\ 27 + 214), \qquad \theta_B \mid y \sim \text{Beta}(3 + 41,\ 27 + 209).</div>
+    <p>"Is B better?" is the posterior probability <span class="m">P(\theta_B > \theta_A \mid y)</span>. There is a formula (exercise 3), but <strong>Monte Carlo</strong> is simpler and more general: draw many pairs <span class="m">(\theta_A, \theta_B)</span> from the two posteriors, and count how often <span class="m">\theta_B > \theta_A</span>. Each dot below is one such pair; the dots above the diagonal are the draws in which B is better.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="mc">
+      <canvas id="mcC" aria-label="Scatter plot of draws of the two conversion rates, with the diagonal where they are equal"></canvas>
+      <p class="caption" id="mcCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn" type="button" id="mcAgain">draw again</button></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The same draws give the whole posterior of the difference <span class="m">\theta_B - \theta_A</span> and of the relative lift <span class="m">\theta_B / \theta_A - 1</span> at no extra cost: compute it for each pair, and look at the histogram (the lower chart in the demo).</p>
+    <pre><code class="language-python">a0, b0 = 3, 27
 nA, yA = 240, 26
 nB, yB = 250, 41
 postA = stats.beta(a0 + yA, b0 + nA - yA)
 postB = stats.beta(a0 + yB, b0 + nB - yB)
 
-for name, p, yy, nn in [(&quot;A&quot;, postA, yA, nA), (&quot;B&quot;, postB, yB, nB)]:
-    lo, hi = p.ppf([0.025, 0.975])
-    print(f&quot;version {name}: observed {yy / nn:.3f}, posterior mean {p.mean():.3f}, 95% credible interval ({lo:.3f}, {hi:.3f})&quot;)
-
 S = 200_000
 tA, tB = postA.rvs(S, random_state=rng), postB.rvs(S, random_state=rng)
 p_better = (tB &gt; tA).mean()
 exact = integrate.quad(lambda t: postA.pdf(t) * postB.sf(t), 0, 1)[0]   # P(θB &gt; θA) = ∫ pA(t) P(θB &gt; t) dt
-print(f&quot;\nP(θB &gt; θA | data): Monte Carlo {p_better:.4f}, numerical integral {exact:.4f}&quot;)
-lift = tB / tA - 1
-print(f&quot;relative lift of B: median {np.median(lift):+.0%}, 95% interval ({np.quantile(lift, 0.025):+.0%}, {np.quantile(lift, 0.975):+.0%})&quot;)
-print(f&quot;P(lift &gt; 20%) = {(lift &gt; 0.2).mean():.3f}&quot;)
-
-fig, ax = plt.subplots(1, 2, figsize=(10, 3.2))
-t = np.linspace(0, 0.3, 600)
-ax[0].fill_between(t, stats.beta.pdf(t, a0, b0), color=PRIOR, alpha=0.35, label=&quot;shared prior Beta(3, 27)&quot;)
-ax[0].plot(t, postA.pdf(t), color=LIK, lw=2, label=&quot;A posterior&quot;)
-ax[0].plot(t, postB.pdf(t), color=POST, lw=2, label=&quot;B posterior&quot;)
-ax[0].set_xlabel(&quot;conversion rate&quot;); ax[0].legend(fontsize=8); ax[0].set_title(&quot;the two conversion rates&quot;)
-ax[1].hist(tB - tA, bins=120, density=True, color=POST, alpha=0.7)
-ax[1].axvline(0, color=&quot;k&quot;, lw=1)
-ax[1].set_xlabel(&quot;θB − θA&quot;); ax[1].set_title(f&quot;difference: P(B better) = {p_better:.3f}&quot;)
-plt.tight_layout(); plt.show()</code></pre>
-<pre class="output">version A: observed 0.108, posterior mean 0.107, 95% credible interval (0.073, 0.147)
+lift = tB / tA - 1</code></pre>
+    <pre class="output"><code class="nohl">version A: observed 0.108, posterior mean 0.107, 95% credible interval (0.073, 0.147)
 version B: observed 0.164, posterior mean 0.157, 95% credible interval (0.117, 0.202)
 
 P(θB &gt; θA | data): Monte Carlo 0.9584, numerical integral 0.9586
 relative lift of B: median +47%, 95% interval (-5%, +130%)
-P(lift &gt; 20%) = 0.818</pre>
-<figure class="output-figure"><img src="img/05-1.png" alt="Figure: the two conversion rates; difference: P(B better) = …" width="1187" height="371" loading="lazy"></figure>
-</div>
+P(lift &gt; 20%) = 0.818</code></pre>
+    <p class="callout">This is the kind of answer decision-makers actually want: "B is better with probability about 96%; the most likely lift is around +45%, but the data are still compatible with anything from a small loss to more than doubling the conversion rate." A p-value answers a different question: how surprising the data would be if A and B were identical.</p>
+  </div>
+</section>
 
-<div class="md">
-<p>This is the kind of answer decision-makers actually want: &quot;B is better with
-probability about 96%; the most likely lift is around +45%, but the data are still
-compatible with anything from a small loss to more than doubling the conversion
-rate.&quot; Compare it with a p-value, which
-answers a different question (how surprising the data would be if A and B were
-identical).</p>
-</div>
-
-<div class="md">
-<h2 id="4-predicting-future-successes">4. Predicting future successes</h2>
-<p>The posterior predictive for the number of successes <span class="math inline">\tilde y</span> in <span class="math inline">m</span> future trials
-has a closed form here, the <strong>beta-binomial distribution</strong>:
-<span class="math display"> p(\tilde y\mid y) = \int_0^1 \binom{m}{\tilde y}\theta^{\tilde y}(1-\theta)^{m-\tilde y}\,
-   \frac{\theta^{\alpha&#x27;-1}(1-\theta)^{\beta&#x27;-1}}{B(\alpha&#x27;,\beta&#x27;)}\,\mathrm d\theta
-   = \binom{m}{\tilde y}\frac{B(\alpha&#x27;+\tilde y,\ \beta&#x27;+m-\tilde y)}{B(\alpha&#x27;,\beta&#x27;)}, </span>
-where <span class="math inline">(\alpha&#x27;,\beta&#x27;)</span> are the posterior parameters and <span class="math inline">B</span> is the beta function
-<span class="math inline">B(a,b) = \Gamma(a)\Gamma(b)/\Gamma(a+b)</span>. The integral is easy because the integrand
-is an unnormalised beta density. scipy calls it <code>stats.betabinom</code>. We check it by
-simulating: draw <span class="math inline">\theta</span> from the posterior, then <span class="math inline">\tilde y</span> from the binomial.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">m = 100                                           # the next 100 visitors to version B
+<!-- =================================================================== -->
+<section id="predict">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Predicting future successes</h2>
+  </div>
+  <div class="col prose">
+    <p>How many of the next 100 visitors to version B will buy? The posterior predictive of chapter 04 has a closed form here, the <strong>beta-binomial distribution</strong>. With <span class="m">(\alpha', \beta')</span> the posterior parameters,</p>
+    <div class="math-block" data-narrow="\begin{aligned} p(\tilde y \mid y) &amp;= \int_0^1 \binom{m}{\tilde y}\theta^{\tilde y}(1-\theta)^{m-\tilde y} \\ &amp;\qquad \times \frac{\theta^{\alpha'-1}(1-\theta)^{\beta'-1}}{B(\alpha', \beta')}\,\mathrm{d}\theta \\ &amp;= \binom{m}{\tilde y}\frac{B(\alpha' + \tilde y,\ \beta' + m - \tilde y)}{B(\alpha', \beta')}, \end{aligned}">p(\tilde y \mid y) = \int_0^1 \binom{m}{\tilde y}\theta^{\tilde y}(1-\theta)^{m-\tilde y}\,\frac{\theta^{\alpha'-1}(1-\theta)^{\beta'-1}}{B(\alpha', \beta')}\,\mathrm{d}\theta = \binom{m}{\tilde y}\frac{B(\alpha' + \tilde y,\ \beta' + m - \tilde y)}{B(\alpha', \beta')},</div>
+    <p>where <span class="m">B</span> is the beta function of chapter 02. The integral is easy because the integrand is an unnormalised beta density: its area is a beta function. scipy calls the result <code>stats.betabinom</code>.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="bb">
+      <div class="params">
+        <label class="field"><span>Next visitors to B, <span class="m">m</span></span><span class="row"><input type="range" id="bbM" min="10" max="300" step="10" value="100"><span class="readout-line" id="bbMV"></span></span></label>
+        <label class="field"><span>Shade "at least <span class="m">k</span> buyers"</span><span class="row"><input type="range" id="bbK" min="0" max="100" step="1" value="20"><span class="readout-line" id="bbKV"></span></span></label>
+      </div>
+      <canvas id="bbC" aria-label="Beta-binomial predictive and plug-in binomial for the number of future buyers"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--prior)"></span>plug-in binomial</span>
+        <span class="key"><span class="sw" style="background:var(--post)"></span>beta-binomial predictive</span>
+      </div>
+      <p class="caption" id="bbCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">m = 100                                           # the next 100 visitors to version B
 pred = stats.betabinom(m, a0 + yB, b0 + nB - yB)
 sim = rng.binomial(m, postB.rvs(200_000, random_state=rng))
-print(f&quot;buyers among next {m} B visitors: formula mean {pred.mean():.2f} sd {pred.std():.2f} | &quot;
-      f&quot;simulation mean {sim.mean():.2f} sd {sim.std():.2f}&quot;)
-print(f&quot;P(at least 20 buyers) = {pred.sf(19):.3f}&quot;)</code></pre>
-<pre class="output">buyers among next 100 B visitors: formula mean 15.71 sd 4.23 | simulation mean 15.73 sd 4.22
-P(at least 20 buyers) = 0.183</pre>
-</div>
+print(f"buyers among next {m} B visitors: formula mean {pred.mean():.2f} sd {pred.std():.2f} | "
+      f"simulation mean {sim.mean():.2f} sd {sim.std():.2f}")
+print(f"P(at least 20 buyers) = {pred.sf(19):.3f}")</code></pre>
+    <pre class="output"><code class="nohl">buyers among next 100 B visitors: formula mean 15.71 sd 4.23 | simulation mean 15.73 sd 4.22
+P(at least 20 buyers) = 0.183</code></pre>
+    <p>The simulation check is the recipe of chapter 04 made concrete: draw a <span class="m">\theta</span> from the posterior, then a <span class="m">\tilde y</span> from the binomial with that <span class="m">\theta</span>; repeat. It agrees with the formula to two decimals.</p>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="5-the-poisson-gamma-model">5. The Poisson-gamma model</h2>
-<p><strong>Model.</strong> Counts <span class="math inline">y_1,\dots,y_n</span> of events in equal time periods, occurring at an
-unknown rate <span class="math inline">\lambda</span>, with a Gamma prior (shape <span class="math inline">\alpha</span>, rate <span class="math inline">\beta</span>):
-<span class="math display"> y_i\mid\lambda \overset{\text{iid}}{\sim}\text{Poisson}(\lambda),\qquad \lambda\sim\text{Gamma}(\alpha,\beta). </span></p>
-<p><strong>Posterior.</strong> The likelihood is <span class="math inline">\prod_i \lambda^{y_i}e^{-\lambda}/y_i! \propto \lambda^{\sum y_i}e^{-n\lambda}</span>, so
-<span class="math display"> p(\lambda\mid y) \propto \lambda^{\sum y_i}e^{-n\lambda}\cdot\lambda^{\alpha-1}e^{-\beta\lambda}
-   = \lambda^{\alpha+\sum y_i-1}e^{-(\beta+n)\lambda}, </span>
-<span class="math display"> \boxed{\;\lambda\mid y\sim\text{Gamma}\Big(\alpha+\sum_i y_i,\ \beta+n\Big)\;} </span>
-<strong>Add the total count to the shape and the number of periods to the rate.</strong> The
-prior acts like <span class="math inline">\beta</span> earlier periods in which <span class="math inline">\alpha</span> events were seen in total,
-and the posterior mean is again a weighted average:
-<span class="math display"> \mathbb E[\lambda\mid y] = \frac{\alpha+\sum y_i}{\beta+n}
-   = \frac{\beta}{\beta+n}\cdot\frac{\alpha}{\beta} + \frac{n}{\beta+n}\cdot\bar y. </span></p>
-<p><strong>Posterior predictive.</strong> For a new count <span class="math inline">\tilde y</span> the predictive is a <strong>negative
-binomial</strong>, <span class="math inline">\tilde y\mid y\sim \text{NegBin}\big(\alpha&#x27;,\ \beta&#x27;/(\beta&#x27;+1)\big)</span> in
-scipy's parameterisation, with <span class="math inline">(\alpha&#x27;, \beta&#x27;)</span> the posterior parameters. Its
-variance exceeds its mean, unlike a Poisson, because it includes uncertainty about
-<span class="math inline">\lambda</span>.</p>
-<p><strong>Example.</strong> A café's owner records the number of customer complaints on each of
-7 days: 6, 3, 7, 5, 8, 4, 6. From the chain's other cafés, the rate is typically
-around 3 per day, and the owner encodes that as a Gamma<span class="math inline">(6, 2)</span> prior: mean 3, worth
-2 days of data. The posterior is Gamma<span class="math inline">(6+39,\ 2+7) = </span> Gamma<span class="math inline">(45, 9)</span>.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">counts = np.array([6, 3, 7, 5, 8, 4, 6])
+<!-- =================================================================== -->
+<section id="poisson">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The Poisson-gamma model</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The model.</b> Counts <span class="m">y_1, \dots, y_n</span> of events in equal periods, at an unknown rate <span class="m">\lambda</span>, with a gamma prior (shape <span class="m">\alpha</span>, rate <span class="m">\beta</span>):</p>
+    <div class="math-block">y_i \mid \lambda \overset{\text{iid}}{\sim} \text{Poisson}(\lambda), \qquad \lambda \sim \text{Gamma}(\alpha, \beta).</div>
+    <p><b>The posterior.</b> The likelihood is <span class="m">\prod_i \lambda^{y_i} e^{-\lambda} / y_i! \propto \lambda^{\sum y_i} e^{-n\lambda}</span>, so</p>
+    <div class="math-block" data-narrow="\begin{aligned} p(\lambda \mid y) &amp;\propto \lambda^{\sum y_i} e^{-n\lambda} \cdot \lambda^{\alpha-1} e^{-\beta\lambda} \\ &amp;= \lambda^{\alpha + \sum y_i - 1} e^{-(\beta + n)\lambda}, \end{aligned}">p(\lambda \mid y) \propto \lambda^{\sum y_i} e^{-n\lambda} \cdot \lambda^{\alpha-1} e^{-\beta\lambda} = \lambda^{\alpha + \sum y_i - 1} e^{-(\beta + n)\lambda},</div>
+    <div class="math-block">\boxed{\;\lambda \mid y \sim \text{Gamma}\Big(\alpha + \sum_i y_i,\ \beta + n\Big)\;}</div>
+    <p class="big-idea">Add the total count to the shape, and the number of periods to the rate.</p>
+    <p>The prior acts like <span class="m">\beta</span> earlier periods in which <span class="m">\alpha</span> events were seen in total, and the posterior mean is again a weighted average of the prior mean and the sample mean:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathbb{E}[\lambda \mid y] &amp;= \frac{\alpha + \sum y_i}{\beta + n} \\ &amp;= \frac{\beta}{\beta + n} \cdot \frac{\alpha}{\beta} + \frac{n}{\beta + n} \cdot \bar y. \end{aligned}">\mathbb{E}[\lambda \mid y] = \frac{\alpha + \sum y_i}{\beta + n} = \frac{\beta}{\beta + n} \cdot \frac{\alpha}{\beta} + \frac{n}{\beta + n} \cdot \bar y.</div>
+    <p><b>Predicting a new count.</b> For tomorrow's count <span class="m">\tilde y</span>, the posterior predictive is a <strong>negative binomial</strong>: in scipy, <code>stats.nbinom(a1, b1 / (b1 + 1))</code>, with <span class="m">(\alpha', \beta')</span> = (<code>a1</code>, <code>b1</code>) the posterior parameters. Its variance is larger than its mean, unlike a Poisson's, because it includes our uncertainty about <span class="m">\lambda</span>.</p>
+    <p><b>Example.</b> A café owner records customer complaints on each of 7 days: 6, 3, 7, 5, 8, 4, 6. The chain's other cafés typically get about 3 a day, and the owner encodes that as a Gamma(6, 2) prior: mean 3, worth 2 days of data. The posterior is Gamma(6 + 39, 2 + 7) = Gamma(45, 9). Edit the days, or add one:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="cafe">
+      <div class="days" id="cafeDays" role="group" aria-label="Complaints per day"></div>
+      <div class="controls">
+        <button class="btn" type="button" id="cafeAdd">add a day</button>
+        <button class="btn" type="button" id="cafeDay8">day 8: 12 complaints</button>
+        <button class="btn" type="button" id="cafeReset">the notebook's 7 days</button>
+      </div>
+      <div class="params">
+        <label class="field"><span>Prior: typical rate per day</span><span class="row"><input type="range" id="cM" min="1" max="20" step="0.5"><span class="readout-line" id="cMV"></span></span></label>
+        <label class="field"><span>Prior worth (days)</span><span class="row"><input type="range" id="cK" min="0.5" max="20" step="0.5"><span class="readout-line" id="cKV"></span></span></label>
+      </div>
+      <p class="chart-title">The rate λ (complaints per day)</p>
+      <canvas id="cafeC" aria-label="Prior, likelihood and posterior for the complaint rate"></canvas>
+      <p class="chart-title">Tomorrow's complaints</p>
+      <canvas id="cafeP" aria-label="Negative binomial predictive for tomorrow, compared with a Poisson of the same mean"></canvas>
+      <p class="caption" id="cafeCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">counts = np.array([6, 3, 7, 5, 8, 4, 6])
 a0, b0 = 6.0, 2.0
 a1, b1 = a0 + counts.sum(), b0 + len(counts)
 post = stats.gamma(a=a1, scale=1 / b1)
-w = b0 / (b0 + len(counts))
-print(f&quot;posterior Gamma({a1:.0f}, {b1:.0f}): mean {post.mean():.3f} = {w:.2f} x prior mean {a0 / b0:.1f} &quot;
-      f&quot;+ {1 - w:.2f} x sample mean {counts.mean():.3f}&quot;)
-lo, hi = post.ppf([0.025, 0.975])
-print(f&quot;95% credible interval for λ: ({lo:.2f}, {hi:.2f}) complaints per day&quot;)
-
-pred = stats.nbinom(a1, b1 / (b1 + 1))
-sim = rng.poisson(post.rvs(200_000, random_state=rng))
-print(f&quot;tomorrow: predictive mean {pred.mean():.2f}, var {pred.var():.2f} (a Poisson would have var = mean); &quot;
-      f&quot;simulated var {sim.var():.2f}&quot;)
-print(f&quot;P(10 or more complaints tomorrow) = {pred.sf(9):.4f}&quot;)
-
-lam = np.linspace(0, 12, 600)
-plt.fill_between(lam, stats.gamma.pdf(lam, a0, scale=1 / b0), color=PRIOR, alpha=0.35, label=&quot;prior Gamma(6, 2)&quot;)
-plt.plot(lam, stats.gamma.pdf(lam, counts.sum() + 1, scale=1 / len(counts)), color=LIK, lw=1.5, ls=&quot;--&quot;,
-         label=&quot;likelihood (scaled)&quot;)
-plt.plot(lam, post.pdf(lam), color=POST, lw=2.2, label=f&quot;posterior Gamma({a1:.0f}, {b1:.0f})&quot;)
-plt.xlabel(&quot;λ (complaints per day)&quot;); plt.ylabel(&quot;density&quot;)
-plt.title(&quot;The posterior sits between the chain&#x27;s typical rate and this café&#x27;s data&quot;)
-plt.legend(); plt.show()</code></pre>
-<pre class="output">posterior Gamma(45, 9): mean 5.000 = 0.22 x prior mean 3.0 + 0.78 x sample mean 5.571
+pred = stats.nbinom(a1, b1 / (b1 + 1))</code></pre>
+    <pre class="output"><code class="nohl">posterior Gamma(45, 9): mean 5.000 = 0.22 x prior mean 3.0 + 0.78 x sample mean 5.571
 95% credible interval for λ: (3.65, 6.56) complaints per day
 tomorrow: predictive mean 5.00, var 5.56 (a Poisson would have var = mean); simulated var 5.56
-P(10 or more complaints tomorrow) = 0.0398</pre>
-<figure class="output-figure"><img src="img/05-2.png" alt="Figure: The posterior sits between the chain&#x27;s typical rate and this café&#x27;s data" width="789" height="418" loading="lazy"></figure>
-</div>
+P(10 or more complaints tomorrow) = 0.0398</code></pre>
+    <details class="math">
+      <summary>For the curious: why predictions are wider than a Poisson <span>(optional)</span></summary>
+      <div class="inner">
+        <p>The <strong>law of total variance</strong> splits the uncertainty about a prediction in two:</p>
+        <div class="math-block" data-narrow="\begin{aligned} \mathrm{Var}(\tilde y) &amp;= \mathbb{E}\big[\mathrm{Var}(\tilde y \mid \lambda)\big] \\ &amp;\quad + \mathrm{Var}\big(\mathbb{E}[\tilde y \mid \lambda]\big). \end{aligned}">\mathrm{Var}(\tilde y) = \mathbb{E}\big[\mathrm{Var}(\tilde y \mid \lambda)\big] + \mathrm{Var}\big(\mathbb{E}[\tilde y \mid \lambda]\big).</div>
+        <p>The first term is the noise you would have even if you knew <span class="m">\lambda</span> exactly; the second is the extra spread from not knowing it. For a Poisson count both pieces are easy, because a Poisson's mean and variance are both <span class="m">\lambda</span>. Exercise 5 works them out: for the café, 5.00 from the Poisson noise plus 0.56 from the uncertainty about the rate. With more days of data the second term shrinks towards zero, and the predictive approaches a plain Poisson.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="6-choosing-the-hyperparameters">6. Choosing the hyperparameters</h2>
-<p>The effective-sample-size reading makes conjugate priors easy to set:</p>
-<ol>
-<li>Choose a <strong>prior mean</strong> <span class="math inline">m</span> from background knowledge.</li>
-<li>Choose how many observations the prior should be <strong>worth</strong>, <span class="math inline">k</span>.</li>
-<li>Solve: for a beta prior, <span class="math inline">\alpha = mk</span>, <span class="math inline">\beta = (1-m)k</span>; for a gamma prior on a
-Poisson rate, <span class="math inline">\beta = k</span> periods and <span class="math inline">\alpha = mk</span> events.</li>
-</ol>
-<p>Always look at the prior you have chosen, for example with its central 95% interval
-or its prior predictive distribution, and ask whether it says what you meant.
-Chapter 07 returns to priors in more depth.</p>
-</div>
+<!-- =================================================================== -->
+<section id="choose">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Choosing the prior's numbers</h2>
+  </div>
+  <div class="col prose">
+    <p>Reading a prior as imaginary data makes conjugate priors easy to set:</p>
+  </div>
+  <div class="col" style="margin-top:0.6rem">
+    <ol class="steps">
+      <li><div><b>Choose a prior mean</b> <span class="m">m</span> from background knowledge: a typical conversion rate, a typical number of complaints.</div></li>
+      <li><div><b>Choose what the prior is worth</b>, <span class="m">k</span> observations: how many real data points would make you change your mind.</div></li>
+      <li><div><b>Solve</b>: for a beta prior, <span class="m">\alpha = mk</span> and <span class="m">\beta = (1-m)k</span>; for a gamma prior on a Poisson rate, <span class="m">\beta = k</span> periods and <span class="m">\alpha = mk</span> events.</div></li>
+    </ol>
+  </div>
+  <div class="col table-wrap" style="margin-top:1rem">
+    <table class="num">
+      <thead><tr><th>Use</th><th>Mean <span class="m">m</span></th><th>Worth <span class="m">k</span></th><th>Prior</th><th>Its 95% range</th></tr></thead>
+      <tbody>
+        <tr><td>No opinion</td><td>0.5</td><td>2</td><td>Beta(1, 1)</td><td>(0.025, 0.975)</td></tr>
+        <tr><td>Shop conversion rates</td><td>0.10</td><td>30</td><td>Beta(3, 27)</td><td>(0.02, 0.23)</td></tr>
+        <tr><td>Players like the shooter</td><td>0.75</td><td>40</td><td>Beta(30, 10)</td><td>(0.61, 0.87)</td></tr>
+        <tr><td>Café complaints per day</td><td>3</td><td>2 days</td><td>Gamma(6, 2)</td><td>(1.1, 5.8)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Always look at the prior you have chosen, for example through its 95% range as in the last column, or through its prior predictive distribution (chapter 04), and ask whether it says what you meant. The widgets of Parts 2 and 5 are built around exactly these two dials. Chapter 07 returns to priors in more depth.</p>
+  </div>
+</section>
 
-<div class="md exercises">
-<h3 id="exercises">Exercises</h3>
-<ol>
-<li>Show that the posterior mean of the beta-binomial model always lies between the
-prior mean and <span class="math inline">y/n</span>.</li>
-<li>In the A/B test, redo the analysis with flat Beta<span class="math inline">(1,1)</span> priors and with a strong
-Beta<span class="math inline">(30, 270)</span> prior. How do <span class="math inline">P(\theta_B&gt;\theta_A)</span> and the lift interval change?</li>
-<li>Derive <span class="math inline">P(\theta_B &gt; \theta_A)</span> as a one-dimensional integral (as used in the code)
-and explain why it is correct.</li>
-<li>For the café, the owner opens on an eighth day and gets 12 complaints. Update the
-posterior by adding one observation, and check that it matches refitting with all
-8 days.</li>
-<li>Show that the negative binomial predictive has variance
-<span class="math inline">\alpha&#x27;/\beta&#x27; + \alpha&#x27;/\beta&#x27;^2</span>, and interpret the two terms.</li>
-<li>The Wald interval of chapter 03 failed when <span class="math inline">y=0</span>. Compute the 95% equal-tailed
-credible interval under a Beta<span class="math inline">(1/2, 1/2)</span> prior for <span class="math inline">y=0</span>, <span class="math inline">n=20</span>. Then compute
-its frequentist coverage at <span class="math inline">\theta=0.05</span> with the <code>coverage</code> function of chapter 03.</li>
-</ol>
-</div>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Conjugate prior</b>: the posterior stays in the prior's family. Find it by multiplying and recognising a kernel.</div></li>
+      <li><div><b>Beta-binomial</b>: Beta<span class="m">(\alpha, \beta)</span> + <span class="m">y</span> of <span class="m">n</span> → Beta<span class="m">(\alpha + y, \beta + n - y)</span>. Predictive: beta-binomial.</div></li>
+      <li><div><b>Poisson-gamma</b>: Gamma<span class="m">(\alpha, \beta)</span> + counts over <span class="m">n</span> periods → Gamma<span class="m">(\alpha + \sum y_i, \beta + n)</span>. Predictive: negative binomial.</div></li>
+      <li><div><b>A prior is imaginary data</b>, worth <span class="m">\alpha + \beta</span> trials or <span class="m">\beta</span> periods. The posterior mean is a weighted average of prior mean and data: shrinkage.</div></li>
+      <li><div><b>Monte Carlo</b> answers any question about several posteriors at once, such as <span class="m">P(\theta_B > \theta_A)</span> or the lift, by drawing and counting.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Conjugate prior</td><td>A prior whose posterior is in the same family.</td></tr>
+        <tr><td>Hyperparameters</td><td>The parameters of the prior.</td></tr>
+        <tr><td>Kernel</td><td>A density without its constant: the part that involves the variable.</td></tr>
+        <tr><td>Effective sample size</td><td>What a prior is worth in observations.</td></tr>
+        <tr><td>Shrinkage</td><td>An estimate pulled from the data towards the prior.</td></tr>
+        <tr><td>A/B test</td><td>A comparison of two versions on two groups.</td></tr>
+        <tr><td>Lift</td><td>The relative improvement, <span class="m">\theta_B / \theta_A - 1</span>.</td></tr>
+        <tr><td>Monte Carlo</td><td>Answering a question by drawing many random samples and counting.</td></tr>
+        <tr><td>Beta-binomial</td><td>The predictive distribution of future successes.</td></tr>
+        <tr><td>Negative binomial</td><td>The predictive distribution of a future count; wider than a Poisson.</td></tr>
+        <tr><td>Law of total variance</td><td>Prediction spread = noise given the parameter + uncertainty about it.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-<div class="md refs">
-<h2 id="references">References</h2>
-<ol>
-<li>H. Raiffa, R. Schlaifer. <em>Applied Statistical Decision Theory.</em> Harvard University Press, 1961.</li>
-<li>P. Diaconis, D. Ylvisaker. <em>Conjugate priors for exponential families.</em> The Annals of Statistics, 7(2):269-281, 1979. <a href="https://doi.org/10.1214/aos/1176344611">doi:10.1214/aos/1176344611</a></li>
-<li>P. D. Hoff. <em>A First Course in Bayesian Statistical Methods.</em> Springer, 2009. (Chapter 3.)</li>
-<li>A. Gelman et al. <em>Bayesian Data Analysis</em>, 3rd ed. CRC Press, 2013. (Chapter 2.)</li>
-<li>W. M. Bolstad. <em>Introduction to Bayesian Statistics.</em> Wiley, 2004. (Chapters on the binomial and Poisson.)</li>
-<li>D. Fink. <em>A Compendium of Conjugate Priors.</em> Technical report, Montana State University, 1997.</li>
-</ol>
-</div>
-</main>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek. The notebook has a code cell ready for each of them.</p>
+    <ol class="exercises">
+      <li><div><b>Always in between.</b> Show that the posterior mean of the beta-binomial model always lies between the prior mean and <span class="m">y/n</span>.
+        <details class="sol"><summary>Hint</summary><p>Look at the weights in the weighted-average formula of Part 2.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The posterior mean is <span class="m">w \cdot \frac{\alpha}{\alpha+\beta} + (1 - w) \cdot \frac{y}{n}</span> with <span class="m">w = \frac{\alpha+\beta}{\alpha+\beta+n}</span>. Since <span class="m">\alpha, \beta > 0</span> and <span class="m">n \ge 1</span>, the weight <span class="m">w</span> is strictly between 0 and 1. A weighted average with weights in <span class="m">(0, 1)</span> lies between the two numbers it averages. (For the sceptical prior of chapter 04 this was not true, because that prior was not a beta.)</p></details>
+      </div></li>
+      <li><div><b>Flat or strong.</b> In the A/B test, redo the analysis with flat Beta(1, 1) priors and with a strong Beta(30, 270) prior. How do <span class="m">P(\theta_B > \theta_A)</span> and the lift interval change?
+        <details class="sol"><summary>Hint</summary><p>In the demo at the top, Beta(1, 1) is a typical rate of 50% worth 2 visitors; Beta(30, 270) is 10% worth 300.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <div class="table-wrap"><table class="num">
+            <thead><tr><th>Prior</th><th><span class="m">P(\theta_B > \theta_A)</span></th><th>Median lift</th><th>95% lift interval</th></tr></thead>
+            <tbody>
+              <tr><td>Beta(1, 1)</td><td>0.963</td><td>+50%</td><td>(−4%, +139%)</td></tr>
+              <tr><td>Beta(3, 27)</td><td>0.959</td><td>+47%</td><td>(−5%, +130%)</td></tr>
+              <tr><td>Beta(30, 270)</td><td>0.905</td><td>+25%</td><td>(−10%, +74%)</td></tr>
+            </tbody>
+          </table></div>
+          <p>The flat prior changes almost nothing: 2 imaginary visitors are nothing next to 490 real ones. The strong prior is worth 300 visitors, more than either group, and it pulls <em>both</em> rates towards 10%: B's 16.4% is pulled down much more than A's 10.8%, so the lift shrinks to about +25% and the probability that B is better drops to 0.91. A strong shared prior is a sceptical one: it demands more evidence before declaring a difference.</p></details>
+      </div></li>
+      <li><div><b>The exact probability.</b> Derive <span class="m">P(\theta_B > \theta_A)</span> as a one-dimensional integral, as used in the code, and explain why it is correct.
+        <details class="sol"><summary>Hint</summary><p>Condition on the value of <span class="m">\theta_A</span>, and use the law of total probability of chapter 01, with an integral instead of a sum.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <div class="math-block" data-narrow="\begin{gathered} P(\theta_B > \theta_A \mid y) \\ = \int_0^1 p_A(t)\,P(\theta_B > t \mid y)\,\mathrm{d}t \\ = \int_0^1 p_A(t)\,\big(1 - F_B(t)\big)\,\mathrm{d}t. \end{gathered}">P(\theta_B > \theta_A \mid y) = \int_0^1 p_A(t)\,P(\theta_B > t \mid y)\,\mathrm{d}t = \int_0^1 p_A(t)\,\big(1 - F_B(t)\big)\,\mathrm{d}t.</div>
+          <p>For each possible value <span class="m">t</span> of <span class="m">\theta_A</span>, weighted by its posterior density <span class="m">p_A(t)</span>, we ask how likely <span class="m">\theta_B</span> is to exceed it. This is valid because the two posteriors are independent: the versions have separate data and independent priors, so knowing <span class="m">\theta_A</span> tells us nothing more about <span class="m">\theta_B</span>. scipy's <code>postB.sf(t)</code> is <span class="m">1 - F_B(t)</span>.</p></details>
+      </div></li>
+      <li><div><b>An eighth day.</b> The café opens on an eighth day and gets 12 complaints. Update the posterior by adding one observation, and check that it matches refitting with all 8 days.
+        <details class="sol"><summary>Hint</summary><p>One more day: add its count to the shape and 1 to the rate. The button "day 8: 12 complaints" in the widget does it.</p></details>
+        <details class="sol"><summary>Solution</summary><p>From Gamma(45, 9), one more day with 12 complaints gives Gamma(45 + 12, 9 + 1) = <b>Gamma(57, 10)</b>, with mean 5.7 and a 95% interval of (4.32, 7.27). Refitting from the prior with all 8 days: Gamma(6 + 51, 2 + 8) = Gamma(57, 10), the same, as Part 6 of chapter 04 promised. A single bad day moves the estimate from 5.0 to 5.7, but not to 12: the other 9 days' worth of information (7 real, 2 imaginary) hold it back.</p></details>
+      </div></li>
+      <li><div><b>Two sources of spread.</b> Show that the negative binomial predictive has variance <span class="m">\frac{\alpha'}{\beta'} + \frac{\alpha'}{\beta'^2}</span>, and interpret the two terms.
+        <details class="sol"><summary>Hint</summary><p>Use the law of total variance from the box in Part 5, with the gamma posterior's mean and variance from chapter 02.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Given <span class="m">\lambda</span>, the count is Poisson, so <span class="m">\mathrm{Var}(\tilde y \mid \lambda) = \mathbb{E}[\tilde y \mid \lambda] = \lambda</span>. With <span class="m">\lambda \sim</span> Gamma<span class="m">(\alpha', \beta')</span>:</p>
+          <div class="math-block">\mathrm{Var}(\tilde y) = \mathbb{E}[\lambda] + \mathrm{Var}(\lambda) = \frac{\alpha'}{\beta'} + \frac{\alpha'}{\beta'^2}.</div>
+          <p>The first term is Poisson noise: the day-to-day randomness even with a known rate. The second is our uncertainty about the rate itself. For the café, <span class="m">\frac{45}{9} + \frac{45}{81} = 5 + 0.56 = 5.56</span>, the notebook's value. With more days, <span class="m">\beta'</span> grows and the second term vanishes.</p></details>
+      </div></li>
+      <li><div><b>Fixing the Wald interval.</b> The Wald interval of chapter 03 failed when <span class="m">y = 0</span>. Compute the 95% equal-tailed credible interval under a Beta(1/2, 1/2) prior for <span class="m">y = 0</span>, <span class="m">n = 20</span>. Then compute its frequentist coverage at <span class="m">\theta = 0.05</span> with the <code>coverage</code> function of chapter 03.
+        <details class="sol"><summary>Hint</summary><p>The posterior is Beta(0.5, 20.5). For the coverage, write an interval function that returns the 0.025 and 0.975 quantiles of Beta<span class="m">(y + \frac{1}{2}, n - y + \frac{1}{2})</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The posterior Beta(0.5, 20.5) gives the interval <b>(0.00002, 0.117)</b>: unlike the Wald interval it doesn't collapse to the single point 0, and it admits that a rate of a few percent is perfectly compatible with 0 successes in 20. Used as a frequentist procedure (this is the <strong>Jeffreys interval</strong>, chapter 07), it covers <span class="m">\theta = 0.05</span> <b>98.4%</b> of the time with <span class="m">n = 20</span>, against 64% for Wald, and over all <span class="m">\theta</span> its coverage averages 95.1% and never drops below 89%. A Bayesian interval can also be a very good frequentist one.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <p>The next chapter, <a href="06-continuous-conjugate.html">Continuous data</a>, does the same for measurements: the exponential-gamma model, the normal mean, and the normal model with an unknown variance.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>H. Raiffa and R. Schlaifer. <em>Applied Statistical Decision Theory.</em> Harvard University Press, 1961. <span class="note">Where conjugate priors were named and systematised.</span></div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>P. Diaconis and D. Ylvisaker. "Conjugate priors for exponential families". <em>The Annals of Statistics</em> 7(2), 269–281, 1979. <a href="https://doi.org/10.1214/aos/1176344611">doi:10.1214/aos/1176344611</a> <span class="note">Why "prior mean, worth k observations" works so generally.</span></div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>P. D. Hoff. <em>A First Course in Bayesian Statistical Methods.</em> Springer, 2009. <span class="note">Chapter 3.</span></div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>A. Gelman et al. <em>Bayesian Data Analysis</em>, 3rd ed. CRC Press, 2013. <span class="note">Chapter 2.</span></div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>W. M. Bolstad. <em>Introduction to Bayesian Statistics.</em> Wiley, 2004. <span class="note">The chapters on the binomial and the Poisson.</span></div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>D. Fink. <em>A Compendium of Conjugate Priors.</em> Technical report, Montana State University, 1997. <span class="note">A catalogue of conjugate pairs and their update rules.</span></div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
   <a class="prev" rel="prev" href="04-prior-to-posterior.html"><span class="lbl">Previous · 04</span><span class="t">From prior to posterior</span></a>
@@ -291,11 +446,13 @@ its frequentist coverage at <span class="math inline">\theta=0.05</span> with th
 </nav>
 
 <footer class="col">
-  <p>Chapter 05 of the Bayesian statistics course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+  <p>Chapter 05 of the Bayesian statistics course by Elie Rouphael. The demos run in your browser; the code and its printed results come from the chapter's notebook, which you can download at the top. Math rendered with KaTeX, code highlighted with highlight.js.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch05.js"></script>
 </body>
 </html>
