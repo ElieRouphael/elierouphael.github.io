@@ -60,7 +60,11 @@ CHAPTERS = [
          build="Monte Carlo error, the Metropolis algorithm from scratch, step-size tuning, effective sample size and R-hat.",
          result="Four Metropolis chains agree on a golf-putting logistic regression, R-hat 1.00."),
 ]
-COURSE = Course(name="Bayesian statistics course", folder="bayesian-statistics", chapters=CHAPTERS)
+COURSE = Course(name="Bayesian statistics course", folder="bayesian-statistics", chapters=CHAPTERS,
+                # Chapters rebuilt by hand as interactive pages; the builder leaves their .html alone.
+                interactive={"00_overview", "01_probability_and_bayes", "02_distributions", "03_likelihood_and_frequentist",
+                             "04_prior_to_posterior", "05_discrete_conjugate", "06_continuous_conjugate",
+                             "07_priors", "08_linear_regression", "09_mcmc"})
 
 
 # ---------------------------------------------------------------- landing
@@ -88,9 +92,9 @@ def index_page(results: list[dict]) -> str:
 <nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
 
 <header class="hero col">
-  <span class="eyebrow">Bayesian statistics · Ten notebooks · numpy, scipy + matplotlib</span>
+  <span class="eyebrow">Bayesian statistics · Ten interactive chapters · notebooks in Python</span>
   <h1>Bayesian statistics from scratch</h1>
-  <p class="lede">A course that builds Bayesian inference from one rule, Bayes' theorem, up to regression and Markov chain Monte Carlo. Each chapter derives the mathematics by hand, then checks every result in code: simulations against formulas, grids against closed forms, samplers against exact answers.</p>
+  <p class="lede">A course that builds Bayesian inference from one rule, Bayes' theorem, up to regression and Markov chain Monte Carlo. Each chapter derives the mathematics by hand, lets you try it in live demos, and checks every result in code: simulations against formulas, grids against closed forms, samplers against exact answers.</p>
   <p class="byline">Elie Rouphael · Assumes algebra, a little calculus and basic Python; no prior statistics course needed</p>
   <div class="downloads">
     <a class="btn" href="{slug(CHAPTERS[0])}.html">Start with chapter 00</a>
@@ -127,10 +131,10 @@ def index_page(results: list[dict]) -> str:
 
 <section class="col prose" aria-labelledby="run">
   <h2 id="run">Running it yourself</h2>
-  <p>Every chapter page shows the notebook with its outputs, so you can read the whole course here. To run and change the code, <a href="{zip_name}" download>download the course</a> (the notebooks, their markdown sources and the requirements) and run:</p>
+  <p>You can read and try the whole course here: every chapter page has live demos that run in your browser, the derivations, and the notebook's code with its printed results. To run and change the code yourself, <a href="{zip_name}" download>download the course</a> (the notebooks, their markdown sources and the requirements) and run:</p>
   <pre><code class="language-bash">pip install -r requirements.txt
 jupyter notebook            # then open notebooks/00_overview.ipynb</code></pre>
-  <p>Each notebook is self-contained and runs in seconds on a laptop, using only numpy, scipy and matplotlib. Every chapter ends with exercises and references.</p>
+  <p>Each notebook is self-contained and runs in seconds on a laptop, using only numpy, scipy and matplotlib. Chapters 01 to 09 end with exercises, each with a hint and a solution, and every chapter lists its references.</p>
 </section>
 
 <section class="col prose" aria-labelledby="sources">
@@ -139,7 +143,7 @@ jupyter notebook            # then open notebooks/00_overview.ipynb</code></pre>
 </section>
 
 <footer class="col">
-  <p>Bayesian statistics course by Elie Rouphael. The chapter pages are rendered from the executed notebooks; math by KaTeX, code highlighting by highlight.js.</p>
+  <p>Bayesian statistics course by Elie Rouphael. The chapter pages are written from the executed notebooks, with demos that run in your browser; math by KaTeX, code highlighting by highlight.js.</p>
 </footer>
 """ + page_scripts()
 

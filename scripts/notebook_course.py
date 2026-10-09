@@ -47,6 +47,9 @@ class Course:
     author: str = "Elie Rouphael"
     license: str = ""               # appended to each chapter footer, e.g. "MIT licensed."
     notes: dict[str, str] = field(default_factory=dict)   # stem -> HTML note under the download buttons
+    # Stems of chapters whose page is a hand-built interactive page (public/tutorials/kit/):
+    # their notebook is still copied for download, but their .html is never overwritten.
+    interactive: set[str] = field(default_factory=set)
 
     @property
     def out(self) -> Path:
@@ -287,8 +290,10 @@ def build_chapters(course: Course, nb_dir: Path) -> list[dict]:
         (out / sub).mkdir(exist_ok=True)
         for old in (out / sub).iterdir():         # clear stale outputs (file by file: OneDrive can lock folders)
             old.unlink()
+    keep = {f"{slug(ch)}.html" for ch in course.chapters if ch["stem"] in course.interactive}
     for old in out.glob("[0-9][0-9]-*.html"):
-        old.unlink()
+        if old.name not in keep:
+            old.unlink()
     for asset in ("style.css", "course.js"):
         shutil.copy2(ASSETS / asset, out / asset)
 
@@ -297,10 +302,13 @@ def build_chapters(course: Course, nb_dir: Path) -> list[dict]:
         path = nb_dir / f"{ch['stem']}.ipynb"
         nb = json.loads(path.read_text(encoding="utf-8"))
         r = render_chapter(course, idx, nb)
-        (out / f"{slug(ch)}.html").write_text(chapter_page(course, idx, r), encoding="utf-8")
+        if ch["stem"] in course.interactive:
+            print(f"  {slug(ch)}.html  kept: interactive page, edited by hand")
+        else:
+            (out / f"{slug(ch)}.html").write_text(chapter_page(course, idx, r), encoding="utf-8")
+            print(f"  {slug(ch)}.html  {len(r['toc'])} sections, {r['figures']} figures")
         shutil.copy2(path, out / "notebooks" / path.name)
         results.append(r)
-        print(f"  {slug(ch)}.html  {len(r['toc'])} sections, {r['figures']} figures")
     return results
 
 

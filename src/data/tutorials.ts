@@ -55,7 +55,7 @@ export const tutorials: Tutorial[] = [
   {
     title: 'Bayesian Statistics from Scratch',
     description:
-      "A ten-chapter course from Bayes' theorem to Markov chain Monte Carlo: probability and distributions, likelihood and confidence intervals, priors and posteriors, conjugate models, choosing priors, Bayesian linear regression and a Metropolis sampler written from scratch. Every formula is derived by hand and checked in a runnable notebook.",
+      "A ten-chapter course from Bayes' theorem to Markov chain Monte Carlo: probability and distributions, likelihood and confidence intervals, priors and posteriors, conjugate models, choosing priors, Bayesian linear regression and a Metropolis sampler written from scratch. Every chapter has live demos to play with; every formula is derived by hand and checked in a runnable notebook.",
     topics: ['Bayesian Inference', 'Probability', 'Conjugate Priors', 'MCMC', 'SciPy'],
     prerequisites: 'Algebra, a little calculus and Python',
     level: 'Beginner',
