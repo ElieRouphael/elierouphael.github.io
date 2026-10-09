@@ -3,10 +3,9 @@
    the same quantities in the browser. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, pct, int, caption, frame, plotLine, alpha, reduceMotion, onRedraw } = window.Kit;
+const { $, $$, css, fmt, pct, int, caption, frame, plotLine, alpha, reduceMotion, onRedraw, narrowOf } = window.Kit;
 const { pdf, pmf, makeRng, linspace, cumulative } = window.Stats;
 const rng = makeRng();
-const narrowOf = canvas => canvas.clientWidth < 520;
 const Z = { 0.8: 1.2816, 0.9: 1.6449, 0.95: 1.96, 0.99: 2.5758 };
 
 /* the two intervals, for y successes in n trials */

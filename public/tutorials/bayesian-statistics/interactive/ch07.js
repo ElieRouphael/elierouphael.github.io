@@ -3,10 +3,9 @@
    the same quantities in the browser. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, pct, int, caption, frame, plotLine, alpha, onRedraw } = window.Kit;
-const { lgamma, lchoose, integrate, makeRng, linspace, cumulative } = window.Stats;
+const { $, $$, css, fmt, pct, int, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { lgamma, lchoose, integrate, makeRng, linspace, densityQuantiles } = window.Stats;
 const rng = makeRng();
-const narrowOf = canvas => canvas.clientWidth < 520;
 
 /* ---------------- beta helpers with the constant computed once ---------------- */
 function betaDens(a, b) {
@@ -16,12 +15,7 @@ function betaDens(a, b) {
 function betaQ(a, b, ps) {
   const m = a / (a + b), sd = Math.sqrt(a * b / ((a + b) ** 2 * (a + b + 1)));
   const lo = Math.max(0, m - 12 * sd), hi = Math.min(1, m + 12 * sd);
-  const xs = linspace(lo, hi, 1601), F = cumulative(betaDens(a, b), xs), tot = F[F.length - 1];
-  return ps.map(p => {                                   // interpolate between grid points
-    const target = p * tot, i = F.findIndex(v => v >= target);
-    if (i <= 0) return xs[0];
-    return xs[i - 1] + (xs[i] - xs[i - 1]) * (target - F[i - 1]) / (F[i] - F[i - 1]);
-  });
+  return densityQuantiles(betaDens(a, b), lo, hi, ps, 1601);
 }
 
 /* =====================================================================

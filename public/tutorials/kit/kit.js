@@ -146,6 +146,24 @@ function plotLine(fr, xs, ys, { color, width = 2, dash = null, fill = null } = {
   if (color) { ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = "round"; ctx.setLineDash(dash || []); ctx.stroke(); }
   ctx.restore();
 }
+/* Bars of a histogram of `values` inside a frame: `bins` equal bins on [lo, hi], each of
+   height count * scale (scale = 1 / (n * width) gives a density). Returns the counts. */
+function histogram(fr, values, lo, hi, bins, scale, color) {
+  const w = (hi - lo) / bins, counts = new Float64Array(bins);
+  for (const v of values) { const i = Math.floor((v - lo) / w); if (i >= 0 && i < bins) counts[i]++; }
+  const { ctx, X, Y } = fr;
+  ctx.save(); ctx.beginPath(); ctx.rect(fr.pad.l, fr.pad.t, fr.iw, fr.ih); ctx.clip();
+  ctx.fillStyle = color;
+  counts.forEach((c, i) => {
+    if (!c) return;
+    const x0 = X(lo + i * w), x1 = X(lo + (i + 1) * w), h = c * scale;
+    ctx.fillRect(x0 + 0.3, Y(h), Math.max(0.8, x1 - x0 - 0.6), Y(0) - Y(h));
+  });
+  ctx.restore();
+  return counts;
+}
+/* Phone-sized chart? Charts switch to a taller aspect below this width. */
+const narrowOf = (canvas, width = 520) => canvas.clientWidth < width;
 /* A colour with transparency, from a CSS colour token such as "--post". */
 function alpha(token, a) {
   const c = css(token);
@@ -160,8 +178,14 @@ function alpha(token, a) {
 const drawers = [() => fitMath()];
 function onRedraw(fn) { drawers.push(fn); }
 function redrawAll() { drawers.forEach(fn => fn()); }
-let resizeTimer = null;
-new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redrawAll, 60); }).observe(document.body);
+/* Only width changes move the charts: a height change (an opened hint, a longer caption) is skipped. */
+let resizeTimer = null, lastWidth = -1;
+new ResizeObserver(entries => {
+  const width = entries[entries.length - 1].contentRect.width;
+  if (width === lastWidth) return;
+  lastWidth = width;
+  clearTimeout(resizeTimer); resizeTimer = setTimeout(redrawAll, 60);
+}).observe(document.body);
 darkQuery.addEventListener("change", redrawAll);
 new MutationObserver(redrawAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 if (document.fonts) document.fonts.ready.then(redrawAll);
@@ -170,5 +194,5 @@ renderMath();
 window.addEventListener("load", () => renderMath());
 if (global.hljs) $$("pre code").forEach(b => { if (!b.classList.contains("nohl")) hljs.highlightElement(b); });
 
-global.Kit = { $, $$, css, isDark, reduceMotion, fmt, pct, int, renderMath, tex, caption, fit, ticks, tickLabel, frame, plotLine, alpha, onRedraw, redrawAll };
+global.Kit = { $, $$, css, isDark, reduceMotion, fmt, pct, int, renderMath, tex, caption, fit, ticks, tickLabel, frame, plotLine, histogram, narrowOf, alpha, onRedraw, redrawAll };
 })(window);

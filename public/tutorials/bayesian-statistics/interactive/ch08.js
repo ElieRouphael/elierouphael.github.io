@@ -3,10 +3,9 @@
    widgets recompute the same posterior in the browser. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, pct, caption, frame, plotLine, alpha, onRedraw } = window.Kit;
-const { pdf, makeRng, linspace, tCdf, tQuantile } = window.Stats;
+const { $, $$, css, fmt, pct, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { pdf, makeRng, linspace, tCdf, tQuantile, quantile } = window.Stats;
 const rng = makeRng();
-const narrowOf = canvas => canvas.clientWidth < 520;
 
 const TEMP = [19.2, 33.7, 19.0, 29.3, 31.1, 20.6, 21.6, 20.2, 14.4, 22.5, 17.3, 17.7, 16.1, 16.3, 29.9, 21.3, 17.6, 25.0, 25.3, 26.2, 32.0, 15.3, 20.2, 18.3, 12.4];
 const DRINKS = [104, 170, 108, 130, 179, 102, 90, 110, 102, 115, 116, 118, 82, 64, 140, 130, 89, 114, 118, 138, 164, 99, 123, 91, 74];
@@ -36,7 +35,6 @@ function sample(f, S) {
   }
   return { b0, b1, sig };
 }
-const quantile = (arr, p) => { const a = Float64Array.from(arr).sort(); return a[Math.min(a.length - 1, Math.floor(p * a.length))]; };
 
 /* =====================================================================
    THE DEMO: CLICK TO ADD OR REMOVE DAYS

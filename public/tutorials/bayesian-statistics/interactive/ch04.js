@@ -3,9 +3,8 @@
    the same quantities in the browser on the same grid. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, pct, caption, frame, plotLine, alpha, reduceMotion, onRedraw } = window.Kit;
+const { $, $$, css, fmt, pct, caption, frame, plotLine, alpha, reduceMotion, onRedraw, narrowOf } = window.Kit;
 const { pdf, pmf, lchoose, linspace } = window.Stats;
-const narrowOf = canvas => canvas.clientWidth < 520;
 
 /* ---------------- the grid, as in the notebook ---------------- */
 const G = 2001;
@@ -112,16 +111,16 @@ function updateDemo() {
     $("#rAbove").textContent = s.above > 0.9995 ? "> 0.999" : fmt(s.above, 3);
     const two = s.hpd.length > 1 ? " Your posterior has more than one peak: the data have not been able to decide between them." : "";
     if (!st.n) msg = `No throws yet, so the posterior is just your prior, centred at ${fmt(sp.mean, 2)}. Add some throws.`;
-    else if (st.preset === "flat") msg = `With a flat prior, the posterior has exactly the shape of the likelihood: the blue curve lies on the dashed orange one. Its peak is at the data's ${st.y}/${st.n} = ${fmt(st.y / st.n, 2)}.`;
+    else if (st.preset === "flat") msg = `With a flat prior, the posterior has exactly the shape of the likelihood: the blue curve lies on the dashed orange one. Its peak is at the data's [[\\frac{${st.y}}{${st.n}}]] = ${fmt(st.y / st.n, 2)}.`;
     else {
       const mle = st.y / st.n, between = (s.mean - sp.mean) * (s.mean - mle) <= 1e-9;
-      msg = `Your prior is centred at ${fmt(sp.mean, 2)} and the data say ${st.y}/${st.n} = ${fmt(mle, 2)}. ` +
+      msg = `Your prior is centred at ${fmt(sp.mean, 2)} and the data say [[\\frac{${st.y}}{${st.n}}]] = ${fmt(mle, 2)}. ` +
         (between ? `The posterior settles in between, at ${fmt(s.mean, 2)}` +
             (s.sd < Math.min(sp.sd, summarise(st.lik).sd) ? ", and it is narrower than either: two sources of information agree." : ".")
           : `The posterior mean is ${fmt(s.mean, 2)}, not between the two: the whole shape of the prior matters, not just its centre.`) + two;
     }
   }
-  $("#postStatus").innerHTML = msg;
+  caption($("#postStatus"), msg);
   drawSum(); drawPred();
 }
 

@@ -3,30 +3,12 @@
    the same conjugate updates in the browser. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, int, caption, frame, plotLine, alpha, onRedraw } = window.Kit;
-const { pdf, lgamma, integrate, makeRng, linspace, cumulative } = window.Stats;
+const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { pdf, lgamma, makeRng, linspace, densityQuantiles, tQuantile } = window.Stats;
 const rng = makeRng();
-const narrowOf = canvas => canvas.clientWidth < 520;
 
 /* ---------------- helpers ---------------- */
-/* quantiles of a density on [lo, hi] by a numerical CDF */
-function quantiles(dens, lo, hi, ps, N = 6001) {
-  const xs = linspace(lo, hi, N), F = cumulative(dens, xs), tot = F[N - 1];
-  return ps.map(p => { const i = F.findIndex(v => v >= p * tot); return xs[Math.max(0, i)]; });
-}
-const gammaQ = (a, b, ps) => quantiles(x => pdf.gamma(x, a, b), 0, (a + 14 * Math.sqrt(a)) / b, ps);
-/* standard Student t quantile by bisection on F(x) = 1/2 + integral from 0 to x */
-function tQuantile(p, nu) {
-  const target = Math.abs(p - 0.5);
-  const c = Math.exp(lgamma((nu + 1) / 2) - lgamma(nu / 2)) / Math.sqrt(nu * Math.PI);   // the density's constant, once
-  const dens = x => c * (1 + x * x / nu) ** (-(nu + 1) / 2);
-  let lo = 0, hi = 400;
-  for (let k = 0; k < 45; k++) {
-    const mid = (lo + hi) / 2;
-    if (integrate(dens, 0, mid, 1200) < target) lo = mid; else hi = mid;
-  }
-  return p < 0.5 ? -lo : lo;
-}
+const gammaQ = (a, b, ps) => densityQuantiles(x => pdf.gamma(x, a, b), 0, (a + 14 * Math.sqrt(a)) / b, ps, 6001);
 const invGammaPdf = (x, a, b) => (x <= 0 ? 0 : Math.exp(a * Math.log(b) - lgamma(a) - (a + 1) * Math.log(x) - b / x));
 
 /* =====================================================================
@@ -78,7 +60,7 @@ function drawWeighing() {
   $("#rCI").textContent = `(${fmt(w.m1 - 1.96 * w.s1, 3)}, ${fmt(w.m1 + 1.96 * w.s1, 3)})`;
   $("#rWorth").textContent = fmt(wt.sigma ** 2 / wt.s0 ** 2, 2);
   caption($("#wStatus"), w.n
-    ? `Precision: the prior's [[${fmt(w.p0, 1)}]] plus ${w.n} reading${w.n > 1 ? "s" : ""} × [[${fmt(w.pd, 1)}]] = [[${fmt(w.P, 1)}]], so the posterior sd is [[1/\\sqrt{${fmt(w.P, 1)}} = ${fmt(w.s1, 3)}]] g. ` +
+    ? `Precision: the prior's [[${fmt(w.p0, 1)}]] plus ${w.n} reading${w.n > 1 ? "s" : ""} × [[${fmt(w.pd, 1)}]] = [[${fmt(w.P, 1)}]], so the posterior sd is [[\\frac{1}{\\sqrt{${fmt(w.P, 1)}}} = ${fmt(w.s1, 3)}]] g. ` +
       `The posterior mean ${fmt(w.m1, 3)} weights the supplier's ${fmt(wt.m0, 2)} by ${fmt(w.p0 / w.P, 2)} and the readings' average ${fmt(w.ybar, 3)} by ${fmt(1 - w.p0 / w.P, 2)}.`
     : `No readings yet: the posterior is the supplier's prior, with precision [[1/${fmt(wt.s0, 2)}^2 = ${fmt(w.p0, 1)}]]. Click the chart or take a reading.`);
 }
@@ -115,7 +97,7 @@ function drawBus() {
   const fr = frame($("#busRate"), aspect, { x: [0, 0.25], y: [0, Math.max(...po, ...pr) * 1.1], yticks: false, xlabel: "λ per minute" });
   plotLine(fr, ls, pr, { color: css("--prior"), width: 1.5, fill: alpha("--prior", 0.25) });
   plotLine(fr, ls, po, { color: css("--post"), width: 2.4, fill: alpha("--post", 0.18) });
-  // the mean wait 1/lambda: an inverse-gamma
+  // the mean wait, one over lambda: an inverse-gamma
   const ws = linspace(0.2, 40, 600);
   const wpr = ws.map(x => invGammaPdf(x, BUS_A0, BUS_B0)), wpo = ws.map(x => invGammaPdf(x, a, b));
   const gr = frame($("#busWait"), aspect, { x: [0, 40], y: [0, Math.max(...wpo, ...wpr) * 1.25], yticks: false, xlabel: "minutes" });
@@ -125,16 +107,18 @@ function drawBus() {
   const mark = (v, color, dash, label, row) => {
     gr.ctx.strokeStyle = color; gr.ctx.lineWidth = 1.6; gr.ctx.setLineDash(dash);
     gr.ctx.beginPath(); gr.ctx.moveTo(gr.X(v), gr.Y(0)); gr.ctx.lineTo(gr.X(v), gr.pad.t + 12 * row + 4); gr.ctx.stroke(); gr.ctx.setLineDash([]);
-    gr.ctx.font = "600 10px " + css("--font-ui"); gr.ctx.fillStyle = color; gr.ctx.textAlign = "left";
-    gr.ctx.fillText(label, gr.X(v) + 4, gr.pad.t + 12 * row + 8);
+    gr.ctx.font = "600 10px " + css("--font-ui"); gr.ctx.fillStyle = color;
+    const right = gr.X(v) + 4 + gr.ctx.measureText(label).width <= gr.w - gr.pad.r;   // else write it on the left of the line
+    gr.ctx.textAlign = right ? "left" : "right";
+    gr.ctx.fillText(label, gr.X(v) + (right ? 4 : -4), gr.pad.t + 12 * row + 8);
   };
-  mark(eInv, css("--post"), [6, 4], "E[1/λ]", 0);
-  mark(invE, css("--lik"), [], "1/E[λ]", 1);
+  mark(eInv, css("--post"), [6, 4], "posterior mean wait", 0);
+  mark(invE, css("--lik"), [], "one over the mean rate", 1);
   if (busK) mark(tot / busK, css("--ink"), [2, 3], "sample mean", 2);
   const [l1, l2] = gammaQ(a, b, [0.025, 0.975]);
   const pNext = (b / (b + 20)) ** a, plug = Math.exp(-20 * a / b);
   caption($("#busCap"),
-    `Posterior Gamma(${a}, ${fmt(b, 1).replace(/\.0$/, "")}). The mean wait: [[\\mathbb{E}[1/\\lambda] = ${fmt(eInv, 2)}]] minutes, but [[1/\\mathbb{E}[\\lambda] = ${fmt(invE, 2)}]]` +
+    `Posterior Gamma(${a}, ${fmt(b, 1).replace(/\.0$/, "")}). The mean wait: [[\\mathbb{E}\\big[\\frac{1}{\\lambda}\\big] = ${fmt(eInv, 2)}]] minutes, but [[\\frac{1}{\\mathbb{E}[\\lambda]} = ${fmt(invE, 2)}]]` +
     (busK ? `, and the sample mean is ${fmt(tot / busK, 2)}` : "") +
     `. 95% interval for the mean wait: (${fmt(1 / l2, 1)}, ${fmt(1 / l1, 1)}) minutes. ` +
     `[[P(\\text{next wait} > 20) = ${fmt(pNext, 3)}]], against ${fmt(plug, 3)} for the plug-in exponential.`);

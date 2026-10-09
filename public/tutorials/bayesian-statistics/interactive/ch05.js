@@ -3,23 +3,18 @@
    the same conjugate updates in the browser. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, pct, int, caption, frame, plotLine, alpha, reduceMotion, onRedraw } = window.Kit;
-const { pdf, pmf, lgamma, lchoose, makeRng, linspace, cumulative } = window.Stats;
+const { $, $$, css, fmt, pct, int, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { pdf, pmf, lgamma, lchoose, makeRng, linspace, cumulative, densityQuantiles } = window.Stats;
 const rng = makeRng();
-const narrowOf = canvas => canvas.clientWidth < 520;
 const signed = v => (v >= 0 ? "+" : "−") + Math.abs(Math.round(100 * v)) + "%";
 
 /* ---------------- beta and gamma helpers (numerical quantiles on a local grid) ---------------- */
 const betaMean = (a, b) => a / (a + b);
 const betaSd = (a, b) => Math.sqrt(a * b / ((a + b) ** 2 * (a + b + 1)));
 const gammaMean = (a, b) => a / b, gammaSd = (a, b) => Math.sqrt(a) / b;
-function quantiles(dens, lo, hi, ps, N = 4001) {
-  const xs = linspace(lo, hi, N), F = cumulative(dens, xs), tot = F[N - 1];
-  return ps.map(p => { const i = F.findIndex(v => v >= p * tot); return xs[Math.max(0, i)]; });
-}
 const betaRange = (a, b) => [Math.max(0, betaMean(a, b) - 9 * betaSd(a, b)), Math.min(1, betaMean(a, b) + 9 * betaSd(a, b))];
-const betaQ = (a, b, ps) => { const [lo, hi] = betaRange(a, b); return quantiles(x => pdf.beta(x, a, b), lo, hi, ps); };
-const gammaQ = (a, b, ps) => quantiles(x => pdf.gamma(x, a, b), 0, gammaMean(a, b) + 12 * gammaSd(a, b), ps);
+const betaQ = (a, b, ps) => { const [lo, hi] = betaRange(a, b); return densityQuantiles(x => pdf.beta(x, a, b), lo, hi, ps); };
+const gammaQ = (a, b, ps) => densityQuantiles(x => pdf.gamma(x, a, b), 0, gammaMean(a, b) + 12 * gammaSd(a, b), ps);
 
 /* =====================================================================
    THE A/B TEST (the demo at the top)
@@ -187,7 +182,7 @@ function drawShrink() {
   };
   const priorLeft = dm === null || pm <= dm;
   dotAt(pm, css("--prior"), "prior mean", priorLeft ? "left" : "right");
-  if (dm !== null) dotAt(dm, css("--lik"), "data y/n", priorLeft ? "right" : "left");
+  if (dm !== null) dotAt(dm, css("--lik"), "data proportion", priorLeft ? "right" : "left");
   dotAt(qm, css("--post"), "posterior mean", "below");
   const w = sh.k / (sh.k + sh.n);
   caption($("#shrinkCap"),

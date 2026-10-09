@@ -3,10 +3,9 @@
    the same quantities in the browser. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, int, caption, frame, plotLine, alpha, reduceMotion, onRedraw } = window.Kit;
+const { $, $$, css, fmt, int, caption, frame, plotLine, alpha, reduceMotion, onRedraw, narrowOf } = window.Kit;
 const { pdf, cdf, pmf, makeRng, linspace, cumulative, mean, variance } = window.Stats;
 const rng = makeRng();
-const narrowOf = canvas => canvas.clientWidth < 520;
 
 /* =====================================================================
    THE CENTRAL LIMIT THEOREM (the demo at the top)

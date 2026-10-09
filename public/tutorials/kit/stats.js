@@ -18,7 +18,8 @@ function lgamma(x) {
   return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
 }
 const lchoose = (n, k) => lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1);
-/* error function (Abramowitz and Stegun 7.1.26, error below 1.5e-7) */
+/* error function (Abramowitz and Stegun 7.1.26, absolute error below 1.5e-7): fine for
+   probabilities above about 1e-5, too coarse for far tails such as cdf.normal(-5) */
 function erf(x) {
   const s = Math.sign(x);
   x = Math.abs(x);
@@ -137,11 +138,99 @@ function tQuantile(p, nu) {
   for (let k = 0; k < 45; k++) { const mid = (lo + hi) / 2; if (integrate(f, 0, mid, 1200) < target) lo = mid; else hi = mid; }
   return p < 0.5 ? -lo : lo;
 }
+/* Quantiles of a density on [lo, hi] (normalised or not), from its numerical CDF on N grid
+   points, interpolated between them. */
+function densityQuantiles(dens, lo, hi, ps, N = 4001) {
+  const xs = linspace(lo, hi, N), F = cumulative(dens, xs), tot = F[N - 1];
+  return ps.map(p => {
+    const target = p * tot, i = F.findIndex(v => v >= target);
+    if (i < 0) return xs[N - 1];
+    if (i === 0) return xs[0];
+    return xs[i - 1] + (xs[i] - xs[i - 1]) * (target - F[i - 1]) / (F[i] - F[i - 1]);
+  });
+}
+
+/* ---------------- samples ---------------- */
 const mean = a => a.reduce((s, v) => s + v, 0) / a.length;
 function variance(a) {                              // population variance, as numpy's .var()
   const m = mean(a);
   return a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length;
 }
+/* Sample quantiles as numpy computes them by default (linear interpolation).
+   quantileSorted needs sorted values; quantile sorts a copy first. */
+const sortedCopy = a => Float64Array.from(a).sort();
+function quantileSorted(sorted, p) {
+  const pos = p * (sorted.length - 1), lo = Math.floor(pos), hi = Math.min(sorted.length - 1, lo + 1);
+  return sorted[lo] + (pos - lo) * (sorted[hi] - sorted[lo]);
+}
+const quantile = (values, p) => quantileSorted(sortedCopy(values), p);
 
-global.Stats = { lgamma, lchoose, erf, pdf, cdf, pmf, makeRng, linspace, integrate, cumulative, tCdf, tQuantile, mean, variance };
+/* ---------------- Markov chain Monte Carlo diagnostics ---------------- */
+/* In-place radix-2 FFT (length a power of 2), with the cos/sin tables kept per length. */
+const twiddles = {};
+function fft(re, im, inverse) {
+  const n = re.length;
+  if (!twiddles[n]) {
+    const c = new Float64Array(n / 2), s = new Float64Array(n / 2);
+    for (let k = 0; k < n / 2; k++) { c[k] = Math.cos(2 * Math.PI * k / n); s[k] = Math.sin(2 * Math.PI * k / n); }
+    twiddles[n] = [c, s];
+  }
+  const [cos, sin] = twiddles[n], sign = inverse ? 1 : -1;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const half = len >> 1, stride = n / len;
+    for (let i = 0; i < n; i += len) {
+      for (let k = 0; k < half; k++) {
+        const c = cos[k * stride], s = sign * sin[k * stride];
+        const p = i + k, q = p + half;
+        const br = re[q] * c - im[q] * s, bi = re[q] * s + im[q] * c;
+        re[q] = re[p] - br; im[q] = im[p] - bi; re[p] += br; im[p] += bi;
+      }
+    }
+  }
+}
+/* Effective sample size of one chain, as the Bayesian course's ess(): autocorrelations
+   (computed by FFT) summed until the first negative one. */
+function ess(x) {
+  const n = x.length;
+  if (n < 4) return n;
+  let m = 0;
+  for (let i = 0; i < n; i++) m += x[i];
+  m /= n;
+  let v = 0;
+  for (let i = 0; i < n; i++) v += (x[i] - m) ** 2;
+  v /= n;
+  if (!(v > 0)) return 1;                       // the chain never moved
+  let size = 1;
+  while (size < 2 * n) size <<= 1;
+  const re = new Float64Array(size), im = new Float64Array(size);
+  for (let i = 0; i < n; i++) re[i] = x[i] - m;
+  fft(re, im, false);
+  for (let i = 0; i < size; i++) { re[i] = re[i] * re[i] + im[i] * im[i]; im[i] = 0; }
+  fft(re, im, true);
+  let sum = 0;
+  for (let k = 1; k < n; k++) {
+    const r = re[k] / size / (v * n);
+    if (r < 0) break;
+    sum += r;
+  }
+  return n / (1 + 2 * sum);
+}
+/* R-hat (Gelman and Rubin): between-chain against within-chain variance; chains of equal length. */
+function rhat(chains) {
+  const k = chains.length, n = chains[0].length;
+  const means = chains.map(c => c.reduce((s, v) => s + v, 0) / n);
+  const grand = means.reduce((s, v) => s + v, 0) / k;
+  const B = n * means.reduce((s, v) => s + (v - grand) ** 2, 0) / (k - 1);
+  const W = chains.reduce((s, c, j) => s + c.reduce((t, v) => t + (v - means[j]) ** 2, 0) / (n - 1), 0) / k;
+  return Math.sqrt(((n - 1) / n * W + B / n) / W);
+}
+
+global.Stats = { lgamma, lchoose, erf, pdf, cdf, pmf, makeRng, linspace, integrate, cumulative, tCdf, tQuantile,
+  densityQuantiles, mean, variance, sortedCopy, quantileSorted, quantile, ess, rhat };
 })(window);
