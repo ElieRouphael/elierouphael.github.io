@@ -60,7 +60,9 @@ CHAPTERS = [
          build="Monte Carlo error, the Metropolis algorithm from scratch, step-size tuning, effective sample size and R-hat.",
          result="Four Metropolis chains agree on a golf-putting logistic regression, R-hat 1.00."),
 ]
-COURSE = Course(name="Bayesian statistics course", folder="bayesian-statistics", chapters=CHAPTERS)
+COURSE = Course(name="Bayesian statistics course", folder="bayesian-statistics", chapters=CHAPTERS,
+                # Chapters rebuilt by hand as interactive pages; the builder leaves their .html alone.
+                interactive={"01_probability_and_bayes"})
 
 
 # ---------------------------------------------------------------- landing
