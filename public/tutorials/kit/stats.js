@@ -122,11 +122,26 @@ function cumulative(f, xs) {
   for (let i = 1; i < xs.length; i++) out.push(out[i - 1] + 0.5 * (f(xs[i]) + f(xs[i - 1])) * (xs[i] - xs[i - 1]));
   return out;
 }
+/* Student t: CDF and quantile, by integrating the density from 0 (it is symmetric). */
+function tDensity(nu) {
+  const c = Math.exp(lgamma((nu + 1) / 2) - lgamma(nu / 2)) / Math.sqrt(nu * Math.PI);
+  return x => c * (1 + x * x / nu) ** (-(nu + 1) / 2);
+}
+function tCdf(x, nu) {
+  const half = integrate(tDensity(nu), 0, Math.abs(x), 1200);
+  return x >= 0 ? 0.5 + half : 0.5 - half;
+}
+function tQuantile(p, nu) {
+  const target = Math.abs(p - 0.5), f = tDensity(nu);
+  let lo = 0, hi = 400;
+  for (let k = 0; k < 45; k++) { const mid = (lo + hi) / 2; if (integrate(f, 0, mid, 1200) < target) lo = mid; else hi = mid; }
+  return p < 0.5 ? -lo : lo;
+}
 const mean = a => a.reduce((s, v) => s + v, 0) / a.length;
 function variance(a) {                              // population variance, as numpy's .var()
   const m = mean(a);
   return a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length;
 }
 
-global.Stats = { lgamma, lchoose, erf, pdf, cdf, pmf, makeRng, linspace, integrate, cumulative, mean, variance };
+global.Stats = { lgamma, lchoose, erf, pdf, cdf, pmf, makeRng, linspace, integrate, cumulative, tCdf, tQuantile, mean, variance };
 })(window);

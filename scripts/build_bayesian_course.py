@@ -64,7 +64,7 @@ COURSE = Course(name="Bayesian statistics course", folder="bayesian-statistics",
                 # Chapters rebuilt by hand as interactive pages; the builder leaves their .html alone.
                 interactive={"01_probability_and_bayes", "02_distributions", "03_likelihood_and_frequentist",
                              "04_prior_to_posterior", "05_discrete_conjugate", "06_continuous_conjugate",
-                             "07_priors"})
+                             "07_priors", "08_linear_regression"})
 
 
 # ---------------------------------------------------------------- landing
