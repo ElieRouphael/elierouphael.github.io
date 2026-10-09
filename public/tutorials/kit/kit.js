@@ -120,7 +120,7 @@ function frame(canvas, aspect, o) {
   ctx.beginPath(); ctx.moveTo(pad.l, Math.round(Y(y0)) + 0.5); ctx.lineTo(w - pad.r, Math.round(Y(y0)) + 0.5); ctx.stroke();
   if (o.xticks !== false) {
     ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillStyle = css("--muted");
-    for (const t of o.xticks || ticks(x0, x1, Math.max(3, Math.floor(iw / 70)))) {
+    for (const t of o.xticks || ticks(x0, x1, Math.max(4, Math.floor(iw / 70)))) {
       ctx.beginPath(); ctx.moveTo(Math.round(X(t)) + 0.5, Y(y0)); ctx.lineTo(Math.round(X(t)) + 0.5, Y(y0) + 4); ctx.stroke();
       ctx.fillText((o.xfmt || tickLabel)(t), Math.min(w - pad.r - 8, Math.max(pad.l + 4, X(t))), Y(y0) + 6);
     }
