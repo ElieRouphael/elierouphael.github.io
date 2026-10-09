@@ -3,7 +3,7 @@
    the same formulas in the browser. Needs ../kit/kit.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, pct, int, tex, fit, onRedraw } = window.Kit;
+const { $, $$, css, fmt, pct, int, tex, caption: setCaption, fit, onRedraw } = window.Kit;
 
 /* ratios such as likelihood ratios: 9.5, 80, 0.056, 0.20 */
 const ratio = x => x >= 10 ? x.toFixed(0) : x >= 1 ? x.toFixed(1) : x.toFixed(x < 0.1 ? 3 : 2);
@@ -11,12 +11,6 @@ const ratio = x => x >= 10 ? x.toFixed(0) : x >= 1 ? x.toFixed(1) : x.toFixed(x 
 const pc = x => (100 * x).toFixed(1).replace(/\.0$/, "") + "%";
 /* small probabilities in the factory table */
 const small = v => v === 1 ? "1" : v === 0 ? "0" : v >= 1e-6 ? v.toPrecision(3) : v.toExponential(2);
-/* Set a caption's HTML; [[...]] marks TeX, rendered inline with KaTeX (so fractions are stacked). */
-function setCaption(el, html) {
-  const parts = [];
-  el.innerHTML = html.replace(/\[\[(.+?)\]\]/g, (_, t) => { parts.push(t); return '<span class="cap-tex"></span>'; });
-  $$(".cap-tex", el).forEach((span, i) => tex(span, parts[i]));
-}
 
 /* =====================================================================
    THE CROWD: 10,000 people and a screening test
