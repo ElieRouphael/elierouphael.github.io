@@ -672,7 +672,9 @@ function w4NewWeights() {
   w4.w = raw.map(v => v / sum);
   w4.teeth = null;
   w4.picks = null;
-  $("#w4cap").innerHTML = "Eight guesses after weighing. Each one's segment is as long as its share of the total score. Press <b>drop the comb</b> to pick the new set of eight.";
+  const ess = 1 / w4.w.reduce((a, v) => a + v * v, 0);   // effective sample size
+  $("#w4cap").innerHTML = "Eight guesses after weighing. Each one's segment is as long as its share of the total score. " +
+    `Together they are worth about <b>${fmt(ess)}</b> equally good guesses (the effective sample size). Press <b>drop the comb</b> to pick the new set of eight.`;
   w4Draw();
 }
 function w4Resample() {

@@ -128,7 +128,7 @@ export const tutorials: Tutorial[] = [
   {
     title: 'Finding a Lost Robot with a Particle Filter',
     description:
-      'A beginner\'s tutorial on Monte Carlo localization: a robot with no GPS finds itself on a hilly map using only its wheels, a compass and an altimeter. A warm-up on a loop track, noisy motion, the bell curve, resampling with a comb, jitter and the kidnapped robot, then the whole filter as four short Python functions and experiments that show when it fails. Every idea comes with a live demo in the browser.',
+      'A beginner\'s tutorial on Monte Carlo localization: a robot with no GPS finds itself on a hilly map using only its wheels, a compass and an altimeter. A warm-up on a loop track, noisy motion, the bell curve, resampling with a comb, jitter and the kidnapped robot, one full step worked out by hand, then the whole filter as four short Python functions, experiments that show when it fails, a comparison with the Kalman filter and exercises with solutions. Every idea comes with a live demo in the browser, and optional boxes give the math behind it.',
     topics: ['Particle Filters', 'Localization', 'Robotics', 'Probability', 'NumPy'],
     prerequisites: 'None: no robotics, probability or programming background needed',
     level: 'Beginner',
