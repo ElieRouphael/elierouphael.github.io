@@ -51,7 +51,7 @@ CHAPTERS = [
          result="White innovations and a mean NIS of 2.08 against the expected 2."),
     dict(stem="06_odd_and_integrity", short="ODD and integrity",
          build="The operational design domain as set membership, three detectors, their fusion into an integrity score, ROC and detection delay.",
-         result="Fused AUC of 0.96 against roughly 0.70 for any single detector."),
+         result="Fused AUC of 0.96 against 0.66 to 0.70 for the single detectors."),
     dict(stem="07_shared_control", short="Shared control",
          build="Haptic shared control, the McRuer crossover driver model, workload, and the law that shares authority between driver and automation.",
          result="Stability with a delayed driver in the loop and integrity-aware conflict arbitration."),
