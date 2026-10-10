@@ -4,13 +4,12 @@
    so its numbers vary a little from the notebook's. Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
 const { makeRng, erf } = window.Stats;
 const f = x => Math.sin(1.5 * x), D_FEAT = 200, SCALE = 1.5, LAM = 1e-2, N_TRAIN = 300, N_EVAL = 2000;
 const XS = Array.from({ length: 400 }, (_, i) => -5 + 10 * i / 399);
 const uniform = (rng, lo, hi, n) => Float64Array.from({ length: n }, () => lo + (hi - lo) * rng.uniform());
 const Phi = z => 0.5 * (1 + erf(z / Math.SQRT2));
-function seg(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
 
 /* ---------------- one member: random cosine features, ridge regression ---------------- */
 function drawFeatures(rng, D) {

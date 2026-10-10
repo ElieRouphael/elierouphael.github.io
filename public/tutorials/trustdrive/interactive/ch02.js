@@ -3,12 +3,10 @@
    exactly (Q = diag(1, 5), R = 8, steering limited to 0.6 rad). Needs ../kit/kit.js. */
 (() => {
 "use strict";
-const { $, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { $, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg, clamp } = window.Kit;
 const L = 2.7, TS = 0.05, V0 = 15, DMAX = 0.6, Q0 = [1, 5], R0 = 8;
-const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const num = x => String(+x.toFixed(1));
 const snapR = s => +(10 ** s).toPrecision(2);                 // 0.903 -> 8, keeps the slider's values tidy
-function seg(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
 
 /* ---------------- the linear model and the Riccati equation (2 states, 1 input) ---------------- */
 const model = v => ({ A: [[1, v * TS], [0, 1]], b: [0, v * TS / L], e: [0, -v * TS] });

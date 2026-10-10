@@ -4,11 +4,10 @@
    Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, int, caption, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
-const { makeRng, pdf } = window.Stats;
+const { $, $$, css, fmt, int, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
+const { makeRng, pdf, mean } = window.Stats;
 const L = 2.7, TS = 0.05, V = 15, N = 500, WARM = 50, GATE = -2 * Math.log(0.01);   // chi-squared, 2 dof, 99%: 9.21
 const QT = [2e-4, 1e-4], RT = [0.02 ** 2, 0.01 ** 2];                                // true noise covariances (diagonal)
-function seg(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
 const scaleOf = id => 10 ** +$(id).value;
 
 /* ---------------- 2 x 2 helpers ---------------- */
@@ -49,7 +48,6 @@ function simulate({ seed = 1, onset = null, bias = [0, 0], rScale = 1, filterV =
   }
   return out;
 }
-const mean = a => a.reduce((s, v) => s + v, 0) / a.length;
 
 /* =====================================================================
    THE DEMO: A FAULT THE CAMERA WILL NOT ADMIT

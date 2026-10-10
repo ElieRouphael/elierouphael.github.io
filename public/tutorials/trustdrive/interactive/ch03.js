@@ -4,13 +4,11 @@
    Needs ../kit/kit.js and ../kit/stats.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, caption, fit, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { $, $$, css, fmt, caption, fit, frame, plotLine, alpha, onRedraw, narrowOf, seg, clamp } = window.Kit;
 const { makeRng } = window.Stats;
 const H = 64, W = 64, FOCAL = 55, CAM_H = 1.25, HORIZON = 0.34 * 64, LANE = 1.75;
 const ODD = { kappa: 0.022, brightness: 0.45, blur: 1.6, occlusion: 0.35 };
-const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const pct = x => `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(0)}%`;
-function seg(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
 
 /* ---------------- the renderer ---------------- */
 /* Python's round(): halves go to the even neighbour */
@@ -42,7 +40,7 @@ function gaussianBlur(img, sigma) {
 }
 function render({ ey, ep, kap, b = 1, blur = 0, occ = 0, noise = 0, seed = 7 }) {
   let img = new Float64Array(H * W).fill(0.15);                          // dark asphalt
-  const yc = S.map(s => -ey - ep * s + 0.5 * kap * s * s);
+  const yc = S.map(s => ey + ep * s - 0.5 * kap * s * s);               // lane centre, to the right (chapter 01's signs)
   for (const [off, dashed] of [[-LANE, false], [LANE, false], [0, true]]) {
     for (let i = 0; i < S.length; i++) {
       if (dashed && Math.trunc(S[i]) % 3 === 0) continue;
@@ -109,7 +107,7 @@ function updateCam() {
 function drawCam() {
   const { ctx, w, h, px } = drawImage($("#camC"), cam.img);
   if ($("#cGuide").checked) {
-    const [, hy] = px(0, HORIZON), [vx] = px(W / 2, 0);
+    const [, hy] = px(0, HORIZON), [vx] = px(W / 2 + FOCAL * cam.p.ep, 0);   // a straight road's lines meet at u = c_x + f e_psi (exercise 1)
     ctx.strokeStyle = css("--path"); ctx.lineWidth = 1.5; seg(ctx, 0, hy, w, hy);
     ctx.fillStyle = css("--geom"); ctx.beginPath(); ctx.arc(vx, hy, 4.5, 0, 2 * Math.PI); ctx.fill();
     ctx.font = "600 11px " + css("--font-ui"); ctx.textAlign = "left"; ctx.fillStyle = css("--path");
@@ -142,7 +140,7 @@ function drawTop() {
   ctx.font = "600 10px " + css("--font-ui"); ctx.fillStyle = css("--muted"); ctx.textAlign = "left";
   ctx.fillText("camera view, 3 to 45 m", 4, Y(45) - 4);
   const ss = Array.from({ length: 107 }, (_, i) => i * 0.5);
-  const yroad = s => -p.ey - p.ep * s + 0.5 * p.kap * s * s;
+  const yroad = s => p.ey + p.ep * s - 0.5 * p.kap * s * s;
   [[-LANE, []], [LANE, []], [0, [6, 6]]].forEach(([o, dash]) => {
     ctx.strokeStyle = alpha("--ink", 0.7); ctx.lineWidth = 1.6; ctx.setLineDash(dash); ctx.beginPath();
     ss.forEach((s, i) => { const x = X(yroad(s) + o), y = Y(s); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();

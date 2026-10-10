@@ -3,9 +3,8 @@
    and linearisation studies use the notebook's exact settings. Needs ../kit/kit.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, int, caption, fit, frame, plotLine, alpha, onRedraw, narrowOf } = window.Kit;
+const { $, $$, css, fmt, int, caption, fit, frame, plotLine, alpha, onRedraw, narrowOf, seg, clamp } = window.Kit;
 const L = 2.7, G = 9.81, V = 15, TS = 0.05, LANE = 1.75;
-const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const num = x => String(+x.toFixed(1));                  // 15 rather than 15.0
 const ROADS = { "0.9": "a dry road", "0.5": "a wet road", "0.2": "packed snow" };
 
@@ -24,7 +23,6 @@ function verdict(ay, mu) {
   return ["bad", "beyond the grip"];
 }
 /* a line between two points in screen pixels */
-function seg(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
 /* the car seen from above: body, chassis line and the two wheels, in screen units */
 function drawCar(ctx, P, psi, delta, s) {
   const c = Math.cos(psi), sn = Math.sin(psi);
@@ -111,11 +109,17 @@ function driveStatus() {
       : cls === "warn" ? `On ${road} that is more than half the grip (${fmt(0.5 * mu * G, 2)} m/s²): the tyres start to slip, and the kinematic model starts to drift from reality.`
       : `That is more than the tyres can give on ${road} (${fmt(mu * G, 2)} m/s²): a real car would slide off this circle, but the kinematic model, which knows nothing about tyres, drives it anyway.`));
 }
+/* At most one frame loop, and none while the demo is scrolled off-screen: the car waits there. */
+let frameId = 0, onScreen = true;
+function loop(on) {
+  cancelAnimationFrame(frameId); frameId = 0;
+  if (on) { drive.lastT = performance.now(); frameId = requestAnimationFrame(tick); }
+}
 function setRunning(on) {
   drive.running = on;
   $("#dRun").setAttribute("aria-pressed", on ? "true" : "false");
   $("#dRun").textContent = on ? "pause" : "drive";
-  if (on) { drive.lastT = performance.now(); requestAnimationFrame(tick); }
+  loop(on && onScreen);
 }
 function tick(now) {
   if (!drive.running) return;
@@ -125,8 +129,9 @@ function tick(now) {
   const [lx, ly] = drive.trail[drive.trail.length - 1];
   if (Math.hypot(drive.X - lx, drive.Y - ly) > 0.5) { drive.trail.push([drive.X, drive.Y]); if (drive.trail.length > 900) drive.trail.shift(); }
   drawDrive();
-  requestAnimationFrame(tick);
+  frameId = requestAnimationFrame(tick);
 }
+new IntersectionObserver(([e]) => { onScreen = e.isIntersecting; loop(drive.running && onScreen); }).observe($("#driveC"));
 $("#dRun").addEventListener("click", () => setRunning(!drive.running));
 $("#dReset").addEventListener("click", () => { Object.assign(drive, { X: 0, Y: 0, psi: Math.PI / 2, trail: [[0, 0]] }); drawDrive(); });
 ["#dDelta", "#dSpeed"].forEach(id => $(id).addEventListener("input", () => { driveStatus(); if (!drive.running) drawDrive(); }));

@@ -22,6 +22,7 @@ function pct(p, d) {
   return (100 * p).toFixed(d) + "%";
 }
 const int = n => Math.round(n).toLocaleString("en-US");
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 
 /* ---------------- math and code ---------------- */
 function renderTo(node, source) {
@@ -82,6 +83,8 @@ function fit(canvas, aspect) {
   ctx.clearRect(0, 0, w, h);
   return { ctx, w, h };
 }
+/* A straight line segment in the current stroke style. */
+function seg(ctx, x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
 
 /* ---------------- charts ---------------- */
 /* About `count` round tick values between lo and hi (steps of 1, 2 or 5 times a power of 10). */
@@ -194,5 +197,5 @@ renderMath();
 window.addEventListener("load", () => renderMath());
 if (global.hljs) $$("pre code").forEach(b => { if (!b.classList.contains("nohl")) hljs.highlightElement(b); });
 
-global.Kit = { $, $$, css, isDark, reduceMotion, fmt, pct, int, renderMath, tex, caption, fit, ticks, tickLabel, frame, plotLine, histogram, narrowOf, alpha, onRedraw, redrawAll };
+global.Kit = { $, $$, css, isDark, reduceMotion, fmt, pct, int, clamp, renderMath, tex, caption, fit, seg, ticks, tickLabel, frame, plotLine, histogram, narrowOf, alpha, onRedraw, redrawAll };
 })(window);
