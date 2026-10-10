@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>09 · Advanced ideas and next steps — TrustDrive course</title>
-<meta name="description" content="CUSUM change detection and its average run length, conformal prediction with adaptive coverage, and a research roadmap.">
+<title>09 · Advanced ideas and next steps · TrustDrive course</title>
+<meta name="description" content="Sequential change detection with CUSUM and its average run lengths, split conformal prediction and its distribution-free guarantee, adaptive conformal inference under drift, and a research roadmap for a serious version of the TrustDrive system.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="interactive/trustdrive.css">
 </head>
 <body>
 
@@ -18,295 +19,361 @@
 <header class="hero col">
   <span class="eyebrow">TrustDrive course · Chapter 09 of 09</span>
   <h1>Advanced ideas and next steps</h1>
-  <div class="intro prose">
-<p>The course system is deliberately simple. This closing notebook develops two
-techniques that directly strengthen it - <strong>sequential change detection</strong> and
-<strong>conformal prediction</strong> - each with the theory and a runnable demo, and then lays
-out a research roadmap for the pieces we only sketched.</p>
-
-  </div>
+  <p class="lede">The course's system is deliberately simple. This closing chapter develops two techniques that directly strengthen it: <strong>sequential change detection</strong>, which turns the flickering NIS of chapter 08 into a robust alarm, and <strong>conformal prediction</strong>, which gives uncertainty a guarantee. Then it lays out a research roadmap. Below, a stream of NIS values changes regime halfway through. A single-sample gate sees isolated spikes; a cumulative sum adds up the evidence. Move the change, the threshold and the reference, and compare.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 04, 05 and 08 · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/09_advanced_ideas.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/09_advanced_ideas.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">This notebook imports <code>courselib</code>, the course's reference library. Download the full course to run it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#part-a-sequential-change-detection-cusum">Part A - Sequential change detection (CUSUM)</a></li>
-    <li><a href="#part-b-conformal-prediction">Part B - Conformal prediction</a></li>
-    <li><a href="#part-c-a-research-roadmap">Part C - A research roadmap</a></li>
-    <li><a href="#you-have-finished-the-course">You have finished the course</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="part-a-sequential-change-detection-cusum">Part A - Sequential change detection (CUSUM)</h2>
-<p>The capstone (notebook 08) found that a single-sample gate on the NIS is
-<em>intermittent</em>: under a bias the filter partly tracks, the NIS spikes cross the
-threshold only ~30% of the time, so as a standalone trigger the gate is weak. The
-fix is to accumulate evidence over time.</p>
-<p><strong>From the SPRT to CUSUM.</strong> Detecting a change from an in-control density <span class="math inline">p_0</span> to an
-out-of-control <span class="math inline">p_1</span> as quickly as possible, subject to a false-alarm budget, is a
-sequential-testing problem. Wald's sequential probability ratio test accumulates the
-<strong>log-likelihood ratio</strong> <span class="math inline">s_k=\log\frac{p_1(z_k)}{p_0(z_k)}</span>; Page's <strong>CUSUM</strong> [1]
-applies it with a reset at zero,</p>
-<div class="math display"> g_k=\max\!\big(0,\ g_{k-1}+s_k\big),\qquad \text{alarm when } g_k&gt;h. </div>
-<p>For detecting a <strong>mean increase</strong> this reduces to <span class="math inline">g_k=\max(0,\,g_{k-1}+z_k-k_{ref})</span>
-with reference <span class="math inline">k_{ref}\approx(\mu_0+\mu_1)/2</span>: below the change the increments are
-negative and <span class="math inline">g_k</span> is pinned near <span class="math inline">0</span> (few false alarms); after the change they turn
-positive and <span class="math inline">g_k</span> ramps up (fast detection). CUSUM is <strong>asymptotically optimal</strong> -
-it minimises the worst-case expected detection delay for a given false-alarm rate
-[3,4].</p>
+<!-- ============ LIVE DEMO: CUSUM against the single-sample gate ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The NIS stream, and the single-sample gate</p>
+        <canvas id="zC" aria-label="A stream of NIS values over 400 steps, changing regime at step 200, with the 99% gate at 9.21 and the gate's alarms marked" aria-describedby="heroStatus"></canvas>
+      </div>
+      <div>
+        <p class="chart-title">The cumulative sum and its threshold</p>
+        <canvas id="gC" aria-label="The CUSUM statistic over the same 400 steps, with its threshold and its alarms marked"></canvas>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>NIS</span>
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>CUSUM <span class="m">g_k</span></span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>alarms</span>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Size of the change (noncentrality <span class="m">\lambda</span>): <b id="hLV"></b></span>
+        <span class="row"><input type="range" id="hL" min="0" max="12" step="0.5" value="6"></span>
+      </label>
+      <label class="field"><span>CUSUM threshold <span class="m">h</span>: <b id="hHV"></b></span>
+        <span class="row"><input type="range" id="hH" min="2" max="20" step="1" value="10"></span>
+      </label>
+      <label class="field"><span>Reference <span class="m">k_{\text{ref}}</span>: <b id="hKV"></b></span>
+        <span class="row"><input type="range" id="hK" min="2.5" max="8" step="0.25" value="5"></span>
+      </label>
+      <div class="btn-row"><button class="btn" id="hNew" type="button">new stream</button></div>
+      <div class="readouts" aria-live="off">
+        <span>CUSUM detects after</span><span class="v" id="rC">–</span>
+        <span>gate first fires after</span><span class="v" id="rG">–</span>
+        <span>false alarms before the change: gate</span><span class="v" id="rFG">–</span>
+        <span>false alarms before the change: CUSUM</span><span class="v" id="rFC">–</span>
+      </div>
+      <p class="hint">Defaults are the notebook's: in control, the NIS is <span class="m">\chi^2_2</span> (mean 2); from step 200 it is a noncentral <span class="m">\chi^2_2</span> with <span class="m">\lambda = 6</span> (mean 8). After an alarm, the CUSUM restarts from zero.</p>
+    </div>
+  </div>
 </div>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
-rng = np.random.default_rng(0)
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#cusum"><span class="n">1</span><span class="t">Sequential change detection</span><span class="d">From the SPRT to CUSUM</span></a>
+    <a href="#arl"><span class="n">2</span><span class="t">The average run length</span><span class="d">False alarms against delay</span></a>
+    <a href="#conformal"><span class="n">3</span><span class="t">Conformal prediction</span><span class="d">A guarantee without a model of the noise</span></a>
+    <a href="#aci"><span class="n">4</span><span class="t">Coverage under drift</span><span class="d">Adaptive conformal inference</span></a>
+    <a href="#roadmap"><span class="n">5</span><span class="t">A research roadmap</span><span class="d">Where a serious version would go</span></a>
+    <a href="#finished"><span class="n">6</span><span class="t">You have finished the course</span><span class="d">What you built</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-# NIS-like stream: in-control ~ chi^2_2 (mean 2), out-of-control ~ noncentral chi^2 (mean ~8)
-ic = lambda size: rng.chisquare(2, size)
-oc = lambda size: rng.noncentral_chisquare(2, 6.0, size)
-
-zr = np.random.default_rng(3)
-N, change = 400, 200
-z = np.concatenate([zr.chisquare(2, change), zr.noncentral_chisquare(2, 6.0, N - change)])
+<!-- =================================================================== -->
+<section id="cusum">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Sequential change detection: CUSUM</h2>
+  </div>
+  <div class="col prose">
+    <p>The capstone found that a single-sample gate on the NIS is <em>intermittent</em>. Under a bias the filter partly tracks, the NIS crosses the gate on only about 30% of the samples, so on its own the gate is a weak trigger. The fix is to accumulate evidence over time.</p>
+    <p><strong>From the SPRT to CUSUM.</strong> Detecting a change from an in-control density <span class="m">p_0</span> to an out-of-control density <span class="m">p_1</span> as quickly as possible, within a false-alarm budget, is a sequential testing problem. Wald's sequential probability ratio test <a href="#ref-2">[2]</a> accumulates the <strong>log-likelihood ratio</strong> of each observation,</p>
+    <div class="math-block">s_k = \log \frac{p_1(z_k)}{p_0(z_k)},</div>
+    <p>which is negative on average before the change and positive after it. Page's <strong>CUSUM</strong> <a href="#ref-1">[1]</a> applies it with a reset at zero:</p>
+    <div class="math-block" data-narrow="\boxed{\begin{gathered} g_k = \max\big(0,\ g_{k-1} + s_k\big), \\[4pt] \text{alarm when } g_k &gt; h. \end{gathered}}">\boxed{\;g_k = \max\big(0,\ g_{k-1} + s_k\big), \qquad \text{alarm when } g_k &gt; h\;}</div>
+    <p>To detect an <strong>increase in the mean</strong>, the increment becomes <span class="m">z_k - k_{\text{ref}}</span>, with a reference halfway between the two means, <span class="m">k_{\text{ref}} \approx \frac{\mu_0 + \mu_1}{2}</span>. This is exact for Gaussian data (exercise 1). Before the change the increments are negative, and <span class="m">g_k</span> stays pinned near 0: few false alarms. After it they turn positive, and <span class="m">g_k</span> ramps up: fast detection. CUSUM is <strong>optimal</strong> in a precise sense: among all tests with the same false-alarm rate, it minimises the worst-case expected detection delay <a href="#ref-3">[3]</a>, <a href="#ref-4">[4]</a>.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a CUSUM?</p>
+      <p><b>In plain words:</b> a running total of how surprising each new sample is, which never goes below zero. Ordinary samples drain it; a run of slightly surprising ones fills it up, and the alarm sounds when it overflows.</p>
+      <p><b>More precisely:</b> the cumulative sum of log-likelihood ratios between the after-change and before-change distributions, reset at zero, compared with a threshold. It is the optimal detector of an abrupt change for a given false-alarm rate <a href="#ref-3">[3]</a>.</p>
+      <dl>
+        <dt>In control, out of control</dt><dd>Before the change, and after it.</dd>
+        <dt>Reference <span class="m">k_{\text{ref}}</span></dt><dd>The value each sample must exceed to add to the sum.</dd>
+        <dt>Threshold <span class="m">h</span></dt><dd>How much accumulated evidence triggers the alarm.</dd>
+        <dt>Detection delay</dt><dd>The time from the change to the alarm.</dd>
+      </dl>
+    </div>
+    <pre><code class="language-python">z = np.concatenate([zr.chisquare(2, change), zr.noncentral_chisquare(2, 6.0, N - change)])
 kref, h = 5.0, 10.0
 g = np.zeros(N)
 for t in range(1, N):
-    g[t] = max(0.0, g[t-1] + z[t] - kref)
-cusum_alarm = int(np.argmax(g &gt; h)) if (g &gt; h).any() else None
-gate_alarm  = change + int(np.argmax(z[change:] &gt; 9.21)) if (z[change:] &gt; 9.21).any() else None
+    g[t] = max(0.0, g[t-1] + z[t] - kref)</code></pre>
+    <pre class="output"><code class="nohl">change at k=200 :  CUSUM detects at k=206 (delay 6) ;  first single-sample gate crossing at k=201</code></pre>
+    <p>One run says little. Here the gate happened to fire one step after the change: after it, a sample crosses 9.21 with probability 0.35, so an early crossing is likely. In this run, it also raised no false alarm in the first 200 steps, although it fires on 1% of in-control samples. The fair comparison fixes the false-alarm rate, and measures the delay.</p>
+    <details class="math">
+      <summary>For the curious: the exact likelihood ratio for the NIS <span>(optional)</span></summary>
+      <div class="inner">
+        <p>The NIS is not Gaussian. In control it is <span class="m">\chi^2_2</span>, with density <span class="m">\frac{1}{2}e^{-z/2}</span>; under a bias it becomes a noncentral <span class="m">\chi^2_2</span> with noncentrality <span class="m">\lambda</span>, with density <span class="m">\frac{1}{2}e^{-(z + \lambda)/2}\,I_0\big(\sqrt{\lambda z}\big)</span>, where <span class="m">I_0</span> is a modified Bessel function. The exact log-likelihood ratio is therefore</p>
+        <div class="math-block">s(z) = -\frac{\lambda}{2} + \log I_0\big(\sqrt{\lambda z}\big),</div>
+        <p>increasing in <span class="m">z</span> but not linear. The CUSUM on this exact <span class="m">s</span> is the optimal one. Is the simple linear version far behind? Not much. At about one false alarm per 780 steps, the exact CUSUM detects the notebook's change in 3.7 steps on average, the linear one with <span class="m">k_{\text{ref}} = 5</span> in 4.0.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-fig, ax = plt.subplots(2, 1, figsize=(8, 4.4), sharex=True)
-ax[0].plot(z, color=&quot;#e67e22&quot;, lw=.7); ax[0].axhline(9.21, ls=&quot;--&quot;, color=&quot;k&quot;, label=&quot;single-sample gate $\\chi^2_{2,0.99}$&quot;)
-ax[0].axvspan(change, N, color=&quot;red&quot;, alpha=.06); ax[0].set_ylabel(&quot;NIS $z_k$&quot;); ax[0].legend(loc=&quot;upper left&quot;, fontsize=8)
-ax[1].plot(g, color=&quot;#2e7d32&quot;); ax[1].axhline(h, ls=&quot;--&quot;, color=&quot;r&quot;, label=&quot;CUSUM threshold $h$&quot;)
-if cusum_alarm: ax[1].axvline(cusum_alarm, color=&quot;k&quot;, lw=1)
-ax[1].axvspan(change, N, color=&quot;red&quot;, alpha=.06); ax[1].set_ylabel(&quot;CUSUM $g_k$&quot;); ax[1].set_xlabel(&quot;k&quot;)
-ax[1].legend(loc=&quot;upper left&quot;, fontsize=8)
-for a in ax: a.grid(alpha=.3)
-plt.tight_layout(); plt.show()
-print(&quot;change at k=%d :  CUSUM detects at k=%s (delay %s) ;  first single-sample gate crossing at k=%s&quot;
-      % (change, cusum_alarm, cusum_alarm-change if cusum_alarm else None, gate_alarm))</code></pre>
-<figure class="output-figure"><img src="img/09-1.png" alt="Figure 1 produced by the code above" width="869" height="472" loading="lazy"></figure>
-<pre class="output">change at k=200 :  CUSUM detects at k=206 (delay 6) ;  first single-sample gate crossing at k=201</pre>
-</div>
+<!-- =================================================================== -->
+<section id="arl">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The operating characteristic: average run length</h2>
+  </div>
+  <div class="col prose">
+    <p>A detector's quality is summarised by its <strong>average run lengths</strong> (ARL) <a href="#ref-4">[4]</a>. <span class="m">\mathrm{ARL}_0</span> is the mean time between false alarms while in control (want it large); <span class="m">\mathrm{ARL}_1</span> is the mean detection delay once the change has happened (want it small). Sweeping the threshold traces a trade-off curve. For the single-sample gate, both are exact: with a gate <span class="m">t</span>, <span class="m">\mathrm{ARL}_0 = \frac{1}{P(\chi^2_2 &gt; t)} = e^{t/2}</span>, and similarly after the change. The CUSUM's are simulated:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="arlw">
+      <canvas id="arlC" aria-label="Detection delay against mean time between false alarms, on log scales, for the single-sample gate and for CUSUM; the CUSUM curve lies below"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>CUSUM, <span class="m">k_{\text{ref}} = 5</span>, <span class="m">h</span> from 3 to 13</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>single-sample gate</span>
+      </div>
+      <p class="caption" id="arlCap" aria-live="polite">Simulating…</p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>At any given false-alarm interval, CUSUM detects sooner, and its advantage grows as false alarms are made rarer. At one false alarm per 100 steps, the delay is 2.6 steps against 2.9 for the gate; at one per 300, 3.4 against 4.4; at one per 1,000, 4.2 against 7.4. That is exactly the robustness the capstone was missing: a gate strict enough to rarely cry wolf becomes slow, while the sum keeps adding up small excesses that no single sample could separate from noise.</p>
+    <p>The simulation lets every run go on until its first false alarm. At the largest threshold that takes about 4,600 steps on average, and a run cut short would understate <span class="m">\mathrm{ARL}_0</span>.</p>
+  </div>
+</section>
 
-<div class="md">
-<h3 id="the-operating-characteristic-arl">The operating characteristic: ARL</h3>
-<p>Detector quality is summarised by the <strong>average run length (ARL)</strong>: <span class="math inline">\mathrm{ARL}_0</span> is
-the mean time <em>between false alarms</em> while in control (want it large), and
-<span class="math inline">\mathrm{ARL}_1</span> is the mean <em>detection delay</em> once the change occurs (want it small)
-[4]. Sweeping the threshold traces a trade-off curve. Below we compare CUSUM against
-the memoryless single-sample gate on the same streams: for any given false-alarm
-interval, CUSUM detects far sooner - which is exactly the robustness the capstone was
-missing.</p>
-</div>
+<!-- =================================================================== -->
+<section id="conformal">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Conformal prediction</h2>
+  </div>
+  <div class="col prose">
+    <p>Ensembles (chapter 04) give a spread, but no <em>guarantee</em>. <strong>Conformal prediction</strong> <a href="#ref-5">[5]</a> wraps any model to produce prediction sets with a finite-sample, distribution-free coverage guarantee.</p>
+    <p><strong>Split conformal.</strong> Hold out a calibration set of <span class="m">n</span> points, compute their nonconformity scores <span class="m">R_i = |y_i - \hat f(x_i)|</span>, and let <span class="m">q</span> be the <span class="m">\lceil (n + 1)(1 - \alpha)\rceil</span>-th smallest. Then, for an exchangeable test point,</p>
+    <div class="math-block">\boxed{\;\mathbb{P}\big(y_{n+1} \in \hat f(x_{n+1}) \pm q\big) \ \ge\ 1 - \alpha\;}</div>
+    <p><strong>Why it holds.</strong> If the calibration points and the test point are exchangeable, the rank of the test score <span class="m">R_{n+1}</span> among <span class="m">R_1, \ldots, R_{n+1}</span> is uniform on <span class="m">\{1, \ldots, n + 1\}</span>. So <span class="m">\mathbb{P}(R_{n+1} \le q) \ge \frac{\lceil (n + 1)(1 - \alpha)\rceil}{n + 1} \ge 1 - \alpha</span>, with no assumption on the distribution <a href="#ref-6">[6]</a>, <a href="#ref-7">[7]</a>. The catch is the <em>exchangeability</em> premise, which is exactly what a distribution shift breaks. A drop in realised coverage is therefore itself an out-of-distribution signal. Move the test inputs away from where the model was trained and calibrated:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="cfw">
+      <div class="params">
+        <label class="field"><span>Miscoverage <span class="m">\alpha</span>: <b id="cAV"></b></span>
+          <span class="row"><input type="range" id="cA" min="0.05" max="0.3" step="0.01" value="0.1"></span>
+        </label>
+        <label class="field"><span>Test inputs drawn from: <b id="cSV"></b></span>
+          <span class="row"><input type="range" id="cS" min="0" max="4" step="0.1" value="0"></span>
+        </label>
+      </div>
+      <canvas id="cfC" aria-label="The model's prediction with its conformal band, the true function, the training range, and test points coloured covered or missed"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>prediction <span class="m">\pm q</span></span>
+        <span class="key"><span class="sw" style="background:var(--ink)"></span>true function</span>
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>test point covered</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>missed</span>
+      </div>
+      <p class="caption" id="cfCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre class="output"><code class="nohl">conformal half-width q = 0.172
+coverage in-distribution [-2, 2] : 0.92  (guarantee: >= 0.90 on average)
+coverage out-of-dist    [ 3, 5] : 0.03  (exchangeability broken -> guarantee voids)</code></pre>
+    <details class="math">
+      <summary>For the curious: what the guarantee does and does not promise <span>(optional)</span></summary>
+      <div class="inner">
+        <p>The guarantee is <em>marginal</em>: it averages over the draw of the calibration set as well as of the test point. For one fixed calibration set of <span class="m">n = 800</span> points, the coverage is itself random, distributed as <span class="m">\mathrm{Beta}(721, 80)</span>: mean 0.900, standard deviation 0.011 <a href="#ref-7">[7]</a>. Half of all calibration sets give a coverage below 0.90, and one in twenty below 0.882. The notebook's calibration set happens to give 0.909 (measured on two million test points); the printed 0.92 adds the noise of its 5,000 test points. Another run could just as well print 0.89, without breaking anything. A guarantee that holds for most calibration sets, not just on average, needs a slightly larger <span class="m">q</span>: the "training-conditional" versions of conformal prediction.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">def arl(gen, kref, h, R=4000, maxT=4000):
-    g = np.zeros(R); rl = np.full(R, float(maxT)); fired = np.zeros(R, bool)
-    for t in range(1, maxT + 1):
-        g = np.maximum(0.0, g + gen(R) - kref)
-        nf = (~fired) &amp; (g &gt; h); rl[nf] = t; fired |= nf
-        if fired.all(): break
-    return rl.mean()
+<!-- =================================================================== -->
+<section id="aci">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Keeping coverage under drift: adaptive conformal inference</h2>
+  </div>
+  <div class="col prose">
+    <p>If the world drifts, fixed conformal loses coverage. <strong>Adaptive conformal inference</strong> (ACI) <a href="#ref-8">[8]</a> restores it online, with a tiny feedback rule on the miscoverage level:</p>
+    <div class="math-block">\alpha_{t+1} = \alpha_t + \gamma\,\big(\alpha - \mathbb{1}[\text{miss}_t]\big).</div>
+    <p>Each miss lowers <span class="m">\alpha_t</span>, which widens the next interval; each hit raises it a little. This provably drives the long-run empirical coverage to <span class="m">1 - \alpha</span> for <em>any</em> sequence of data, even an adversarial one. Below, the input drifts from the training domain <span class="m">[-2, 2]</span> to 5, and each interval uses the scores seen so far:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="aciw">
+      <label class="field"><span>Adaptation rate <span class="m">\gamma</span>: <b id="aGV"></b></span>
+        <span class="row"><input type="range" id="aG" min="-3.00117" max="-0.70317" step="0.0383" value="-1.69897"></span>
+      </label>
+      <div class="two">
+        <div><p class="chart-title">Running coverage</p><canvas id="aciCov" aria-label="Running coverage over 4000 steps for the fixed level and for adaptive conformal inference, with the 0.90 target"></canvas></div>
+        <div><p class="chart-title">Interval half-width</p><canvas id="aciW" aria-label="The interval half-width over the same steps, for both methods, growing as the input drifts"></canvas></div>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>fixed level</span>
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>adaptive (ACI)</span>
+        <span class="key"><span class="sw" style="background:var(--ink)"></span>target 0.90</span>
+      </div>
+      <p class="caption" id="aciCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre class="output"><code class="nohl">long-run coverage   fixed: 0.73    ACI: 0.90    (target 0.90)</code></pre>
+    <p>Two remarks keep this honest. First, ACI restores <em>coverage</em> by widening the intervals: once the input has drifted out of the training domain, the fixed-level predictor covers only 51% of the points, ACI 90%, but by the end ACI's half-width is about 2.1, against 0.17 inside the domain, for a function of amplitude 1. That is not a better model, it is an honest admission of ignorance. And the widening, or the fall of <span class="m">\alpha_t</span>, is itself the out-of-distribution signal. Second, the guarantee assumes that when <span class="m">\alpha_t</span> drops to zero or below, the interval becomes the whole line. The notebook instead caps it at the largest past score, which happens on 16% of the steps here; with the textbook rule, the coverage is the same, 0.899.</p>
+  </div>
+</section>
 
-hs = np.arange(3, 15, 2)
-cusum0 = np.array([arl(ic, kref, hh) for hh in hs])   # in-control -&gt; false-alarm interval
-cusum1 = np.array([arl(oc, kref, hh) for hh in hs])   # out-of-control -&gt; detection delay
+<!-- =================================================================== -->
+<section id="roadmap">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>A research roadmap</h2>
+  </div>
+  <div class="col prose">
+    <p>Where a serious version of this system would go, with the mathematics named and the literature to start from:</p>
+    <ol>
+      <li><b>Chance-constrained, stochastic MPC instead of LQR.</b> Replace the regulator with a predictive controller that keeps the lane with high probability, <span class="m">\mathbb{P}(|e_y| \le e_{\max}) \ge 1 - \varepsilon</span> over a horizon, propagating the perception covariance <span class="m">\Sigma^{\text{AI}}</span> into a <em>tightening</em> of the constraints. This turns the integrity signal into a rigorous safety margin, rather than a speed heuristic <a href="#ref-9">[9]</a>.</li>
+      <li><b>A learned driver state.</b> Replace the scalar workload <span class="m">W</span> with an estimate from gaze, reaction time or steering entropy, so that the authority <span class="m">\lambda = \Phi(I, W)</span> reflects the <em>real</em> driver: the workload-adaptive shared control of chapter 07.</li>
+      <li><b>Perception with built-in, calibrated uncertainty.</b> Swap the synthetic sensor and the ensemble for evidential or prior-network heads that output a distribution directly <a href="#ref-10">[10]</a>, <a href="#ref-11">[11]</a>, trained on real images and a photorealistic simulator such as CARLA, with the NIS and domain monitors wrapped around the real network.</li>
+      <li><b>Runtime assurance and formal guarantees.</b> Make the contracted-envelope mode a verified <strong>safety controller</strong>, and switch to it under low integrity: a Simplex, or runtime-assurance, architecture <a href="#ref-12">[12]</a>. Certify its safe set with <strong>control barrier functions</strong> or reachability analysis <a href="#ref-13">[13]</a>, moving from a heuristic score towards an assured envelope.</li>
+      <li><b>Integrity with a bound, not a score.</b> Borrow the aviation notion of a <strong>protection level</strong>: instead of <span class="m">I \in [0, 1]</span>, compute a statistical bound on the state error that holds with a target integrity risk, using the conformal or change-detection machinery above. This is the path from a monitor to a safety case.</li>
+      <li><b>A higher-fidelity plant.</b> A dynamic bicycle model with tyre slip and actuator lag (chapter 01), longitudinal control, and closed-loop evaluation in a realistic simulator, where the monitored perception feeds the controller. Chapter 08 showed why: the sharp bend's 1.08 g is invisible to a kinematic model.</li>
+    </ol>
+  </div>
+</section>
 
-thr = np.linspace(5, 14, 12)                          # single-sample gate on z
-Zic, Zoc = ic(400000), oc(400000)
-gate0 = np.array([1/np.mean(Zic &gt; t) for t in thr])
-gate1 = np.array([1/np.mean(Zoc &gt; t) for t in thr])
+<!-- =================================================================== -->
+<section id="finished">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>You have finished the course</h2>
+  </div>
+  <div class="col prose">
+    <p>Across nine chapters you built, from first principles, a small but complete trustworthy-autonomy stack, and the theory under each piece:</p>
+    <ul>
+      <li>a vehicle model and an optimal controller (chapters 01 and 02);</li>
+      <li>a camera model and a perception front-end with calibrated, decomposed uncertainty (03 and 04);</li>
+      <li>a Kalman monitor whose innovations are white and whose NIS is chi-squared (05);</li>
+      <li>an operating-domain check, and a fused integrity score evaluated by ROC curves and detection delays (06);</li>
+      <li>an integrity-aware shared controller whose authority follows trust (07).</li>
+    </ul>
+    <p>The capstone showed, with a controlled and statistically tested experiment, that using AI perception <em>through</em> a monitoring layer is safer than trusting it blindly or switching away from it. This chapter showed how to make each piece more rigorous.</p>
+    <p class="big-idea">Trust the perception exactly as far as an independent check can vouch for it.</p>
+  </div>
+</section>
 
-plt.figure(figsize=(6.4, 4.2))
-plt.loglog(cusum0, cusum1, &#x27;-o&#x27;, color=&quot;#2e7d32&quot;, label=&quot;CUSUM&quot;)
-plt.loglog(gate0, gate1, &#x27;-s&#x27;, color=&quot;#d1495b&quot;, label=&quot;single-sample gate&quot;)
-plt.xlabel(&quot;$\\mathrm{ARL}_0$  (mean steps between false alarms)&quot;)
-plt.ylabel(&quot;$\\mathrm{ARL}_1$  (detection delay)&quot;)
-plt.title(&quot;CUSUM detects sooner for the same false-alarm rate&quot;)
-plt.legend(); plt.grid(alpha=.3, which=&quot;both&quot;); plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/09-2.png" alt="Figure: CUSUM detects sooner for the same false-alarm rate" width="693" height="452" loading="lazy"></figure>
-</div>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>CUSUM</b>: <span class="m">g_k = \max(0, g_{k-1} + s_k)</span>, alarm above <span class="m">h</span>; for a mean shift, <span class="m">s_k = z_k - k_{\text{ref}}</span>, with <span class="m">k_{\text{ref}}</span> halfway between the means.</div></li>
+      <li><div><b>Average run lengths</b>: <span class="m">\mathrm{ARL}_0</span> between false alarms, <span class="m">\mathrm{ARL}_1</span> to detection; at equal <span class="m">\mathrm{ARL}_0</span>, CUSUM detects sooner, the more so as false alarms get rarer.</div></li>
+      <li><div><b>Split conformal</b>: <span class="m">\hat f(x) \pm q</span>, with <span class="m">q</span> the <span class="m">\lceil (n + 1)(1 - \alpha)\rceil</span>-th smallest calibration score, covers with probability at least <span class="m">1 - \alpha</span> under exchangeability.</div></li>
+      <li><div><b>Shift</b>: breaking exchangeability voids the guarantee; the fall in coverage is an out-of-distribution signal.</div></li>
+      <li><div><b>ACI</b>: <span class="m">\alpha_{t+1} = \alpha_t + \gamma(\alpha - \mathbb{1}[\text{miss}_t])</span> restores long-run coverage, by widening the intervals.</div></li>
+      <li><div><b>Roadmap</b>: stochastic MPC, driver-state estimation, calibrated perception, runtime assurance, protection levels, higher-fidelity plants.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Sequential test</td><td>A test that decides as the data arrive, stopping as soon as the evidence suffices.</td></tr>
+        <tr><td>Log-likelihood ratio</td><td>How much more likely an observation is after the change than before it.</td></tr>
+        <tr><td>CUSUM</td><td>A cumulative sum of log-likelihood ratios, reset at zero, with an alarm threshold.</td></tr>
+        <tr><td>Average run length</td><td>The mean time to an alarm: between false alarms, or after a change.</td></tr>
+        <tr><td>Nonconformity score</td><td>How badly a point fits the model, such as the absolute residual.</td></tr>
+        <tr><td>Exchangeability</td><td>Any reordering of the data is equally likely; i.i.d. data are exchangeable.</td></tr>
+        <tr><td>Coverage</td><td>The share of points that fall inside their prediction intervals.</td></tr>
+        <tr><td>Runtime assurance</td><td>A verified fallback controller that takes over when the main one cannot be trusted.</td></tr>
+        <tr><td>Protection level</td><td>A bound on the estimation error that holds with a specified integrity risk.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="part-b-conformal-prediction">Part B - Conformal prediction</h2>
-<p>Ensembles (notebook 04) give a spread but no <em>guarantee</em>. <strong>Conformal prediction</strong> [5]
-wraps any model to produce prediction sets with a finite-sample, distribution-free
-coverage guarantee.</p>
-<p><strong>Split conformal.</strong> Hold out a calibration set of <span class="math inline">n</span> points, compute nonconformity
-scores <span class="math inline">R_i=|y_i-\hat f(x_i)|</span>, and take <span class="math inline">q=</span> the <span class="math inline">\lceil(n+1)(1-\alpha)\rceil</span>-th
-smallest. The interval <span class="math inline">\hat f(x)\pm q</span> then satisfies, for an exchangeable test point,</p>
-<div class="math display"> \mathbb P\big(y_{n+1}\in \hat f(x_{n+1})\pm q\big)\ \ge\ 1-\alpha. </div>
-<p><strong>Why it holds (sketch).</strong> Under exchangeability the rank of the test score <span class="math inline">R_{n+1}</span>
-among <span class="math inline">\{R_1,\dots,R_{n+1}\}</span> is uniform on <span class="math inline">\{1,\dots,n+1\}</span>, so
-<span class="math inline">\mathbb P(R_{n+1}\le q)\ge \lceil(n+1)(1-\alpha)\rceil/(n+1)\ge 1-\alpha</span> - no
-distributional assumptions [6,7]. The catch is the <em>exchangeability</em> premise, which is
-exactly what a distribution shift breaks - so a drop in realised coverage is itself an
-out-of-distribution signal.</p>
-</div>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>The Gaussian CUSUM.</b> Derive the CUSUM increment <span class="m">z_k - k_{\text{ref}}</span> from the log-likelihood ratio of a Gaussian mean shift, and identify <span class="m">k_{\text{ref}}</span> in terms of <span class="m">\mu_0</span>, <span class="m">\mu_1</span> and <span class="m">\sigma</span>.
+        <details class="sol"><summary>Hint</summary><p>Write <span class="m">\log \frac{\mathcal{N}(z; \mu_1, \sigma^2)}{\mathcal{N}(z; \mu_0, \sigma^2)}</span>; the quadratic terms in <span class="m">z</span> cancel.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <div class="math-block" data-narrow="\begin{aligned} s(z) &amp;= \frac{(z - \mu_0)^2 - (z - \mu_1)^2}{2\sigma^2} \\ &amp;= \frac{\mu_1 - \mu_0}{\sigma^2}\Big(z - \frac{\mu_0 + \mu_1}{2}\Big). \end{aligned}">s(z) = \frac{(z - \mu_0)^2 - (z - \mu_1)^2}{2\sigma^2} = \frac{\mu_1 - \mu_0}{\sigma^2}\Big(z - \frac{\mu_0 + \mu_1}{2}\Big).</div>
+          <p>The factor <span class="m">\frac{\mu_1 - \mu_0}{\sigma^2}</span> is positive and constant, so dividing the whole recursion by it changes nothing but the scale of the threshold. The increment is <span class="m">z_k - k_{\text{ref}}</span> with <span class="m">k_{\text{ref}} = \frac{\mu_0 + \mu_1}{2}</span>, and the threshold becomes <span class="m">h' = \frac{h\sigma^2}{\mu_1 - \mu_0}</span>. The reference does not depend on <span class="m">\sigma</span>; only the threshold does. For the NIS, <span class="m">\mu_0 = 2</span> and <span class="m">\mu_1 = 2 + \lambda = 8</span>, which gives the notebook's <span class="m">k_{\text{ref}} = 5</span>. The NIS is not Gaussian, though, so there this is a heuristic, a very good one (Part 1's box).</p>
+        </details>
+      </div></li>
+      <li><div><b>CUSUM in the capstone.</b> Add the CUSUM to the integrity monitor of chapter 08, feeding it the NIS, and re-run the sharp-bend ablation with the NIS alone. Does the cumulative test now hold the integrity down where the single-sample score could not?
+        <details class="sol"><summary>Hint</summary><p>Keep <span class="m">k_{\text{ref}} = 5</span> and <span class="m">h = 10</span>. Feed the integrity monitor nothing while <span class="m">g_k \le h</span>, and the excess <span class="m">g_k - h</span> above the gate once it crosses. Check the other scenarios for false alarms.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Yes, mostly. With the NIS as the only external check, the single-sample score holds the integrity below one half on only 13% of the bend on average over ten seeds; the CUSUM, on 94%. The RMSE falls from 0.172 to 0.063 m, and the unsafe usage from 29% to 2%: almost the full system's 0.052 m and 0.2%. On the notebook's own seed the gain is smaller (0.170 to 0.095 m; 10% to 62% of the bend), a reminder to look at more than one run. And the CUSUM costs nothing elsewhere: in nominal, fog and conflict, <span class="m">g_k</span> never reaches <span class="m">h</span>, and every result is unchanged. With the domain monitor also on, the CUSUM is redundant here (0.053 against 0.052 m), as the bend is a monitored condition, but it makes the NIS a standalone trigger for the failures no map can announce.</p></details>
+      </div></li>
+      <li><div><b>A self-starting CUSUM.</b> Implement a normalised, self-starting CUSUM that estimates <span class="m">\mu_0</span> and <span class="m">\sigma</span> online.
+        <details class="sol"><summary>Hint</summary><p>Standardise each sample with a running mean and standard deviation (Welford's update), learned only while the statistic sits at zero, and run the CUSUM on the standardised values with <span class="m">k = 1.5</span> and <span class="m">h = 4.5</span>, which is the notebook's test in units of <span class="m">\sigma = 2</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>It works, but it pays in false alarms. With the true <span class="m">\mu_0 = 2</span> and <span class="m">\sigma = 2</span>, the standardised CUSUM has a mean time between false alarms of about 720 steps. Self-starting after a burn-in of 30 samples, about 150; after 100 samples, about 310; after 200, about 460. Two effects compound. Estimating a mean and a spread from a few dozen samples of a skewed <span class="m">\chi^2_2</span> is noisy, and an underestimated spread inflates every increment. And learning only while <span class="m">g_k = 0</span> discards the in-control samples that happened to run high, which biases both estimates low. The remedies are a longer burn-in, a larger threshold, or a robust estimate (a median and a scaled interquartile range). The general lesson: a detector's false-alarm rate depends on knowing the in-control behaviour, and that knowledge has a price.</p></details>
+      </div></li>
+      <li><div><b>Normalised conformal scores.</b> Use a <em>normalised</em> nonconformity score, <span class="m">\frac{|y - \hat f(x)|}{\hat\sigma(x)}</span>, with an ensemble's <span class="m">\hat\sigma</span>, and compare the sharpness of the intervals with the constant-width version.
+        <details class="sol"><summary>Hint</summary><p>Fit five random-feature ridge models on bootstrap resamples of the training set, take their standard deviation (plus a small floor) as <span class="m">\hat\sigma</span>, calibrate <span class="m">q</span> on the normalised scores, and predict <span class="m">\hat f(x) \pm q\,\hat\sigma(x)</span>. Look inside and outside the training range.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Inside the training range, the normalised intervals are <em>not</em> sharper: they cover the same 91%, with a mean half-width of 0.184 against 0.172. The noise here is the same everywhere, while the ensemble's spread, an epistemic quantity, varies from 0.013 to 0.035 and makes the widths vary where they should not. Outside the range, the picture flips. The constant-width intervals cover 36% of points on <span class="m">[2, 3]</span> and 9% on <span class="m">[3, 5]</span>; the normalised ones widen to mean half-widths of 4.4 and 9.6 and cover every point. They become honest out of distribution, though uselessly wide, and without a guarantee, since exchangeability is broken there too. Normalising pays off in sharpness when the score's scale genuinely varies, as with heteroscedastic noise and a <span class="m">\hat\sigma</span> that tracks it.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">from math import erf, sqrt
-f = lambda x: np.sin(1.5*x); noise = 0.1
-Xtr = rng.uniform(-2, 2, 1200); Ytr = f(Xtr) + rng.normal(0, noise, 1200)
-Wf, bf = rng.normal(0, 1.5, (200, 1)), rng.uniform(0, 2*np.pi, 200)
-phi = lambda x: np.cos(x.reshape(-1, 1) @ Wf.T + bf)
-ntr = 400; Pm = phi(Xtr[:ntr]); w = np.linalg.solve(Pm.T@Pm + 1e-2*np.eye(200), Pm.T@Ytr[:ntr])
-model = lambda x: phi(x) @ w
-res = np.abs(Ytr[ntr:] - model(Xtr[ntr:])); alpha = 0.1   # 800 calibration points
-q = np.quantile(res, min(np.ceil((len(res)+1)*(1-alpha))/len(res), 1.0))
-
-def coverage(lo, hi):
-    X = rng.uniform(lo, hi, 5000); Y = f(X) + rng.normal(0, noise, 5000)
-    return np.mean(np.abs(Y - model(X)) &lt;= q)
-print(&quot;conformal half-width q = %.3f&quot; % q)
-print(&quot;coverage in-distribution [-2, 2] : %.2f  (guarantee: &gt;= %.2f)&quot; % (coverage(-2, 2), 1-alpha))
-print(&quot;coverage out-of-dist    [ 3, 5] : %.2f  (exchangeability broken -&gt; guarantee voids)&quot; % coverage(3, 5))</code></pre>
-<pre class="output">conformal half-width q = 0.166
-coverage in-distribution [-2, 2] : 0.89  (guarantee: &gt;= 0.90)
-coverage out-of-dist    [ 3, 5] : 0.07  (exchangeability broken -&gt; guarantee voids)</pre>
-</div>
-
-<div class="md">
-<h3 id="keeping-coverage-under-drift-adaptive-conformal-inference">Keeping coverage under drift: adaptive conformal inference</h3>
-<p>If the world drifts, fixed conformal loses coverage. <strong>Adaptive conformal inference
-(ACI)</strong> [8] restores it online with a tiny feedback rule on the miscoverage level:</p>
-<div class="math display"> \alpha_{t+1}=\alpha_t+\gamma\big(\alpha-\mathbb 1[\text{miss}_t]\big), </div>
-<p>which provably drives the long-run empirical coverage to <span class="math inline">1-\alpha</span> for <em>any</em> sequence,
-even adversarial. Below, an input that drifts out of distribution collapses the
-coverage of a fixed-level online predictor, while ACI holds it near the target.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">T = 4000
-xs = np.linspace(-2, 5, T)                       # input drifts out of the training domain
-ys = f(xs) + rng.normal(0, noise, T)
-scores = np.abs(ys - model(xs))                  # nonconformity scores along the drift
-
-def online(adaptive, gamma=0.02, warm=50):
-    at = alpha; covered = np.zeros(T, bool)
-    for t in range(T):
-        if t &lt; warm:
-            covered[t] = True;
-            if adaptive: at = at + gamma*(alpha - 0)
-            continue
-        lvl = 1 - min(max(at, 0.0), 1.0) if adaptive else 1 - alpha
-        qt = np.quantile(scores[:t], lvl)        # quantile of past scores at the (adapted) level
-        c = scores[t] &lt;= qt; covered[t] = c
-        if adaptive: at = at + gamma*(alpha - (0.0 if c else 1.0))
-    return covered
-
-run_cov = lambda c: np.cumsum(c)/np.arange(1, len(c)+1)
-cov_fix, cov_aci = online(False), online(True)
-plt.figure(figsize=(7.2, 3.4))
-plt.plot(run_cov(cov_fix), color=&quot;#d1495b&quot;, label=&quot;fixed level&quot;)
-plt.plot(run_cov(cov_aci), color=&quot;#2e7d32&quot;, label=&quot;adaptive (ACI)&quot;)
-plt.axhline(1-alpha, ls=&quot;--&quot;, color=&quot;k&quot;, label=&quot;target %.2f&quot; % (1-alpha))
-plt.xlabel(&quot;time step (input drifting OOD -&gt;)&quot;); plt.ylabel(&quot;running coverage&quot;)
-plt.title(&quot;ACI restores coverage under distribution shift&quot;); plt.legend(loc=&quot;lower left&quot;); plt.grid(alpha=.3)
-plt.tight_layout(); plt.show()
-print(&quot;long-run coverage   fixed: %.2f    ACI: %.2f    (target %.2f)&quot;
-      % (cov_fix[100:].mean(), cov_aci[100:].mean(), 1-alpha))</code></pre>
-<figure class="output-figure"><img src="img/09-3.png" alt="Figure: ACI restores coverage under distribution shift" width="781" height="362" loading="lazy"></figure>
-<pre class="output">long-run coverage   fixed: 0.75    ACI: 0.90    (target 0.90)</pre>
-</div>
-
-<div class="md">
-<h2 id="part-c-a-research-roadmap">Part C - A research roadmap</h2>
-<p>Where a serious version of this system would go, with the mathematics named and the
-literature to start from.</p>
-<p><strong>1. Chance-constrained / stochastic MPC instead of LQR.</strong> Replace the regulator with
-a predictive controller that keeps the lane with high probability,
-<span class="math inline">\mathbb P(|e_y|\le e_{\max})\ge 1-\varepsilon</span> over a horizon, propagating the
-perception covariance <span class="math inline">\Sigma^{AI}</span> into constraint <em>tightening</em>. This turns the
-integrity signal into a rigorous safety margin rather than a speed heuristic [9].</p>
-<p><strong>2. Learned driver state.</strong> Replace the scalar workload <span class="math inline">W</span> with an estimate from
-gaze, reaction time, or steering entropy, so authority <span class="math inline">\lambda=\Phi(I,W)</span> reflects the
-<em>real</em> driver - the workload-adaptive-shared-control direction [notebook 07, ref 9].</p>
-<p><strong>3. Perception with built-in, calibrated uncertainty.</strong> Swap the synthetic sensor and
-the ensemble for evidential or prior-network heads that output a distribution directly
-[10,11], trained on real images (and a photoreal simulator such as CARLA), with the
-NIS/ODD monitor wrapped around the real network.</p>
-<p><strong>4. Runtime assurance and formal guarantees.</strong> Frame the contracted-envelope mode as a
-verified <strong>safety controller</strong> and switch to it under low integrity - a Simplex /
-runtime-assurance architecture [12] - and certify the safe set with <strong>control barrier
-functions</strong> or reachability [13], moving from a heuristic score toward an assured
-envelope.</p>
-<p><strong>5. Integrity with a bound, not a score.</strong> Borrow the aviation notion of a
-<strong>protection level</strong>: instead of <span class="math inline">I\in[0,1]</span>, compute a statistical bound on the state
-error that holds with a target integrity risk, using the conformal or GLR machinery
-above. This is the path from &quot;monitor&quot; to &quot;safety case&quot;.</p>
-<p><strong>6. Higher-fidelity plant and closed-loop learning.</strong> A dynamic bicycle with tyre
-slip and actuator lag (notebook 01), longitudinal control, and end-to-end evaluation
-where the monitored perception feeds the controller in a realistic simulator.</p>
-</div>
-
-<div class="md">
-<h2 id="you-have-finished-the-course">You have finished the course</h2>
-<p>Across nine notebooks you built, from first principles, a small but complete
-trustworthy-autonomy stack and the theory under each piece: a vehicle model and an
-optimal controller; a camera model and a perception front-end with calibrated,
-decomposed uncertainty; a Kalman monitor whose innovations are white and whose NIS is
-chi-squared; an operational-design-domain check; a fused integrity score evaluated by
-ROC and detection delay; and an integrity-aware shared controller whose authority
-follows trust. The capstone showed, with a controlled and statistically-tested
-experiment, that using AI perception <em>through</em> a monitoring layer is safer than
-trusting it or switching away from it - and this notebook showed how to make each
-piece rigorous. That is the core of trustworthy interactive autonomous driving.</p>
-</div>
-
-<div class="md exercises">
-<h3 id="exercises">Exercises</h3>
-<ol>
-<li>Derive the CUSUM increment <span class="math inline">z_k-k_{ref}</span> from the Gaussian-mean log-likelihood ratio
-and identify <span class="math inline">k_{ref}</span> in terms of <span class="math inline">\mu_0,\mu_1,\sigma</span>.</li>
-<li>Add the CUSUM to <code>courselib</code>'s integrity monitor (feed it the NIS) and re-run the
-capstone <code>ood_curve</code> ablation with NIS-only. Does the cumulative test now hold
-integrity down where the single-sample score could not?</li>
-<li>Implement a normalized (self-starting) CUSUM that estimates <span class="math inline">\mu_0,\sigma</span> online.</li>
-<li>For conformal, use a <em>normalized</em> nonconformity score <span class="math inline">|y-\hat f(x)|/\hat\sigma(x)</span>
-with the ensemble's <span class="math inline">\hat\sigma</span> and compare interval sharpness to the constant-width version.</li>
-</ol>
-</div>
-
-<div class="md refs">
-<h2 id="references">References</h2>
-<ol>
-<li>E. S. Page. <em>Continuous Inspection Schemes.</em> Biometrika, 41(1/2):100-115, 1954. <a href="https://doi.org/10.2307/3001968">doi:10.2307/3001968</a></li>
-<li>A. Wald. <em>Sequential Analysis.</em> Wiley, 1947. (Sequential probability ratio test.)</li>
-<li>G. Lorden. <em>Procedures for Reacting to a Change in Distribution.</em> Annals of Mathematical Statistics, 42(6):1897-1908, 1971. <a href="https://doi.org/10.1214/aoms/1177693055">doi:10.1214/aoms/1177693055</a></li>
-<li>M. Basseville, I. V. Nikiforov. <em>Detection of Abrupt Changes: Theory and Application.</em> Prentice Hall, 1993.</li>
-<li>V. Vovk, A. Gammerman, G. Shafer. <em>Algorithmic Learning in a Random World.</em> Springer, 2005.</li>
-<li>J. Lei, M. G'Sell, A. Rinaldo, R. J. Tibshirani, L. Wasserman. <em>Distribution-Free Predictive Inference for Regression.</em> Journal of the American Statistical Association, 113(523):1094-1111, 2018. <a href="https://doi.org/10.1080/01621459.2017.1307116">doi:10.1080/01621459.2017.1307116</a></li>
-<li>A. N. Angelopoulos, S. Bates. <em>A Gentle Introduction to Conformal Prediction and Distribution-Free Uncertainty Quantification.</em> Foundations and Trends in ML, 2023. <a href="https://arxiv.org/abs/2107.07511">arXiv:2107.07511</a></li>
-<li>I. Gibbs, E. Candes. <em>Adaptive Conformal Inference Under Distribution Shift.</em> NeurIPS, 2021. <a href="https://arxiv.org/abs/2106.00170">arXiv:2106.00170</a></li>
-<li>A. Mesbah. <em>Stochastic Model Predictive Control: An Overview and Perspectives for Future Research.</em> IEEE Control Systems Magazine, 36(6):30-44, 2016. <a href="https://doi.org/10.1109/MCS.2016.2602087">doi:10.1109/MCS.2016.2602087</a></li>
-<li>A. Amini, W. Schwarting, A. Soleimany, D. Rus. <em>Deep Evidential Regression.</em> NeurIPS, 2020. <a href="https://arxiv.org/abs/1910.02600">arXiv:1910.02600</a></li>
-<li>A. Malinin, M. Gales. <em>Predictive Uncertainty Estimation via Prior Networks.</em> NeurIPS, 2018. <a href="https://arxiv.org/abs/1802.10501">arXiv:1802.10501</a></li>
-<li>L. Sha. <em>Using Simplicity to Control Complexity.</em> IEEE Software, 18(4):20-28, 2001. <a href="https://doi.org/10.1109/MS.2001.936213">doi:10.1109/MS.2001.936213</a> (Simplex / runtime assurance.)</li>
-<li>A. D. Ames, S. Coogan, M. Egerstedt, G. Notomista, K. Sreenath, P. Tabuada. <em>Control Barrier Functions: Theory and Applications.</em> European Control Conference, 2019. <a href="https://doi.org/10.23919/ECC.2019.8796030">doi:10.23919/ECC.2019.8796030</a></li>
-</ol>
-</div>
-</main>
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>E. S. Page. "Continuous inspection schemes". <em>Biometrika</em> 41(1/2), 100–115, 1954. <a href="https://doi.org/10.1093/biomet/41.1-2.100">doi:10.1093/biomet/41.1-2.100</a></div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>A. Wald. <em>Sequential Analysis</em>. Wiley, 1947. The sequential probability ratio test.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>G. Lorden. "Procedures for reacting to a change in distribution". <em>Annals of Mathematical Statistics</em> 42(6), 1897–1908, 1971. <a href="https://doi.org/10.1214/aoms/1177693055">doi:10.1214/aoms/1177693055</a></div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>M. Basseville and I. V. Nikiforov. <em>Detection of Abrupt Changes: Theory and Application</em>. Prentice Hall, 1993.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>V. Vovk, A. Gammerman and G. Shafer. <em>Algorithmic Learning in a Random World</em>. Springer, 2005.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>J. Lei, M. G'Sell, A. Rinaldo, R. J. Tibshirani and L. Wasserman. "Distribution-free predictive inference for regression". <em>Journal of the American Statistical Association</em> 113(523), 1094–1111, 2018. <a href="https://doi.org/10.1080/01621459.2017.1307116">doi:10.1080/01621459.2017.1307116</a></div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>A. N. Angelopoulos and S. Bates. "Conformal prediction: a gentle introduction". <em>Foundations and Trends in Machine Learning</em> 16(4), 494–591, 2023. <a href="https://doi.org/10.1561/2200000101">doi:10.1561/2200000101</a></div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>I. Gibbs and E. Candès. "Adaptive conformal inference under distribution shift". <em>Advances in Neural Information Processing Systems</em> 34, 2021. arXiv:2106.00170</div></li>
+      <li id="ref-9"><span class="rn">[9]</span><div>A. Mesbah. "Stochastic model predictive control: an overview and perspectives for future research". <em>IEEE Control Systems Magazine</em> 36(6), 30–44, 2016. <a href="https://doi.org/10.1109/MCS.2016.2602087">doi:10.1109/MCS.2016.2602087</a></div></li>
+      <li id="ref-10"><span class="rn">[10]</span><div>A. Amini, W. Schwarting, A. Soleimany and D. Rus. "Deep evidential regression". <em>Advances in Neural Information Processing Systems</em> 33, 2020. arXiv:1910.02600</div></li>
+      <li id="ref-11"><span class="rn">[11]</span><div>A. Malinin and M. Gales. "Predictive uncertainty estimation via prior networks". <em>Advances in Neural Information Processing Systems</em> 31, 2018. arXiv:1802.10501</div></li>
+      <li id="ref-12"><span class="rn">[12]</span><div>L. Sha. "Using simplicity to control complexity". <em>IEEE Software</em> 18(4), 20–28, 2001. <a href="https://doi.org/10.1109/MS.2001.936213">doi:10.1109/MS.2001.936213</a>. Simplex and runtime assurance.</div></li>
+      <li id="ref-13"><span class="rn">[13]</span><div>A. D. Ames, S. Coogan, M. Egerstedt, G. Notomista, K. Sreenath and P. Tabuada. "Control barrier functions: theory and applications". <em>European Control Conference</em>, 3420–3431, 2019. <a href="https://doi.org/10.23919/ECC.2019.8796030">doi:10.23919/ECC.2019.8796030</a></div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
   <a class="prev" rel="prev" href="08-capstone-closed-loop.html"><span class="lbl">Previous · 08</span><span class="t">Capstone: the whole system</span></a>
-  <span></span>
+  <a class="next" rel="next" href="index.html"><span class="lbl">Back to</span><span class="t">The course home page</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 09 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 09 of the TrustDrive course by Elie Rouphael. The demos run the notebook's streams and models in your browser, with their own random numbers, so their numbers vary a little from the notebook's printed ones. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch09.js"></script>
 </body>
 </html>
