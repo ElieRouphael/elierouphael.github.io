@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>01 · The vehicle model — TrustDrive course</title>
-<meta name="description" content="The kinematic bicycle from the no-slip constraints, Frenet error dynamics, discretisation, linearisation, controllability and observability.">
+<title>01 · The vehicle model · TrustDrive course</title>
+<meta name="description" content="The kinematic bicycle from the no-slip constraint, road-relative error coordinates, Euler discretisation and its error, linearisation, controllability and observability, and where the model stops being valid, with a car you can steer.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="interactive/trustdrive.css">
 </head>
 <body>
 
@@ -18,90 +19,116 @@
 <header class="hero col">
   <span class="eyebrow">TrustDrive course · Chapter 01 of 09</span>
   <h1>The vehicle model</h1>
-  <div class="intro prose">
-<p><strong>Goal.</strong> Derive, from geometry, the plant that everything else in the course
-controls: a vehicle tracking a lane. We build the kinematic bicycle model from the
-rolling (no-slip) constraints, rewrite it in road-relative <em>error coordinates</em>,
-discretise it, linearise it term by term, and check the structural properties
-(controllability, observability) that later let a controller and an estimator work.</p>
-<p>Why a model at all? The controller (notebook 02) and the Kalman monitor (notebook
-05) are both <em>model-based</em>: they use a mathematical prediction of how the vehicle
-moves. The quality of that model sets the quality of both. So we take it seriously,
-and we quantify where it stops being valid.</p>
-
-  </div>
+  <p class="lede">Everything in this course controls one thing: a car keeping its lane. Before we can control it, or check what its camera tells us, we need a model of how it moves. This chapter builds one from geometry alone: two wheels that roll without sliding and one turning centre. Steer the car below and watch the turning centre, the circle it drives and the sideways acceleration that circle needs. Then follow the derivation to the two-equation model that the rest of the course uses, and find out where it stops being true.</p>
+  <p class="byline">Elie Rouphael · Needs derivatives, matrices and basic Python · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/01_vehicle_model.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/01_vehicle_model.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
   </div>
-  
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-the-kinematic-bicycle-model">1. The kinematic bicycle model</a></li>
-    <li><a href="#2-road-relative-frenet-error-coordinates">2. Road-relative (Frenet) error coordinates</a></li>
-    <li><a href="#3-discretisation-and-its-error">3. Discretisation and its error</a></li>
-    <li><a href="#4-linearisation-for-design">4. Linearisation for design</a></li>
-    <li><a href="#5-structural-properties">5. Structural properties</a></li>
-    <li><a href="#6-when-does-this-model-stop-being-valid">6. When does this model stop being valid?</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-the-kinematic-bicycle-model">1. The kinematic bicycle model</h2>
-<p>At low lateral acceleration the two wheels on each axle can be lumped into one,
-giving a <strong>bicycle</strong>: one rear wheel, one steered front wheel, wheelbase <span class="math inline">L</span>. We
-place the reference point at the <strong>rear axle</strong> and take the state <span class="math inline">(X, Y, \psi)</span> =
-position and heading in the ground frame.</p>
-<p>The key modelling assumption is <strong>no side-slip</strong>: each wheel rolls in the direction
-it points (a nonholonomic constraint [4]). Then</p>
-<ul>
-<li>the rear wheel moves along the heading, so <span class="math inline">\dot X = v\cos\psi,\; \dot Y = v\sin\psi</span>;</li>
-<li>the front wheel points at <span class="math inline">\psi+\delta</span>; requiring both wheels to share one
-instantaneous centre of rotation (ICR) fixes the turn radius <span class="math inline">R=L/\tan\delta</span>,
-hence the yaw rate</li>
-</ul>
-<div class="math display"> \dot\psi = \frac{v}{R} = \frac{v}{L}\tan\delta. </div>
-<p>Collecting these,</p>
-<div class="math display"> \dot X = v\cos\psi,\qquad \dot Y = v\sin\psi,\qquad \dot\psi=\frac{v}{L}\tan\delta. \tag{1} </div>
-<p>This is the standard kinematic bicycle [1,2]. The schematic below shows the
-geometry; note the ICR sits on the line through the rear axle, perpendicular to the
-vehicle heading, at distance <span class="math inline">R</span>.</p>
+<!-- ============ LIVE DEMO: drive the bicycle ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Seen from above (grid: 5 m)</p>
+        <canvas id="driveC" aria-label="The car seen from above, with its trail, the circle it is about to drive and, if shown, its turning centre" aria-describedby="driveStatus"></canvas>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>where the rear axle went, and where it will go</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>turning centre</span>
+      </div>
+      <p class="status" id="driveStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Steering angle <span class="m">\delta</span>: <b id="dDeltaV"></b></span>
+        <span class="row"><input type="range" id="dDelta" min="-0.6" max="0.6" step="0.005" value="0.25"></span>
+      </label>
+      <label class="field"><span>Speed <span class="m">v</span>: <b id="dSpeedV"></b></span>
+        <span class="row"><input type="range" id="dSpeed" min="1" max="30" step="0.5" value="6"></span>
+      </label>
+      <label class="field">Road
+        <select id="dRoad">
+          <option value="0.9" selected>dry asphalt (grip μ = 0.9)</option>
+          <option value="0.5">wet asphalt (μ = 0.5)</option>
+          <option value="0.2">packed snow (μ = 0.2)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="dIcr" checked> show the turning centre</label>
+      <div class="btn-row">
+        <button class="btn primary" id="dRun" type="button" aria-pressed="false">drive</button>
+        <button class="btn" id="dReset" type="button">start over</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>turning radius <span class="m">R</span></span><span class="v" id="rR">–</span>
+        <span>yaw rate <span class="m">\dot\psi</span></span><span class="v" id="rYaw">–</span>
+        <span>sideways acceleration</span><span class="v" id="rAy">–</span>
+        <span>kinematic model</span><span class="v" id="rValid">–</span>
+      </div>
+      <p class="hint">The wheelbase is the course's, <span class="m">L = 2.7</span> m. Try the notebook's own check, 0.15 rad at 15 m/s, and look at the sideways acceleration it asks for.</p>
+    </div>
+  </div>
 </div>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#bicycle"><span class="n">1</span><span class="t">The kinematic bicycle</span><span class="d">Two wheels, no sliding, one turning centre</span></a>
+    <a href="#frenet"><span class="n">2</span><span class="t">Errors relative to the road</span><span class="d">Lateral and heading error, curvature as a disturbance</span></a>
+    <a href="#euler"><span class="n">3</span><span class="t">Discretisation and its error</span><span class="d">Forward Euler is first order</span></a>
+    <a href="#linear"><span class="n">4</span><span class="t">Linearisation</span><span class="d">The matrices A, B and E, and where they fail</span></a>
+    <a href="#structure"><span class="n">5</span><span class="t">Structural properties</span><span class="d">Stability, controllability, observability</span></a>
+    <a href="#validity"><span class="n">6</span><span class="t">When the model stops being valid</span><span class="d">Sideways acceleration and tyre grip</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-L, delta = 2.7, 0.45
-R = L/np.tan(delta)
-fig, ax = plt.subplots(figsize=(6, 5.2))
-ax.plot([0, L], [0, 0], color=&quot;#333&quot;, lw=2, zorder=2)              # chassis rear-&gt;front
-ax.plot([-0.5, 0.5], [0, 0], color=&quot;k&quot;, lw=6, solid_capstyle=&quot;round&quot;)   # rear wheel (heading)
-Rm = np.array([[np.cos(delta), -np.sin(delta)], [np.sin(delta), np.cos(delta)]])
-fw = Rm @ np.array([[-0.5, 0.5], [0, 0]])
-ax.plot(L + fw[0], fw[1], color=&quot;k&quot;, lw=6, solid_capstyle=&quot;round&quot;)      # steered front wheel
-ax.plot(0, R, &#x27;o&#x27;, color=&quot;#d1495b&quot;, zorder=3)
-ax.annotate(&quot;ICR&quot;, (0, R), textcoords=&quot;offset points&quot;, xytext=(10, -2), color=&quot;#d1495b&quot;)
-ax.plot([0, 0], [0, R], &#x27;--&#x27;, color=&quot;#d1495b&quot;, lw=1)
-ax.plot([L, 0], [0, R], &#x27;--&#x27;, color=&quot;#d1495b&quot;, lw=1)
-th = np.linspace(-0.45, 0.95, 120)
-ax.plot(R*np.sin(th), R - R*np.cos(th), &#x27;:&#x27;, color=&quot;#0e7c8b&quot;, label=&quot;path of rear axle&quot;)
-ax.annotate(&quot;$L$&quot;, (L/2, -0.35))
-ax.annotate(&quot;$\\delta$&quot;, (L + 0.55, 0.45))
-ax.annotate(&quot;$R = L/\\tan\\delta$&quot;, (0.25, R/2), color=&quot;#d1495b&quot;)
-ax.set_aspect(&quot;equal&quot;); ax.set_xlabel(&quot;x [m]&quot;); ax.set_ylabel(&quot;y [m]&quot;)
-ax.set_title(&quot;Kinematic bicycle: rear-axle reference and the ICR&quot;)
-ax.legend(loc=&quot;lower right&quot;); ax.grid(alpha=.3); plt.tight_layout(); plt.show()
-print(&quot;For delta = %.2f rad, turning radius R = %.2f m&quot; % (delta, R))</code></pre>
-<figure class="output-figure"><img src="img/01-1.png" alt="Figure: Kinematic bicycle: rear-axle reference and the ICR" width="643" height="574" loading="lazy"></figure>
-<pre class="output">For delta = 0.45 rad, turning radius R = 5.59 m</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python"># Sanity check: a constant steering angle should trace a circle of radius L/tan(delta)
+<!-- =================================================================== -->
+<section id="bicycle">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The kinematic bicycle</h2>
+  </div>
+  <div class="col prose">
+    <p>Why a model at all? The controller of chapter 02 and the Kalman monitor of chapter 05 are both <em>model-based</em>: they use a mathematical prediction of how the car moves. The quality of that model sets the quality of both, so we take it seriously, and we measure where it stops being valid.</p>
+    <p>At low sideways acceleration, the two wheels on each axle can be lumped into one, giving a <strong>bicycle</strong>: one rear wheel, one steered front wheel, a wheelbase <span class="m">L</span> between them. We take the rear axle as the reference point, and the state <span class="m">(X, Y, \psi)</span> is its position and the car's heading on the ground.</p>
+    <p>The key modelling assumption is <strong>no side-slip</strong>: each wheel rolls in the direction it points, a so-called nonholonomic constraint <a href="#ref-4">[4]</a>. Then:</p>
+    <ul>
+      <li>the rear wheel moves along the heading, so <span class="m">\dot X = v\cos\psi</span> and <span class="m">\dot Y = v\sin\psi</span>;</li>
+      <li>the front wheel points at <span class="m">\psi + \delta</span>. Both wheels must turn about one <strong>instantaneous centre of rotation</strong> (ICR), which fixes the turning radius <span class="m">R = \frac{L}{\tan\delta}</span> and hence the yaw rate:</li>
+    </ul>
+    <div class="math-block">\dot\psi = \frac{v}{R} = \frac{v}{L}\tan\delta.</div>
+    <p>Collecting these gives the standard kinematic bicycle <a href="#ref-1">[1]</a>, <a href="#ref-2">[2]</a>:</p>
+    <div class="math-block" data-narrow="\begin{gathered} \dot X = v\cos\psi, \qquad \dot Y = v\sin\psi, \\[4pt] \dot\psi = \frac{v}{L}\tan\delta. \end{gathered} \tag{1}">\dot X = v\cos\psi, \qquad \dot Y = v\sin\psi, \qquad \dot\psi = \frac{v}{L}\tan\delta. \tag{1}</div>
+    <p>The ICR sits on the line through the rear axle, perpendicular to the heading, at distance <span class="m">R</span>. Move the steering angle to see why <span class="m">R = \frac{L}{\tan\delta}</span>:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="geo">
+      <label class="field"><span>Steering angle <span class="m">\delta</span>: <b id="gDeltaV"></b></span>
+        <span class="row"><input type="range" id="gDelta" min="0.15" max="0.6" step="0.005" value="0.45"></span>
+      </label>
+      <canvas id="geoC" aria-label="The bicycle's two wheels, the turning centre, and the two radii from it to the wheels, with the angle delta marked at the front wheel and at the turning centre"></canvas>
+      <p class="caption" id="geoCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <div class="define" id="definition">
+      <p class="define-title">What is a kinematic model?</p>
+      <p><b>In plain words:</b> a model of motion from geometry alone. It says where the car goes when the wheels roll the way they point, and ignores forces, mass and tyres entirely.</p>
+      <p><b>More precisely:</b> a kinematic model relates velocities to positions through constraints, here that neither wheel slides sideways. A <em>dynamic</em> model adds Newton's laws and tyre forces. The kinematic one is simpler and needs fewer parameters, and it is accurate while the tyres are far from their grip limit (Part 6).</p>
+      <dl>
+        <dt>Wheelbase <span class="m">L</span></dt><dd>The distance between the rear and front axles (2.7 m in this course).</dd>
+        <dt>Steering angle <span class="m">\delta</span></dt><dd>The angle of the front wheel relative to the car's heading.</dd>
+        <dt>Heading <span class="m">\psi</span></dt><dd>The direction the car points, measured on the ground.</dd>
+        <dt>Yaw rate <span class="m">\dot\psi</span></dt><dd>How fast the heading turns, in radians per second.</dd>
+        <dt>Turning centre (ICR)</dt><dd>The point the whole car is turning about at this instant.</dd>
+        <dt>Nonholonomic constraint</dt><dd>A constraint on velocities, not positions: the car can reach any place, but cannot move sideways directly.</dd>
+      </dl>
+    </div>
+    <p>A sanity check: with constant steering, the model should drive a circle of radius <span class="m">\frac{L}{\tan\delta}</span>. The notebook integrates (1) with small steps and measures the circle:</p>
+    <pre><code class="language-python"># Sanity check: a constant steering angle should trace a circle of radius L/tan(delta)
 v, L, Ts = 15.0, 2.7, 0.02
 def global_step(s, delta):
     X, Y, psi = s
@@ -111,207 +138,311 @@ delta = 0.15; s = np.array([0.0, 0.0, 0.0]); H = [s]
 for _ in range(int(2*np.pi*(L/np.tan(delta))/(v*Ts)) + 3):
     s = global_step(s, delta); H.append(s)
 H = np.array(H)
-R_true = L/np.tan(delta); R_est = (H[:,0].max() - H[:,0].min())/2
+R_true = L/np.tan(delta); R_est = (H[:,0].max() - H[:,0].min())/2</code></pre>
+    <pre class="output"><code class="nohl">radius from geometry L/tan(delta) = 17.86 m   from simulation = 17.86 m</code></pre>
+    <p>The model passes. But look at that circle in the demo at the top: at 15 m/s it needs 1.28 g of sideways acceleration, which no tyre on any road can provide. The model drives it anyway, because it knows nothing about tyres. Part 6 makes that limit precise.</p>
+  </div>
+</section>
 
-plt.figure(figsize=(4.4, 4.4)); plt.plot(H[:,0], H[:,1], color=&quot;#0e7c8b&quot;)
-plt.gca().set_aspect(&quot;equal&quot;); plt.title(&quot;Constant steering traces a circle&quot;)
-plt.xlabel(&quot;X [m]&quot;); plt.ylabel(&quot;Y [m]&quot;); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
-print(&quot;radius from geometry L/tan(delta) = %.2f m   from simulation = %.2f m&quot; % (R_true, R_est))</code></pre>
-<figure class="output-figure"><img src="img/01-2.png" alt="Figure: Constant steering traces a circle" width="453" height="472" loading="lazy"></figure>
-<pre class="output">radius from geometry L/tan(delta) = 17.86 m   from simulation = 17.86 m</pre>
-</div>
+<!-- =================================================================== -->
+<section id="frenet">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Errors relative to the road</h2>
+  </div>
+  <div class="col prose">
+    <p>For lane keeping we don't care about the car's absolute position, only its error relative to the lane centreline. Attach a <strong>Frenet frame</strong> to the centreline, measured by arc length <span class="m">s</span>, with curvature <span class="m">\kappa(s) = \frac{\mathrm{d}\psi_{\text{ref}}}{\mathrm{d}s}</span> (one over the radius of the bend), and define</p>
+    <div class="math-block" data-narrow="\begin{gathered} e_y = \text{signed offset from the centreline}, \\[4pt] e_\psi = \psi - \psi_{\text{ref}}. \end{gathered}">e_y = \text{signed lateral offset from the centreline}, \qquad e_\psi = \psi - \psi_{\text{ref}}.</div>
+    <p>Differentiating the geometric relations gives the exact error dynamics <a href="#ref-1">[1]</a>, <a href="#ref-8">[8]</a>:</p>
+    <div class="math-block" data-narrow="\begin{gathered} \dot s = \frac{v\cos e_\psi}{1 - \kappa\,e_y}, \qquad \dot e_y = v\sin e_\psi, \\[4pt] \dot e_\psi = \frac{v}{L}\tan\delta - \kappa\,\dot s. \end{gathered}">\dot s = \frac{v\cos e_\psi}{1 - \kappa\,e_y}, \qquad \dot e_y = v\sin e_\psi, \qquad \dot e_\psi = \frac{v}{L}\tan\delta - \kappa\,\dot s.</div>
+    <details class="math">
+      <summary>For the curious: where these come from <span>(optional)</span></summary>
+      <div class="inner">
+        <p>Write the car's position as the closest centreline point plus the offset along the centreline's left normal: <span class="m">p = r(s) + e_y\,n(s)</span>. Along the centreline the unit tangent <span class="m">t</span> and normal <span class="m">n</span> turn with the curvature, <span class="m">t' = \kappa\,n</span> and <span class="m">n' = -\kappa\,t</span>. Differentiating in time,</p>
+        <div class="math-block" data-narrow="\begin{aligned} \dot p &amp;= \dot s\,t + \dot e_y\,n - e_y\,\kappa\,\dot s\,t \\ &amp;= \dot s\,(1 - \kappa e_y)\,t + \dot e_y\,n. \end{aligned}">\dot p = \dot s\,t + \dot e_y\,n - e_y\,\kappa\,\dot s\,t = \dot s\,(1 - \kappa e_y)\,t + \dot e_y\,n.</div>
+        <p>The car moves at speed <span class="m">v</span> at angle <span class="m">e_\psi</span> to the tangent, so <span class="m">\dot p = v\cos e_\psi\,t + v\sin e_\psi\,n</span>. Matching the two components gives the first two equations. The road's direction turns at <span class="m">\dot\psi_{\text{ref}} = \kappa\,\dot s</span>, and <span class="m">\dot e_\psi = \dot\psi - \dot\psi_{\text{ref}}</span> with <span class="m">\dot\psi</span> from (1) gives the third.</p>
+      </div>
+    </details>
+    <p>For a small offset (<span class="m">\kappa e_y</span> much smaller than 1), the speed along the road is <span class="m">\dot s \approx v</span>, and we get the model used throughout the course:</p>
+    <div class="math-block" data-narrow="\boxed{\begin{gathered} \dot e_y = v\sin e_\psi, \\[4pt] \dot e_\psi = \frac{v}{L}\tan\delta - v\,\kappa \end{gathered}} \tag{2}">\boxed{\;\dot e_y = v\sin e_\psi, \qquad \dot e_\psi = \frac{v}{L}\tan\delta - v\,\kappa\;} \tag{2}</div>
+    <p>So the curvature enters as a <strong>measured disturbance</strong>: on a bend, the lane itself turns at rate <span class="m">v\kappa</span>, and the steering must supply that yaw rate just to stay parallel to the lane. Setting <span class="m">\dot e_\psi = 0</span> gives the steering that does exactly that, <span class="m">\delta = \arctan(L\kappa)</span>: the <strong>feed-forward</strong> of chapter 02. Try it on a bend below.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="bend">
+      <div class="params">
+        <label class="field"><span>Road curvature <span class="m">\kappa</span>: <b id="bKappaV"></b></span>
+          <span class="row"><input type="range" id="bKappa" min="-0.04" max="0.04" step="0.002" value="0.022"></span>
+        </label>
+        <label class="field"><span>Starting offset <span class="m">e_y</span>: <b id="bEyV"></b></span>
+          <span class="row"><input type="range" id="bEy" min="-1.5" max="1.5" step="0.1" value="0.5"></span>
+        </label>
+      </div>
+      <div class="seg" role="group" aria-label="Steering">
+        <button class="btn" type="button" data-steer="zero" aria-pressed="false">wheels straight</button>
+        <button class="btn" type="button" data-steer="ff" aria-pressed="true">feed-forward: <span class="m">\arctan(L\kappa)</span></button>
+      </div>
+      <div class="two">
+        <div><p class="chart-title">Seen from above, 6 seconds at 15 m/s</p><canvas id="bendTop" aria-label="The lane from above and the path of the car's rear axle"></canvas></div>
+        <div><p class="chart-title">Offset from the centreline</p><canvas id="bendEy" aria-label="The lateral offset over time, from the exact geometry and from the simplified model (2)"></canvas></div>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>exact: the global model (1)</span>
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>model (2), dashed</span>
+      </div>
+      <p class="caption" id="bendCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="2-road-relative-frenet-error-coordinates">2. Road-relative (Frenet) error coordinates</h2>
-<p>For lane keeping we do not care about absolute position, only the error relative to
-the lane centreline. Attach a <strong>Frenet frame</strong> to the reference path, parameterised
-by arc length <span class="math inline">s</span> with curvature <span class="math inline">\kappa(s)=\mathrm d\psi_{ref}/\mathrm d s</span>, and
-define</p>
-<div class="math display"> e_y = \text{signed lateral offset from the centreline},\qquad
-   e_\psi = \psi - \psi_{ref}. </div>
-<p>Differentiating the geometric relations gives the exact error dynamics [1,8]</p>
-<div class="math display"> \dot s = \frac{v\cos e_\psi}{1-\kappa\,e_y},\qquad
-   \dot e_y = v\sin e_\psi,\qquad
-   \dot e_\psi = \frac{v}{L}\tan\delta - \kappa\,\dot s . </div>
-<p>For small offset (<span class="math inline">\kappa e_y \ll 1</span>) the along-path speed is <span class="math inline">\dot s\approx v</span>, and
-the model used throughout the course follows:</p>
-<div class="math display"> \boxed{\;\dot e_y = v\sin e_\psi,\qquad \dot e_\psi = \frac{v}{L}\tan\delta - v\,\kappa\;} \tag{2} </div>
-<p>So <span class="math inline">\kappa</span> enters as a <strong>measured disturbance</strong>: on a curve the lane tangent itself
-rotates at rate <span class="math inline">v\kappa</span>, and the steering must supply that yaw rate merely to stay
-parallel to the lane (this is exactly the feed-forward of notebook 02).</p>
-</div>
-
-<div class="md">
-<h2 id="3-discretisation-and-its-error">3. Discretisation and its error</h2>
-<p>We integrate (2) in discrete time with <strong>forward Euler</strong> at sample time <span class="math inline">T_s</span>:</p>
-<div class="math display"> x_{k+1} = x_k + T_s\,f(x_k, \delta_k, \kappa_k), \qquad x=[e_y, e_\psi]^\top. </div>
-<p>Euler has <strong>local truncation error</strong> <span class="math inline">O(T_s^2)</span> per step and therefore <strong>global
-error</strong> <span class="math inline">O(T_s)</span> over a fixed horizon - it is a first-order method [7]. That is
-adequate here because <span class="math inline">T_s=0.05</span> s is small relative to the vehicle time constants,
-but it is worth <em>seeing</em> the order rather than asserting it: below we compare Euler
-against a high-accuracy RK4 reference and recover the slope-1 line on a log-log
-plot.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">v, L, Ts = 15.0, 2.7, 0.05
-delta, kappa = 0.1, 0.0
-x0 = np.array([0.2, 0.05])
-def f(x): return np.array([v*np.sin(x[1]), v/L*np.tan(delta) - v*kappa])
-def euler(x, h): return x + h*f(x)
-def rk4(x, h):
-    k1 = f(x); k2 = f(x + 0.5*h*k1); k3 = f(x + 0.5*h*k2); k4 = f(x + h*k3)
-    return x + h/6*(k1 + 2*k2 + 2*k3 + k4)
-def integrate(step, h, T=2.0):
-    x = x0.copy()
-    for _ in range(int(round(T/h))): x = step(x, h)
-    return x
-
-ref = integrate(rk4, 1e-4)
+<!-- =================================================================== -->
+<section id="euler">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Discretisation and its error</h2>
+  </div>
+  <div class="col prose">
+    <p>A computer steps through time. We integrate (2) with <strong>forward Euler</strong> at sample time <span class="m">T_s</span>: take the current slope and follow it for one step,</p>
+    <div class="math-block" data-narrow="\begin{gathered} x_{k+1} = x_k + T_s\,f(x_k, \delta_k, \kappa_k), \\[4pt] x = \begin{bmatrix} e_y \\ e_\psi \end{bmatrix}. \end{gathered}">x_{k+1} = x_k + T_s\,f(x_k, \delta_k, \kappa_k), \qquad x = \begin{bmatrix} e_y \\ e_\psi \end{bmatrix}.</div>
+    <p>Euler makes a <strong>local</strong> error of order <span class="m">T_s^2</span> per step, and therefore a <strong>global</strong> error of order <span class="m">T_s</span> over a fixed horizon: it is a first-order method <a href="#ref-7">[7]</a>. Halve the step and the error halves. That is adequate here because <span class="m">T_s = 0.05</span> s is short compared with how fast the car's errors change, but it is worth <em>seeing</em> the order rather than asserting it. The notebook starts from <span class="m">e_y = 0.2</span> m and <span class="m">e_\psi = 0.05</span> rad with <span class="m">\delta = 0.1</span>, and compares Euler at the end of 2 seconds with a very accurate Runge-Kutta solution:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="eul">
+      <label class="field"><span>Euler step <span class="m">T_s</span>: <b id="eStepV"></b></span>
+        <span class="row"><input type="range" id="eStep" min="0" max="5" step="1" value="3"></span>
+      </label>
+      <div class="two">
+        <div><p class="chart-title">Lateral offset over 2 seconds</p><canvas id="eulPath" aria-label="The exact lateral offset over two seconds and the forward Euler steps"></canvas></div>
+        <div><p class="chart-title">Error at 2 s against step size (log-log)</p><canvas id="eulErr" aria-label="The error of forward Euler against the step size on logarithmic axes, a straight line of slope one"></canvas></div>
+      </div>
+      <p class="caption" id="eulCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">ref = integrate(rk4, 1e-4)
 hs = np.array([0.2, 0.1, 0.05, 0.025, 0.0125])
 err = np.array([np.linalg.norm(integrate(euler, h) - ref) for h in hs])
-
-plt.figure(figsize=(6, 3.4))
-plt.loglog(hs, err, &#x27;o-&#x27;, color=&quot;#0e7c8b&quot;, label=&quot;forward Euler global error&quot;)
-plt.loglog(hs, err[0]*(hs/hs[0]), &#x27;--&#x27;, color=&quot;#999&quot;, label=&quot;slope 1  (first order)&quot;)
-plt.gca().invert_xaxis()
-plt.xlabel(&quot;step size $T_s$ [s]&quot;); plt.ylabel(&quot;error at $T=2$ s&quot;)
-plt.title(&quot;Euler is first order: error $\\propto T_s$&quot;); plt.legend(); plt.grid(alpha=.3, which=&quot;both&quot;)
-plt.tight_layout(); plt.show()
 slope = np.polyfit(np.log(hs), np.log(err), 1)[0]
-print(&quot;fitted convergence order = %.2f  (theory: 1)&quot; % slope)</code></pre>
-<figure class="output-figure"><img src="img/01-3.png" alt="Figure: Euler is first order: error T s" width="648" height="363" loading="lazy"></figure>
-<pre class="output">fitted convergence order = 1.00  (theory: 1)</pre>
-</div>
+print("fitted convergence order = %.2f  (theory: 1)" % slope)</code></pre>
+    <pre class="output"><code class="nohl">fitted convergence order = 1.00  (theory: 1)</code></pre>
+    <details class="math">
+      <summary>For the curious: why a local error of order two gives a global error of order one <span>(optional)</span></summary>
+      <div class="inner">
+        <p>Taylor's theorem gives the exact step <span class="m">x(t + T_s) = x(t) + T_s\,\dot x(t) + \frac{T_s^2}{2}\,\ddot x(\xi)</span>. Euler keeps the first two terms, so each step is off by about <span class="m">\frac{T_s^2}{2}\max\lvert\ddot x\rvert</span>. Reaching a fixed time <span class="m">T</span> takes <span class="m">\frac{T}{T_s}</span> steps, and for a stable enough problem these errors add up rather than explode:</p>
+        <div class="math-block">\frac{T}{T_s} \cdot \frac{T_s^2}{2}\max\lvert\ddot x\rvert = \frac{T}{2}\max\lvert\ddot x\rvert\;T_s.</div>
+        <p>One power of <span class="m">T_s</span> is lost to the number of steps. The same argument gives order 2 for the midpoint method and order 4 for Runge-Kutta (exercise 2).</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="4-linearisation-for-design">4. Linearisation for design</h2>
-<p>Controllers and observers are easiest to design on a <em>linear</em> model. Linearise (2)
-about the centred, aligned operating point <span class="math inline">x=0,\ \delta=0</span> by taking the Jacobians
-of the one-step map <span class="math inline">x_{k+1}=F(x_k,\delta_k,\kappa_k)</span>:</p>
-<div class="math display"> A=\left.\frac{\partial F}{\partial x}\right|_0,\quad
-   B=\left.\frac{\partial F}{\partial \delta}\right|_0,\quad
-   E=\left.\frac{\partial F}{\partial \kappa}\right|_0 . </div>
-<p>Term by term, using <span class="math inline">\left.\cos e_\psi\right|_0=1</span> and <span class="math inline">\left.\sec^2\delta\right|_0=1</span>,</p>
-<div class="math display"> \frac{\partial F_1}{\partial e_y}=1,\;\;
-   \frac{\partial F_1}{\partial e_\psi}=vT_s,\;\;
-   \frac{\partial F_2}{\partial e_\psi}=1,\;\;
-   \frac{\partial F_2}{\partial \delta}=\frac{vT_s}{L},\;\;
-   \frac{\partial F_2}{\partial \kappa}=-vT_s, </div>
-<p>so</p>
-<div class="math display"> A=\begin{bmatrix}1 &amp; vT_s\\ 0 &amp; 1\end{bmatrix},\qquad
-   B=\begin{bmatrix}0\\ vT_s/L\end{bmatrix},\qquad
-   E=\begin{bmatrix}0\\ -vT_s\end{bmatrix}. \tag{3} </div>
-<p>The approximation error comes from <span class="math inline">\sin e_\psi\approx e_\psi</span> and
-<span class="math inline">\tan\delta\approx\delta</span>, whose leading terms are <em>cubic</em>, so the linear model is
-excellent for small errors and degrades smoothly as they grow. Let us see exactly
-where.</p>
-</div>
+<!-- =================================================================== -->
+<section id="linear">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Linearisation</h2>
+  </div>
+  <div class="col prose">
+    <p>Controllers and observers are easiest to design on a <em>linear</em> model. Linearise the one-step map <span class="m">x_{k+1} = F(x_k, \delta_k, \kappa_k)</span> about the centred, aligned operating point <span class="m">x = 0</span>, <span class="m">\delta = 0</span>, by taking its Jacobians:</p>
+    <div class="math-block" data-narrow="\begin{gathered} A = \left.\frac{\partial F}{\partial x}\right|_0, \qquad B = \left.\frac{\partial F}{\partial \delta}\right|_0, \\[4pt] E = \left.\frac{\partial F}{\partial \kappa}\right|_0. \end{gathered}">A = \left.\frac{\partial F}{\partial x}\right|_0, \qquad B = \left.\frac{\partial F}{\partial \delta}\right|_0, \qquad E = \left.\frac{\partial F}{\partial \kappa}\right|_0.</div>
+    <p>Term by term, using <span class="m">\cos 0 = 1</span> and <span class="m">\frac{1}{\cos^2 0} = 1</span>,</p>
+    <div class="math-block" data-narrow="\begin{gathered} \frac{\partial F_1}{\partial e_y} = 1, \quad \frac{\partial F_1}{\partial e_\psi} = vT_s, \quad \frac{\partial F_2}{\partial e_\psi} = 1, \\[4pt] \frac{\partial F_2}{\partial \delta} = \frac{vT_s}{L}, \quad \frac{\partial F_2}{\partial \kappa} = -vT_s, \end{gathered}">\frac{\partial F_1}{\partial e_y} = 1, \quad \frac{\partial F_1}{\partial e_\psi} = vT_s, \quad \frac{\partial F_2}{\partial e_\psi} = 1, \quad \frac{\partial F_2}{\partial \delta} = \frac{vT_s}{L}, \quad \frac{\partial F_2}{\partial \kappa} = -vT_s,</div>
+    <p>so</p>
+    <div class="math-block" data-narrow="\begin{gathered} A = \begin{bmatrix} 1 &amp; vT_s \\ 0 &amp; 1 \end{bmatrix}, \\[6pt] B = \begin{bmatrix} 0 \\ \frac{vT_s}{L} \end{bmatrix}, \qquad E = \begin{bmatrix} 0 \\ -vT_s \end{bmatrix}. \end{gathered} \tag{3}">A = \begin{bmatrix} 1 &amp; vT_s \\ 0 &amp; 1 \end{bmatrix}, \qquad B = \begin{bmatrix} 0 \\ \frac{vT_s}{L} \end{bmatrix}, \qquad E = \begin{bmatrix} 0 \\ -vT_s \end{bmatrix}. \tag{3}</div>
+    <p>With the course's numbers (<span class="m">v = 15</span> m/s, <span class="m">T_s = 0.05</span> s, <span class="m">L = 2.7</span> m), <span class="m">vT_s = 0.75</span> m and <span class="m">\frac{vT_s}{L} \approx 0.278</span>.</p>
+    <p>The approximation comes from <span class="m">\sin e_\psi \approx e_\psi</span> and <span class="m">\tan\delta \approx \delta</span>. Their first neglected terms are <em>cubic</em>, <span class="m">\sin e = e - \frac{e^3}{6} + \dots</span> and <span class="m">\tan\delta = \delta + \frac{\delta^3}{3} + \dots</span>, so the linear model is excellent for small errors and degrades smoothly as they grow. The notebook drives both models for 7.5 seconds with a small constant steering, <span class="m">\delta = 0.02</span>, from two initial heading errors:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="lin">
+      <div class="params">
+        <label class="field"><span>Initial heading error <span class="m">e_\psi</span>: <b id="lE0V"></b></span>
+          <span class="row"><input type="range" id="lE0" min="0" max="0.8" step="0.01" value="0.5"></span>
+        </label>
+        <label class="field"><span>Steering <span class="m">\delta</span>: <b id="lDV"></b></span>
+          <span class="row"><input type="range" id="lD" min="0" max="0.05" step="0.005" value="0.02"></span>
+        </label>
+      </div>
+      <canvas id="linC" aria-label="The lateral offset over 7.5 seconds from the nonlinear model and from the linearised model"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>nonlinear model (2)</span>
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>linearised model (3), dashed</span>
+      </div>
+      <p class="caption" id="linCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">v, L, Ts = 15.0, 2.7, 0.05
-A = np.array([[1, v*Ts], [0, 1.]]); Bv = np.array([0, v*Ts/L]); Ev = np.array([0, -v*Ts])
-def f_nl(x, d, kap): return np.array([x[0] + v*np.sin(x[1])*Ts, x[1] + (v/L*np.tan(d) - v*kap)*Ts])
-def f_lin(x, d, kap): return A@x + Bv*d + Ev*kap
-
-t = np.arange(151)*Ts
-fig, ax = plt.subplots(1, 2, figsize=(9, 3.3), sharey=True)
-for a, e0 in zip(ax, (0.05, 0.5)):
-    xn = np.array([0.0, e0]); xl = np.array([0.0, e0]); Hn, Hl = [0.0], [0.0]
-    for _ in range(150):
-        xn = f_nl(xn, 0.02, 0.0); xl = f_lin(xl, 0.02, 0.0); Hn.append(xn[0]); Hl.append(xl[0])
-    a.plot(t, Hn, label=&quot;nonlinear&quot;); a.plot(t, Hl, &#x27;--&#x27;, label=&quot;linearised&quot;)
-    a.set_title(&quot;initial $e_\\psi$ = %.2f rad&quot; % e0); a.set_xlabel(&quot;t [s]&quot;); a.grid(alpha=.3); a.legend()
-ax[0].set_ylabel(&quot;$e_y$ [m]&quot;)
-fig.suptitle(&quot;Linear model is accurate for small angles, diverges for large ones&quot;)
-plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/01-4.png" alt="Figure: initial e = … rad; Linear model is accurate for small angles, diverges for large ones" width="978" height="360" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="5-structural-properties">5. Structural properties</h2>
-<p>Two questions decide whether model-based control and estimation are even possible.</p>
-<p><strong>Open-loop behaviour.</strong> The eigenvalues of <span class="math inline">A</span> are both <span class="math inline">1</span>: the error dynamics are
-a marginally stable <em>integrator chain</em> (heading error integrates into lateral
-error). Errors do not grow explosively, but they do not decay either - hence the
-need for feedback.</p>
-<p><strong>Controllability.</strong> Can steering drive any error to zero? Yes iff <span class="math inline">[\,B\ \ AB\,]</span> has
-full rank (notebook 02 uses this).</p>
-<p><strong>Observability.</strong> In the full system we do not measure the state directly. Can we
-reconstruct it from measurements? With the perception giving both components,
-<span class="math inline">C=I</span>, this is immediate; more interestingly, even measuring only the lateral
-offset (<span class="math inline">C=[1,\ 0]</span>) the pair <span class="math inline">(A,C)</span> is observable, so heading error can be inferred
-over time [5,6]. That is what makes the Kalman monitor of notebook 05 well posed.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">A = np.array([[1, v*Ts], [0, 1.]]); B = np.array([[0.], [v*Ts/L]])
+<!-- =================================================================== -->
+<section id="structure">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Structural properties</h2>
+  </div>
+  <div class="col prose">
+    <p>Three questions decide whether model-based control and estimation are even possible.</p>
+    <p><b>Open-loop behaviour.</b> Both eigenvalues of <span class="m">A</span> are 1: the error dynamics are a <em>chain of two integrators</em>, the heading error integrating into the lateral error. Errors do not grow explosively, but they do not decay either. Hence the need for feedback.</p>
+    <p><b>Controllability.</b> Can steering drive any error to zero? Yes, if and only if the matrix <span class="m">[\,B \ \ AB\,]</span> has full rank. Chapter 02 relies on this.</p>
+    <p><b>Observability.</b> In the full system we don't measure the state directly; perception estimates it. If perception gave both components, <span class="m">C = I</span>, reconstructing the state would be immediate. More interestingly, even measuring only the lateral offset, <span class="m">C = [\,1 \ \ 0\,]</span>, the pair <span class="m">(A, C)</span> is observable: the heading error can be inferred over time from how the offset changes <a href="#ref-5">[5]</a>, <a href="#ref-6">[6]</a>. That is what makes the Kalman monitor of chapter 05 well posed.</p>
+    <div class="define">
+      <p class="define-title">Controllable and observable</p>
+      <p><b>In plain words:</b> controllable means the steering can bring the car to any lateral offset and heading; observable means the measurements, watched for a while, reveal the whole state.</p>
+      <p><b>More precisely:</b> for <span class="m">x_{k+1} = Ax_k + Bu_k</span> and <span class="m">y_k = Cx_k</span> with <span class="m">n</span> states, the system is controllable if <span class="m">[\,B \ \ AB \ \cdots \ A^{n-1}B\,]</span> has rank <span class="m">n</span>, and observable if the matrix stacking <span class="m">C, CA, \dots, CA^{n-1}</span> has rank <span class="m">n</span>. Here <span class="m">n = 2</span>.</p>
+    </div>
+    <details class="math">
+      <summary>For the curious: both tests by hand <span>(optional)</span></summary>
+      <div class="inner">
+        <p>Write <span class="m">b = \frac{vT_s}{L}</span>. Then <span class="m">AB = \begin{bmatrix} vT_s\,b \\ b \end{bmatrix}</span>, and</p>
+        <div class="math-block" data-narrow="\begin{aligned} \det\,[\,B \ \ AB\,] &amp;= \det\begin{bmatrix} 0 &amp; vT_s\,b \\ b &amp; b \end{bmatrix} \\ &amp;= -vT_s\,b^2 = -\frac{v^3T_s^3}{L^2}. \end{aligned}">\det\,[\,B \ \ AB\,] = \det\begin{bmatrix} 0 &amp; vT_s\,b \\ b &amp; b \end{bmatrix} = -vT_s\,b^2 = -\frac{v^3T_s^3}{L^2}.</div>
+        <p>For observability from the offset alone, <span class="m">CA = [\,1 \ \ vT_s\,]</span>, and</p>
+        <div class="math-block">\det\begin{bmatrix} C \\ CA \end{bmatrix} = \det\begin{bmatrix} 1 &amp; 0 \\ 1 &amp; vT_s \end{bmatrix} = vT_s.</div>
+        <p>Both determinants are non-zero exactly when the car moves. A parked car cannot be steered sideways, and its heading cannot be read from an offset that does not change: both properties hold only for <span class="m">v</span> above zero. Concretely, the heading error is the change of offset over one step divided by <span class="m">vT_s</span>.</p>
+      </div>
+    </details>
+    <pre><code class="language-python">A = np.array([[1, v*Ts], [0, 1.]]); B = np.array([[0.], [v*Ts/L]])
 ctrb = np.hstack([B, A@B])
 C = np.array([[1.0, 0.0]])                     # measure only lateral offset
 obsv = np.vstack([C, C@A])
-print(&quot;eigenvalues of A            :&quot;, np.linalg.eigvals(A), &quot; (integrator chain)&quot;)
-print(&quot;rank[ B  AB ]  (controllab.):&quot;, np.linalg.matrix_rank(ctrb), &quot; / 2&quot;)
-print(&quot;rank[ C; CA ]  (observab.)  :&quot;, np.linalg.matrix_rank(obsv), &quot; / 2  from e_y alone&quot;)</code></pre>
-<pre class="output">eigenvalues of A            : [1.+0.j 1.+0.j]  (integrator chain)
+print("eigenvalues of A            :", np.linalg.eigvals(A), " (integrator chain)")
+print("rank[ B  AB ]  (controllab.):", np.linalg.matrix_rank(ctrb), " / 2")
+print("rank[ C; CA ]  (observab.)  :", np.linalg.matrix_rank(obsv), " / 2  from e_y alone")</code></pre>
+    <pre class="output"><code class="nohl">eigenvalues of A            : [1.+0.j 1.+0.j]  (integrator chain)
 rank[ B  AB ]  (controllab.): 2  / 2
-rank[ C; CA ]  (observab.)  : 2  / 2  from e_y alone</pre>
-</div>
+rank[ C; CA ]  (observab.)  : 2  / 2  from e_y alone</code></pre>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="6-when-does-this-model-stop-being-valid">6. When does this model stop being valid?</h2>
-<p>The kinematic model assumes tyres do not slip, which holds only at modest lateral
-acceleration. On a curve of radius <span class="math inline">R</span> the lateral acceleration is</p>
-<div class="math display"> a_y = \frac{v^2}{R} = v^2\,\kappa . </div>
-<p>A common rule of thumb is that the kinematic model is trustworthy while
-<span class="math inline">a_y \lesssim 0.5\,\mu g</span> (roughly half of the tyre-road friction limit); beyond
-that, side-slip matters and one should switch to a <strong>dynamic bicycle model</strong> with
-tyre forces [1,2,3]. Kong et al. [2] compare the two for control design, and Polack
-et al. [3] give consistency conditions for using the kinematic model in planning.</p>
-<p>For this course we stay well inside the valid region: at <span class="math inline">v=15</span> m/s the largest
-curvature we test, <span class="math inline">|\kappa|=0.04</span>, gives <span class="math inline">a_y = 9\ \mathrm{m/s^2}\approx 0.9g</span> -
-deliberately near the edge, which is part of why that scenario is &quot;out of
-distribution&quot; for the perception <em>and</em> stressful for the plant.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">v = 15.0
+<!-- =================================================================== -->
+<section id="validity">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>When the model stops being valid</h2>
+  </div>
+  <div class="col prose">
+    <p>The kinematic model assumes the tyres do not slip, which holds only at modest sideways acceleration. On a bend of radius <span class="m">R</span>, the sideways (lateral) acceleration is</p>
+    <div class="math-block">a_y = \frac{v^2}{R} = v^2\,\kappa.</div>
+    <p>A common rule of thumb is that the kinematic model can be trusted while <span class="m">a_y</span> stays below about <span class="m">0.5\,\mu g</span>, half of what the tyre-road friction <span class="m">\mu</span> can give. Beyond that, side-slip matters, and one should switch to a <strong>dynamic bicycle model</strong> with tyre forces <a href="#ref-1">[1]</a>, <a href="#ref-2">[2]</a>, <a href="#ref-3">[3]</a>. Kong et al. <a href="#ref-2">[2]</a> compare the two models for control design, and Polack et al. <a href="#ref-3">[3]</a> give conditions under which the kinematic model is consistent for planning.</p>
+    <p>The course drives at 15 m/s. Its nominal road curves gently, with a curvature of at most 0.012 per metre; the integrity monitor of chapter 06 treats 0.022 as the edge of its operating domain; and the out-of-distribution scenario adds a sharp bend of 0.04. Here they are against the two limits:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="val">
+      <div class="params">
+        <label class="field"><span>Speed <span class="m">v</span>: <b id="vSpeedV"></b></span>
+          <span class="row"><input type="range" id="vSpeed" min="5" max="30" step="0.5" value="15"></span>
+        </label>
+        <label class="field">Road
+          <select id="vRoad">
+            <option value="0.9" selected>dry asphalt (μ = 0.9)</option>
+            <option value="0.5">wet asphalt (μ = 0.5)</option>
+            <option value="0.2">packed snow (μ = 0.2)</option>
+          </select>
+        </label>
+      </div>
+      <canvas id="valC" aria-label="Sideways acceleration against speed for the three curvatures of the course, with the kinematic limit and the grip limit as horizontal lines"></canvas>
+      <div class="legend" id="valLegend" aria-hidden="true"></div>
+      <div class="table-wrap"><table class="num" id="valT"><thead><tr><th>Curvature</th><th>Sideways acceleration</th><th>Kinematic model</th></tr></thead><tbody></tbody></table></div>
+      <p class="caption" id="valCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">v = 15.0
 for kappa in (0.012, 0.022, 0.04):
-    print(&quot;kappa = %.3f 1/m  -&gt;  R = %5.1f m,  a_y = %.2f m/s^2  = %.2f g&quot;
+    print("kappa = %.3f 1/m  ->  R = %5.1f m,  a_y = %.2f m/s^2  = %.2f g"
           % (kappa, 1/kappa, v**2*kappa, v**2*kappa/9.81))</code></pre>
-<pre class="output">kappa = 0.012 1/m  -&gt;  R =  83.3 m,  a_y = 2.70 m/s^2  = 0.28 g
-kappa = 0.022 1/m  -&gt;  R =  45.5 m,  a_y = 4.95 m/s^2  = 0.50 g
-kappa = 0.040 1/m  -&gt;  R =  25.0 m,  a_y = 9.00 m/s^2  = 0.92 g</pre>
-</div>
+    <pre class="output"><code class="nohl">kappa = 0.012 1/m  ->  R =  83.3 m,  a_y = 2.70 m/s^2  = 0.28 g
+kappa = 0.022 1/m  ->  R =  45.5 m,  a_y = 4.95 m/s^2  = 0.50 g
+kappa = 0.040 1/m  ->  R =  25.0 m,  a_y = 9.00 m/s^2  = 0.92 g</code></pre>
+    <p>So the nominal road stays well inside the valid region, the edge of the operating domain sits right at the rule of thumb, and the sharp bend of the out-of-distribution scenario goes far past it, deliberately: 0.92 g is more than a dry road's full grip. That is part of why this scenario is "out of distribution" for the perception <em>and</em> stressful for the plant: the model the controller relies on is no longer accurate exactly when the camera is also wrong.</p>
+  </div>
+</section>
 
-<div class="md exercises">
-<h3 id="exercises">Exercises</h3>
-<ol>
-<li>Re-derive <span class="math inline">\dot\psi=(v/L)\tan\delta</span> from the ICR geometry (hint: the front and
-rear wheels share one centre of rotation; write the radius to each).</li>
-<li>In the discretisation study, replace Euler with the midpoint method and confirm
-the fitted order becomes 2.</li>
-<li>Drive the <em>global</em> model (1) along a sinusoidally curving reference, compute
-<span class="math inline">e_y, e_\psi</span>, and check they match the error model (2) - where do they start to
-differ, and why (look at the <span class="math inline">1-\kappa e_y</span> term)?</li>
-<li>Compute the lateral acceleration at which the kinematic assumption breaks for a
-dry road (<span class="math inline">\mu\approx 0.9</span>). Which of the course scenarios approach it?</li>
-</ol>
-</div>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Kinematic bicycle</b> (1): wheels roll without sliding, so the car turns about one centre at radius <span class="m">R = \frac{L}{\tan\delta}</span>, with yaw rate <span class="m">\frac{v}{L}\tan\delta</span>.</div></li>
+      <li><div><b>Error coordinates</b> (2): offset <span class="m">e_y</span> and heading error <span class="m">e_\psi</span> relative to the lane; the road curvature is a measured disturbance, cancelled by the feed-forward <span class="m">\arctan(L\kappa)</span>.</div></li>
+      <li><div><b>Forward Euler</b> at <span class="m">T_s = 0.05</span> s: global error proportional to <span class="m">T_s</span>.</div></li>
+      <li><div><b>Linear model</b> (3) with <span class="m">A</span>, <span class="m">B</span>, <span class="m">E</span>: accurate while the angles stay small; the neglected terms are cubic.</div></li>
+      <li><div><b>Structure</b>: a double integrator, controllable by steering and observable from the offset alone, as long as the car moves.</div></li>
+      <li><div><b>Validity</b>: trust the model while <span class="m">v^2\kappa</span> stays below about half the grip, <span class="m">0.5\,\mu g</span>.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Kinematic model</td><td>Motion from geometry and rolling constraints, without forces.</td></tr>
+        <tr><td>Side-slip</td><td>A wheel moving sideways relative to where it points; assumed zero here.</td></tr>
+        <tr><td>Turning centre (ICR)</td><td>The point the car turns about at this instant.</td></tr>
+        <tr><td>Curvature <span class="m">\kappa</span></td><td>One over the radius of a bend; 0 on a straight road.</td></tr>
+        <tr><td>Frenet frame</td><td>Coordinates that follow the road: distance along it and offset across it.</td></tr>
+        <tr><td>Feed-forward</td><td>Steering computed from a known disturbance, here the curvature, before any error appears.</td></tr>
+        <tr><td>Forward Euler</td><td>Follow the current slope for one time step.</td></tr>
+        <tr><td>Order of a method</td><td>How fast the error shrinks with the step: as <span class="m">T_s</span> for Euler, <span class="m">T_s^4</span> for Runge-Kutta 4.</td></tr>
+        <tr><td>Linearisation</td><td>Replacing a model by its first-order Taylor expansion around an operating point.</td></tr>
+        <tr><td>Controllable, observable</td><td>The input can reach any state; the outputs reveal the whole state.</td></tr>
+        <tr><td>Lateral acceleration</td><td>The sideways acceleration on a bend, <span class="m">v^2\kappa</span>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-<div class="md refs">
-<h2 id="references">References</h2>
-<ol>
-<li>R. Rajamani. <em>Vehicle Dynamics and Control,</em> 2nd ed. Springer, 2012. (Kinematic and dynamic models; lane-keeping error dynamics.)</li>
-<li>J. Kong, M. Pfeiffer, G. Schildbach, F. Borrelli. <em>Kinematic and Dynamic Vehicle Models for Autonomous Driving Control Design.</em> IEEE Intelligent Vehicles Symposium, 2015. <a href="https://doi.org/10.1109/IVS.2015.7225830">doi:10.1109/IVS.2015.7225830</a></li>
-<li>P. Polack, F. Altche, B. d'Andrea-Novel, A. de La Fortelle. <em>The Kinematic Bicycle Model: a Consistent Model for Planning Feasible Trajectories for Autonomous Vehicles?</em> IEEE Intelligent Vehicles Symposium, 2017. <a href="https://doi.org/10.1109/IVS.2017.7995816">doi:10.1109/IVS.2017.7995816</a></li>
-<li>S. M. LaValle. <em>Planning Algorithms.</em> Cambridge University Press, 2006. (Nonholonomic constraints, the simple-car model.)</li>
-<li>T. Kailath. <em>Linear Systems.</em> Prentice Hall, 1980. (Controllability and observability.)</li>
-<li>J. P. Hespanha. <em>Linear Systems Theory,</em> 2nd ed. Princeton University Press, 2018.</li>
-<li>U. M. Ascher, L. R. Petzold. <em>Computer Methods for Ordinary Differential Equations and Differential-Algebraic Equations.</em> SIAM, 1998. (Order of Euler and Runge-Kutta methods.)</li>
-<li>M. Werling, J. Ziegler, S. Kammel, S. Thrun. <em>Optimal Trajectory Generation for Dynamic Street Scenarios in a Frenet Frame.</em> IEEE ICRA, 2010. <a href="https://doi.org/10.1109/ROBOT.2010.5509799">doi:10.1109/ROBOT.2010.5509799</a></li>
-</ol>
-</div>
-</main>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>The yaw rate from geometry.</b> Re-derive <span class="m">\dot\psi = \frac{v}{L}\tan\delta</span> from the turning-centre geometry.
+        <details class="sol"><summary>Hint</summary><p>Each wheel moves perpendicular to the line joining it to the turning centre. Draw both lines; the widget of Part 1 shows them. Where does the angle <span class="m">\delta</span> appear a second time?</p></details>
+        <details class="sol"><summary>Solution</summary><p>The rear wheel points along the heading, so the turning centre lies on the line through the rear axle, perpendicular to the heading, at some distance <span class="m">R</span>. The front wheel, a distance <span class="m">L</span> ahead, points at angle <span class="m">\delta</span>, so the line from it to the turning centre is perpendicular to it. The two lines from the turning centre, to the rear wheel and to the front wheel, make the angle <span class="m">\delta</span> between them (two angles whose sides are perpendicular are equal). In the right triangle formed by the turning centre and the two wheels, the side opposite that angle is <span class="m">L</span> and the adjacent side is <span class="m">R</span>, so <span class="m">\tan\delta = \frac{L}{R}</span>, that is <span class="m">R = \frac{L}{\tan\delta}</span>. The rear axle moves at speed <span class="m">v</span> on a circle of radius <span class="m">R</span>, so the heading turns at <span class="m">\dot\psi = \frac{v}{R} = \frac{v}{L}\tan\delta</span>. (The front wheel is further from the centre, at <span class="m">\frac{L}{\sin\delta}</span>, so it moves faster, at <span class="m">\frac{v}{\cos\delta}</span>.)</p></details>
+      </div></li>
+      <li><div><b>A second-order method.</b> In the discretisation study, replace Euler by the midpoint method and confirm that the fitted order becomes 2.
+        <details class="sol"><summary>Hint</summary><p>The midpoint method takes a half Euler step to estimate the slope at the middle of the step, then uses that slope for the full step.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-python">def midpoint(x, h): return x + h*f(x + 0.5*h*f(x))</code></pre>
+          <p>With the same five step sizes, from 0.2 to 0.0125 s, the errors at 2 s are 8.4e-3, 2.1e-3, 5.3e-4, 1.3e-4 and 3.3e-5: each halving of the step divides the error by 4, and the fitted order is <b>2.00</b>. The midpoint method needs two evaluations of <span class="m">f</span> per step instead of one, but at <span class="m">T_s = 0.05</span> s its error is about 600 times smaller than Euler's (5.3e-4 against 0.33). For comparison, the four-stage Runge-Kutta used as the reference fits an order of about 4.</p></details>
+      </div></li>
+      <li><div><b>Exact against simplified.</b> Drive the <em>global</em> model (1) along a winding road, compute <span class="m">e_y</span> and <span class="m">e_\psi</span> from the geometry, and compare with the error model (2). Where do they start to differ, and why? Look at the <span class="m">1 - \kappa e_y</span> term.
+        <details class="sol"><summary>Hint</summary><p>Use the course's nominal road, <span class="m">\kappa(s) = 0.012\sin\frac{2\pi s}{300}</span>. Build its centreline by integrating the heading along arc length, steer with the feed-forward <span class="m">\arctan(L\kappa)</span>, start a little off the centreline, and project the car onto the centreline to get its offset.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Starting aligned with the road but 0.5 m off the centreline, with feed-forward steering and no feedback, model (2) says the offset stays at 0.5 m forever. The real geometry disagrees by up to <b>0.30 m</b> within 10 seconds. Starting 2 m off, the gap reaches 1.18 m in 30 seconds; starting 5 m off, 2.94 m. The gap grows in proportion to the offset, which points at the product <span class="m">\kappa e_y</span>. At an offset <span class="m">e_y</span>, the car covers the road's length at <span class="m">\dot s = \frac{v\cos e_\psi}{1 - \kappa e_y}</span>, not <span class="m">v</span>: on the inside of a bend it gets around faster. Model (2) therefore feels the road's curvature at the wrong place and at the wrong rate, and the small heading errors this creates integrate twice into the offset. Integrating the exact equations, with <span class="m">\dot s</span>, instead reproduces the global model to within 5 mm. In closed loop, feedback keeps <span class="m">e_y</span> small, so <span class="m">\kappa e_y</span> stays tiny (0.004 at an offset of 0.3 m on the nominal road) and (2) is accurate where it is used.</p></details>
+      </div></li>
+      <li><div><b>The limit on a dry road.</b> Compute the sideways acceleration at which the kinematic assumption breaks on a dry road (<span class="m">\mu \approx 0.9</span>). Which of the course's scenarios approach it?
+        <details class="sol"><summary>Hint</summary><p>Use the rule of thumb <span class="m">a_y \lesssim 0.5\,\mu g</span>, with <span class="m">g = 9.81</span> m/s², and <span class="m">a_y = v^2\kappa</span> at 15 m/s. The widget of Part 6 does the same.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The limit is <span class="m">0.5 \times 0.9 \times 9.81 \approx 4.41</span> m/s², or 0.45 g. The nominal road, at most 2.70 m/s² (0.28 g), is well inside. The edge of the operating domain, <span class="m">\kappa = 0.022</span>, gives 4.95 m/s² (0.50 g): just past the limit. The out-of-distribution bend, <span class="m">\kappa = 0.04</span>, gives 9.00 m/s² (0.92 g): twice the limit, and more than the full grip of a dry road, <span class="m">\mu g \approx 8.83</span> m/s². A real car would slide there, which the kinematic model cannot represent. To take that bend within the rule of thumb, it would have to slow to <span class="m">\sqrt{\frac{4.41}{0.04}} \approx 10.5</span> m/s.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>R. Rajamani. <em>Vehicle Dynamics and Control</em>, 2nd ed. Springer, 2012. Kinematic and dynamic models; lane-keeping error dynamics.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>J. Kong, M. Pfeiffer, G. Schildbach and F. Borrelli. "Kinematic and dynamic vehicle models for autonomous driving control design". IEEE Intelligent Vehicles Symposium, 2015. <a href="https://doi.org/10.1109/IVS.2015.7225830">doi:10.1109/IVS.2015.7225830</a></div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>P. Polack, F. Altché, B. d'Andréa-Novel and A. de La Fortelle. "The kinematic bicycle model: a consistent model for planning feasible trajectories for autonomous vehicles?". IEEE Intelligent Vehicles Symposium, 2017. <a href="https://doi.org/10.1109/IVS.2017.7995816">doi:10.1109/IVS.2017.7995816</a></div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>S. M. LaValle. <em>Planning Algorithms</em>. Cambridge University Press, 2006. Nonholonomic constraints, the simple-car model.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>T. Kailath. <em>Linear Systems</em>. Prentice Hall, 1980. Controllability and observability.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>J. P. Hespanha. <em>Linear Systems Theory</em>, 2nd ed. Princeton University Press, 2018.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>U. M. Ascher and L. R. Petzold. <em>Computer Methods for Ordinary Differential Equations and Differential-Algebraic Equations</em>. SIAM, 1998. The order of Euler and Runge-Kutta methods.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>M. Werling, J. Ziegler, S. Kammel and S. Thrun. "Optimal trajectory generation for dynamic street scenarios in a Frenet frame". IEEE International Conference on Robotics and Automation, 2010. <a href="https://doi.org/10.1109/ROBOT.2010.5509799">doi:10.1109/ROBOT.2010.5509799</a></div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
   <a class="prev" rel="prev" href="00-overview.html"><span class="lbl">Previous · 00</span><span class="t">Overview</span></a>
@@ -319,11 +450,12 @@ dry road (<span class="math inline">\mu\approx 0.9</span>). Which of the course 
 </nav>
 
 <footer class="col">
-  <p>Chapter 01 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 01 of the TrustDrive course by Elie Rouphael. The demos run in your browser; the code and its printed results come from the chapter's notebook, which you can download at the top. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch01.js"></script>
 </body>
 </html>
