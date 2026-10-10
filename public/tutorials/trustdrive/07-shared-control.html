@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>07 · Shared human-vehicle control — TrustDrive course</title>
-<meta name="description" content="Haptic shared control, the McRuer crossover driver model, workload, and the law that shares authority between driver and automation.">
+<title>07 · Shared human-vehicle control · TrustDrive course</title>
+<meta name="description" content="Haptic shared control, a delayed driver model and the crossover idea, the stability of the blended loop, an authority law driven by integrity and workload, and why integrity decides who should win a conflict between driver and automation.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="interactive/trustdrive.css">
 </head>
 <body>
 
@@ -18,91 +19,140 @@
 <header class="hero col">
   <span class="eyebrow">TrustDrive course · Chapter 07 of 09</span>
   <h1>Shared human-vehicle control</h1>
-  <div class="intro prose">
-<p><strong>Goal.</strong> Turn the integrity score into <em>action</em>. Instead of a brittle all-or-nothing
-handover, we blend the automation and driver commands with an <strong>authority</strong> that
-follows integrity, model an imperfect human, analyse the stability of the blended
-loop, and show how the same integrity signal arbitrates a driver/automation conflict.</p>
-
-  </div>
+  <p class="lede">Chapter 06 produced one number, the integrity score <span class="m">I</span>. This chapter turns it into action. Instead of a brittle all-or-nothing handover, the driver's and the automation's steering are <em>blended</em>, with an authority that follows integrity. Below, the two disagree: one of them is mistaken, and the integrity score is supposed to know which. Set the integrity and the driver's workload, swap who is wrong, and watch whose steering wins.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 02 and 06 · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/07_shared_control.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/07_shared_control.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
   </div>
-  
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-levels-of-automation-and-the-handover-problem">1. Levels of automation and the handover problem</a></li>
-    <li><a href="#2-haptic-shared-control">2. Haptic shared control</a></li>
-    <li><a href="#3-a-driver-model-the-crossover-idea">3. A driver model: the crossover idea</a></li>
-    <li><a href="#4-workload-and-performance">4. Workload and performance</a></li>
-    <li><a href="#5-the-authority-law-and-the-operating-envelope">5. The authority law and the operating envelope</a></li>
-    <li><a href="#6-conflict-who-should-win-and-why-integrity-decides">6. Conflict: who should win, and why integrity decides</a></li>
-    <li><a href="#7-putting-it-together">7. Putting it together</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-levels-of-automation-and-the-handover-problem">1. Levels of automation and the handover problem</h2>
-<p>Partial automation (SAE levels 2-3 [1]) keeps the human in a supervisory role, which
-is exactly where humans are worst: taking a person who is <strong>out of the loop</strong> and
-asking them to resume control takes seconds and is error-prone [2,3]. A <em>hard</em>
-handover - automation drops out, human must instantly take over - inherits all of
-that risk, and it also throws away the automation's contribution the moment it is
-flagged. The alternative is to keep <em>both</em> agents in the loop and shift authority
-<em>smoothly</em>.</p>
+<!-- ============ LIVE DEMO: who steers? ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Lateral offset over 20 s (the lane centre is 0)</p>
+        <canvas id="heroC" aria-label="The car's lateral offset over 20 seconds under shared control, with the automation alone and the driver alone for comparison, and the offset the mistaken agent steers towards" aria-describedby="heroStatus"></canvas>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>shared control</span>
+        <span class="key"><span class="sw" style="background:var(--c5)"></span>automation alone</span>
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>driver alone</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>where the mistaken agent steers</span>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Who is mistaken">
+        <button class="btn" type="button" data-case="driver" aria-pressed="true">driver mistaken</button>
+        <button class="btn" type="button" data-case="auto" aria-pressed="false">perception mistaken</button>
+      </div>
+      <label class="field"><span>Integrity <span class="m">I</span>: <b id="hIV"></b></span>
+        <span class="row"><input type="range" id="hI" min="0" max="1" step="0.05" value="0.9"></span>
+      </label>
+      <label class="field"><span>Driver's workload <span class="m">W</span>: <b id="hWV"></b></span>
+        <span class="row"><input type="range" id="hW" min="0" max="1" step="0.05" value="0.2"></span>
+      </label>
+      <label class="check"><input type="checkbox" id="hAv" checked> driver available</label>
+      <div class="btn-row"><button class="btn" id="hNew" type="button">new noise</button></div>
+      <div class="readouts" aria-live="off">
+        <span>automation authority <span class="m">\lambda</span></span><span class="v" id="rLam">–</span>
+        <span>automation's effective share</span><span class="v" id="rShare">–</span>
+        <span>offset error, last 7.5 s (RMS)</span><span class="v" id="rErr">–</span>
+        <span>reference speed</span><span class="v" id="rV">–</span>
+      </div>
+      <p class="hint">Defaults: the perception is trustworthy (<span class="m">I = 0.9</span>) and the driver holds a wrong offset of 0.6 m. Both mistakes are the notebook's. The driver model is the course's: delayed by 0.2 s, noisier and weaker under workload.</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-haptic-shared-control">2. Haptic shared control</h2>
-<p>In <strong>haptic shared control</strong> both the driver and the automation act on the same
-control channel simultaneously; their commands are blended rather than switched
-[4,5,6]. We use an input-mixing form on the steering:</p>
-<div class="math display"> \boxed{\;\delta = \delta^{ff} + \lambda\,\delta_A + (1-\lambda)\,\delta_H\;}\qquad \lambda\in[0,1], </div>
-<p>with <span class="math inline">\lambda</span> the <strong>automation authority</strong>: <span class="math inline">\lambda=1</span> is full automation, <span class="math inline">\lambda=0</span>
-is the driver (plus the map-based feed-forward <span class="math inline">\delta^{ff}</span>, which always applies -
-notebook 02). Blending, rather than switching, means neither agent is ever fully
-out of the loop, the transition is continuous, and the driver feels the automation's
-intent through the shared actuator [4]. The design question is how to set <span class="math inline">\lambda</span>;
-we tie it to integrity.</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#handover"><span class="n">1</span><span class="t">The handover problem</span><span class="d">Why not simply switch?</span></a>
+    <a href="#blend"><span class="n">2</span><span class="t">Haptic shared control</span><span class="d">Blending two commands</span></a>
+    <a href="#driver"><span class="n">3</span><span class="t">A model of the driver</span><span class="d">Delay, and the crossover idea</span></a>
+    <a href="#workload"><span class="n">4</span><span class="t">Workload</span><span class="d">A noisier, weaker driver</span></a>
+    <a href="#law"><span class="n">5</span><span class="t">The authority law</span><span class="d">Integrity, workload, speed</span></a>
+    <a href="#conflict"><span class="n">6</span><span class="t">Conflict</span><span class="d">Who should win, and why integrity decides</span></a>
+    <a href="#together"><span class="n">7</span><span class="t">Putting it together</span><span class="d">The whole loop, chapters 01 to 07</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="md">
-<h2 id="3-a-driver-model-the-crossover-idea">3. A driver model: the crossover idea</h2>
-<p>To reason about the loop we need a model of the human. The classic result is
-McRuer's <strong>crossover model</strong> [7]: a well-trained operator adapts their own dynamics
-so that the <em>open-loop</em> human+plant behaves like</p>
-<div class="math display"> Y_{OL}(j\omega)\approx \frac{\omega_c\,e^{-j\omega\tau}}{j\omega} </div>
-<p>near the crossover frequency <span class="math inline">\omega_c</span>, with an effective reaction delay
-<span class="math inline">\tau\approx 0.2</span>-<span class="math inline">0.4</span> s from neuromuscular and processing lags. The delay is the
-crux: it erodes phase margin, so a human with <em>too much</em> delay or gain goes unstable.
-Our discrete driver is a minimal realisation of this - a delayed, noisy proportional
-controller on the lane error,</p>
-<div class="math display"> \delta_H = -(1-\tfrac12 W)\,K_h^\top x_{k-\tau} + w_k,\qquad
-   w_k\sim\mathcal N\!\big(0,(\sigma_h(1+2W))^2\big), </div>
-<p>where <span class="math inline">W</span> is workload (next section). We choose <span class="math inline">K_h</span> and <span class="math inline">\tau</span> so the human is
-<strong>stabilising but clearly worse than the automation</strong> - a viable fallback, not a
-perfect one. Let us verify the delay really is the stability-limiting factor.</p>
-</div>
+<!-- =================================================================== -->
+<section id="handover">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Levels of automation and the handover problem</h2>
+  </div>
+  <div class="col prose">
+    <p>Partial and conditional automation, levels 2 and 3 of the SAE scale <a href="#ref-1">[1]</a>, keep the human in the loop: as a supervisor at level 2, and as a fallback who must take over on request at level 3. That is exactly where humans are worst. Asking a person who is <strong>out of the loop</strong> to resume control takes seconds and is error-prone <a href="#ref-2">[2]</a>, <a href="#ref-3">[3]</a>. A <em>hard</em> handover, in which the automation drops out and the human must take over at once, inherits all of that risk. It also throws away the automation's contribution the moment it is flagged. The alternative is to keep <em>both</em> agents in the loop and shift authority <em>smoothly</em>.</p>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
-L, Ts, V = 2.7, 0.05, 15.0
-A = np.array([[1, V*Ts], [0, 1.]]); B2 = np.array([[0.], [V*Ts/L]]); Bv = B2.ravel()
+<!-- =================================================================== -->
+<section id="blend">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Haptic shared control</h2>
+  </div>
+  <div class="col prose">
+    <p>In <strong>haptic shared control</strong>, the driver and the automation act on the same control channel at the same time, and their commands are blended rather than switched <a href="#ref-4">[4]</a>, <a href="#ref-5">[5]</a>, <a href="#ref-6">[6]</a>. The course uses an input-mixing form on the steering:</p>
+    <div class="math-block" data-narrow="\boxed{\begin{gathered} \delta = \delta^{\text{ff}} + \lambda\,\delta_A + (1 - \lambda)\,\delta_H, \\[4pt] \lambda \in [0, 1], \end{gathered}}">\boxed{\;\delta = \delta^{\text{ff}} + \lambda\,\delta_A + (1 - \lambda)\,\delta_H\;} \qquad \lambda \in [0, 1],</div>
+    <p>where <span class="m">\lambda</span> is the <strong>automation authority</strong>: <span class="m">\lambda = 1</span> is full automation, <span class="m">\lambda = 0</span> is the driver alone, plus the map's feed-forward <span class="m">\delta^{\text{ff}}</span> of chapter 02, which always applies. Blending means neither agent is ever fully out of the loop, the transition is continuous, and the driver feels the automation's intent through the shared actuator <a href="#ref-4">[4]</a>. The design question is how to set <span class="m">\lambda</span>. The course ties it to integrity.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is shared control?</p>
+      <p><b>In plain words:</b> the driver and the automation both hold the wheel. Each pushes the way it thinks is right, and the car follows a weighted mix of the two. The weights shift towards whichever is more trustworthy at the moment.</p>
+      <p><b>More precisely:</b> a control architecture in which human and automatic controllers act continuously on the same actuator, with the authority between them set by a law rather than by a discrete switch <a href="#ref-4">[4]</a>, <a href="#ref-6">[6]</a>.</p>
+      <dl>
+        <dt>Authority <span class="m">\lambda</span></dt><dd>The automation's weight in the blend; the driver gets <span class="m">1 - \lambda</span>.</dd>
+        <dt>Handover</dt><dd>A transfer of control from one agent to the other.</dd>
+        <dt>Out of the loop</dt><dd>Not actively controlling, and so slow to take over.</dd>
+        <dt>Conflict</dt><dd>The two agents steering in different directions.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
 
-def dlqr(A, B, Q, R, it=800):
-    P = Q.copy()
-    for _ in range(it): P = Q + A.T@P@A - A.T@P@B@np.linalg.solve(R + B.T@P@B, B.T@P@A)
-    return np.linalg.solve(R + B.T@P@B, B.T@P@A)
-
-KA = dlqr(A, B2, np.diag([1., 5.]), np.array([[8.]])).ravel()   # automation (LQR) gain
-KH = np.array([0.12, 0.9])                                      # human proportional gain
-
-def blended_poles(lam, tau):
+<!-- =================================================================== -->
+<section id="driver">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>A model of the driver: the crossover idea</h2>
+  </div>
+  <div class="col prose">
+    <p>To reason about the loop, we need a model of the human. The classic result is McRuer's <strong>crossover model</strong> <a href="#ref-7">[7]</a>. A well-trained operator adapts their own dynamics so that, near the crossover frequency <span class="m">\omega_c</span>, the open loop of human and vehicle together behaves like</p>
+    <div class="math-block">Y_{\text{OL}}(j\omega) \approx \frac{\omega_c\,e^{-j\omega\tau}}{j\omega},</div>
+    <p>an integrator with an effective reaction delay <span class="m">\tau</span> of roughly 0.2 to 0.4 s, from neuromuscular and processing lags. The delay is the crux. It erodes the phase margin, so a human with too much delay, or too much gain, goes unstable. The course's driver is a minimal realisation of this, a delayed, noisy proportional controller on the lane error:</p>
+    <div class="math-block" data-narrow="\begin{gathered} \delta_H = -\big(1 - \tfrac{1}{2}W\big)\,K_h^\top x_{k-\tau} + w_k, \\[4pt] w_k \sim \mathcal{N}\big(0, (\sigma_h(1 + 2W))^2\big), \end{gathered}">\delta_H = -\big(1 - \tfrac{1}{2}W\big)\,K_h^\top x_{k-\tau} + w_k, \qquad w_k \sim \mathcal{N}\big(0, (\sigma_h(1 + 2W))^2\big),</div>
+    <p>with gains <span class="m">K_h = (0.12, 0.9)</span>, a delay of 4 steps (0.2 s), a noise of <span class="m">\sigma_h = 0.02</span> rad, and <span class="m">W</span> the workload of Part 4. The automation is chapter 02's LQR, <span class="m">K_A = (0.2834, 1.5001)</span>, with no delay. The driver is meant to be a viable fallback, clearly worse than the automation. Is the delay really what limits it? The stability of a loop with a delay is analysed on an augmented state, the current state and its <span class="m">\tau</span> predecessors, whose spectral radius must stay below 1. Change the delay and the driver's gain:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="dly">
+      <div class="params">
+        <label class="field"><span>Driver's reaction delay <span class="m">\tau</span>: <b id="dTV"></b></span>
+          <span class="row"><input type="range" id="dT" min="0" max="0.6" step="0.05" value="0.2"></span>
+        </label>
+        <label class="field"><span>Driver's gain (× <span class="m">K_h</span>): <b id="dGV"></b></span>
+          <span class="row"><input type="range" id="dG" min="0.5" max="3" step="0.25" value="1"></span>
+        </label>
+      </div>
+      <div class="two">
+        <div><p class="chart-title">Recovering from a 0.5 m offset</p><canvas id="dlyStep" aria-label="The lateral offset over 20 seconds as the driver alone, and the automation alone, steer back from 0.5 metres"></canvas></div>
+        <div><p class="chart-title">Spectral radius against delay</p><canvas id="dlyRho" aria-label="The spectral radius of the driver-only loop against the reaction delay, with the stability limit at 1"></canvas></div>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>driver alone</span>
+        <span class="key"><span class="sw" style="background:var(--c5)"></span>automation alone</span>
+      </div>
+      <p class="caption" id="dlyCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">def blended_poles(lam, tau):
     # spectral radius of the delayed blended closed loop (augmented state)
     n, d = 2, tau + 1
     Z = np.zeros((n*d, n*d))
@@ -110,171 +160,231 @@ def blended_poles(lam, tau):
     Z[0:n, n*tau:n*tau+n] += -(1 - lam)*np.outer(Bv, KH)       # human acts on x_{k-tau}
     for j in range(1, d):
         Z[n*j:n*j+n, n*(j-1):n*(j-1)+n] = np.eye(n)            # delay shift register
-    return np.max(np.abs(np.linalg.eigvals(Z)))
+    return np.max(np.abs(np.linalg.eigvals(Z)))</code></pre>
+    <pre class="output"><code class="nohl">human-only stable up to 0.20 s of delay, unstable from 0.25 s; our driver uses tau=4 (0.20 s), spectral radius 0.996</code></pre>
+    <p>The driver alone is stable up to exactly the delay it is given, and only just. Its spectral radius there is 0.996, so its slowest mode takes 12 s to decay by a factor <span class="m">e</span>. From a 0.5 m offset, it overshoots to 0.23 m on the other side and still has 5 cm to go after 20 s. The automation, at 0.80, is back within 1 cm in 0.75 s. So the course's driver is stabilising, but barely: a viable fallback, not a good one.</p>
+    <p>The blended loop, on the other hand, is stable for every authority, at the driver's 0.2 s delay. Its spectral radius is largest, 0.996, at <span class="m">\lambda = 0</span> (the driver alone), and falls to 0.77 near <span class="m">\lambda = 0.84</span>.</p>
+    <details class="math">
+      <summary>For the curious: the crossover model predicts the critical delay <span>(optional)</span></summary>
+      <div class="inner">
+        <p>At the crossover frequency, where the open loop has gain 1, the crossover model's phase is <span class="m">-\frac{\pi}{2} - \omega_c\tau</span>, so its phase margin is <span class="m">\frac{\pi}{2} - \omega_c\tau</span>. The loop goes unstable when the delay eats the margin. More generally, a loop with phase margin <span class="m">\varphi_m</span> at <span class="m">\omega_c</span> tolerates an extra delay of about</p>
+        <div class="math-block">\tau_{\text{crit}} \approx \frac{\varphi_m}{\omega_c}.</div>
+        <p>For the course's driver without delay, the open loop <span class="m">K_h^\top (zI - A)^{-1} B</span> crosses over at <span class="m">\omega_c = 5.14</span> rad/s with a margin of 60.5°, which a delay of 0.205 s uses up: right between the last stable delay (0.20 s) and the first unstable one (0.25 s). A higher gain raises <span class="m">\omega_c</span> and shrinks the tolerable delay (exercise 1): the gain-against-phase trade that a human operator manages by adapting <a href="#ref-7">[7]</a>.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-taus = np.arange(0, 13)
-rho_human = [blended_poles(0.0, t) for t in taus]              # human-only vs delay
-lams = np.linspace(0, 1, 51)
-rho_blend = [blended_poles(l, 4) for l in lams]               # blended vs authority (tau=4)
+<!-- =================================================================== -->
+<section id="workload">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Workload and performance</h2>
+  </div>
+  <div class="col prose">
+    <p>Human performance is not fixed. It follows the <strong>Yerkes-Dodson</strong> inverted U <a href="#ref-8">[8]</a>: too little or too much arousal degrades it. Under high workload, a driver's corrections get noisier and less forceful, and taking over is slower. The course folds a scalar workload <span class="m">W \in [0, 1]</span> into the driver model (think of a normalised NASA-TLX score <a href="#ref-10">[10]</a>). It <strong>inflates the steering noise</strong>, to <span class="m">\sigma_h(1 + 2W)</span>, and <strong>attenuates the gain</strong>, by <span class="m">1 - \frac{1}{2}W</span>. The model keeps only the high-workload side of the inverted U: performance only worsens as <span class="m">W</span> grows.</p>
+    <p>Workload-adaptive haptic control hands more to the automation when the driver is loaded, provided the automation is trustworthy. It is an active research direction <a href="#ref-9">[9]</a>, and the authority law below does a version of it. Note one side effect of the weaker gain: it makes the delayed driver <em>more</em> stable. The blended loop's largest spectral radius falls from 0.996 at <span class="m">W = 0</span> to 0.97 at <span class="m">W = 0.5</span>.</p>
+  </div>
+</section>
 
-fig, ax = plt.subplots(1, 2, figsize=(9, 3.4))
-ax[0].plot(taus*Ts, rho_human, &#x27;o-&#x27;, color=&quot;#d1495b&quot;); ax[0].axhline(1, ls=&#x27;--&#x27;, color=&#x27;k&#x27;)
-ax[0].set(xlabel=&quot;human reaction delay [s]&quot;, ylabel=&quot;spectral radius&quot;, title=&quot;Delay destabilises the human&quot;)
-ax[1].plot(lams, rho_blend, color=&quot;#2e7d32&quot;); ax[1].axhline(1, ls=&#x27;--&#x27;, color=&#x27;k&#x27;)
-ax[1].set(xlabel=&quot;automation authority $\\lambda$&quot;, ylabel=&quot;spectral radius&quot;,
-          title=&quot;Blended loop is stable for all $\\lambda$&quot;, ylim=(0.6, 1.05))
-for a in ax: a.grid(alpha=.3)
-plt.tight_layout(); plt.show()
-print(&quot;human-only stable up to delay ~ %.2f s ; our driver uses tau=4 (0.20 s)&quot; %
-      (Ts*taus[np.argmax(np.array(rho_human) &gt; 1)] if np.any(np.array(rho_human) &gt; 1) else Ts*taus[-1]))</code></pre>
-<figure class="output-figure"><img src="img/07-1.png" alt="Figure 1 produced by the code above" width="979" height="362" loading="lazy"></figure>
-<pre class="output">human-only stable up to delay ~ 0.25 s ; our driver uses tau=4 (0.20 s)</pre>
-</div>
-
-<div class="md">
-<h2 id="4-workload-and-performance">4. Workload and performance</h2>
-<p>Human performance is not fixed; it follows the <strong>Yerkes-Dodson</strong> inverted-U [8]: too
-little or too much arousal/workload degrades it. Under high workload a driver's
-corrections get noisier and less forceful, and takeover is slower. We fold a scalar
-workload <span class="math inline">W\in[0,1]</span> (think of a normalised NASA-TLX [10]) into the driver model in
-two ways: it <strong>inflates the steering noise</strong> (<span class="math inline">\sigma_h(1+2W)</span>) and <strong>attenuates the
-gain</strong> (<span class="math inline">1-\tfrac12 W</span>). Workload-adaptive haptic control - handing more to the
-automation when the driver is loaded, provided the automation is trustworthy - is an
-active research direction [9], and it is exactly what our authority law below does.</p>
-</div>
-
-<div class="md">
-<h2 id="5-the-authority-law-and-the-operating-envelope">5. The authority law and the operating envelope</h2>
-<p>We set authority from integrity <span class="math inline">I</span> and workload <span class="math inline">W</span>:</p>
-<div class="math display"> \lambda=\mathrm{clip}\!\big(I+\rho\,W\,(I-0.5),\ \lambda_{\min},\ \lambda_{\max}\big),
-   \qquad [\lambda_{\min},\lambda_{\max}]=[0.05,0.95]. </div>
-<p>Three design choices are encoded here. Authority <strong>rises with integrity</strong> - trust the
-automation when the monitor says it is trustworthy. The <strong>workload term is signed
-about <span class="math inline">I=0.5</span></strong>: when integrity is decent and the driver is loaded, keep a little
-<em>more</em> with the automation; when integrity is already poor, do not dump a loaded
-driver into control. And the clipping keeps <strong>both agents partly in the loop</strong> at all
-times (never 0 or 1), which is what made the blended loop stable across <span class="math inline">\lambda</span> above.</p>
-<p>When integrity drops we also <strong>contract the operating envelope</strong> - a form of graceful
-degradation / minimal-risk behaviour [1] - by lowering the reference speed:</p>
-<div class="math display"> v_{ref}=v_{nom}\,(0.4+0.6\,I). </div>
-<p>So when <em>neither</em> perception nor driver is ideal, the vehicle slows down instead of
-gambling on one agent.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def authority(I, W, avail=True, rho=0.35, lo=0.05, hi=0.95):
+<!-- =================================================================== -->
+<section id="law">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The authority law and the operating envelope</h2>
+  </div>
+  <div class="col prose">
+    <p>The course sets the authority from the integrity <span class="m">I</span> and the workload <span class="m">W</span>:</p>
+    <div class="math-block" data-narrow="\boxed{\begin{gathered} \lambda = \mathrm{clip}\big(I + \rho\,W\,(I - 0.5), \\ \lambda_{\min},\ \lambda_{\max}\big), \\[6pt] \rho = 0.35, \\ [\lambda_{\min}, \lambda_{\max}] = [0.05, 0.95]. \end{gathered}}">\boxed{\;\lambda = \mathrm{clip}\big(I + \rho\,W\,(I - 0.5),\ \lambda_{\min},\ \lambda_{\max}\big)\;} \qquad \rho = 0.35, \quad [\lambda_{\min}, \lambda_{\max}] = [0.05, 0.95].</div>
+    <p>Three design choices are encoded here. First, authority <strong>rises with integrity</strong>: trust the automation when the monitor says it is trustworthy. Second, the <strong>workload term is signed about <span class="m">I = 0.5</span></strong>, so workload makes the arbitration more decisive. With decent integrity, a loaded driver hands a little more to the automation. With poor integrity, the automation, now the less trustworthy agent, hands a little more to the driver, loaded or not. Third, the <strong>clip</strong> keeps both agents partly in the loop at all times. That is not needed for stability, since Part 3 found the blended loop stable for every <span class="m">\lambda</span>, ends included. It is about the people: a driver who never steers drifts out of the loop, and an automation reduced to nothing cannot help when the driver errs. The course's code adds a fourth rule: when the driver is not available, the authority is at least 0.85.</p>
+    <p>When integrity drops, the law also <strong>contracts the operating envelope</strong>, a form of graceful degradation towards a minimal-risk condition <a href="#ref-1">[1]</a>, by lowering the reference speed:</p>
+    <div class="math-block">v_{\text{ref}} = v_{\text{nom}}\,(0.4 + 0.6\,I).</div>
+    <p>So when <em>neither</em> the perception nor the driver is ideal, the car slows down instead of gambling on one of them.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="law-w">
+      <div class="params">
+        <label class="field"><span>Integrity <span class="m">I</span>: <b id="lIV"></b></span>
+          <span class="row"><input type="range" id="lI" min="0" max="1" step="0.01" value="0.3"></span>
+        </label>
+        <label class="field"><span>Workload <span class="m">W</span>: <b id="lWV"></b></span>
+          <span class="row"><input type="range" id="lW" min="0" max="1" step="0.05" value="0.8"></span>
+        </label>
+        <label class="check"><input type="checkbox" id="lAv" checked> driver available</label>
+      </div>
+      <div class="two">
+        <div><p class="chart-title">Authority rises with integrity</p><canvas id="lawLam" aria-label="The automation authority against integrity, for no workload and for the chosen workload, with the clip limits"></canvas></div>
+        <div><p class="chart-title">Speed contracts under low trust</p><canvas id="lawV" aria-label="The reference speed against integrity, from 6 to 15 metres per second"></canvas></div>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>with this workload</span>
+        <span class="key"><span class="sw" style="background:var(--muted)"></span>no workload</span>
+      </div>
+      <p class="caption" id="lawCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">def authority(I, W, avail=True, rho=0.35, lo=0.05, hi=0.95):
     lam = I + rho*W*(I - 0.5)
     if not avail: lam = max(lam, 0.85)
-    return np.clip(lam, lo, hi)
+    return np.clip(lam, lo, hi)</code></pre>
+  </div>
+</section>
 
-I = np.linspace(0, 1, 100)
-fig, ax = plt.subplots(1, 2, figsize=(9, 3.4))
-for W in (0.0, 0.4, 0.8):
-    ax[0].plot(I, [authority(i, W) for i in I], label=&quot;workload %.1f&quot; % W)
-ax[0].set(xlabel=&quot;integrity $I$&quot;, ylabel=&quot;authority $\\lambda$&quot;, title=&quot;Authority rises with integrity&quot;)
-ax[0].legend(); ax[0].grid(alpha=.3)
-ax[1].plot(I, 15*(0.4 + 0.6*I), color=&quot;#2e7d32&quot;)
-ax[1].set(xlabel=&quot;integrity $I$&quot;, ylabel=&quot;$v_{ref}$ [m/s]&quot;, title=&quot;Speed contracts under low trust&quot;)
-ax[1].grid(alpha=.3); plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/07-2.png" alt="Figure 2 produced by the code above" width="980" height="362" loading="lazy"></figure>
-</div>
+<!-- =================================================================== -->
+<section id="conflict">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Conflict: who should win, and why integrity decides</h2>
+  </div>
+  <div class="col prose">
+    <p>The hardest case is a <strong>conflict</strong>: the automation steers one way, the driver the other. A fixed authority cannot be right, because the correct winner depends on <em>who is actually correct</em>, and that is precisely what integrity estimates. When the perception is trustworthy (<span class="m">I</span> high, so <span class="m">\lambda</span> high), the automation should win against a mistaken driver. When the perception is out of its domain (<span class="m">I</span> low, so <span class="m">\lambda</span> low), the driver should win. The notebook simulates both, as the demo at the top does:</p>
+    <pre><code class="language-python">if case == "human_wrong":                       # perception good; driver steers to a wrong target
+    dA = -KA @ x                                 # automation on the true state (correct)
+    dH = -KH @ (xd - np.array([0.6, 0.0]))       # driver holds a wrong lane offset
+else:                                            # "auto_wrong": perception biased; driver correct
+    dA = -KA @ (x + np.array([0.6, 0.0]))        # automation on a biased estimate
+    dH = -KH @ xd                                # driver on the true state (correct)
+d = np.clip(lam*dA + (1 - lam)*dH, -0.6, 0.6)
+x = A @ x + Bv*d</code></pre>
+    <p>Where does the car settle? In a steady state the steering is zero and so is the heading error, so the two agents' pulls on the offset must cancel. That gives a simple, exact answer:</p>
+    <div class="math-block" data-narrow="\begin{gathered} e_{y,ss} = (1 - w)\,b_H - w\,b_A, \\[6pt] w = \frac{\lambda k_A}{\lambda k_A + (1 - \lambda)\,k_H}, \end{gathered}">e_{y,ss} = (1 - w)\,b_H - w\,b_A, \qquad w = \frac{\lambda k_A}{\lambda k_A + (1 - \lambda)\,k_H},</div>
+    <p>where <span class="m">b_H</span> is the offset the driver wrongly holds, <span class="m">b_A</span> the perception's bias, and <span class="m">k_A = 0.2834</span> and <span class="m">k_H = 0.12</span> the two agents' gains on the offset. The car ends up at a weighted mix of the two agents' targets, and the weight <span class="m">w</span>, the automation's <strong>effective share</strong>, is not <span class="m">\lambda</span>. The automation's gain is more than twice the driver's, so it pulls harder: at <span class="m">\lambda = 0.3</span> it already has half the say.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="cfl">
+      <div class="params">
+        <label class="field"><span>Size of the mistake: <b id="cBV"></b></span>
+          <span class="row"><input type="range" id="cB" min="0.1" max="1" step="0.05" value="0.6"></span>
+        </label>
+        <label class="field"><span>Driver's workload <span class="m">W</span>: <b id="cWV"></b></span>
+          <span class="row"><input type="range" id="cW" min="0" max="1" step="0.05" value="0"></span>
+        </label>
+      </div>
+      <canvas id="cflC" aria-label="Steady-state lateral error against the automation authority for the two conflicts, crossing near 0.3, with the authority the law gives at low and at high integrity"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>perception good, driver mistaken</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>perception mistaken, driver correct</span>
+      </div>
+      <p class="caption" id="cflCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The two curves cross: high authority is right when the perception is good, low authority is right when it is not, and <strong>no single <span class="m">\lambda</span> minimises both</strong>. Because the law sets <span class="m">\lambda</span> from <span class="m">I</span>, which is high when the perception is trustworthy (chapter 06) and low when it is out of its domain, the adaptive authority lands near the minimum of whichever curve is active. That is integrity-aware arbitration. Note the asymmetry the effective share creates. At high integrity (<span class="m">\lambda = 0.9</span>), a mistaken driver moves the car by 2.7 cm. At low integrity (<span class="m">\lambda = 0.1</span>), a mistaken perception still moves it by 12.5 cm, because a tenth of the authority is a fifth of the say.</p>
+    <p class="big-idea">The right winner of a conflict depends on who is right, and integrity is the system's estimate of exactly that.</p>
+    <p>It is only an estimate, though. In the demo at the top, choose "perception mistaken" and leave the integrity high: the monitor has been fooled, and the car follows the biased perception. The arbitration is only as good as the integrity score that drives it.</p>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="6-conflict-who-should-win-and-why-integrity-decides">6. Conflict: who should win, and why integrity decides</h2>
-<p>The hardest case is a <strong>conflict</strong>: the automation steers one way, the driver the
-other. A fixed authority cannot be right, because <em>the correct agent depends on who is
-actually correct</em> - and that is precisely what integrity estimates. When perception
-is trustworthy (<span class="math inline">I</span> high <span class="math inline">\Rightarrow \lambda</span> high) the automation should win a
-conflict with a mistaken driver; when perception is out of its domain
-(<span class="math inline">I</span> low <span class="math inline">\Rightarrow \lambda</span> low) the driver should win. Below we simulate both
-situations and sweep <span class="math inline">\lambda</span>; the integrity-adaptive choice lands on the right side
-of each, where a fixed <span class="math inline">\lambda</span> cannot.</p>
-</div>
+<!-- =================================================================== -->
+<section id="together">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Putting it together</h2>
+  </div>
+  <div class="col prose">
+    <p>This completes the loop. The vehicle (chapter 01) is driven by an LQR (02) reading a state estimate. When the state comes from the perception (03), with its uncertainty (04), a Kalman monitor (05) tests consistency, and an integrity score (06) fuses the evidence. That score sets the shared authority and the speed (07). Chapter 08 runs the whole thing in closed loop, and compares it with the naive and hard-handover baselines across four scenarios.</p>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">from collections import deque
-def sim_conflict(lam, case, n=400, tau=4):
-    x = np.array([0.0, 0.0]); buf = deque([np.zeros(2)]*(tau+1), maxlen=tau+1); ey = []
-    for _ in range(n):
-        buf.append(x.copy()); xd = buf[0]
-        if case == &quot;human_wrong&quot;:                       # perception good; driver steers to a wrong target
-            dA = -KA @ x                                 # automation on the true state (correct)
-            dH = -KH @ (xd - np.array([0.6, 0.0]))       # driver holds a wrong lane offset
-        else:                                            # &quot;auto_wrong&quot;: perception biased; driver correct
-            dA = -KA @ (x + np.array([0.6, 0.0]))        # automation on a biased estimate
-            dH = -KH @ xd                                # driver on the true state (correct)
-        d = np.clip(lam*dA + (1 - lam)*dH, -0.6, 0.6)
-        x = A @ x + Bv*d; ey.append(x[0])
-    return np.sqrt(np.mean(np.square(ey[-150:])))        # steady-state lateral RMSE
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Handover</b>: an out-of-the-loop human takes seconds to resume control; a hard switch inherits that risk.</div></li>
+      <li><div><b>Shared control</b>: <span class="m">\delta = \delta^{\text{ff}} + \lambda\,\delta_A + (1 - \lambda)\,\delta_H</span>, both agents always in the loop.</div></li>
+      <li><div><b>Driver model</b>: a delayed, noisy proportional controller; the delay limits it, as the crossover model predicts (<span class="m">\tau_{\text{crit}} \approx \frac{\varphi_m}{\omega_c}</span>).</div></li>
+      <li><div><b>Authority law</b>: <span class="m">\lambda = \mathrm{clip}(I + \rho W (I - 0.5), 0.05, 0.95)</span>, and <span class="m">v_{\text{ref}} = v_{\text{nom}}(0.4 + 0.6 I)</span>.</div></li>
+      <li><div><b>Conflict</b>: the car settles at a mix of the two agents' targets, weighted by the effective share, not by <span class="m">\lambda</span>.</div></li>
+      <li><div><b>Integrity decides</b>: no fixed authority wins both conflicts; one that follows integrity lands on the right side of each.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Haptic shared control</td><td>Driver and automation acting on the same actuator, their commands blended.</td></tr>
+        <tr><td>Authority</td><td>The automation's weight in the blend.</td></tr>
+        <tr><td>Effective share</td><td>How much each agent actually decides, once their gains are counted.</td></tr>
+        <tr><td>Crossover model</td><td>The human adapts so that the open loop looks like a delayed integrator near crossover.</td></tr>
+        <tr><td>Phase margin</td><td>How much extra phase lag the loop tolerates before going unstable.</td></tr>
+        <tr><td>Workload</td><td>The demand on the driver; here it makes the driver noisier and weaker.</td></tr>
+        <tr><td>Operating envelope</td><td>The range of speeds and manoeuvres allowed; it contracts as trust falls.</td></tr>
+        <tr><td>Minimal-risk condition</td><td>The safe state a system degrades towards when it cannot continue normally.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-lams = np.linspace(0, 1, 41)
-rmse_hw = [sim_conflict(l, &quot;human_wrong&quot;) for l in lams]
-rmse_aw = [sim_conflict(l, &quot;auto_wrong&quot;) for l in lams]
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>Gain against delay.</b> In the driver-only stability analysis, read off the critical delay. Increase the driver's gain <span class="m">K_h</span>, and show that the critical delay shrinks: the crossover model's trade between gain and phase.
+        <details class="sol"><summary>Hint</summary><p>Scale <span class="m">K_h</span> by factors from 0.5 to 3 and find, for each, the first delay at which the spectral radius exceeds 1. Compare with <span class="m">\frac{\varphi_m}{\omega_c}</span> computed from the undelayed open loop.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <div class="table-wrap"><table class="num">
+            <thead><tr><th>Gain</th><th><span class="m">\omega_c</span><span class="sub">rad/s, margin</span></th><th><span class="m">\frac{\varphi_m}{\omega_c}</span><span class="sub">s</span></th><th>Delay limit<span class="sub">stable, unstable (s)</span></th></tr></thead>
+            <tbody>
+              <tr><td>×&nbsp;0.5</td><td>2.93<span class="sub">50.1°</span></td><td>0.299</td><td>0.25<span class="sub">0.30</span></td></tr>
+              <tr><td>×&nbsp;1</td><td>5.14<span class="sub">60.5°</span></td><td>0.205</td><td>0.20<span class="sub">0.25</span></td></tr>
+              <tr><td>×&nbsp;1.5</td><td>7.44<span class="sub">63.7°</span></td><td>0.149</td><td>0.10<span class="sub">0.15</span></td></tr>
+              <tr><td>×&nbsp;2</td><td>9.81<span class="sub">64.1°</span></td><td>0.114</td><td>0.10<span class="sub">0.15</span></td></tr>
+              <tr><td>×&nbsp;3</td><td>14.71<span class="sub">61.1°</span></td><td>0.073</td><td>0.05<span class="sub">0.10</span></td></tr>
+            </tbody>
+          </table></div>
+          <p>The course's driver is stable up to 0.20 s and unstable from 0.25 s. Tripling its gain cuts the tolerable delay to under 0.1 s. The margin changes little, between 50° and 64°, but the crossover frequency rises with the gain, and a given delay costs a phase of <span class="m">\omega_c\tau</span>, more at higher frequency. For each of these gains, the estimate <span class="m">\frac{\varphi_m}{\omega_c}</span> falls between the last stable and the first unstable delay of the discrete model. This is why a skilled human operator lowers their gain when their delay grows: an aggressive driver with slow reactions oscillates.</p>
+        </details>
+      </div></li>
+      <li><div><b>Feed-forward on a bend.</b> Add the map's feed-forward <span class="m">\delta^{\text{ff}} = \arctan(L\kappa)</span> to the conflict simulation on a curve, and confirm that it removes the steady offset whatever <span class="m">\lambda</span> is (chapter 02).
+        <details class="sol"><summary>Hint</summary><p>Add the curvature term <span class="m">E\kappa</span>, with <span class="m">E = (0, -vT_s)</span>, to the dynamics, and the feed-forward outside the blend. In a steady state, the total steering must equal <span class="m">L\kappa</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>On a bend with <span class="m">\kappa = 0.012</span> and both agents correct, the feedback alone must supply the steering <span class="m">L\kappa = 0.032</span> rad, which takes a standing offset of <span class="m">-\frac{L\kappa}{\lambda k_A + (1 - \lambda)\,k_H}</span>. That is <span class="m">-0.25</span> m at <span class="m">\lambda = 0.05</span>, <span class="m">-0.16</span> m at 0.5 and <span class="m">-0.12</span> m at 0.95: it depends on the authority, because the two agents have different gains. With the feed-forward, the offset is below 0.1 mm at every <span class="m">\lambda</span>: the feed-forward supplies the steering, and the feedback has nothing left to do. (The tiny remainder is the difference between <span class="m">\arctan(L\kappa)</span> and the linear model's <span class="m">L\kappa</span>.) In the two conflicts, the feed-forward removes the bend's contribution and leaves exactly the straight-road errors: 2.7 cm and 57 cm at <span class="m">\lambda = 0.9</span>, 48 cm and 12 cm at <span class="m">\lambda = 0.1</span>. So the feed-forward makes the arbitration a matter of who is right, not of who steers harder on a bend.</p></details>
+      </div></li>
+      <li><div><b>A smooth saturation.</b> Replace the hard clip on <span class="m">\lambda</span> with a smooth saturation, and check that the blended loop stays stable across <span class="m">\lambda</span>.
+        <details class="sol"><summary>Hint</summary><p>Try <span class="m">\lambda = 0.5 + 0.45\tanh\big(\frac{u - 0.5}{0.45}\big)</span>, which has slope 1 in the middle. Then ask a harder question: the loop is stable for every <em>fixed</em> <span class="m">\lambda</span>, but is it stable while <span class="m">\lambda</span> changes?</p></details>
+        <details class="sol"><summary>Solution</summary><p>For a fixed authority, the question is already settled: every <span class="m">\lambda</span> in <span class="m">[0, 1]</span> gives a stable loop (largest spectral radius 0.996, at <span class="m">\lambda = 0</span>), so any saturation into that interval is stable. The smooth version is more conservative at the ends: it maps the law's raw value 1 to 0.86 instead of 0.95, and 0 to 0.14 instead of 0.05, keeping both agents further in the loop. It also has no kink, so the wheel's behaviour changes smoothly as integrity crosses the limits. While <span class="m">\lambda</span> changes, stability for each frozen value does not guarantee stability in general. Here, though, even adversarial switching between 0.05 and 0.95 does not destabilise the loop: over every switching pattern that repeats within 12 steps, the worst growth per step is 0.991, and switching at random shrinks the state by a factor 0.87 per step.</p></details>
+      </div></li>
+      <li><div><b>A loaded driver.</b> Make the workload time-varying, and let it, not just integrity, drive <span class="m">\lambda</span>. When should a loaded driver <em>keep</em> authority despite decent integrity?
+        <details class="sol"><summary>Hint</summary><p>Compute <span class="m">\lambda</span> and the effective share before and during a burst of workload, at a decent integrity of 0.7. Then ask what integrity measures, and what it does not.</p></details>
+        <details class="sol"><summary>Solution</summary><p>At <span class="m">I = 0.7</span>, a burst of workload from 0.1 to 0.9 raises <span class="m">\lambda</span> only from 0.71 to 0.76. But the automation's effective share goes from 86% to 93%, mostly because the loaded driver's own gain falls from 0.95 to 0.55 of its normal value. A loaded driver should keep authority when the workload comes from the driving itself: they are reacting to something the automation does not know about, such as an obstacle, a pedestrian or a pothole. Integrity measures whether the <em>perception</em> can be trusted, not whether the automation's goal is right. A sudden, deliberate steering input during a burst of workload is then the driver being right, and taking authority away fights an evasive manoeuvre. Production lane-keeping systems handle this with a driver override, such as a torque threshold on the wheel. A second reason is the out-of-the-loop problem of Part 1: if every burst of workload shifts authority away, the driver learns to disengage, and the next handover is slower <a href="#ref-3">[3]</a>.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
 
-plt.figure(figsize=(7, 3.6))
-plt.plot(lams, rmse_hw, color=&quot;#2e7d32&quot;, label=&quot;perception good, driver wrong&quot;)
-plt.plot(lams, rmse_aw, color=&quot;#d1495b&quot;, label=&quot;perception OOD, driver correct&quot;)
-plt.scatter([0.9], [sim_conflict(0.9, &quot;human_wrong&quot;)], color=&quot;#2e7d32&quot;, zorder=3)
-plt.annotate(&quot;high $I$ -&gt; $\\lambda\\approx0.9$&quot;, (0.9, sim_conflict(0.9, &quot;human_wrong&quot;)), xytext=(0.5, 0.45),
-             textcoords=&quot;axes fraction&quot;, fontsize=8, color=&quot;#2e7d32&quot;)
-plt.scatter([0.1], [sim_conflict(0.1, &quot;auto_wrong&quot;)], color=&quot;#d1495b&quot;, zorder=3)
-plt.annotate(&quot;low $I$ -&gt; $\\lambda\\approx0.1$&quot;, (0.1, sim_conflict(0.1, &quot;auto_wrong&quot;)), xytext=(0.12, 0.7),
-             textcoords=&quot;axes fraction&quot;, fontsize=8, color=&quot;#d1495b&quot;)
-plt.xlabel(&quot;automation authority $\\lambda$&quot;); plt.ylabel(&quot;steady-state $e_y$ RMSE [m]&quot;)
-plt.title(&quot;No fixed authority wins both conflicts; integrity picks the right side&quot;)
-plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/07-3.png" alt="Figure: No fixed authority wins both conflicts; integrity picks the right side" width="759" height="384" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<p>The two curves cross: high authority is right when perception is good, low authority
-is right when it is not, and <strong>no single <span class="math inline">\lambda</span> minimises both</strong>. Because our law
-sets <span class="math inline">\lambda=\Phi(I,W)</span>, and <span class="math inline">I</span> is high exactly when perception is trustworthy (as
-detected in notebook 06) and low when it is out of domain, the adaptive authority
-lands near the minimum of whichever curve is active. That is integrity-aware
-arbitration.</p>
-</div>
-
-<div class="md">
-<h2 id="7-putting-it-together">7. Putting it together</h2>
-<p>This completes the loop. The vehicle (01) is driven by an LQR (02) reading a state
-estimate; when the state comes from perception (03) with uncertainty (04), a Kalman
-monitor (05) tests consistency and an integrity score (06) fuses the evidence; that
-score sets the shared authority and the speed here in (07). Notebook 08 runs the
-whole thing closed-loop and compares it against the naive and hard-handover baselines
-across the four scenarios.</p>
-</div>
-
-<div class="md exercises">
-<h3 id="exercises">Exercises</h3>
-<ol>
-<li>In the human-only stability panel, read off the critical delay. Increase the human
-gain <span class="math inline">K_h</span> and show the critical delay shrinks (the crossover-model gain/phase trade).</li>
-<li>Add the map feed-forward <span class="math inline">\delta^{ff}=\arctan(L\kappa)</span> to <code>sim_conflict</code> on a
-curve and confirm it removes the steady offset regardless of <span class="math inline">\lambda</span> (notebook 02).</li>
-<li>Replace the hard clip on <span class="math inline">\lambda</span> with a smooth saturation and check the blended
-loop stays stable across <span class="math inline">\lambda</span>.</li>
-<li>Make workload time-varying and let it, not just integrity, drive <span class="math inline">\lambda</span>. When
-should a loaded driver <em>keep</em> authority despite decent integrity?</li>
-</ol>
-</div>
-
-<div class="md refs">
-<h2 id="references">References</h2>
-<ol>
-<li>SAE International. <em>Taxonomy and Definitions for Terms Related to Driving Automation Systems for On-Road Motor Vehicles.</em> Standard J3016_202104, 2021. (Automation levels; minimal-risk condition.)</li>
-<li>M. R. Endsley. <em>From Here to Autonomy: Lessons Learned From Human-Automation Research.</em> Human Factors, 59(1):5-27, 2017. <a href="https://doi.org/10.1177/0018720816681350">doi:10.1177/0018720816681350</a></li>
-<li>N. Merat, A. H. Jamson, F. C. H. Lai, M. Daly, O. M. J. Carsten. <em>Transition to manual: Driver behaviour when resuming control from a highly automated vehicle.</em> Transportation Research Part F, 27:274-282, 2014. <a href="https://doi.org/10.1016/j.trf.2014.09.005">doi:10.1016/j.trf.2014.09.005</a></li>
-<li>D. A. Abbink, M. Mulder, E. R. Boer. <em>Haptic shared control: smoothly shifting control authority?</em> Cognition, Technology &amp; Work, 14:19-28, 2012. <a href="https://doi.org/10.1007/s10111-011-0192-5">doi:10.1007/s10111-011-0192-5</a></li>
-<li>F. Flemisch, K. Bengler, H. Bubb, H. Winner, R. Bruder. <em>Towards cooperative guidance and control of highly automated vehicles: H-Mode and Conduct-by-Wire.</em> Ergonomics, 57(3):343-360, 2014. <a href="https://doi.org/10.1080/00140139.2013.869355">doi:10.1080/00140139.2013.869355</a></li>
-<li>M. Marcano, S. Diaz, J. Perez, E. Irigoyen. <em>A Review of Shared Control for Automated Vehicles: Theory and Applications.</em> IEEE Transactions on Human-Machine Systems, 50(6):475-491, 2020. <a href="https://doi.org/10.1109/THMS.2020.3017748">doi:10.1109/THMS.2020.3017748</a></li>
-<li>D. T. McRuer, H. R. Jex. <em>A Review of Quasi-Linear Pilot Models.</em> IEEE Transactions on Human Factors in Electronics, HFE-8(3):231-249, 1967. <a href="https://doi.org/10.1109/THFE.1967.234304">doi:10.1109/THFE.1967.234304</a> (Crossover model.)</li>
-<li>R. M. Yerkes, J. D. Dodson. <em>The relation of strength of stimulus to rapidity of habit-formation.</em> Journal of Comparative Neurology and Psychology, 18:459-482, 1908. <a href="https://doi.org/10.1002/cne.920180503">doi:10.1002/cne.920180503</a></li>
-<li>R. Luo et al. <em>A Workload Adaptive Haptic Shared Control Scheme for Semi-Autonomous Driving.</em> Accident Analysis &amp; Prevention, 2020. <a href="https://arxiv.org/abs/2004.00167">arXiv:2004.00167</a></li>
-<li>S. G. Hart, L. E. Staveland. <em>Development of NASA-TLX (Task Load Index).</em> Advances in Psychology, 52:139-183, 1988. <a href="https://doi.org/10.1016/S0166-4115(08)62386-9">doi:10.1016/S0166-4115(08)62386-9</a></li>
-</ol>
-</div>
-</main>
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>SAE International. <em>Taxonomy and Definitions for Terms Related to Driving Automation Systems for On-Road Motor Vehicles</em>. Standard J3016_202104, 2021. Automation levels; minimal-risk condition.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>M. R. Endsley. "From here to autonomy: lessons learned from human-automation research". <em>Human Factors</em> 59(1), 5–27, 2017. <a href="https://doi.org/10.1177/0018720816681350">doi:10.1177/0018720816681350</a></div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>N. Merat, A. H. Jamson, F. C. H. Lai, M. Daly and O. M. J. Carsten. "Transition to manual: driver behaviour when resuming control from a highly automated vehicle". <em>Transportation Research Part F</em> 27, 274–282, 2014. <a href="https://doi.org/10.1016/j.trf.2014.09.005">doi:10.1016/j.trf.2014.09.005</a></div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>D. A. Abbink, M. Mulder and E. R. Boer. "Haptic shared control: smoothly shifting control authority?" <em>Cognition, Technology &amp; Work</em> 14, 19–28, 2012. <a href="https://doi.org/10.1007/s10111-011-0192-5">doi:10.1007/s10111-011-0192-5</a></div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>F. Flemisch, K. Bengler, H. Bubb, H. Winner and R. Bruder. "Towards cooperative guidance and control of highly automated vehicles: H-Mode and Conduct-by-Wire". <em>Ergonomics</em> 57(3), 343–360, 2014. <a href="https://doi.org/10.1080/00140139.2013.869355">doi:10.1080/00140139.2013.869355</a></div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>M. Marcano, S. Díaz, J. Pérez and E. Irigoyen. "A review of shared control for automated vehicles: theory and applications". <em>IEEE Transactions on Human-Machine Systems</em> 50(6), 475–491, 2020. <a href="https://doi.org/10.1109/THMS.2020.3017748">doi:10.1109/THMS.2020.3017748</a></div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>D. T. McRuer and H. R. Jex. "A review of quasi-linear pilot models". <em>IEEE Transactions on Human Factors in Electronics</em> HFE-8(3), 231–249, 1967. <a href="https://doi.org/10.1109/THFE.1967.234304">doi:10.1109/THFE.1967.234304</a>. The crossover model.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>R. M. Yerkes and J. D. Dodson. "The relation of strength of stimulus to rapidity of habit-formation". <em>Journal of Comparative Neurology and Psychology</em> 18, 459–482, 1908. <a href="https://doi.org/10.1002/cne.920180503">doi:10.1002/cne.920180503</a></div></li>
+      <li id="ref-9"><span class="rn">[9]</span><div>R. Luo, Y. Weng, Y. Wang, P. Jayakumar et al. "A workload adaptive haptic shared control scheme for semi-autonomous driving". <em>Accident Analysis &amp; Prevention</em> 152, 105968, 2021. <a href="https://doi.org/10.1016/j.aap.2020.105968">doi:10.1016/j.aap.2020.105968</a></div></li>
+      <li id="ref-10"><span class="rn">[10]</span><div>S. G. Hart and L. E. Staveland. "Development of NASA-TLX (Task Load Index): results of empirical and theoretical research". <em>Advances in Psychology</em> 52, 139–183, 1988. <a href="https://doi.org/10.1016/S0166-4115(08)62386-9">doi:10.1016/S0166-4115(08)62386-9</a></div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
   <a class="prev" rel="prev" href="06-odd-and-integrity.html"><span class="lbl">Previous · 06</span><span class="t">ODD and integrity</span></a>
@@ -282,11 +392,13 @@ should a loaded driver <em>keep</em> authority despite decent integrity?</li>
 </nav>
 
 <footer class="col">
-  <p>Chapter 07 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 07 of the TrustDrive course by Elie Rouphael. The demos run the notebook's vehicle, LQR and driver model in your browser, with their own random noise for the driver. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch07.js"></script>
 </body>
 </html>

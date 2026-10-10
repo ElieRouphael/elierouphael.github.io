@@ -3,13 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>03 · Perception and image rendering — TrustDrive course</title>
-<meta name="description" content="Pinhole projection, the ground-plane homography, blur and noise models, and a synthetic lane camera.">
+<title>03 · Perception and rendering · TrustDrive course</title>
+<meta name="description" content="The pinhole camera, the road-plane projection and its vanishing point, blur, darkness, occlusion and noise, cheap pixel features for monitoring, and why an out-of-distribution bend is invisible in the pixels, with a camera you can drive and degrade.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="interactive/trustdrive.css">
+<style>
+  .cams { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; }
+  @media (max-width: 560px) { .cams { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cams > :first-child { grid-column: 1 / -1; max-width: 12rem; } }
+</style>
 </head>
 <body>
 
@@ -17,270 +22,350 @@
 
 <header class="hero col">
   <span class="eyebrow">TrustDrive course · Chapter 03 of 09</span>
-  <h1>Perception and image rendering</h1>
-  <div class="intro prose">
-<p><strong>Goal.</strong> Replace direct access to the state with a <em>camera</em>. We derive the pinhole
-projection, use it to render small synthetic road images, and model the ways the
-real world degrades them. This gives a controllable, perfectly-labelled stand-in
-for a perception sensor - and, crucially, a way to leave its operating domain on
-demand.</p>
-<p>Why <em>synthetic</em> images? Because we get exact ground truth for free, we can dial any
-degradation continuously, and we need no dataset. The point of the course is not
-computer vision accuracy but the <em>trustworthy use</em> of a perception estimate in a
-control loop, so a transparent renderer is the right tool.</p>
-
-  </div>
+  <h1>Perception and rendering</h1>
+  <p class="lede">So far the controller was told the car's exact position in the lane. A real car has to see it, through a camera. This chapter builds a small synthetic camera from the pinhole model: a 64-by-64 image of the road, rendered from where the car is, then degraded by fog, darkness, occlusion and sensor noise. Drive it and degrade it below. Then look at what happens on a bend sharper than anything the perception was trained on: the image stays perfectly clean. That fact drives the rest of the course.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 01 and a little geometry · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/03_perception_and_rendering.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/03_perception_and_rendering.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
   </div>
-  
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-the-pinhole-camera">1. The pinhole camera</a></li>
-    <li><a href="#2-the-road-is-a-plane-forward-camera-geometry">2. The road is a plane: forward-camera geometry</a></li>
-    <li><a href="#3-modelling-the-degradations">3. Modelling the degradations</a></li>
-    <li><a href="#4-cheap-pixel-features-for-the-odd-monitor">4. Cheap pixel features for the ODD monitor</a></li>
-    <li><a href="#5-why-out-of-distribution-curvature-is-invisible-in-the-pixels">5. Why out-of-distribution curvature is invisible in the pixels</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-the-pinhole-camera">1. The pinhole camera</h2>
-<p>A pinhole camera projects a 3D point onto the image plane by a perspective
-division. Let a point have coordinates <span class="math inline">(X_c, Y_c, Z_c)</span> in the camera frame, with
-<span class="math inline">Z_c</span> along the optical axis. By <strong>similar triangles</strong> the point at depth <span class="math inline">Z_c</span>
-scales to the image plane at focal length <span class="math inline">f</span>:</p>
-<div class="math display"> u = f\,\frac{X_c}{Z_c} + c_x, \qquad v = f\,\frac{Y_c}{Z_c} + c_y, </div>
-<p>where <span class="math inline">(c_x, c_y)</span> is the principal point. In homogeneous coordinates this is linear
-[1,2]:</p>
-<div class="math display"> Z_c\begin{bmatrix}u\\ v\\ 1\end{bmatrix}
-   = K\begin{bmatrix}X_c\\ Y_c\\ Z_c\end{bmatrix},\qquad
-   K=\begin{bmatrix} f &amp; 0 &amp; c_x\\ 0 &amp; f &amp; c_y\\ 0 &amp; 0 &amp; 1\end{bmatrix}. </div>
-<p>The nonlinearity that matters is the division by <span class="math inline">Z_c</span>: near things are large, far
-things shrink, and parallel lines converge.</p>
+<!-- ============ LIVE DEMO: the car's camera ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div class="two">
+        <div><p class="chart-title">What the camera sees (64 × 64)</p><canvas id="camC" aria-label="The rendered 64 by 64 camera image of the road" aria-describedby="camStatus"></canvas></div>
+        <div><p class="chart-title">The road from above (sideways × 1.8)</p><canvas id="topC" aria-label="The lane seen from above, relative to the car, with the camera's field of view shaded"></canvas></div>
+      </div>
+      <p class="status" id="camStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="The course's four regimes">
+        <button class="btn" type="button" data-preset="clear" aria-pressed="true">clear</button>
+        <button class="btn" type="button" data-preset="fog" aria-pressed="false">fog + blur</button>
+        <button class="btn" type="button" data-preset="occ" aria-pressed="false">occlusion</button>
+        <button class="btn" type="button" data-preset="ood" aria-pressed="false">sharp bend</button>
+      </div>
+      <label class="field"><span>Road curvature <span class="m">\kappa</span>: <b id="cKV"></b></span>
+        <span class="row"><input type="range" id="cK" min="-0.06" max="0.06" step="0.002" value="0.012"></span>
+      </label>
+      <label class="field"><span>Offset <span class="m">e_y</span>: <b id="cEyV"></b></span>
+        <span class="row"><input type="range" id="cEy" min="-1" max="1" step="0.05" value="0.3"></span>
+      </label>
+      <label class="field"><span>Heading error <span class="m">e_\psi</span>: <b id="cEpV"></b></span>
+        <span class="row"><input type="range" id="cEp" min="-0.06" max="0.06" step="0.005" value="0.02"></span>
+      </label>
+      <label class="field"><span>Illumination <span class="m">b</span>: <b id="cBV"></b></span>
+        <span class="row"><input type="range" id="cB" min="0.2" max="1" step="0.05" value="1"></span>
+      </label>
+      <label class="field"><span>Blur <span class="m">\sigma</span>: <b id="cBlV"></b></span>
+        <span class="row"><input type="range" id="cBl" min="0" max="3.5" step="0.1" value="0"></span>
+      </label>
+      <label class="field"><span>Occlusion: <b id="cOV"></b></span>
+        <span class="row"><input type="range" id="cO" min="0" max="0.6" step="0.05" value="0"></span>
+      </label>
+      <label class="field"><span>Sensor noise <span class="m">\sigma_n</span>: <b id="cNV"></b></span>
+        <span class="row"><input type="range" id="cN" min="0" max="0.1" step="0.005" value="0.02"></span>
+      </label>
+      <label class="check"><input type="checkbox" id="cGuide"> show the horizon and the vanishing point</label>
+      <div class="readouts" aria-live="off">
+        <span>brightness (mean)</span><span class="v" id="rBr">–</span>
+        <span>sharpness (gradient²)</span><span class="v" id="rSh">–</span>
+        <span>change from a clear, gentle road</span><span class="v" id="rCh">–</span>
+        <span>operating domain</span><span class="v" id="rOdd">–</span>
+      </div>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-the-road-is-a-plane-forward-camera-geometry">2. The road is a plane: forward-camera geometry</h2>
-<p>For lane keeping the scene of interest is the <strong>ground plane</strong>. Mount the camera at
-height <span class="math inline">h</span> above the road with its optical axis pointing forward along the road, so
-that in camera coordinates a ground point at longitudinal distance <span class="math inline">s</span> ahead and
-lateral offset <span class="math inline">y</span> has <span class="math inline">Z_c = s</span> (depth), <span class="math inline">X_c = y</span> (right), and <span class="math inline">Y_c = h</span> (the road
-is <span class="math inline">h</span> below the camera). Substituting into the pinhole equations:</p>
-<div class="math display"> \boxed{\;u = c_x + f\,\frac{y}{s},\qquad v = c_y + f\,\frac{h}{s}\;} </div>
-<p>Two consequences are worth noting. As <span class="math inline">s\to\infty</span> the projection tends to
-<span class="math inline">(c_x, c_y)</span> regardless of <span class="math inline">y</span>: <strong>all lane lines converge to a single vanishing
-point on the horizon</strong> at row <span class="math inline">v=c_y</span>. And because the road is planar, the whole
-road-to-image map is a <span class="math inline">3\times 3</span> <strong>homography</strong> [1] - a fact lane-detection
-systems exploit to &quot;flatten&quot; the road into a bird's-eye view.</p>
-<p>The lane centreline, in the vehicle frame, is well approximated to second order in
-look-ahead by a parabola (a clothoid segment linearised in <span class="math inline">s</span>) [4,5]:</p>
-<div class="math display"> y_{road}(s) = -e_y - e_\psi\,s + \tfrac12\,\kappa\,s^2, </div>
-<p>the three terms being the lateral offset, the drift due to heading error, and the
-road curvature. Lane markings sit at <span class="math inline">y_{road}(s)\pm w/2</span>.</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#pinhole"><span class="n">1</span><span class="t">The pinhole camera</span><span class="d">Perspective is a division by depth</span></a>
+    <a href="#plane"><span class="n">2</span><span class="t">The road is a plane</span><span class="d">The vanishing point and the lane parabola</span></a>
+    <a href="#degradations"><span class="n">3</span><span class="t">Modelling the degradations</span><span class="d">Blur, darkness, occlusion, noise</span></a>
+    <a href="#features"><span class="n">4</span><span class="t">Cheap pixel features</span><span class="d">Brightness and sharpness</span></a>
+    <a href="#invisible"><span class="n">5</span><span class="t">An invisible bend</span><span class="d">Why the pixels cannot see novelty</span></a>
+    <a href="#summary"><span class="n">6</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">8</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
+<!-- =================================================================== -->
+<section id="pinhole">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The pinhole camera</h2>
+  </div>
+  <div class="col prose">
+    <p>Why <em>synthetic</em> images? Because we get the exact ground truth for free, we can dial any degradation continuously, and we need no dataset. The point of the course is not computer-vision accuracy but the <em>trustworthy use</em> of a perception estimate in a control loop, so a transparent renderer is the right tool. And, crucially, it lets us leave the perception's operating domain on demand.</p>
+    <p>A pinhole camera projects a point in space onto the image plane by a perspective division. Give the point coordinates <span class="m">(X_c, Y_c, Z_c)</span> in the camera frame, with <span class="m">Z_c</span> along the optical axis. By <strong>similar triangles</strong>, a point at depth <span class="m">Z_c</span> lands on the image plane, at focal length <span class="m">f</span>, at</p>
+    <div class="math-block">u = f\,\frac{X_c}{Z_c} + c_x, \qquad v = f\,\frac{Y_c}{Z_c} + c_y,</div>
+    <p>where <span class="m">(c_x, c_y)</span> is the principal point, where the optical axis meets the image. In homogeneous coordinates this is linear <a href="#ref-1">[1]</a>, <a href="#ref-2">[2]</a>:</p>
+    <div class="math-block" data-narrow="\begin{gathered} Z_c \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \begin{bmatrix} X_c \\ Y_c \\ Z_c \end{bmatrix}, \\[6pt] K = \begin{bmatrix} f &amp; 0 &amp; c_x \\ 0 &amp; f &amp; c_y \\ 0 &amp; 0 &amp; 1 \end{bmatrix}. \end{gathered}">Z_c \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \begin{bmatrix} X_c \\ Y_c \\ Z_c \end{bmatrix}, \qquad K = \begin{bmatrix} f &amp; 0 &amp; c_x \\ 0 &amp; f &amp; c_y \\ 0 &amp; 0 &amp; 1 \end{bmatrix}.</div>
+    <p>The nonlinearity that matters is the division by <span class="m">Z_c</span>: near things are large, far things shrink, and parallel lines converge.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is perception, here?</p>
+      <p><b>In plain words:</b> turning camera pixels into the two numbers the controller needs, how far the car is from the lane centre and how far its heading is off. This chapter builds the camera; chapter 04 builds the network that reads it.</p>
+      <p><b>More precisely:</b> a map from images to an estimate of the state <span class="m">(e_y, e_\psi)</span>, learned from examples. It is only trustworthy inside its <strong>operating domain</strong>, the conditions it was trained and tested for.</p>
+      <dl>
+        <dt>Pinhole model</dt><dd>Every ray passes through one point, the camera centre; the image is a perspective projection.</dd>
+        <dt>Focal length <span class="m">f</span></dt><dd>The distance to the image plane, in pixels here (55).</dd>
+        <dt>Principal point</dt><dd>Where the optical axis meets the image, <span class="m">(c_x, c_y)</span>.</dd>
+        <dt>Operational design domain (ODD)</dt><dd>The set of conditions in which the system is designed to work.</dd>
+        <dt>Out of distribution</dt><dd>An input unlike anything in the training data.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
 
-Himg = Wimg = 64
+<!-- =================================================================== -->
+<section id="plane">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The road is a plane: forward-camera geometry</h2>
+  </div>
+  <div class="col prose">
+    <p>For lane keeping, the scene that matters is the <strong>ground plane</strong>. Mount the camera at height <span class="m">h</span> above the road, looking forward along it. Then a point of the road at distance <span class="m">s</span> ahead and lateral offset <span class="m">y</span> has depth <span class="m">Z_c = s</span>, <span class="m">X_c = y</span> (to the right) and <span class="m">Y_c = h</span> (the road is <span class="m">h</span> below the camera). Substituting into the pinhole equations:</p>
+    <div class="math-block" data-narrow="\boxed{\begin{gathered} u = c_x + f\,\frac{y}{s}, \\[4pt] v = c_y + f\,\frac{h}{s} \end{gathered}}">\boxed{\;u = c_x + f\,\frac{y}{s}, \qquad v = c_y + f\,\frac{h}{s}\;}</div>
+    <p>The course's camera has <span class="m">f = 55</span> pixels, <span class="m">h = 1.25</span> m and its horizon at row <span class="m">c_y = 21.76</span>. Two consequences are worth noting. As <span class="m">s</span> grows, the projection tends to <span class="m">(c_x, c_y)</span> whatever <span class="m">y</span> is: <strong>all lane lines converge to a single vanishing point</strong> on the horizon. And because the road is planar, the whole road-to-image map is a 3×3 <strong>homography</strong> <a href="#ref-1">[1]</a>, which lane-detection systems use to "flatten" the road into a bird's-eye view (exercise 2). Move a point on the road and watch where it lands:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="proj">
+      <div class="params">
+        <label class="field"><span>Distance ahead <span class="m">s</span>: <b id="pSV"></b></span>
+          <span class="row"><input type="range" id="pS" min="0.3" max="1.9" step="0.01" value="1"></span>
+        </label>
+        <label class="field"><span>Lateral offset <span class="m">y</span>: <b id="pYV"></b></span>
+          <span class="row"><input type="range" id="pY" min="-4" max="4" step="0.25" value="1.75"></span>
+        </label>
+      </div>
+      <div class="two">
+        <div><p class="chart-title">From the side (heights × 10)</p><canvas id="projSide" aria-label="Side view: the camera above the road, the ray to the road point, and where it crosses the image plane"></canvas></div>
+        <div><p class="chart-title">In the image (64 × 64 pixels)</p><canvas id="projImg" aria-label="The image frame with the horizon, the vanishing point, the lane lines and the projected point"></canvas></div>
+      </div>
+      <p class="caption" id="projCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The lane centreline, in the car's frame, is well approximated to second order in the look-ahead distance by a parabola: a clothoid segment, linearised in <span class="m">s</span> <a href="#ref-4">[4]</a>, <a href="#ref-5">[5]</a>. With the signs of chapter 01 (<span class="m">e_y</span> and <span class="m">e_\psi</span> positive to the left, <span class="m">\kappa &gt; 0</span> for a left bend), and <span class="m">y</span> measured to the right as above:</p>
+    <div class="math-block">y_{\text{road}}(s) = e_y + e_\psi\,s - \frac{1}{2}\,\kappa\,s^2.</div>
+    <p>The three terms are the lateral offset, the drift due to the heading error, and the road's curvature: a car left of the centreline sees the centreline to its right, and a left bend curves away to the left. The lane markings sit at <span class="m">y_{\text{road}}(s) \pm \frac{w}{2}</span>, with <span class="m">w = 3.5</span> m. The renderer draws these three lines from 3 m to 45 m ahead, the far ones dimmer, and projects them with the boxed formula: that is the demo at the top.</p>
+    <pre><code class="language-python">Himg = Wimg = 64
 FOCAL, CAM_H, HORIZON = 55.0, 1.25, 0.34*Himg     # focal [px], camera height [m], horizon row
 
 def project(s, y):
-    return Wimg/2 + FOCAL*y/s, HORIZON + FOCAL*CAM_H/s
+    return Wimg/2 + FOCAL*y/s, HORIZON + FOCAL*CAM_H/s</code></pre>
+  </div>
+</section>
 
-def gaussian_blur(img, sigma):
-    if sigma &lt;= 1e-3: return img
-    r = max(1, int(round(3*sigma))); xk = np.arange(-r, r+1)
-    k = np.exp(-0.5*(xk/sigma)**2); k /= k.sum()
-    out = np.apply_along_axis(lambda m: np.convolve(m, k, &#x27;same&#x27;), 0, img)
-    return np.apply_along_axis(lambda m: np.convolve(m, k, &#x27;same&#x27;), 1, out)
+<!-- =================================================================== -->
+<section id="degradations">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Modelling the degradations</h2>
+  </div>
+  <div class="col prose">
+    <p>Each condition the operating-domain monitor watches corresponds to a physical or measurement process <a href="#ref-2">[2]</a>, <a href="#ref-3">[3]</a>:</p>
+    <ul>
+      <li><b>Defocus or atmospheric blur</b> is a convolution with a <strong>point-spread function</strong> (PSF), the image of a single point of light. A Gaussian PSF of standard deviation <span class="m">\sigma</span> is the standard approximation, <span class="m">I_{\text{blur}} = I * g_\sigma</span>. It is <em>separable</em>, so we apply a one-dimensional kernel along the columns, then along the rows.</li>
+      <li><b>Illumination</b> acts as a multiplicative gain, <span class="m">I \mapsto b\,I</span> (ignoring gamma; exercise 4).</li>
+      <li><b>Occlusion</b> removes a region of the image, here a band of the far road just below the horizon.</li>
+      <li><b>Sensor noise</b> is additive. Read noise is well modelled as Gaussian, <span class="m">\mathcal{N}(0, \sigma_n^2)</span>, and shot noise as Poisson <a href="#ref-6">[6]</a>; we use additive Gaussian.</li>
+    </ul>
+    <p>The four presets of the demo at the top are the four regimes used throughout the course: clear, fog with blur, partial occlusion, and an out-of-distribution bend. Here is the Gaussian PSF and what it does to the lane:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="psf">
+      <label class="field"><span>Blur <span class="m">\sigma</span>: <b id="psfSV"></b></span>
+        <span class="row"><input type="range" id="psfS" min="0.2" max="3.5" step="0.1" value="2"></span>
+      </label>
+      <div class="cams">
+        <div><p class="chart-title">The PSF</p><canvas id="psfK" aria-label="The two-dimensional Gaussian point-spread function"></canvas></div>
+        <div><p class="chart-title">Sharp</p><canvas id="psfA" aria-label="The rendered lane without blur"></canvas></div>
+        <div><p class="chart-title">Image * PSF</p><canvas id="psfB" aria-label="The same lane convolved with the point-spread function"></canvas></div>
+      </div>
+      <p class="caption" id="psfCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <details class="math">
+      <summary>For the curious: why blur removes detail <span>(optional)</span></summary>
+      <div class="inner">
+        <p>By the convolution theorem, blurring multiplies the image's Fourier transform by the PSF's. The Fourier transform of a Gaussian of width <span class="m">\sigma</span> is again a Gaussian,</p>
+        <div class="math-block">\hat g_\sigma(\omega) = e^{-\frac{1}{2}\sigma^2\omega^2},</div>
+        <p>so a spatial frequency <span class="m">\omega</span> is attenuated by <span class="m">e^{-\sigma^2\omega^2/2}</span>: the finest detail, the highest frequencies, goes first. Sharp edges are made of high frequencies, which is why a measure of gradient energy falls so quickly as <span class="m">\sigma</span> grows (Part 4). Separability is the identity <span class="m">g_\sigma(x, y) = g_\sigma(x)\,g_\sigma(y)</span>: one two-dimensional convolution becomes two one-dimensional ones, <span class="m">2(2r + 1)</span> operations per pixel instead of <span class="m">(2r + 1)^2</span>.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-def render(e_y, e_psi, kappa, brightness=1.0, blur=0.0, occ=0.0, noise=0.02, seed=0):
-    rng = np.random.default_rng(seed)
-    img = np.full((Himg, Wimg), 0.15, np.float32)     # dark asphalt
-    s = np.linspace(3, 45, 400)
-    yc = -e_y - e_psi*s + 0.5*kappa*s**2
-    fade = np.clip(1 - (s-3)/42, .2, 1)               # far markings dimmer
-    for off, dashed in ((-1.75, False), (1.75, False), (0.0, True)):
-        u, v = project(s, yc + off)
-        for i in range(len(s)):
-            if dashed and int(s[i]) % 3 == 0: continue
-            rr, cc = int(round(v[i])), int(round(u[i]))
-            if 0 &lt;= rr &lt; Himg and 0 &lt;= cc &lt; Wimg:
-                for dc in (-1, 0, 1):
-                    if 0 &lt;= cc+dc &lt; Wimg: img[rr, cc+dc] = max(img[rr, cc+dc], 0.9*fade[i])
-    img = img * brightness
-    if occ &gt; 0:
-        top = int(HORIZON); img[top:top+int(occ*(Himg-top))] = 0.05
-    img = gaussian_blur(img, blur)
-    return np.clip(img + rng.normal(0, noise, img.shape), 0, 1)
-
-# a clean straight lane, with the horizon and vanishing point marked
-img = render(0.0, 0.0, 0.0, noise=0.0)
-plt.figure(figsize=(4.2, 4.2))
-plt.imshow(img, cmap=&quot;gray&quot;, vmin=0, vmax=1)
-plt.axhline(HORIZON, color=&quot;#0e7c8b&quot;, lw=1.2)
-plt.scatter([Wimg/2], [HORIZON], color=&quot;#d1495b&quot;, s=40, zorder=3)
-plt.annotate(&quot;vanishing point&quot;, (Wimg/2, HORIZON), color=&quot;#d1495b&quot;,
-             textcoords=&quot;offset points&quot;, xytext=(-40, 8))
-plt.annotate(&quot;horizon  $v=c_y$&quot;, (2, HORIZON), color=&quot;#0e7c8b&quot;,
-             textcoords=&quot;offset points&quot;, xytext=(0, -10))
-plt.title(&quot;Perspective projection of a straight lane&quot;); plt.axis(&quot;off&quot;)
-plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/03-1.png" alt="Figure: Perspective projection of a straight lane" width="427" height="450" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="3-modelling-the-degradations">3. Modelling the degradations</h2>
-<p>Each condition the ODD monitor watches corresponds to a physical or measurement
-process [2,3]:</p>
-<ul>
-<li><strong>Defocus / atmospheric blur</strong> is a convolution with a <strong>point-spread function
-(PSF)</strong>. A Gaussian PSF of standard deviation <span class="math inline">\sigma</span> is the standard
-approximation, <span class="math inline">I_{blur} = I * g_\sigma</span>. It is <em>separable</em>, so we apply a 1-D
-kernel along rows then columns.</li>
-<li><strong>Illumination</strong> acts as a multiplicative gain <span class="math inline">I \mapsto b\,I</span> (ignoring gamma).</li>
-<li><strong>Occlusion</strong> removes a region of the image (missing data), here a band of the far
-road.</li>
-<li><strong>Sensor noise</strong> is additive; read noise is well modelled as Gaussian
-<span class="math inline">\mathcal N(0,\sigma_n^2)</span>, shot noise as Poisson [6]. We use additive Gaussian.</li>
-</ul>
-<p>Below: the Gaussian PSF kernel and its effect on the rendered lane.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">sigma = 2.0
-r = int(round(3*sigma)); ax_ = np.arange(-r, r+1)
-k1 = np.exp(-0.5*(ax_/sigma)**2); k1 /= k1.sum()
-psf = np.outer(k1, k1)                              # 2-D separable Gaussian PSF
-
-fig, ax = plt.subplots(1, 3, figsize=(11, 3.4))
-ax[0].imshow(psf, cmap=&quot;magma&quot;); ax[0].set_title(&quot;Gaussian PSF ($\\sigma=2$ px)&quot;); ax[0].axis(&quot;off&quot;)
-ax[1].imshow(render(0.3, 0.02, 0.012, noise=0.0), cmap=&quot;gray&quot;, vmin=0, vmax=1)
-ax[1].set_title(&quot;sharp&quot;); ax[1].axis(&quot;off&quot;)
-ax[2].imshow(render(0.3, 0.02, 0.012, blur=sigma, noise=0.0), cmap=&quot;gray&quot;, vmin=0, vmax=1)
-ax[2].set_title(&quot;blurred = image $*$ PSF&quot;); ax[2].axis(&quot;off&quot;)
-plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/03-2.png" alt="Figure: Gaussian PSF ( =2 px); sharp; blurred = image * PSF" width="1141" height="368" loading="lazy"></figure>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python"># The four regimes used throughout the course
-panels = [(&quot;clear (in ODD)&quot;,      dict(kappa=0.012)),
-          (&quot;fog + blur&quot;,          dict(kappa=0.012, brightness=0.6, blur=2.6, noise=0.03)),
-          (&quot;partial occlusion&quot;,   dict(kappa=0.012, occ=0.45)),
-          (&quot;OOD curvature&quot;,       dict(kappa=0.05))]
-fig, ax = plt.subplots(1, 4, figsize=(12, 3.2))
-for a, (name, kw) in zip(ax, panels):
-    a.imshow(render(0.3, 0.02, **kw), cmap=&quot;gray&quot;, vmin=0, vmax=1)
-    a.set_title(name); a.axis(&quot;off&quot;)
-plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/03-3.png" alt="Figure 3 produced by the code above" width="1308" height="354" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="4-cheap-pixel-features-for-the-odd-monitor">4. Cheap pixel features for the ODD monitor</h2>
-<p>The operational-design-domain monitor (notebook 06) does not have the true
-conditions; it must estimate them from the image. Two very cheap statistics suffice
-as proxies:</p>
-<ul>
-<li><strong>Brightness</strong> = mean intensity, tracking the illumination gain.</li>
-<li><strong>Sharpness</strong> = mean squared image gradient (a Tenengrad-style focus measure),
-which falls as blur rises because convolution with the PSF attenuates high
-spatial frequencies [3].</li>
-</ul>
-<p>Both are monotone in their degradation, so a simple threshold on them detects
-&quot;outside the ODD&quot; from pixels alone.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def brightness_feat(img): return float(img.mean())
+<!-- =================================================================== -->
+<section id="features">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Cheap pixel features for the monitor</h2>
+  </div>
+  <div class="col prose">
+    <p>The operating-domain monitor of chapter 06 does not know the true conditions; it has to estimate them from the image. Two very cheap statistics serve as proxies:</p>
+    <ul>
+      <li><b>Brightness</b> = the mean intensity, which tracks the illumination gain.</li>
+      <li><b>Sharpness</b> = the mean squared image gradient, a Tenengrad-style focus measure. It falls as the blur rises, because convolution with the PSF attenuates high spatial frequencies <a href="#ref-3">[3]</a>.</li>
+    </ul>
+    <pre><code class="language-python">def brightness_feat(img): return float(img.mean())
 def sharpness_feat(img):
     gx = np.diff(img, axis=1); gy = np.diff(img, axis=0)
-    return float(np.mean(gx**2) + np.mean(gy**2))
+    return float(np.mean(gx**2) + np.mean(gy**2))</code></pre>
+    <p>Both are monotone in their degradation, so a simple threshold on each detects "outside the domain" from the pixels alone. The dotted lines are the domain's limits used in chapter 06: blur up to 1.6 px, illumination down to 0.45.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="feat">
+      <div class="params">
+        <label class="field"><span>Blur <span class="m">\sigma</span>: <b id="fBlV"></b></span>
+          <span class="row"><input type="range" id="fBl" min="0" max="3.5" step="0.1" value="1.6"></span>
+        </label>
+        <label class="field"><span>Illumination <span class="m">b</span>: <b id="fBV"></b></span>
+          <span class="row"><input type="range" id="fB" min="0.2" max="1" step="0.05" value="0.45"></span>
+        </label>
+      </div>
+      <div class="two">
+        <div><p class="chart-title">Sharpness falls with blur</p><canvas id="featSh" aria-label="Sharpness against blur, falling steeply, with the domain's blur limit"></canvas></div>
+        <div><p class="chart-title">Brightness tracks illumination</p><canvas id="featBr" aria-label="Mean intensity against the illumination gain, a straight line, with the domain's limit"></canvas></div>
+      </div>
+      <p class="caption" id="featCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-blurs = np.linspace(0, 3.5, 30)
-sh = [sharpness_feat(render(0.3, 0.02, 0.012, blur=b, noise=0.0)) for b in blurs]
-brs = np.linspace(0.2, 1.0, 30)
-br = [brightness_feat(render(0.3, 0.02, 0.012, brightness=b, noise=0.0)) for b in brs]
-
-fig, ax = plt.subplots(1, 2, figsize=(9, 3.2))
-ax[0].plot(blurs, sh, color=&quot;#8e44ad&quot;); ax[0].axvline(1.6, ls=&quot;:&quot;, color=&quot;r&quot;, label=&quot;ODD blur limit&quot;)
-ax[0].set(xlabel=&quot;blur $\\sigma$ [px]&quot;, ylabel=&quot;sharpness&quot;, title=&quot;Sharpness falls with blur&quot;); ax[0].legend(); ax[0].grid(alpha=.3)
-ax[1].plot(brs, br, color=&quot;#c68a12&quot;); ax[1].axvline(0.45, ls=&quot;:&quot;, color=&quot;r&quot;, label=&quot;ODD brightness limit&quot;)
-ax[1].set(xlabel=&quot;illumination gain $b$&quot;, ylabel=&quot;mean intensity&quot;, title=&quot;Brightness tracks illumination&quot;); ax[1].legend(); ax[1].grid(alpha=.3)
-plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/03-4.png" alt="Figure 4 produced by the code above" width="979" height="340" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="5-why-out-of-distribution-curvature-is-invisible-in-the-pixels">5. Why out-of-distribution curvature is invisible in the pixels</h2>
-<p>Blur, darkness and occlusion are <em>visible</em> degradations: they change the image
-statistics, so a pixel-level monitor can flag them. An <strong>out-of-distribution
-curvature is different</strong>. A sharper-than-trained curve still renders as a perfectly
-clean, well-exposed, in-focus lane - its brightness and sharpness are essentially
-those of an in-domain curve. Nothing local in the pixels says &quot;you have never seen
-this geometry.&quot;</p>
-<p>This is the crux of the whole course. The novelty lives in the <em>regime</em>, not in the
-image quality, so no amount of pixel-level confidence or image-feature monitoring
-will catch it. Detecting it requires comparing the perception output against a
-<em>model of the dynamics</em> - the innovation / NIS test of notebook 05.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">in_odd  = render(0.3, 0.02, 0.012, noise=0.0)   # trained curvature
+<!-- =================================================================== -->
+<section id="invisible">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Why an out-of-distribution bend is invisible in the pixels</h2>
+  </div>
+  <div class="col prose">
+    <p>Blur, darkness and occlusion are <em>visible</em> degradations: they change the image statistics, so a monitor of pixel features can flag them. An <strong>out-of-distribution curvature is different</strong>. A bend sharper than anything in training still renders as a perfectly clean, well-exposed, in-focus lane, with essentially the brightness and sharpness of an ordinary bend. Nothing local in the pixels says "you have never seen this geometry".</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="ood">
+      <label class="field"><span>Curvature of the second road <span class="m">\kappa</span>: <b id="oKV"></b></span>
+        <span class="row"><input type="range" id="oK" min="0" max="0.06" step="0.002" value="0.05"></span>
+      </label>
+      <div class="two">
+        <div><p class="chart-title">In the domain: κ = 0.012</p><canvas id="oodA" aria-label="The rendered lane on the course's ordinary bend"></canvas></div>
+        <div><p class="chart-title" id="oodBTitle">This bend</p><canvas id="oodB" aria-label="The rendered lane on the chosen bend"></canvas></div>
+      </div>
+      <div><p class="chart-title">Change of each feature from the ordinary bend</p><canvas id="oodC" aria-label="Percentage change of brightness and sharpness against curvature, both small, compared with the drop that blur at the domain's limit causes"></canvas></div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--path)"></span>sharpness</span>
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>brightness</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>blur at the domain's limit, for scale (dashed)</span>
+      </div>
+      <p class="caption" id="oodCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">in_odd  = render(0.3, 0.02, 0.012, noise=0.0)   # trained curvature
 ood     = render(0.3, 0.02, 0.050, noise=0.0)   # out-of-distribution curvature, still a clean image
-print(&quot;                 sharpness   brightness&quot;)
-print(&quot;in-ODD curve : %10.4f %11.3f&quot; % (sharpness_feat(in_odd),  brightness_feat(in_odd)))
-print(&quot;OOD curve    : %10.4f %11.3f&quot; % (sharpness_feat(ood),     brightness_feat(ood)))
-print()
-print(&quot;Pixel statistics are nearly identical - the images look equally valid.&quot;)
+print("                 sharpness   brightness")
+print("in-ODD curve : %10.4f %11.3f" % (sharpness_feat(in_odd),  brightness_feat(in_odd)))
+print("OOD curve    : %10.4f %11.3f" % (sharpness_feat(ood),     brightness_feat(ood)))</code></pre>
+    <pre class="output"><code class="nohl">                 sharpness   brightness
+in-ODD curve :     0.0246       0.182
+OOD curve    :     0.0290       0.186
 
-fig, ax = plt.subplots(1, 2, figsize=(6.2, 3.2))
-ax[0].imshow(in_odd, cmap=&quot;gray&quot;, vmin=0, vmax=1); ax[0].set_title(&quot;in-ODD curve&quot;); ax[0].axis(&quot;off&quot;)
-ax[1].imshow(ood,    cmap=&quot;gray&quot;, vmin=0, vmax=1); ax[1].set_title(&quot;OOD curve&quot;); ax[1].axis(&quot;off&quot;)
-plt.tight_layout(); plt.show()</code></pre>
-<figure class="output-figure"><img src="img/03-5.png" alt="Figure: in-ODD curve; OOD curve" width="665" height="356" loading="lazy"></figure>
-<pre class="output">                 sharpness   brightness
-in-ODD curve :     0.0250       0.182
-OOD curve    :     0.0292       0.187
+Pixel statistics are nearly identical - the images look equally valid.</code></pre>
+    <p>If anything, the sharp bend looks slightly <em>better</em>: its sharpness is 18% higher, because the slanted markings have more edge per pixel. Blur at the domain's limit, for comparison, divides the sharpness by 18.5.</p>
+    <p class="big-idea">The novelty lives in the regime, not in the image quality.</p>
+    <p>This is the crux of the whole course. No amount of pixel-level confidence or image-feature monitoring will catch an out-of-distribution bend. Detecting it requires comparing what the perception reports against a <em>model of the dynamics</em>, chapter 01's model: if the camera says the car drifts in a way the car physically cannot, something is wrong. That is the innovation test of chapter 05.</p>
+  </div>
+</section>
 
-Pixel statistics are nearly identical - the images look equally valid.</pre>
-</div>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Pinhole camera</b>: a point at depth <span class="m">Z_c</span> lands at <span class="m">f\frac{X_c}{Z_c} + c_x</span>; the division by depth is the whole of perspective.</div></li>
+      <li><div><b>Road plane</b>: <span class="m">u = c_x + f\frac{y}{s}</span>, <span class="m">v = c_y + f\frac{h}{s}</span>; lane lines meet at the vanishing point, and the map is a homography.</div></li>
+      <li><div><b>Lane model</b>: <span class="m">y_{\text{road}}(s) = e_y + e_\psi s - \frac{1}{2}\kappa s^2</span>, rendered into a 64 × 64 image.</div></li>
+      <li><div><b>Degradations</b>: blur is a convolution with a PSF, darkness a gain, occlusion missing data, noise additive.</div></li>
+      <li><div><b>Features</b>: mean intensity and gradient energy detect darkness and blur from the pixels.</div></li>
+      <li><div><b>The crux</b>: an out-of-distribution bend produces a clean image; only a dynamics model can catch it.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Pinhole model</td><td>Perspective projection through a single centre.</td></tr>
+        <tr><td>Focal length, principal point</td><td>The scale of the projection, and where the optical axis meets the image.</td></tr>
+        <tr><td>Vanishing point</td><td>Where parallel lines meet in the image; here, on the horizon row.</td></tr>
+        <tr><td>Homography</td><td>A 3 × 3 projective map between two planes, such as the road and the image.</td></tr>
+        <tr><td>Point-spread function</td><td>The image of a single point; blur is a convolution with it.</td></tr>
+        <tr><td>Separable kernel</td><td>A 2-D kernel that is the product of two 1-D ones.</td></tr>
+        <tr><td>Focus measure</td><td>A number that falls with blur, such as the gradient energy.</td></tr>
+        <tr><td>Operational design domain</td><td>The conditions the system is designed and validated for.</td></tr>
+        <tr><td>Out of distribution</td><td>Unlike anything in the training data, even if the input looks normal.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-<div class="md exercises">
-<h3 id="exercises">Exercises</h3>
-<ol>
-<li>Derive the vanishing-point row <span class="math inline">v=c_y</span> by taking <span class="math inline">s\to\infty</span> in the projection.
-Where does the lateral offset <span class="math inline">e_y</span> go in that limit, and why?</li>
-<li>The bird's-eye (&quot;inverse perspective&quot;) view undoes the homography. Using
-<span class="math inline">u=c_x+f y/s,\ v=c_y+f h/s</span>, solve for <span class="math inline">(s, y)</span> given <span class="math inline">(u, v)</span> and map the clear
-image back to a top-down road. What happens to noise near the horizon?</li>
-<li>Replace the Gaussian PSF with a uniform disc (defocus) kernel of the same radius.
-How does the sharpness-vs-blur curve change?</li>
-<li>Add a <em>gamma</em> nonlinearity <span class="math inline">I\mapsto I^{\gamma}</span> to the illumination model and
-check whether mean intensity is still a good brightness proxy.</li>
-</ol>
-</div>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>The vanishing point.</b> Derive the vanishing-point row <span class="m">v = c_y</span> by letting <span class="m">s</span> grow without bound in the projection. Where does the lateral offset <span class="m">e_y</span> go in that limit, and why?
+        <details class="sol"><summary>Hint</summary><p>Substitute the lane model <span class="m">y = y_{\text{road}}(s)</span> into <span class="m">u = c_x + f\frac{y}{s}</span> and look at each term divided by <span class="m">s</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The row is <span class="m">v = c_y + f\frac{h}{s}</span>, and <span class="m">\frac{h}{s}</span> goes to zero, so every road point at great distance lands on the row <span class="m">c_y</span>: the horizon. In the column, the lane model gives <span class="m">u = c_x + f\big(\frac{e_y}{s} + e_\psi - \frac{1}{2}\kappa s\big)</span>. The offset term <span class="m">\frac{e_y}{s}</span> vanishes: a fixed sideways distance subtends a smaller and smaller angle as it recedes, so far away every lane position looks the same, and the information about <span class="m">e_y</span> lives in the near, bottom rows of the image. The heading error does not vanish: on a straight road the vanishing point moves sideways to <span class="m">u = c_x + f e_\psi</span>, 1.1 pixels to the right for <span class="m">e_\psi = 0.02</span>: the car points to the left of the road, so the road's direction appears to its right. The curvature term grows instead: with a bend, the parabola has no vanishing point, and the lines curve off towards the side of the bend (the parabola is only valid for moderate <span class="m">s</span>).</p></details>
+      </div></li>
+      <li><div><b>The bird's-eye view.</b> The bird's-eye, or inverse-perspective, view undoes the homography. Using <span class="m">u = c_x + f\frac{y}{s}</span> and <span class="m">v = c_y + f\frac{h}{s}</span>, solve for <span class="m">(s, y)</span> given <span class="m">(u, v)</span>, and map the clear image back to a top-down road. What happens to noise near the horizon?
+        <details class="sol"><summary>Hint</summary><p>The second equation gives <span class="m">s</span> alone. Then differentiate <span class="m">s</span> with respect to <span class="m">v</span> to see how a one-pixel error grows.</p></details>
+        <details class="sol"><summary>Solution</summary><p>From the row, <span class="m">s = \frac{fh}{v - c_y}</span>; then <span class="m">y = \frac{(u - c_x)\,s}{f} = \frac{(u - c_x)\,h}{v - c_y}</span>. Every pixel below the horizon maps back to a patch of road, and pixels at or above it to nothing. Near the horizon the map explodes: <span class="m">\frac{\mathrm{d}s}{\mathrm{d}v} = -\frac{fh}{(v - c_y)^2} = -\frac{s^2}{fh}</span>. In the course's camera (<span class="m">fh = 68.75</span>), the bottom row is 1.7 m ahead and one pixel there is 4 cm of road; row 30 is 8.3 m ahead and one pixel is 1 m; row 23, just under the horizon, is 55 m ahead and one pixel is 45 m. So the far rows are stretched into long streaks in the bird's-eye view, and any noise, blur or one-pixel error in them is amplified quadratically with distance. In practice the top-down view is cut off well before the horizon.</p></details>
+      </div></li>
+      <li><div><b>Defocus.</b> Replace the Gaussian PSF with a uniform disc (defocus) kernel of the same radius. How does the curve of sharpness against blur change?
+        <details class="sol"><summary>Hint</summary><p>The Gaussian kernel is cut at radius <span class="m">r = 3\sigma</span>. A disc of radius <span class="m">r</span> weights all of it equally. Which of the two spreads light further?</p></details>
+        <details class="sol"><summary>Solution</summary><p>The disc blurs much more for the same <span class="m">\sigma</span>: most of a Gaussian's weight is within one <span class="m">\sigma</span> of the centre, while a disc of radius <span class="m">3\sigma</span> spreads light evenly out to its edge. On the notebook's scene, the sharpness at <span class="m">\sigma = 1</span> (radius 3) is 0.0013 with the disc against 0.0036 with the Gaussian; at the domain's limit, <span class="m">\sigma = 1.6</span> (radius 5), 0.0004 against 0.0013: between two and a half and four times lower over the whole range. The curve keeps the same shape, monotone and steep, but is shifted down. A blur threshold calibrated on Gaussian blur would therefore fire too early on a defocused lens. A disc's frequency response, unlike a Gaussian's, also has zeros: some fine detail is erased completely and some comes back with its sign flipped, which a single focus number cannot tell apart.</p></details>
+      </div></li>
+      <li><div><b>Gamma.</b> Add a gamma nonlinearity <span class="m">I \mapsto I^\gamma</span> to the illumination model, and check whether the mean intensity is still a good proxy for brightness.
+        <details class="sol"><summary>Hint</summary><p>Apply the gamma after the gain: <span class="m">(bI)^\gamma = b^\gamma I^\gamma</span>. Is the mean still increasing in <span class="m">b</span>? Is it still proportional?</p></details>
+        <details class="sol"><summary>Solution</summary><p>The mean is still increasing in <span class="m">b</span>, so it can still detect darkness, but it is no longer proportional to <span class="m">b</span>, and the threshold has to be recalibrated. On the notebook's scene, with the linear model, the gain limit <span class="m">b = 0.45</span> corresponds to a mean intensity of 0.082; with <span class="m">\gamma = 0.45</span> (a typical encoding) to 0.314; with <span class="m">\gamma = 2.2</span> to 0.0077. The compression also changes the sensitivity: with <span class="m">\gamma = 0.45</span>, going from full light to the limit lowers the mean by 30% instead of 55%, so the same sensor noise makes the threshold less reliable. Gamma also brightens the dark asphalt (0.15 becomes 0.43), which shrinks the contrast that the sharpness feature relies on.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
 
-<div class="md refs">
-<h2 id="references">References</h2>
-<ol>
-<li>R. Hartley, A. Zisserman. <em>Multiple View Geometry in Computer Vision,</em> 2nd ed. Cambridge University Press, 2004. (Pinhole model, planar homography, vanishing points.)</li>
-<li>R. Szeliski. <em>Computer Vision: Algorithms and Applications,</em> 2nd ed. Springer, 2022. (Image formation, blur, noise.)</li>
-<li>R. C. Gonzalez, R. E. Woods. <em>Digital Image Processing,</em> 4th ed. Pearson, 2018. (Point-spread functions, convolution, focus measures, noise models.)</li>
-<li>E. D. Dickmanns, B. D. Mysliwetz. <em>Recursive 3-D road and relative ego-state recognition.</em> IEEE Transactions on Pattern Analysis and Machine Intelligence, 14(2):199-213, 1992. <a href="https://doi.org/10.1109/34.126801">doi:10.1109/34.126801</a> (Clothoid lane model.)</li>
-<li>J. C. McCall, M. M. Trivedi. <em>Video-based lane estimation and tracking for driver assistance.</em> IEEE Transactions on Intelligent Transportation Systems, 7(1):20-37, 2006. <a href="https://doi.org/10.1109/TITS.2006.869595">doi:10.1109/TITS.2006.869595</a> (The <span class="math inline">y=a+bs+cs^2</span> lane model.)</li>
-<li>G. E. Healey, R. Kondepudy. <em>Radiometric CCD camera calibration and noise estimation.</em> IEEE Transactions on Pattern Analysis and Machine Intelligence, 16(3):267-276, 1994. <a href="https://doi.org/10.1109/34.276126">doi:10.1109/34.276126</a> (Sensor noise model.)</li>
-</ol>
-</div>
-</main>
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>R. Hartley and A. Zisserman. <em>Multiple View Geometry in Computer Vision</em>, 2nd ed. Cambridge University Press, 2004. The pinhole model, planar homographies, vanishing points.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>R. Szeliski. <em>Computer Vision: Algorithms and Applications</em>, 2nd ed. Springer, 2022. Image formation, blur, noise.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>R. C. Gonzalez and R. E. Woods. <em>Digital Image Processing</em>, 4th ed. Pearson, 2018. Point-spread functions, convolution, focus measures, noise models.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>E. D. Dickmanns and B. D. Mysliwetz. "Recursive 3-D road and relative ego-state recognition". <em>IEEE Transactions on Pattern Analysis and Machine Intelligence</em> 14(2), 199–213, 1992. <a href="https://doi.org/10.1109/34.126801">doi:10.1109/34.126801</a>. The clothoid lane model.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>J. C. McCall and M. M. Trivedi. "Video-based lane estimation and tracking for driver assistance". <em>IEEE Transactions on Intelligent Transportation Systems</em> 7(1), 20–37, 2006. <a href="https://doi.org/10.1109/TITS.2006.869595">doi:10.1109/TITS.2006.869595</a>. The quadratic lane model.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>G. E. Healey and R. Kondepudy. "Radiometric CCD camera calibration and noise estimation". <em>IEEE Transactions on Pattern Analysis and Machine Intelligence</em> 16(3), 267–276, 1994. <a href="https://doi.org/10.1109/34.276126">doi:10.1109/34.276126</a>. Sensor noise.</div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
   <a class="prev" rel="prev" href="02-lqr-control.html"><span class="lbl">Previous · 02</span><span class="t">LQR lane keeping</span></a>
@@ -288,11 +373,13 @@ check whether mean intensity is still a good brightness proxy.</li>
 </nav>
 
 <footer class="col">
-  <p>Chapter 03 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 03 of the TrustDrive course by Elie Rouphael. The demos run in your browser, with the notebook's renderer ported line by line; the code and its printed results come from the chapter's notebook, which you can download at the top. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch03.js"></script>
 </body>
 </html>

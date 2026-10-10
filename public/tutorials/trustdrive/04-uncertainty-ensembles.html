@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>04 · Uncertainty and deep ensembles — TrustDrive course</title>
-<meta name="description" content="Aleatoric versus epistemic uncertainty through the law of total variance, deep ensembles, calibration and proper scoring rules.">
+<title>04 · Uncertainty and ensembles · TrustDrive course</title>
+<meta name="description" content="Aleatoric and epistemic uncertainty through the law of total variance, deep ensembles as an approximation of the Bayesian predictive, calibration and proper scoring, and why uncertainty is not error, with an ensemble you can train in the browser.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="interactive/trustdrive.css">
 </head>
 <body>
 
@@ -17,99 +18,134 @@
 
 <header class="hero col">
   <span class="eyebrow">TrustDrive course · Chapter 04 of 09</span>
-  <h1>Uncertainty and deep ensembles</h1>
-  <div class="intro prose">
-<p><strong>Goal.</strong> Make a model say &quot;I do not know&quot;, and understand exactly what that means.
-We separate the two kinds of predictive uncertainty, connect ensembles to Bayesian
-inference, estimate uncertainty from scratch with numpy, then test whether it is
-<em>calibrated</em> - and see the failure mode (uncertainty is not error) that the rest of
-the course is built to catch.</p>
-
-  </div>
+  <h1>Uncertainty and ensembles</h1>
+  <p class="lede">A perception network that answers every question with the same confidence is dangerous. We want it to say "I don't know" when it is out of its depth. This chapter separates the two kinds of uncertainty, builds an ensemble from scratch that can express them, and checks whether its uncertainty can be trusted. Below, 25 small models learn the same curve from data between the green lines; where they have seen no data, they disagree, and that disagreement is the uncertainty. The chapter ends with the failure mode the whole course is built to catch: uncertainty is not error.</p>
+  <p class="byline">Elie Rouphael · Needs a little probability and linear regression · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/04_uncertainty_ensembles.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/04_uncertainty_ensembles.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="trustdrive-course.zip" download>Full course (.zip)</a>
   </div>
-  
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-two-uncertainties-via-the-law-of-total-variance">1. Two uncertainties, via the law of total variance</a></li>
-    <li><a href="#2-the-bayesian-predictive-and-why-ensembles-approximate-it">2. The Bayesian predictive, and why ensembles approximate it</a></li>
-    <li><a href="#3-the-estimator">3. The estimator</a></li>
-    <li><a href="#4-is-the-uncertainty-calibrated">4. Is the uncertainty <em>calibrated</em>?</a></li>
-    <li><a href="#5-the-failure-mode-uncertainty-is-not-error">5. The failure mode: uncertainty is not error</a></li>
-    <li><a href="#6-consequences-for-the-driving-system">6. Consequences for the driving system</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-two-uncertainties-via-the-law-of-total-variance">1. Two uncertainties, via the law of total variance</h2>
-<p>Let a model with parameters <span class="math inline">\theta</span> define <span class="math inline">p(y\mid x,\theta)</span>, and let <span class="math inline">p(\theta\mid D)</span>
-be the posterior after seeing data <span class="math inline">D</span>. The predictive variance decomposes exactly
-by the <strong>law of total variance</strong>:</p>
-<div class="math display"> \underbrace{\mathrm{Var}(y\mid x)}_{\text{predictive}}
- = \underbrace{\mathbb E_{\theta}\!\big[\mathrm{Var}(y\mid x,\theta)\big]}_{\text{aleatoric}}
- + \underbrace{\mathrm{Var}_{\theta}\!\big(\mathbb E[y\mid x,\theta]\big)}_{\text{epistemic}} . </div>
-<ul>
-<li><strong>Aleatoric</strong> uncertainty is the <em>expected data noise</em> - irreducible, present even
-with a perfect model; more data does not shrink it [1,2,3].</li>
-<li><strong>Epistemic</strong> uncertainty is the <em>spread of model predictions</em> under the posterior
-<ul>
-<li>it is the model's ignorance, and it <em>does</em> shrink with more data. It is largest
-where the training set was sparse, i.e. out of distribution.</li>
-</ul>
-</li>
-</ul>
-<p>For safety, epistemic uncertainty is the interesting one: it is what should rise
-when the vehicle enters an unfamiliar regime.</p>
+<!-- ============ LIVE DEMO: an ensemble, trained in the browser ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">An ensemble of small models, and its uncertainty</p>
+        <canvas id="ensC" aria-label="Training data, the true curve, the ensemble's members and mean, and the epistemic and total two-sigma bands" aria-describedby="ensStatus"></canvas>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--c5)"></span>ensemble mean, and members</span>
+        <span class="key"><span class="sw" style="background:var(--c5);opacity:0.35"></span>epistemic ±2σ</span>
+        <span class="key"><span class="sw" style="background:var(--warm);opacity:0.3"></span>total ±2σ</span>
+        <span class="key"><span class="sw" style="background:var(--ink)"></span>truth (dashed)</span>
+      </div>
+      <p class="status" id="ensStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Members <span class="m">M</span>: <b id="eMV"></b></span>
+        <span class="row"><input type="range" id="eM" min="1" max="50" step="1" value="25"></span>
+      </label>
+      <label class="field"><span>Training data from <span class="m">-a</span> to <span class="m">a</span>: <b id="eAV"></b></span>
+        <span class="row"><input type="range" id="eA" min="1" max="4" step="0.25" value="2"></span>
+      </label>
+      <label class="field"><span>Label noise: <b id="eNV"></b></span>
+        <span class="row"><input type="range" id="eN" min="0.02" max="0.3" step="0.02" value="0.1"></span>
+      </label>
+      <label class="check"><input type="checkbox" id="eShow" checked> show the members</label>
+      <div class="btn-row">
+        <button class="btn" id="eNew" type="button">new data and members</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>aleatoric std (estimated)</span><span class="v" id="rAl">–</span>
+        <span>epistemic std, in the data</span><span class="v" id="rEin">–</span>
+        <span>epistemic std, far from it</span><span class="v" id="rEout">–</span>
+        <span>95% interval coverage, in the data</span><span class="v" id="rCov">–</span>
+      </div>
+      <p class="hint">Each member is a ridge regression on 200 random cosine features, fitted to its own bootstrap resample of 300 noisy points: the notebook's recipe, trained here in your browser.</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-the-bayesian-predictive-and-why-ensembles-approximate-it">2. The Bayesian predictive, and why ensembles approximate it</h2>
-<p>The quantity we actually want is the <strong>posterior predictive</strong>, marginalising over
-all plausible parameters:</p>
-<div class="math display"> p(y\mid x, D) = \int p(y\mid x,\theta)\,p(\theta\mid D)\,\mathrm d\theta . </div>
-<p>For a neural network <span class="math inline">p(\theta\mid D)</span> is intractable, so we approximate it - by a
-Laplace approximation [4], MC dropout [5], variational inference [6], or a
-<strong>deep ensemble</strong> [7]. A deep ensemble trains <span class="math inline">M</span> models from different random
-initialisations (and/or data resamples) and treats the resulting parameters
-<span class="math inline">\{\theta_i\}</span> as samples of the posterior:</p>
-<div class="math display"> p(y\mid x,D) \approx \frac1M\sum_{i=1}^M p(y\mid x,\theta_i). </div>
-<p>Empirically ensembles are among the strongest uncertainty methods: independent SGD
-runs land in <em>different</em> modes of the loss landscape, giving genuine
-<strong>function-space diversity</strong> rather than small wiggles around one mode [7,8].</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#two"><span class="n">1</span><span class="t">Two uncertainties</span><span class="d">Aleatoric and epistemic, by the law of total variance</span></a>
+    <a href="#bayes"><span class="n">2</span><span class="t">Why ensembles work</span><span class="d">Approximating the Bayesian predictive</span></a>
+    <a href="#estimator"><span class="n">3</span><span class="t">The estimator</span><span class="d">Mean, spread and total variance</span></a>
+    <a href="#calibration"><span class="n">4</span><span class="t">Is it calibrated?</span><span class="d">Reliability curves and proper scores</span></a>
+    <a href="#failure"><span class="n">5</span><span class="t">Uncertainty is not error</span><span class="d">Members that agree and are all wrong</span></a>
+    <a href="#consequences"><span class="n">6</span><span class="t">Consequences for the car</span><span class="d">Why an external check is needed</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="md">
-<h2 id="3-the-estimator">3. The estimator</h2>
-<p>With <span class="math inline">M</span> member predictions <span class="math inline">\hat y_i(x)</span> (each optionally also predicting a noise
-variance <span class="math inline">\hat\sigma_i^2(x)</span> for the aleatoric part), the ensemble reports</p>
-<div class="math display"> \bar y(x)=\frac1M\sum_i \hat y_i(x),\qquad
-   \Sigma^{epi}(x)=\frac{1}{M-1}\sum_i\big(\hat y_i(x)-\bar y(x)\big)\big(\hat y_i(x)-\bar y(x)\big)^\top, </div>
-<p>and the total predictive variance follows the decomposition of section 1,</p>
-<div class="math display"> \sigma^2_{tot}(x)=\underbrace{\tfrac1M\textstyle\sum_i \hat\sigma_i^2(x)}_{\text{aleatoric}}
-   +\underbrace{\mathrm{Var}_i\big(\hat y_i(x)\big)}_{\text{epistemic}} . </div>
-<p>In the driving system, <span class="math inline">\Sigma^{epi}</span> is exactly the perception covariance
-<span class="math inline">\Sigma^{AI}</span> whose trace feeds the integrity score (notebook 06). Let us build one
-from scratch. We use random-feature ridge regressors as cheap &quot;networks&quot; [12]; the
-diversity comes from different random features per member plus a bootstrap resample.</p>
-</div>
+<!-- =================================================================== -->
+<section id="two">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Two uncertainties, via the law of total variance</h2>
+  </div>
+  <div class="col prose">
+    <p>Let a model with parameters <span class="m">\theta</span> define <span class="m">p(y \mid x, \theta)</span>, and let <span class="m">p(\theta \mid D)</span> be the posterior after seeing the data <span class="m">D</span>. The predictive variance splits exactly in two, by the <strong>law of total variance</strong>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \underbrace{\mathrm{Var}(y \mid x)}_{\text{predictive}} &amp;= \underbrace{\mathbb{E}_\theta\big[\mathrm{Var}(y \mid x, \theta)\big]}_{\text{aleatoric}} \\ &amp;\quad + \underbrace{\mathrm{Var}_\theta\big(\mathbb{E}[y \mid x, \theta]\big)}_{\text{epistemic}}. \end{aligned}">\underbrace{\mathrm{Var}(y \mid x)}_{\text{predictive}} = \underbrace{\mathbb{E}_\theta\big[\mathrm{Var}(y \mid x, \theta)\big]}_{\text{aleatoric}} + \underbrace{\mathrm{Var}_\theta\big(\mathbb{E}[y \mid x, \theta]\big)}_{\text{epistemic}}.</div>
+    <ul>
+      <li><b>Aleatoric</b> uncertainty is the <em>expected noise in the data</em>. It is irreducible: it is there even with a perfect model, and more data does not shrink it <a href="#ref-1">[1]</a>, <a href="#ref-2">[2]</a>, <a href="#ref-3">[3]</a>.</li>
+      <li><b>Epistemic</b> uncertainty is the <em>spread of the model's predictions</em> under the posterior: the model's ignorance. It <em>does</em> shrink with more data, and it is largest where the training set was sparse, that is, out of distribution.</li>
+    </ul>
+    <p>For safety, the epistemic part is the interesting one: it is what should rise when the car enters an unfamiliar regime. In the demo at the top, the aleatoric part is the thin light band that never goes away; the epistemic part is the purple flare outside the training data.</p>
+    <div class="define" id="definition">
+      <p class="define-title">Aleatoric and epistemic</p>
+      <p><b>In plain words:</b> aleatoric uncertainty is the dice: the noise in the world itself, which no amount of learning removes. Epistemic uncertainty is ignorance: what the model does not know because it has not seen enough, which more data cures.</p>
+      <p><b>More precisely:</b> the two terms of the law of total variance, the expected conditional variance and the variance of the conditional mean, with the expectation and variance taken over the posterior on the parameters.</p>
+      <dl>
+        <dt>Predictive distribution</dt><dd>The distribution of a new label given its input and all the data seen.</dd>
+        <dt>Posterior <span class="m">p(\theta \mid D)</span></dt><dd>Which parameter values remain plausible after the data.</dd>
+        <dt>Ensemble</dt><dd>Several models trained differently, whose disagreement estimates the epistemic part.</dd>
+        <dt>Out of distribution</dt><dd>Inputs unlike the training data, where epistemic uncertainty should rise.</dd>
+      </dl>
+    </div>
+    <details class="math">
+      <summary>For the curious: the law of total variance in three lines <span>(optional)</span></summary>
+      <div class="inner">
+        <p>Write <span class="m">m(\theta) = \mathbb{E}[y \mid x, \theta]</span>. By the tower rule, <span class="m">\mathbb{E}[y \mid x] = \mathbb{E}_\theta[m(\theta)]</span> and <span class="m">\mathbb{E}[y^2 \mid x] = \mathbb{E}_\theta\big[\mathrm{Var}(y \mid x, \theta) + m(\theta)^2\big]</span>. Subtracting the square of the first from the second,</p>
+        <div class="math-block" data-narrow="\begin{aligned} \mathrm{Var}(y \mid x) &amp;= \mathbb{E}_\theta\big[\mathrm{Var}(y \mid x, \theta)\big] \\ &amp;\quad + \mathbb{E}_\theta\big[m(\theta)^2\big] \\ &amp;\quad - \mathbb{E}_\theta\big[m(\theta)\big]^2, \end{aligned}">\mathrm{Var}(y \mid x) = \mathbb{E}_\theta\big[\mathrm{Var}(y \mid x, \theta)\big] + \Big(\mathbb{E}_\theta\big[m(\theta)^2\big] - \mathbb{E}_\theta\big[m(\theta)\big]^2\Big),</div>
+        <p>and the bracket is <span class="m">\mathrm{Var}_\theta(m(\theta))</span>. No approximation is involved: the split is exact for any model and any posterior.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np, matplotlib.pyplot as plt
-from math import erf, sqrt
-rng = np.random.default_rng(0)
+<!-- =================================================================== -->
+<section id="bayes">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The Bayesian predictive, and why ensembles approximate it</h2>
+  </div>
+  <div class="col prose">
+    <p>What we actually want is the <strong>posterior predictive</strong>, which averages over all plausible parameters:</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;p(y \mid x, D) \\ &amp;\quad = \int p(y \mid x, \theta)\,p(\theta \mid D)\,\mathrm{d}\theta. \end{aligned}">p(y \mid x, D) = \int p(y \mid x, \theta)\,p(\theta \mid D)\,\mathrm{d}\theta.</div>
+    <p>For a neural network, <span class="m">p(\theta \mid D)</span> is intractable, so we approximate it: by a Laplace approximation <a href="#ref-4">[4]</a>, Monte Carlo dropout <a href="#ref-5">[5]</a>, variational inference <a href="#ref-6">[6]</a>, or a <strong>deep ensemble</strong> <a href="#ref-7">[7]</a>. A deep ensemble trains <span class="m">M</span> models from different random initialisations and/or resamples of the data, and treats the resulting parameters <span class="m">\{\theta_i\}</span> as samples from the posterior:</p>
+    <div class="math-block">p(y \mid x, D) \approx \frac{1}{M}\sum_{i=1}^{M} p(y \mid x, \theta_i).</div>
+    <p>Empirically, ensembles are among the strongest uncertainty methods. Independent training runs land in <em>different</em> modes of the loss landscape, which gives genuine diversity between the functions they compute, rather than small wiggles around one mode <a href="#ref-7">[7]</a>, <a href="#ref-8">[8]</a>.</p>
+  </div>
+</section>
 
-f = lambda x: np.sin(1.5*x)                       # ground-truth function
-noise = 0.1                                       # aleatoric label noise (std)
-Xtr = rng.uniform(-2, 2, 300); Ytr = f(Xtr) + rng.normal(0, noise, 300)
-Xval = rng.uniform(-2, 2, 300); Yval = f(Xval) + rng.normal(0, noise, 300)
-
-def features(D, seed, scale=1.5):
+<!-- =================================================================== -->
+<section id="estimator">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The estimator</h2>
+  </div>
+  <div class="col prose">
+    <p>With <span class="m">M</span> member predictions <span class="m">\hat y_i(x)</span>, each optionally also predicting a noise variance <span class="m">\hat\sigma_i^2(x)</span> for the aleatoric part, the ensemble reports</p>
+    <div class="math-block" data-narrow="\begin{gathered} \bar y(x) = \frac{1}{M}\sum_i \hat y_i(x), \\[6pt] \Sigma^{\text{epi}}(x) = \frac{1}{M}\sum_i d_i\,d_i^\top, \\[4pt] d_i = \hat y_i(x) - \bar y(x), \end{gathered}">\bar y(x) = \frac{1}{M}\sum_i \hat y_i(x), \qquad \Sigma^{\text{epi}}(x) = \frac{1}{M}\sum_i \big(\hat y_i(x) - \bar y(x)\big)\big(\hat y_i(x) - \bar y(x)\big)^\top,</div>
+    <p>and the total predictive variance follows the decomposition of Part 1:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \sigma^2_{\text{tot}}(x) &amp;= \underbrace{\frac{1}{M}\sum_i \hat\sigma_i^2(x)}_{\text{aleatoric}} \\ &amp;\quad + \underbrace{\mathrm{Var}_i\big(\hat y_i(x)\big)}_{\text{epistemic}}. \end{aligned}">\sigma^2_{\text{tot}}(x) = \underbrace{\frac{1}{M}\sum_i \hat\sigma_i^2(x)}_{\text{aleatoric}} + \underbrace{\mathrm{Var}_i\big(\hat y_i(x)\big)}_{\text{epistemic}}.</div>
+    <p>In the driving system, <span class="m">\Sigma^{\text{epi}}</span> is exactly the perception covariance <span class="m">\Sigma^{\text{AI}}</span> whose trace feeds the integrity score of chapter 06. The notebook builds one from scratch, with random-feature ridge regressions as cheap "networks" <a href="#ref-12">[12]</a>: the diversity comes from different random features for each member, plus a bootstrap resample of the data. It estimates the aleatoric part from the residuals on held-out data.</p>
+    <pre><code class="language-python">def features(D, seed, scale=1.5):
     r = np.random.default_rng(seed)
     Wf, bf = r.normal(0, scale, (D, 1)), r.uniform(0, 2*np.pi, D)
     return lambda x: np.cos(x.reshape(-1, 1) @ Wf.T + bf)
@@ -123,163 +159,215 @@ members = []
 for s in range(M):
     phi = features(200, seed=1000 + s)            # init diversity: different random features
     idx = rng.integers(0, len(Xtr), len(Xtr))     # data diversity: bootstrap resample
-    members.append(fit_member(phi, Xtr[idx], Ytr[idx]))
-
-preds    = lambda x: np.stack([m(x) for m in members])   # (M, N)
-ens_mean = lambda x: preds(x).mean(0)
-ens_epi  = lambda x: preds(x).var(0)
-sig_a2   = float(np.mean((Yval - ens_mean(Xval))**2))     # aleatoric estimate (held-out residual)
-
-xs = np.linspace(-5, 5, 400)
-mu, epi = ens_mean(xs), ens_epi(xs); tot = epi + sig_a2
-plt.figure(figsize=(8, 3.6))
-plt.fill_between(xs, mu-2*np.sqrt(tot), mu+2*np.sqrt(tot), color=&quot;#c68a12&quot;, alpha=.18, label=&quot;total $\\pm2\\sigma$&quot;)
-plt.fill_between(xs, mu-2*np.sqrt(epi), mu+2*np.sqrt(epi), color=&quot;#8e44ad&quot;, alpha=.30, label=&quot;epistemic $\\pm2\\sigma$&quot;)
-plt.plot(xs, f(xs), &#x27;k--&#x27;, lw=1, label=&quot;truth&quot;); plt.plot(xs, mu, color=&quot;#8e44ad&quot;, label=&quot;ensemble mean&quot;)
-plt.scatter(Xtr, Ytr, s=6, color=&quot;#1f77b4&quot;, alpha=.5)
-plt.axvspan(-2, 2, color=&quot;green&quot;, alpha=.05); plt.ylim(-2.5, 2.5)
-plt.legend(ncol=2, loc=&quot;upper center&quot;, fontsize=8); plt.title(&quot;Aleatoric floor + epistemic flare&quot;)
-plt.grid(alpha=.3); plt.tight_layout(); plt.show()
-print(&quot;aleatoric std  sqrt(sig_a2)     = %.3f   (true label noise %.2f)&quot; % (np.sqrt(sig_a2), noise))
-print(&quot;epistemic std  in [-2,2]        = %.3f&quot; % np.sqrt(epi[(xs&gt;-2)&amp;(xs&lt;2)].mean()))
-print(&quot;epistemic std  in |x|&gt;3 (OOD)   = %.3f&quot; % np.sqrt(epi[np.abs(xs)&gt;3].mean()))</code></pre>
-<figure class="output-figure"><img src="img/04-1.png" alt="Figure: Aleatoric floor + epistemic flare" width="868" height="384" loading="lazy"></figure>
-<pre class="output">aleatoric std  sqrt(sig_a2)     = 0.100   (true label noise 0.10)
+    members.append(fit_member(phi, Xtr[idx], Ytr[idx]))</code></pre>
+    <pre class="output"><code class="nohl">aleatoric std  sqrt(sig_a2)     = 0.100   (true label noise 0.10)
 epistemic std  in [-2,2]        = 0.017
-epistemic std  in |x|&gt;3 (OOD)   = 1.314</pre>
-</div>
+epistemic std  in |x|>3 (OOD)   = 1.314</code></pre>
+    <p>Inside the data, the members agree to within 0.017, much less than the label noise. Far outside it, they disagree by more than the whole range of the curve. Pick a point and see the two parts:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="dec">
+      <label class="field"><span>Input <span class="m">x</span>: <b id="dXV"></b></span>
+        <span class="row"><input type="range" id="dX" min="-5" max="5" step="0.05" value="2.5"></span>
+      </label>
+      <div class="two">
+        <div><p class="chart-title">The members' predictions at this x</p><canvas id="decPts" aria-label="Each member's prediction at the chosen input, with the ensemble mean, the truth and the two bands"></canvas></div>
+        <div><p class="chart-title">The variance, split in two</p><canvas id="decBar" aria-label="The aleatoric and epistemic variances at the chosen input, as a stacked bar"></canvas></div>
+      </div>
+      <p class="caption" id="decCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="4-is-the-uncertainty-calibrated">4. Is the uncertainty <em>calibrated</em>?</h2>
-<p>An uncertainty is only useful if it is calibrated: a claimed 95% interval should
-contain the truth about 95% of the time [9,10]. For regression we can check this
-with the standardised residual <span class="math inline">z=(y-\bar y)/\sigma_{tot}</span>: if the predictive
-Gaussian is calibrated, <span class="math inline">z\sim\mathcal N(0,1)</span>, so the empirical fraction with
-<span class="math inline">|z|\le t</span> should match the nominal <span class="math inline">2\Phi(t)-1</span> across thresholds <span class="math inline">t</span>. Plotting one
-against the other gives a <strong>reliability curve</strong> (the diagonal is perfect).</p>
-</div>
+<!-- =================================================================== -->
+<section id="calibration">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Is the uncertainty calibrated?</h2>
+  </div>
+  <div class="col prose">
+    <p>An uncertainty is only useful if it is <strong>calibrated</strong>: a claimed 95% interval should contain the truth about 95% of the time <a href="#ref-9">[9]</a>, <a href="#ref-10">[10]</a>. For regression, check it with the standardised residual <span class="m">z = \frac{y - \bar y}{\sigma_{\text{tot}}}</span>. If the predictive Gaussian is calibrated, <span class="m">z \sim \mathcal{N}(0, 1)</span>, so the fraction of points with <span class="m">|z| \le t</span> should match the nominal <span class="m">2\Phi(t) - 1</span> for every threshold <span class="m">t</span>. Plotting one against the other gives a <strong>reliability curve</strong>; the diagonal is perfect. This one uses the ensemble trained at the top, with fresh points inside the data and far outside it:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="cal">
+      <div class="two">
+        <div><p class="chart-title">Reliability curve</p><canvas id="calC" aria-label="Empirical against nominal coverage, in the data and far from it, with the diagonal of perfect calibration"></canvas></div>
+        <div><p class="chart-title">Negative log-likelihood (lower is better)</p><canvas id="nllC" aria-label="Gaussian negative log-likelihood of a single model and of the ensemble"></canvas></div>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>in the data</span>
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>far from it</span>
+        <span class="key"><span class="sw" style="background:var(--ink)"></span>perfect (dashed)</span>
+      </div>
+      <p class="caption" id="calCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <pre class="output"><code class="nohl">95% interval coverage  in-distribution : 0.95  (well calibrated)
+95% interval coverage  out-of-dist     : 1.00  (intervals balloon -> over-conservative)
 
-<div class="cell">
-<pre class="source"><code class="language-python">Phi = lambda z: 0.5*(1 + erf(z/sqrt(2)))          # standard normal CDF (no scipy needed)
+Gaussian NLL (lower is better)   single model: 11.571   ensemble: -0.373</code></pre>
+    <p>In the data, the ensemble is well calibrated. Far from it, its intervals are too wide (coverage 1.00 instead of 0.95): it is <em>conservative</em>, which is the safe direction. The single model, which reports only the aleatoric noise, is badly over-confident wherever it is wrong, and the negative log-likelihood punishes that heavily.</p>
+    <details class="math">
+      <summary>For the curious: why the negative log-likelihood is a fair judge <span>(optional)</span></summary>
+      <div class="inner">
+        <p>For a Gaussian prediction with mean <span class="m">\mu</span> and variance <span class="m">\sigma^2</span>, the negative log-likelihood of an outcome <span class="m">y</span> is</p>
+        <div class="math-block">\text{NLL} = \frac{1}{2}\log(2\pi\sigma^2) + \frac{(y - \mu)^2}{2\sigma^2}.</div>
+        <p>The first term punishes vagueness, the second over-confidence. If the outcome really has variance <span class="m">s^2</span>, the expected score is minimised exactly at <span class="m">\sigma^2 = s^2</span>: honesty is optimal. Scores with this property are called <strong>strictly proper</strong> <a href="#ref-11">[11]</a>. A model cannot improve its NLL by claiming more or less certainty than it has, which is why it is used to compare uncertainty estimates.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-def zscores(lo, hi, n=4000):
-    X = rng.uniform(lo, hi, n); Y = f(X) + rng.normal(0, noise, n)
-    var = ens_epi(X) + sig_a2
-    return np.abs(Y - ens_mean(X)) / np.sqrt(var)
-
-z_in, z_ood = zscores(-2, 2), zscores(3, 5)
-ts = np.linspace(0.05, 3.0, 40); nominal = np.array([2*Phi(t)-1 for t in ts])
-emp_in  = np.array([np.mean(z_in  &lt;= t) for t in ts])
-emp_ood = np.array([np.mean(z_ood &lt;= t) for t in ts])
-
-plt.figure(figsize=(4.6, 4.4))
-plt.plot([0,1],[0,1], &#x27;k--&#x27;, lw=1, label=&quot;perfect calibration&quot;)
-plt.plot(nominal, emp_in, &#x27;-o&#x27;, ms=3, color=&quot;#2e7d32&quot;, label=&quot;in-distribution&quot;)
-plt.plot(nominal, emp_ood, &#x27;-o&#x27;, ms=3, color=&quot;#d1495b&quot;, label=&quot;out-of-distribution&quot;)
-plt.xlabel(&quot;nominal coverage&quot;); plt.ylabel(&quot;empirical coverage&quot;)
-plt.title(&quot;Reliability curve&quot;); plt.legend(loc=&quot;lower right&quot;); plt.grid(alpha=.3)
-plt.tight_layout(); plt.show()
-print(&quot;95%% interval coverage  in-distribution : %.2f  (well calibrated)&quot; % np.mean(z_in  &lt;= 1.96))
-print(&quot;95%% interval coverage  out-of-dist     : %.2f  (intervals balloon -&gt; over-conservative)&quot; % np.mean(z_ood &lt;= 1.96))
-
-# proper scoring rule: Gaussian negative log-likelihood, single model vs ensemble
-Xte = rng.uniform(-3, 3, 4000); Yte = f(Xte) + rng.normal(0, noise, 4000)
-def gauss_nll(mu, var, y): return float(np.mean(0.5*np.log(2*np.pi*var) + 0.5*(y-mu)**2/var))
-nll_single = gauss_nll(members[0](Xte), np.full(len(Xte), sig_a2), Yte)   # one model, no epistemic
-nll_ens    = gauss_nll(ens_mean(Xte),   ens_epi(Xte) + sig_a2,     Yte)   # ensemble, with epistemic
-print(&quot;\nGaussian NLL (lower is better)   single model: %.3f   ensemble: %.3f&quot; % (nll_single, nll_ens))</code></pre>
-<figure class="output-figure"><img src="img/04-2.png" alt="Figure: Reliability curve" width="495" height="472" loading="lazy"></figure>
-<pre class="output">95% interval coverage  in-distribution : 0.95  (well calibrated)
-95% interval coverage  out-of-dist     : 1.00  (intervals balloon -&gt; over-conservative)
-
-Gaussian NLL (lower is better)   single model: 11.571   ensemble: -0.373</pre>
-</div>
-
-<div class="md">
-<h2 id="5-the-failure-mode-uncertainty-is-not-error">5. The failure mode: uncertainty is not error</h2>
-<p>In the demo above the well-specified ensemble stayed calibrated in-distribution and
-turned <em>conservative</em> out-of-distribution (coverage 1.00 - the band ballooned): it
-correctly widened where it was ignorant. That is the good case, and it is why the
-epistemic trace is a useful signal. But note that off-diagonal calibration can go
-<em>either</em> way, and only one direction is dangerous.</p>
-<p>The danger is this: an ensemble only disagrees where its members <em>can</em> disagree. If
-the members share a limiting assumption - too small a hypothesis class, the same
-blind spot - they <strong>agree and are all wrong</strong>: low variance, high error. Uncertainty
-then silently underestimates error, and no reliability check on in-distribution data
-would reveal it.</p>
-<p>Below we cripple the ensemble (very few, shared features; only the bootstrap
-differs). The members agree closely, so the reported band is tight - yet the fit is
-biased, and in a fraction of the domain the true error lies <em>outside</em> the 2-sigma
-band. This is the confidently-wrong regime.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">phi_shared = features(6, seed=7)                  # too few features, shared by all members
-weak = [fit_member(phi_shared, Xtr[rng.integers(0, len(Xtr), len(Xtr))], Ytr) for _ in range(25)]
+<!-- =================================================================== -->
+<section id="failure">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The failure mode: uncertainty is not error</h2>
+  </div>
+  <div class="col prose">
+    <p>The ensemble above widened where it was ignorant. That is the good case, and it is why the epistemic trace is a useful signal. But miscalibration can go <em>either</em> way, and only one direction is dangerous.</p>
+    <p>An ensemble only disagrees where its members <em>can</em> disagree. If they share a limiting assumption, too small a family of functions or the same blind spot, they <strong>agree and are all wrong</strong>: low variance, high error. The uncertainty then silently underestimates the error, and no reliability check on familiar data would reveal it.</p>
+    <p>Below, each member gets only a handful of random features. When all members <em>share</em> the same features, only their bootstrap resamples differ: they agree closely, the reported band is tight, and the fit is biased. Give each member its own features, with the same small number, and the disagreement returns.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="weak">
+      <div class="params">
+        <label class="field"><span>Random features per member: <b id="wDV"></b></span>
+          <span class="row"><input type="range" id="wD" min="1" max="12" step="1" value="3"></span>
+        </label>
+        <div class="seg" role="group" aria-label="How the members get their features">
+          <button class="btn" type="button" data-share="1" aria-pressed="true">all members share them</button>
+          <button class="btn" type="button" data-share="0" aria-pressed="false">each member draws its own</button>
+        </div>
+      </div>
+      <canvas id="weakC" aria-label="Inside the training data: the actual error of the ensemble mean against its reported two-sigma band, with the gap shaded"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--geom)"></span>actual error <span class="m">|\bar y - f|</span></span>
+        <span class="key"><span class="sw" style="background:var(--c5)"></span>reported <span class="m">2\sigma</span></span>
+      </div>
+      <p class="caption" id="weakCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn" type="button" id="wAgain">draw new features and resamples</button></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>With 3 shared features, the actual error exceeds the reported 2σ band over roughly 90% of the training range: the confidently-wrong regime. The notebook runs the same experiment:</p>
+    <pre><code class="language-python">phi_shared = features(3, seed=7)                  # too few features, shared by all members
+weak = []
+for _ in range(25):
+    idx = rng.integers(0, len(Xtr), len(Xtr))     # bootstrap: inputs and labels resampled together
+    weak.append(fit_member(phi_shared, Xtr[idx], Ytr[idx]))
 pw = np.stack([m(xs) for m in weak]); muw, stdw = pw.mean(0), pw.std(0)
 errw = np.abs(muw - f(xs))
 mask = (xs &gt; -2) &amp; (xs &lt; 2)
-over = 100*np.mean(errw[mask] &gt; 2*stdw[mask])
+over = 100*np.mean(errw[mask] &gt; 2*stdw[mask])</code></pre>
+    <pre class="output"><code class="nohl">in-domain fraction where actual error exceeds the 2-sigma band: 89%</code></pre>
+    <p>With 3 features drawn independently for each member, the members disagree, and the band covers the error almost everywhere. The size of the model family was the same; what changed was whether the members could fail differently.</p>
+  </div>
+</section>
 
-plt.figure(figsize=(8, 3.4))
-plt.plot(xs[mask], errw[mask], color=&quot;#d1495b&quot;, label=&quot;actual error $|\\bar y - f|$&quot;)
-plt.plot(xs[mask], 2*stdw[mask], color=&quot;#8e44ad&quot;, label=&quot;reported $2\\sigma$ band&quot;)
-plt.fill_between(xs[mask], 2*stdw[mask], errw[mask], where=errw[mask] &gt; 2*stdw[mask],
-                 color=&quot;#d1495b&quot;, alpha=.15)
-plt.xlabel(&quot;x&quot;); plt.ylabel(&quot;magnitude&quot;); plt.title(&quot;Confidently wrong: error exceeds the reported uncertainty&quot;)
-plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
-print(&quot;in-domain fraction where actual error exceeds the 2-sigma band: %.0f%%&quot; % over)</code></pre>
-<figure class="output-figure"><img src="img/04-3.png" alt="Figure: Confidently wrong: error exceeds the reported uncertainty" width="869" height="362" loading="lazy"></figure>
-<pre class="output">in-domain fraction where actual error exceeds the 2-sigma band: 93%</pre>
-</div>
+<!-- =================================================================== -->
+<section id="consequences">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Consequences for the driving system</h2>
+  </div>
+  <div class="col prose">
+    <p>The trace of <span class="m">\Sigma^{\text{epi}}</span> is a genuinely useful signal: it rises under blur, darkness and sparse data, and it feeds the integrity score. But Part 5 is the warning. On a truly novel regime, such as the out-of-distribution bend of chapter 03, which even <em>looks</em> like a valid image, an over-confident perception network can report a small covariance while being biased. No amount of introspective uncertainty fixes this, because the model is judging itself.</p>
+    <p class="big-idea">A model cannot be the only judge of its own errors.</p>
+    <p>The remedy is an <strong>external, model-based</strong> cross-check: compare the perception's output with a physics prediction and test whether the two are consistent. That is the Kalman innovation test of chapter 05, and it is precisely what catches the case where uncertainty alone stays quiet.</p>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="6-consequences-for-the-driving-system">6. Consequences for the driving system</h2>
-<p>The trace of <span class="math inline">\Sigma^{epi}</span> is a genuinely useful signal - it rises under blur,
-darkness and sparse data, and it feeds the integrity score. But section 5 is the
-warning: on a truly novel regime (the out-of-distribution <em>curve</em> of notebook 03,
-which even looks like a valid image) an over-confident perception network can report
-a small covariance while being biased. No amount of introspective uncertainty fixes
-this, because the model is judging itself.</p>
-<p>The remedy is an <strong>external, model-based</strong> cross-check: compare the perception
-output against a physics prediction and test their consistency. That is the Kalman
-innovation / NIS test of notebook 05, and it is precisely what catches the case
-where uncertainty alone stays quiet.</p>
-</div>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Two uncertainties</b>: predictive variance = expected noise (aleatoric) + spread of the model's predictions (epistemic), exactly.</div></li>
+      <li><div><b>Ensembles</b> approximate the posterior predictive with <span class="m">M</span> independently trained models.</div></li>
+      <li><div><b>Estimator</b>: the mean of the members, the spread around it (their covariance, divided by <span class="m">M</span>), and the held-out residual for the noise.</div></li>
+      <li><div><b>Calibration</b>: a 95% interval should cover 95%; reliability curves and the negative log-likelihood check it.</div></li>
+      <li><div><b>The failure mode</b>: members with a shared blind spot agree and are all wrong; the uncertainty stays small while the error is large.</div></li>
+      <li><div><b>The remedy</b>: an external check against a physics model, chapter 05's innovation test.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Aleatoric uncertainty</td><td>Noise in the data itself; more data does not remove it.</td></tr>
+        <tr><td>Epistemic uncertainty</td><td>The model's ignorance; more data reduces it.</td></tr>
+        <tr><td>Law of total variance</td><td>Total variance = expected conditional variance + variance of the conditional mean.</td></tr>
+        <tr><td>Posterior predictive</td><td>The prediction averaged over all plausible parameters.</td></tr>
+        <tr><td>Deep ensemble</td><td>Several networks trained independently, used together.</td></tr>
+        <tr><td>Bootstrap</td><td>Resampling the training data with replacement.</td></tr>
+        <tr><td>Calibration</td><td>Claimed confidence matches actual frequency.</td></tr>
+        <tr><td>Reliability curve</td><td>Empirical against nominal coverage; the diagonal is perfect.</td></tr>
+        <tr><td>Proper scoring rule</td><td>A score, such as the NLL, that is best when the predicted uncertainty is honest.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-<div class="md exercises">
-<h3 id="exercises">Exercises</h3>
-<ol>
-<li>Verify the law of total variance numerically: estimate both terms from the
-ensemble and confirm they sum to the empirical predictive variance in-domain.</li>
-<li>Grow <span class="math inline">M</span> from 2 to 50 and plot how the epistemic estimate stabilises. How many
-members are &quot;enough&quot; here?</li>
-<li>Recalibrate the OOD intervals with a single temperature scalar
-<span class="math inline">\sigma\mapsto\tau\sigma</span> chosen on a validation set (temperature scaling [9]).
-Does one global <span class="math inline">\tau</span> fix both in- and out-of-distribution coverage? Why not?</li>
-<li>Replace the ensemble with MC dropout on a small MLP (if you have torch) and
-compare the reliability curves.</li>
-</ol>
-</div>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>The law of total variance, numerically.</b> Estimate both terms from the ensemble and confirm that they add up to the empirical predictive variance inside the data.
+        <details class="sol"><summary>Hint</summary><p>To sample from the ensemble's predictive at a point <span class="m">x</span>: pick a member at random, take its prediction, add Gaussian noise with the aleatoric variance. Then compare the variance of many such samples with the sum of the two terms.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With the notebook's ensemble and 200,000 samples, at <span class="m">x = 0</span> the empirical predictive variance is 0.01029, against 0.00993 (aleatoric) + 0.00022 (epistemic) = 0.01015; at <span class="m">x = -2</span>, 0.01208 against 0.00993 + 0.00199 = 0.01192; at <span class="m">x = 2</span>, 0.01098 against 0.01077. The agreement is within the Monte Carlo error. Inside the data, the aleatoric term dominates: the members agree far more closely than the labels vary. Towards the edges of the data, the epistemic term grows several times larger than in the middle: nine times at <span class="m">x = -2</span>.</p></details>
+      </div></li>
+      <li><div><b>How many members?</b> Grow <span class="m">M</span> from 2 to 50 and plot how the epistemic estimate stabilises. How many members are "enough" here?
+        <details class="sol"><summary>Hint</summary><p>Train 50 members once and use the first <span class="m">M</span>. Look at the average epistemic standard deviation inside the data and far outside it separately. The <span class="m">M</span> slider of the demo does the same.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Inside the data, the estimate is already about right with very few members (0.016 with 2) and is stable at 0.017 from about 10 members. Far from the data, it is much noisier: 1.70 with 2 members, 2.34 with 3, 1.82 with 10, then between 1.64 and 1.75 from 15 to 50. So 10 to 20 members are enough for the purpose here, flagging that the model is outside its data, but not for a precise value of the uncertainty far out, where each member extrapolates wildly. The notebook's own 25 members gave 1.31 far out, another reminder that this number depends heavily on the draw.</p></details>
+      </div></li>
+      <li><div><b>Temperature scaling.</b> Recalibrate the intervals with a single temperature <span class="m">\sigma \mapsto \tau\sigma</span>, chosen on a validation set. Does one global <span class="m">\tau</span> fix the coverage both inside and outside the data? Why not?
+        <details class="sol"><summary>Hint</summary><p>Choose <span class="m">\tau</span> so that 95% of the validation points have <span class="m">|z| \le 1.96\tau</span>. Then try the value that would fix the far region instead.</p></details>
+        <details class="sol"><summary>Solution</summary><p>No. Validation data come from the training range, where the ensemble is already calibrated, so the chosen temperature is close to 1 (0.97): the coverage stays at 0.94 inside and 1.00 outside. To bring the far region to 95%, the intervals there must shrink to <span class="m">\tau = 0.71</span>, but the same <span class="m">\tau</span> drops the coverage inside the data to 0.84. The miscalibration depends on the input, too wide far away and right inside, so no single number can correct both. Input-dependent recalibration <a href="#ref-10">[10]</a> or better uncertainty models are needed, and there are no labels for the regions where it matters most.</p></details>
+      </div></li>
+      <li><div><b>Monte Carlo dropout.</b> Replace the ensemble with Monte Carlo dropout on a small multilayer perceptron, if you have PyTorch, and compare the reliability curves.
+        <details class="sol"><summary>Hint</summary><p>Keep dropout active at test time and run, say, 50 forward passes per input; their mean and variance replace the ensemble's.</p></details>
+        <details class="sol"><summary>Solution</summary><p>What to expect: inside the data the two give similar reliability curves. Away from the data, Monte Carlo dropout's samples all come from one trained network, perturbed, so they tend to disagree less than independently trained members, and the intervals widen less. Published comparisons generally find ensembles better calibrated, particularly out of distribution <a href="#ref-7">[7]</a>. The exact curves depend on the architecture, the dropout rate and the training, so this solution doesn't quote any numbers.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
 
-<div class="md refs">
-<h2 id="references">References</h2>
-<ol>
-<li>A. Der Kiureghian, O. Ditlevsen. <em>Aleatory or epistemic? Does it matter?</em> Structural Safety, 31(2):105-112, 2009. <a href="https://doi.org/10.1016/j.strusafe.2008.06.020">doi:10.1016/j.strusafe.2008.06.020</a></li>
-<li>E. Huellermeier, W. Waegeman. <em>Aleatoric and epistemic uncertainty in machine learning: an introduction to concepts and methods.</em> Machine Learning, 110:457-506, 2021. <a href="https://doi.org/10.1007/s10994-021-05946-3">doi:10.1007/s10994-021-05946-3</a></li>
-<li>A. Kendall, Y. Gal. <em>What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?</em> NeurIPS, 2017. <a href="https://arxiv.org/abs/1703.04977">arXiv:1703.04977</a></li>
-<li>D. J. C. MacKay. <em>A Practical Bayesian Framework for Backpropagation Networks.</em> Neural Computation, 4(3):448-472, 1992. <a href="https://doi.org/10.1162/neco.1992.4.3.448">doi:10.1162/neco.1992.4.3.448</a></li>
-<li>Y. Gal, Z. Ghahramani. <em>Dropout as a Bayesian Approximation: Representing Model Uncertainty in Deep Learning.</em> ICML, 2016. <a href="https://arxiv.org/abs/1506.02142">arXiv:1506.02142</a></li>
-<li>C. Blundell, J. Cornebise, K. Kavukcuoglu, D. Wierstra. <em>Weight Uncertainty in Neural Networks.</em> ICML, 2015. <a href="https://arxiv.org/abs/1505.05424">arXiv:1505.05424</a></li>
-<li>B. Lakshminarayanan, A. Pritzel, C. Blundell. <em>Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles.</em> NeurIPS, 2017. <a href="https://arxiv.org/abs/1612.01474">arXiv:1612.01474</a></li>
-<li>S. Fort, H. Hu, B. Lakshminarayanan. <em>Deep Ensembles: A Loss Landscape Perspective.</em> <a href="https://arxiv.org/abs/1912.02757">arXiv:1912.02757</a>, 2019.</li>
-<li>C. Guo, G. Pleiss, Y. Sun, K. Q. Weinberger. <em>On Calibration of Modern Neural Networks.</em> ICML, 2017. <a href="https://arxiv.org/abs/1706.04599">arXiv:1706.04599</a></li>
-<li>V. Kuleshov, N. Fenner, S. Ermon. <em>Accurate Uncertainties for Deep Learning Using Calibrated Regression.</em> ICML, 2018. <a href="https://arxiv.org/abs/1807.00263">arXiv:1807.00263</a></li>
-<li>T. Gneiting, A. E. Raftery. <em>Strictly Proper Scoring Rules, Prediction, and Estimation.</em> Journal of the American Statistical Association, 102(477):359-378, 2007. <a href="https://doi.org/10.1198/016214506000001437">doi:10.1198/016214506000001437</a></li>
-<li>A. Rahimi, B. Recht. <em>Random Features for Large-Scale Kernel Machines.</em> NeurIPS, 2007. (The random-feature regressors used here.)</li>
-</ol>
-</div>
-</main>
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>A. Der Kiureghian and O. Ditlevsen. "Aleatory or epistemic? Does it matter?". <em>Structural Safety</em> 31(2), 105–112, 2009. <a href="https://doi.org/10.1016/j.strusafe.2008.06.020">doi:10.1016/j.strusafe.2008.06.020</a></div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>E. Hüllermeier and W. Waegeman. "Aleatoric and epistemic uncertainty in machine learning: an introduction to concepts and methods". <em>Machine Learning</em> 110, 457–506, 2021. <a href="https://doi.org/10.1007/s10994-021-05946-3">doi:10.1007/s10994-021-05946-3</a></div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>A. Kendall and Y. Gal. "What uncertainties do we need in Bayesian deep learning for computer vision?". NeurIPS, 2017. <a href="https://arxiv.org/abs/1703.04977">arXiv:1703.04977</a></div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>D. J. C. MacKay. "A practical Bayesian framework for backpropagation networks". <em>Neural Computation</em> 4(3), 448–472, 1992. <a href="https://doi.org/10.1162/neco.1992.4.3.448">doi:10.1162/neco.1992.4.3.448</a></div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>Y. Gal and Z. Ghahramani. "Dropout as a Bayesian approximation: representing model uncertainty in deep learning". ICML, 2016. <a href="https://arxiv.org/abs/1506.02142">arXiv:1506.02142</a></div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>C. Blundell, J. Cornebise, K. Kavukcuoglu and D. Wierstra. "Weight uncertainty in neural networks". ICML, 2015. <a href="https://arxiv.org/abs/1505.05424">arXiv:1505.05424</a></div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>B. Lakshminarayanan, A. Pritzel and C. Blundell. "Simple and scalable predictive uncertainty estimation using deep ensembles". NeurIPS, 2017. <a href="https://arxiv.org/abs/1612.01474">arXiv:1612.01474</a></div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>S. Fort, H. Hu and B. Lakshminarayanan. "Deep ensembles: a loss landscape perspective". 2019. <a href="https://arxiv.org/abs/1912.02757">arXiv:1912.02757</a></div></li>
+      <li id="ref-9"><span class="rn">[9]</span><div>C. Guo, G. Pleiss, Y. Sun and K. Q. Weinberger. "On calibration of modern neural networks". ICML, 2017. <a href="https://arxiv.org/abs/1706.04599">arXiv:1706.04599</a></div></li>
+      <li id="ref-10"><span class="rn">[10]</span><div>V. Kuleshov, N. Fenner and S. Ermon. "Accurate uncertainties for deep learning using calibrated regression". ICML, 2018. <a href="https://arxiv.org/abs/1807.00263">arXiv:1807.00263</a></div></li>
+      <li id="ref-11"><span class="rn">[11]</span><div>T. Gneiting and A. E. Raftery. "Strictly proper scoring rules, prediction, and estimation". <em>Journal of the American Statistical Association</em> 102(477), 359–378, 2007. <a href="https://doi.org/10.1198/016214506000001437">doi:10.1198/016214506000001437</a></div></li>
+      <li id="ref-12"><span class="rn">[12]</span><div>A. Rahimi and B. Recht. "Random features for large-scale kernel machines". NeurIPS, 2007. The random-feature regressions used here.</div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
   <a class="prev" rel="prev" href="03-perception-and-rendering.html"><span class="lbl">Previous · 03</span><span class="t">Perception and rendering</span></a>
@@ -287,11 +375,13 @@ compare the reliability curves.</li>
 </nav>
 
 <footer class="col">
-  <p>Chapter 04 of the TrustDrive course by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 04 of the TrustDrive course by Elie Rouphael. The demos train their own ensembles in your browser, with the notebook's recipe and different random draws, so their numbers vary a little from the notebook's printed ones. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch04.js"></script>
 </body>
 </html>
