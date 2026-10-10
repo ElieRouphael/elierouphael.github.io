@@ -1,10 +1,11 @@
 """Build the "A Tour of Machine Learning" course pages from the executed notebooks.
 
-Reads the eleven executed notebooks of the course
+Reads the twelve executed notebooks of the course (an overview, 00, and eleven chapters)
 (MADIS Machine Learning Workshop/course/executed) and writes static pages into
 public/tutorials/ml-tour/:
 
     index.html                                    course landing page
+    00-what-machine-learning-is.html              the overview (an interactive page, kept)
     01-linear-regression.html ... 11-federated-learning.html
     img/, notebooks/                              extracted figures, notebooks for download
     ml-tour-course.zip                            notebooks, mlutils.py, data and requirements
@@ -34,6 +35,9 @@ DEFAULT_COURSE = SITE.parents[1] / "MADIS Machine Learning Workshop" / "course"
 
 # `result` lines quote the notebooks' own outputs; re-check them if the notebooks change.
 CHAPTERS = [
+    dict(stem="00_what_machine_learning_is", short="What Machine Learning Is",
+         build="The families of machine learning, the recipe every chapter shares, and the overfitting every chapter guards against, with polynomials of rising degree.",
+         result="Training error falls at every degree, while test error is lowest at degree 3 (0.379) and passes 100 at degree 12; cross-validation picks degree 3 without the test set."),
     dict(stem="01_linear_regression", short="Linear Regression",
          build="Simple and multiple regression on real car data, reading coefficients as rates of change, and R².",
          result="Weight and engine volume together reach R²=0.377 (up from 0.305 with weight alone); a 1300kg/1300cm³ car is predicted at 99.7 g/km of CO2."),
@@ -68,11 +72,13 @@ CHAPTERS = [
          build="An original FedAvg simulation: three clients train locally on real patient data and average their models, compared to a centrally-trained baseline.",
          result="After 15 rounds, the federated model matches the centrally-trained baseline exactly — 71.4% test accuracy for both — without the clients' data ever being pooled."),
 ]
+HERO = next(i for i, ch in enumerate(CHAPTERS) if ch["stem"].startswith("05_"))   # the landing page's figure
 NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: "
         "the full course download has everything.")
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
+    interactive={"00_what_machine_learning_is"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
@@ -99,7 +105,7 @@ def index_page(results: list[dict]) -> str:
     </li>""")
     chapters = "\n".join(items)
     zip_name = f"{COURSE.folder}-course.zip"
-    hero = results[4]   # chapter 05's labelled cluster figure
+    hero = results[HERO]   # chapter 05's labelled cluster figure
     return page_head(
         "A Tour of Machine Learning",
         "Eleven standalone notebooks, one machine-learning idea each: linear regression, the calculus behind "
@@ -110,7 +116,7 @@ def index_page(results: list[dict]) -> str:
 <nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
 
 <header class="hero col">
-  <span class="eyebrow">Eleven notebooks · scikit-learn, NumPy, sympy, TensorFlow/Keras</span>
+  <span class="eyebrow">An overview and eleven chapters · scikit-learn, NumPy, sympy, TensorFlow/Keras</span>
   <h1>A tour of machine learning</h1>
   <p class="lede">Eleven standalone notebooks, each covering one machine-learning idea start to finish, on real
   data: regression, the calculus that training is secretly doing, support vector machines, random forests,
@@ -119,7 +125,7 @@ def index_page(results: list[dict]) -> str:
   learning. No chapter depends on another — read the one you're curious about.</p>
   <p class="byline">Elie Rouphael · Assumes Python and a little numpy/pandas; no prior ML background needed</p>
   <div class="downloads">
-    <a class="btn" href="{slug(CHAPTERS[0])}.html">Start with chapter 01</a>
+    <a class="btn" href="{slug(CHAPTERS[0])}.html">Start with the overview</a>
     <a class="btn ghost" href="{zip_name}" download>Download the course (.zip)</a>
   </div>
 </header>
@@ -148,7 +154,8 @@ def index_page(results: list[dict]) -> str:
 
 <section class="col" aria-labelledby="chapters">
   <h2 id="chapters">Chapters</h2>
-  <p class="section-lede">Chapters 01-02 are the foundations: fitting a line, and the calculus every model's
+  <p class="section-lede">Chapter 00 is the map: the families of machine learning, the recipe every chapter
+  shares, and the overfitting every chapter guards against. Chapters 01-02 are the foundations: fitting a line, and the calculus every model's
   training loop is quietly doing. Chapters 03-05 are the classical toolkit: SVMs, random forests, K-means.
   Chapters 06-10 are deep learning and modern architectures, built up from a from-scratch neural network to
   from-scratch self-attention. Chapter 11 closes with federated learning, simulated end to end from nothing
@@ -234,7 +241,7 @@ def main() -> None:
         pass  # build_chapters already copies executed notebooks into out/notebooks/
 
     w, h = png_size((out / "img" / "05-3.png").read_bytes())
-    results[4].update(hero_w=w, hero_h=h)
+    results[HERO].update(hero_w=w, hero_h=h)
     (out / "index.html").write_text(index_page(results), encoding="utf-8")
 
     members = [(course / rel, rel) for rel in ("README.md", "requirements.txt", "mlutils.py", "build_notebooks.py")]
