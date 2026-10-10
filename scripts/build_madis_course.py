@@ -42,8 +42,8 @@ CHAPTERS = [
          build="Least squares derived and worked by hand, then simple and multiple regression on 36 cars: coefficients as rates and as partial effects, and R².",
          result="Weight and engine volume together reach R² = 0.377 (0.305 with weight alone), a gain an F test calls suggestive (p = 0.06); a 1,300 kg, 1,300 cm³ car is predicted at 99.7 g/km of CO2."),
     dict(stem="02_minima_and_maxima", short="Finding Minima and Maxima",
-         build="Critical points and the second-derivative test with sympy, then the same calculus behind a training loop, checked against gradient descent.",
-         result="Gradient descent converges to w*=2.3342 after 200 steps — the exact closed-form minimiser found by solving L'(w)=0 by hand."),
+         build="Derivatives, critical points and the second-derivative test, gradients and Hessians, then gradient descent derived from a Taylor expansion and checked against the closed form.",
+         result="Gradient descent matches the closed-form minimiser w* = 2.3342 to 4 decimals after 69 of its 200 steps; above a learning rate of 1/a = 0.028 the same loop explodes."),
     dict(stem="03_support_vector_machines", short="Support Vector Machines",
          build="An RBF-kernel SVM on real iris measurements, its decision boundary drawn directly, and a confusion matrix on held-out flowers.",
          result="93.3% test accuracy using only 34 of 105 training points as support vectors."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
