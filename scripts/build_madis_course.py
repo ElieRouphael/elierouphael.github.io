@@ -39,8 +39,8 @@ CHAPTERS = [
          build="The families of machine learning, the recipe every chapter shares, and the overfitting every chapter guards against, with polynomials of rising degree.",
          result="Training error falls at every degree, while test error is lowest at degree 3 (0.379) and passes 100 at degree 12; cross-validation picks degree 3 without the test set."),
     dict(stem="01_linear_regression", short="Linear Regression",
-         build="Simple and multiple regression on real car data, reading coefficients as rates of change, and R².",
-         result="Weight and engine volume together reach R²=0.377 (up from 0.305 with weight alone); a 1300kg/1300cm³ car is predicted at 99.7 g/km of CO2."),
+         build="Least squares derived and worked by hand, then simple and multiple regression on 36 cars: coefficients as rates and as partial effects, and R².",
+         result="Weight and engine volume together reach R² = 0.377 (0.305 with weight alone), a gain an F test calls suggestive (p = 0.06); a 1,300 kg, 1,300 cm³ car is predicted at 99.7 g/km of CO2."),
     dict(stem="02_minima_and_maxima", short="Finding Minima and Maxima",
          build="Critical points and the second-derivative test with sympy, then the same calculus behind a training loop, checked against gradient descent.",
          result="Gradient descent converges to w*=2.3342 after 200 steps — the exact closed-form minimiser found by solving L'(w)=0 by hand."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
@@ -178,7 +178,7 @@ jupyter lab                 # then open any chapter directly, in any order</code
 
 <section class="col prose" aria-labelledby="data">
   <h2 id="data">Data and sources</h2>
-  <p>Chapter 01 uses a small car-emissions dataset; chapter 03 uses Fisher's iris measurements; chapter 04 uses
+  <p>Chapter 01 uses a small car-emissions dataset, the one in the W3Schools Python tutorial; chapter 03 uses Fisher's iris measurements; chapter 04 uses
   a real cardiac-evaluation dataset; chapter 05 uses a mall customer-segmentation dataset; chapter 09 uses
   Numenta Anomaly Benchmark (NAB) style synthetic sensor data; chapter 11 uses the Pima Indians Diabetes
   dataset. Chapters 02, 06, 07, 08 and 10 use synthetic or built-in (scikit-learn digits) data by design, so
