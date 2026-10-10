@@ -71,7 +71,7 @@ COURSE = Course(
     license="MIT licensed.",
     notes={"08_capstone_closed_loop": COURSELIB_NOTE, "09_advanced_ideas": COURSELIB_NOTE},
     # Chapters rebuilt by hand as interactive pages; the builder leaves their .html alone.
-    interactive={"01_vehicle_model", "02_lqr_control", "03_perception_and_rendering"},
+    interactive={"01_vehicle_model", "02_lqr_control", "03_perception_and_rendering", "04_uncertainty_ensembles"},
 )
 
 
