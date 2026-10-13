@@ -45,8 +45,8 @@ CHAPTERS = [
          build="Derivatives, critical points and the second-derivative test, gradients and Hessians, then gradient descent derived from a Taylor expansion and checked against the closed form.",
          result="Gradient descent matches the closed-form minimiser w* = 2.3342 to 4 decimals after 69 of its 200 steps; above a learning rate of 1/a = 0.028 the same loop explodes."),
     dict(stem="03_support_vector_machines", short="Support Vector Machines",
-         build="An RBF-kernel SVM on real iris measurements, its decision boundary drawn directly, and a confusion matrix on held-out flowers.",
-         result="93.3% test accuracy using only 34 of 105 training points as support vectors."),
+         build="The widest margin worked by hand, the hinge loss and kernels, then an RBF-kernel SVM on Fisher's iris petals, its decision boundary drawn directly, and a confusion matrix on held-out flowers.",
+         result="42 of 45 held-out flowers right (93.3%) with 34 of 105 training points as support vectors; the three errors sit where versicolor and virginica overlap."),
     dict(stem="04_random_forest", short="Random Forest",
          build="A single decision tree vs. a 300-tree random forest on real heart-disease data, and the feature importances the forest learned.",
          result="The forest reaches 78.9% test accuracy against 72.4% for one unrestricted tree; chest-pain type is the most important feature."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
