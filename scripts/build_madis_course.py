@@ -48,8 +48,8 @@ CHAPTERS = [
          build="The widest margin worked by hand, the hinge loss and kernels, then an RBF-kernel SVM on Fisher's iris petals, its decision boundary drawn directly, and a confusion matrix on held-out flowers.",
          result="42 of 45 held-out flowers right (93.3%) with 34 of 105 training points as support vectors; the three errors sit where versicolor and virginica overlap."),
     dict(stem="04_random_forest", short="Random Forest",
-         build="A single decision tree vs. a 300-tree random forest on real heart-disease data, and the feature importances the forest learned.",
-         result="The forest reaches 78.9% test accuracy against 72.4% for one unrestricted tree; chest-pain type is the most important feature."),
+         build="The Gini impurity by hand, why one deep tree overfits, bootstrap samples and the variance of an average of correlated trees, then a single tree against a 300-tree forest on real heart-disease data, and two kinds of feature importance.",
+         result="The forest gets 60 of 76 held-out patients right (78.9%) against 55 for one unrestricted tree, a gain that holds across splits; chest-pain type leads the impurity importance, and the data's own label turns out to be coded the other way round."),
     dict(stem="05_kmeans_and_kmeans_plusplus", short="K-Means and K-Means++",
          build="Customer segmentation by the elbow method, then 30 seeds of random vs. k-means++ initialisation compared head to head, plus a PCA view.",
          result="Across 30 seeds, k-means++ averages 14% lower inertia than random init (48,140 vs 55,718) and is far more consistent (std 8,250 vs 14,855)."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
