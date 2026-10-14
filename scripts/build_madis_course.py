@@ -51,8 +51,8 @@ CHAPTERS = [
          build="The Gini impurity by hand, why one deep tree overfits, bootstrap samples and the variance of an average of correlated trees, then a single tree against a 300-tree forest on real heart-disease data, and two kinds of feature importance.",
          result="The forest gets 60 of 76 held-out patients right (78.9%) against 55 for one unrestricted tree, a gain that holds across splits; chest-pain type leads the impurity importance, and the data's own label turns out to be coded the other way round."),
     dict(stem="05_kmeans_and_kmeans_plusplus", short="K-Means and K-Means++",
-         build="Customer segmentation by the elbow method, then 30 seeds of random vs. k-means++ initialisation compared head to head, plus a PCA view.",
-         result="Across 30 seeds, k-means++ averages 14% lower inertia than random init (48,140 vs 55,718) and is far more consistent (std 8,250 vs 14,855)."),
+         build="The inertia k-means minimises, Lloyd's algorithm stepped by hand, k-means++ seeding and its guarantee, the elbow, feature scale and a PCA view, then 30 seeds of random vs. k-means++ initialisation compared head to head.",
+         result="Single runs end at the optimum (J = 44,448) or in a bad valley: random starts reach the optimum in 10 of 30 runs, k-means++ in 18, with a 14% lower mean inertia (48,140 vs 55,718) and half the spread."),
     dict(stem="06_neural_network_from_scratch", short="A Neural Network from Scratch",
          build="Forward pass, backpropagation and gradient descent implemented in plain NumPy, trained on two interleaving moons.",
          result="A hand-written 8-unit hidden layer reaches 96.0% test accuracy with a curved decision boundary no linear model could draw."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'

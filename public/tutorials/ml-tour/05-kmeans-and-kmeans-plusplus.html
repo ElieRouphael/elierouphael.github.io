@@ -3,13 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>05 · K-Means and K-Means++ — A Tour of Machine Learning</title>
-<meta name="description" content="Customer segmentation by the elbow method, then 30 seeds of random vs. k-means++ initialisation compared head to head, plus a PCA view.">
+<title>05 · K-means and k-means++ · A Tour of Machine Learning</title>
+<meta name="description" content="K-means from the ground up: the inertia it minimises, Lloyd's algorithm stepped by hand and live, why it only goes downhill, k-means++ seeding, the elbow and the silhouette, feature scale, a PCA view, and a hundred-seed race between random and k-means++ starts on 200 mall customers.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  #stepT td, #stepT th { white-space: nowrap; }
+  @media (max-width: 420px) { #stepT { font-size: 0.8rem; } #stepT th, #stepT td { padding-inline: 0.2rem; } }
+</style>
 </head>
 <body>
 
@@ -17,253 +21,209 @@
 
 <header class="hero col">
   <span class="eyebrow">A Tour of Machine Learning · Chapter 05 of 11</span>
-  <h1>K-Means and K-Means++</h1>
-  <div class="intro prose">
-<p><strong>Objectives:</strong> cluster real customers with K-means, pick <span class="math inline">k</span> with the elbow method,
-and see exactly why the <em>k-means++</em> initialisation scikit-learn uses by default beats
-plain random initialisation.</p>
-<p>K-means alternates two steps until convergence: assign every point to its nearest
-centroid, then move each centroid to the mean of the points assigned to it. It always
-converges — but only to a <em>local</em> optimum, and which one depends on where the
-centroids started.</p>
-
-  </div>
+  <h1>K-means and k-means++</h1>
+  <p class="lede">Two hundred mall customers, their incomes and their spending scores, and no labels at all. K-means looks for a few groups whose points lie close together, by alternating two steps: assign every point to its nearest centre, then move each centre to the mean of its points. It always converges, but only to a local optimum, and which one depends on where the centres started. Step through it below, and watch it get stuck.</p>
+  <p class="byline">Elie Rouphael · Needs Python and a little calculus · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/05_kmeans_and_kmeans_plusplus.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/05_kmeans_and_kmeans_plusplus.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-the-goal-a-few-centres-small-distances">1. The goal: a few centres, small distances</a></li>
-    <li><a href="#2-lloyd-s-algorithm-and-why-it-only-goes-downhill">2. Lloyd's algorithm, and why it only goes downhill</a></li>
-    <li><a href="#3-better-starting-centres-k-means-and-choosing-k">3. Better starting centres (k-means++), and choosing k</a></li>
-    <li><a href="#4-feature-scale-and-a-2-d-view-with-pca">4. Feature scale, and a 2-D view with PCA</a></li>
-    <li><a href="#5-the-data">5. The data</a></li>
-    <li><a href="#6-choosing-k-the-elbow-method">6. Choosing k: the elbow method</a></li>
-    <li><a href="#7-random-init-vs-k-means">7. Random init vs. k-means++</a></li>
-    <li><a href="#8-a-2d-view-via-pca">8. A 2D view via PCA</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-    <li><a href="#key-takeaways">Key takeaways</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-the-goal-a-few-centres-small-distances">1. The goal: a few centres, small distances</h2>
-<p>Picture the 200 customers as dots on a plane, one axis for income and one for
-spending score. Clustering asks for a few groups whose dots lie close together.
-K-means turns &quot;close together&quot; into one number and makes it as small as it can.</p>
-<p><strong>Notation.</strong> The data are <span class="math inline">n</span> points <span class="math inline">x_1, \dots, x_n</span>. Each <span class="math inline">x_i</span> is a vector of <span class="math inline">d</span>
-features, <span class="math inline">x_i \in \mathbb{R}^d</span>. In the code the points are the rows of <code>X</code>, with
-<span class="math inline">n = 200</span> and <span class="math inline">d = 2</span> (income in thousands of dollars, spending score from 1 to 100).
-We choose a number of clusters <span class="math inline">k</span>. Each cluster <span class="math inline">C_j</span> (<span class="math inline">j = 1, \dots, k</span>) is a set
-of points, and every point belongs to exactly one cluster. Each cluster has a
-<strong>centre</strong> (or centroid) <span class="math inline">\mu_j \in \mathbb{R}^d</span>, a point in the same space as the
-data. The squared Euclidean distance between a point <span class="math inline">x</span> and a centre <span class="math inline">\mu</span> is</p>
-<div class="math display">\lVert x - \mu \rVert^2 = \sum_{f=1}^{d} (x_f - \mu_f)^2 ,</div>
-<p>the sum over the <span class="math inline">d</span> features of the squared coordinate differences.</p>
-<p><strong>The objective.</strong> K-means looks for the clusters and centres that make the total
-squared distance from each point to its own centre as small as possible:</p>
-<div class="math display">J = \sum_{j=1}^{k} \; \sum_{x \in C_j} \lVert x - \mu_j \rVert^2 .</div>
-<p>Read it as: for each cluster, add up how far its points sit from its centre
-(squared), then add over the clusters. <span class="math inline">J</span> is measured in squared feature units. A
-small <span class="math inline">J</span> means tight, compact groups. <span class="math inline">J</span> is called the <strong>inertia</strong> or
-within-cluster sum of squares; after fitting, scikit-learn stores it in <code>inertia_</code>.</p>
-<p>Minimising <span class="math inline">J</span> exactly is hard: the number of ways to split <span class="math inline">n</span> points into <span class="math inline">k</span>
-groups grows roughly like <span class="math inline">k^n</span>. So k-means improves one split step by step instead.</p>
+<!-- ============ LIVE DEMO: Lloyd's algorithm step by step ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The customers, coloured by their nearest centre</p>
+        <canvas id="mallC" aria-label="Scatter plot of the 200 customers by income and spending score, coloured by cluster, with the current centres as crosses" aria-describedby="heroStatus"></canvas>
+      </div>
+      <div>
+        <p class="chart-title">The inertia <span class="keep"><span class="m">J</span></span> after each half-step</p>
+        <canvas id="jC" aria-label="The inertia after each assignment and update step, with the optimum for five clusters as a dashed line"></canvas>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Clusters <span class="m">k</span>: <b id="hKV"></b></span>
+        <span class="row"><input type="range" id="hK" min="2" max="8" step="1" value="5"></span>
+      </label>
+      <div class="seg" role="group" aria-label="Starting centres">
+        <button class="btn" type="button" data-init="k-means++" aria-pressed="true">k-means++ start</button>
+        <button class="btn" type="button" data-init="random" aria-pressed="false">random start</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="hStep" type="button">one step</button>
+        <button class="btn" id="hRun" type="button">run to convergence</button>
+        <button class="btn" id="hNew" type="button">new start</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>inertia <span class="m">J</span></span><span class="v" id="rJ">–</span>
+        <span>half-steps taken</span><span class="v" id="rStep">–</span>
+      </div>
+      <p class="hint">The next step will: <b id="rNext"></b>. A half-step is one assignment or one update. The notebook's five clusters have <span class="m">J = 44{,}448</span>, the best known for <span class="m">k = 5</span> (dashed in the chart).</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-lloyd-s-algorithm-and-why-it-only-goes-downhill">2. Lloyd's algorithm, and why it only goes downhill</h2>
-<p><span class="math inline">J</span> depends on two things: the assignment (which cluster each point is in) and the
-centres. Fixing either one makes the other easy to choose. <strong>Lloyd's algorithm</strong>
-alternates the two choices:</p>
-<ol>
-<li><strong>Assignment step.</strong> Keep the centres fixed. Put each point in the cluster of its
-nearest centre.</li>
-<li><strong>Update step.</strong> Keep the assignment fixed. Move each centre to the mean of its
-points, <span class="math inline">\mu_j = \frac{1}{\lvert C_j\rvert}\sum_{x\in C_j} x</span>, where <span class="math inline">\lvert C_j\rvert</span>
-is the number of points in <span class="math inline">C_j</span>.</li>
-</ol>
-<p>Repeat until no point changes cluster.</p>
-<p><strong>The assignment step cannot increase <span class="math inline">J</span>.</strong> <span class="math inline">J</span> has one term per point, its squared
-distance to its centre. Choosing the nearest centre makes each term as small as the
-current centres allow, so no term grows and neither does the sum.</p>
-<p><strong>The update step cannot increase <span class="math inline">J</span>.</strong> With the assignment fixed, the clusters no
-longer interact, so look at one cluster <span class="math inline">C</span> with <span class="math inline">m</span> points and ask which centre
-<span class="math inline">\mu</span> minimises</p>
-<div class="math display">g(\mu) = \sum_{x\in C} \lVert x - \mu\rVert^2 = \sum_{x \in C}\sum_{f=1}^d (x_f - \mu_f)^2 .</div>
-<p>Differentiate with respect to one coordinate <span class="math inline">\mu_f</span>. Only the terms containing
-<span class="math inline">\mu_f</span> matter, and the derivative of <span class="math inline">(x_f-\mu_f)^2</span> is <span class="math inline">-2(x_f-\mu_f)</span>:</p>
-<div class="math display">\frac{\partial g}{\partial \mu_f} = -2\sum_{x\in C}(x_f - \mu_f) = -2\Big(\sum_{x\in C} x_f \;-\; m\,\mu_f\Big).</div>
-<p>Setting this to zero gives <span class="math inline">\mu_f = \frac1m \sum_{x\in C} x_f</span>: each coordinate of the
-best centre is the average of that coordinate over the cluster. So the best centre
-is the cluster mean, written <span class="math inline">\bar x</span>. The second derivative is <span class="math inline">2m &gt; 0</span>, so this is a
-minimum.</p>
-<p>A second derivation shows <em>how much</em> a misplaced centre costs. Write
-<span class="math inline">x - \mu = (x - \bar x) + (\bar x - \mu)</span> and expand the square. The cross terms add
-up to zero because <span class="math inline">\sum_{x\in C}(x-\bar x) = 0</span>, which leaves</p>
-<div class="math display">\sum_{x\in C}\lVert x-\mu\rVert^2 = \sum_{x\in C}\lVert x-\bar x\rVert^2 + m\,\lVert \bar x - \mu\rVert^2 .</div>
-<p>The first term does not depend on <span class="math inline">\mu</span>. The second is a penalty: placing the centre
-a distance <span class="math inline">\delta</span> away from the mean adds exactly <span class="math inline">m\,\delta^2</span>. The mean is the only
-choice with zero penalty.</p>
-<p><strong>Convergence.</strong> Each step lowers <span class="math inline">J</span> or leaves it unchanged, <span class="math inline">J \ge 0</span>, and there are
-only finitely many ways to assign <span class="math inline">n</span> points to <span class="math inline">k</span> clusters. So the algorithm stops
-after a finite number of steps. It stops at a <strong>local minimum</strong>: no single step can
-improve <span class="math inline">J</span>, but a completely different split may have a lower <span class="math inline">J</span>. Which local
-minimum it reaches depends on the starting centres.</p>
-<p><strong>Worked example.</strong> Six points on a line, <span class="math inline">x = 1, 2, 3, 8, 9, 12</span>, with <span class="math inline">k = 2</span> and a
-poor start: <span class="math inline">\mu_1 = 1</span>, <span class="math inline">\mu_2 = 4</span>. The assignment step:</p>
-<table>
-<thead>
-<tr>
-<th><span class="math inline">x</span></th>
-<th>distance to <span class="math inline">\mu_1 = 1</span></th>
-<th>distance to <span class="math inline">\mu_2 = 4</span></th>
-<th>cluster</th>
-<th>squared distance</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1</td>
-<td>0</td>
-<td>3</td>
-<td>1</td>
-<td>0</td>
-</tr>
-<tr>
-<td>2</td>
-<td>1</td>
-<td>2</td>
-<td>1</td>
-<td>1</td>
-</tr>
-<tr>
-<td>3</td>
-<td>2</td>
-<td>1</td>
-<td>2</td>
-<td>1</td>
-</tr>
-<tr>
-<td>8</td>
-<td>7</td>
-<td>4</td>
-<td>2</td>
-<td>16</td>
-</tr>
-<tr>
-<td>9</td>
-<td>8</td>
-<td>5</td>
-<td>2</td>
-<td>25</td>
-</tr>
-<tr>
-<td>12</td>
-<td>11</td>
-<td>8</td>
-<td>2</td>
-<td>64</td>
-</tr>
-</tbody>
-</table>
-<p>So <span class="math inline">J = 0+1+1+16+25+64 = 107</span>. The update step moves the centres to the means:
-<span class="math inline">\mu_1 = (1+2)/2 = 1.5</span> and <span class="math inline">\mu_2 = (3+8+9+12)/4 = 8</span>. With the same clusters,
-<span class="math inline">J = (0.25+0.25) + (25+0+1+16) = 42.5</span>. That completes one iteration.</p>
-<p>The next assignment step moves the point <span class="math inline">3</span> to cluster 1 (it is <span class="math inline">1.5</span> from <span class="math inline">\mu_1</span>
-and <span class="math inline">5</span> from <span class="math inline">\mu_2</span>), and <span class="math inline">J</span> falls to <span class="math inline">19.75</span>. The next update gives <span class="math inline">\mu_1 = 2</span>,
-<span class="math inline">\mu_2 = 29/3 \approx 9.67</span> and <span class="math inline">J \approx 10.67</span>. After that no point changes cluster
-and the algorithm stops. <span class="math inline">J</span> went <span class="math inline">107 \to 42.5 \to 19.75 \to 10.67</span> and never rose.</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#goal"><span class="n">1</span><span class="t">The goal</span><span class="d">A few centres, small distances</span></a>
+    <a href="#lloyd"><span class="n">2</span><span class="t">Lloyd's algorithm</span><span class="d">And why it only goes downhill</span></a>
+    <a href="#seeding"><span class="n">3</span><span class="t">Better starting centres</span><span class="d">k-means++, and choosing k</span></a>
+    <a href="#scale"><span class="n">4</span><span class="t">Feature scale, and PCA</span><span class="d">Standardising, and a 2-D view</span></a>
+    <a href="#data"><span class="n">5</span><span class="t">The data</span><span class="d">200 mall customers</span></a>
+    <a href="#elbow-part"><span class="n">6</span><span class="t">Choosing k</span><span class="d">The elbow, and the silhouette</span></a>
+    <a href="#race"><span class="n">7</span><span class="t">Random against k-means++</span><span class="d">One run each, many seeds</span></a>
+    <a href="#pca-part"><span class="n">8</span><span class="t">A 2-D view via PCA</span><span class="d">Three features, five clusters</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="md">
-<h2 id="3-better-starting-centres-k-means-and-choosing-k">3. Better starting centres (k-means++), and choosing k</h2>
-<p><strong>Random initialisation</strong> picks <span class="math inline">k</span> data points uniformly at random as the starting
-centres. Two of them can fall inside the same natural group, and Lloyd's local moves
-often cannot pull one of them out to a group that has no centre.</p>
-<p><strong>k-means++</strong> chooses the starting centres one at a time and favours points far from
-the centres already chosen. Let <span class="math inline">D(x)</span> be the distance from a point <span class="math inline">x</span> to the
-nearest centre chosen so far.</p>
-<ol>
-<li>Pick the first centre uniformly at random from the data.</li>
-<li>Pick the next centre at random, choosing point <span class="math inline">x</span> with probability
-<span class="math display">P(x) = \frac{D(x)^2}{\sum_{x&#x27;} D(x&#x27;)^2}.</span></li>
-<li>Repeat step 2 until there are <span class="math inline">k</span> centres, then run Lloyd's algorithm from them.</li>
-</ol>
-<p>A point next to a chosen centre has <span class="math inline">D(x) \approx 0</span> and is almost never picked; a
-point in a region with no centre is likely to be picked.</p>
-<p>With the six points above, suppose the first centre is <span class="math inline">1</span>. Then
-<span class="math inline">D(x)^2 = 0, 1, 4, 49, 64, 121</span>, which add to <span class="math inline">239</span>. The probability that the second
-centre lands in the far group <span class="math inline">\{8, 9, 12\}</span> is <span class="math inline">(49+64+121)/239 \approx 0.98</span>.
-Uniform random choice among the five other points would give <span class="math inline">3/5 = 0.6</span>.</p>
-<p>The guarantee, proved by Arthur and Vassilvitskii (2007), concerns the seeding alone,
-before any Lloyd step:</p>
-<div class="math display">\mathbb{E}\big[J_{\text{k-means++}}\big] \le 8(\ln k + 2)\, J^{\ast},</div>
-<p>where <span class="math inline">J^\ast</span> is the smallest inertia any <span class="math inline">k</span> centres can achieve and <span class="math inline">\mathbb{E}</span> is
-the average over the random choices. The expected cost is within a factor
-<span class="math inline">O(\log k)</span> of the best possible, and Lloyd's steps can only lower it further.
-Random seeding has no bound of this kind: its <span class="math inline">J</span> can be arbitrarily worse than
-<span class="math inline">J^\ast</span>.</p>
-<p><strong>Choosing <span class="math inline">k</span>: the elbow.</strong> Let <span class="math inline">J^\ast(k)</span> be the best inertia with <span class="math inline">k</span> clusters. It
-never increases with <span class="math inline">k</span>: given the best <span class="math inline">k</span>-cluster solution, put one extra centre
-exactly on a data point that is not yet a centre; that point's term drops to zero
-and no other term grows. At <span class="math inline">k = n</span> every point is its own centre and <span class="math inline">J = 0</span>. So
-&quot;minimise <span class="math inline">J</span> over <span class="math inline">k</span>&quot; always answers &quot;as many clusters as points&quot;. Instead, plot <span class="math inline">J</span>
-against <span class="math inline">k</span> and look for the <strong>elbow</strong>. Before it, an extra centre separates groups
-that were forced together, and <span class="math inline">J</span> drops a lot. After it, an extra centre only splits
-a genuine group in two, and <span class="math inline">J</span> drops a little.</p>
-</div>
+<!-- =================================================================== -->
+<section id="goal">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The goal: a few centres, small distances</h2>
+  </div>
+  <div class="col prose">
+    <p>Picture the 200 customers as dots on a plane, one axis for income and one for spending score. Clustering asks for a few groups whose dots lie close together. K-means turns "close together" into one number and makes it as small as it can.</p>
+    <p><b>Notation.</b> The data are <span class="m">n</span> points <span class="m">x_1, \dots, x_n</span>. Each <span class="m">x_i</span> is a vector of <span class="m">d</span> features, <span class="m">x_i \in \mathbb{R}^d</span>. In the code the points are the rows of <code>X</code>, with <span class="m">n = 200</span> and <span class="m">d = 2</span> (income in thousands of dollars, spending score from 1 to 100). We choose a number of clusters <span class="m">k</span>. Each cluster <span class="m">C_j</span> (<span class="m">j = 1, \dots, k</span>) is a set of points, and every point belongs to exactly one cluster. Each cluster has a <strong>centre</strong> (or centroid) <span class="m">\mu_j \in \mathbb{R}^d</span>, a point in the same space as the data. The squared Euclidean distance between a point <span class="m">x</span> and a centre <span class="m">\mu</span> is</p>
+    <div class="math-block">\lVert x - \mu \rVert^2 = \sum_{f=1}^{d} (x_f - \mu_f)^2 ,</div>
+    <p>the sum over the <span class="m">d</span> features of the squared coordinate differences.</p>
+    <p><b>The objective.</b> K-means looks for the clusters and centres that make the total squared distance from each point to its own centre as small as possible:</p>
+    <div class="math-block">J = \sum_{j=1}^{k} \; \sum_{x \in C_j} \lVert x - \mu_j \rVert^2 .</div>
+    <p>Read it as: for each cluster, add up how far its points sit from its centre (squared), then add over the clusters. <span class="m">J</span> is measured in squared feature units. A small <span class="m">J</span> means tight, compact groups. <span class="m">J</span> is called the <strong>inertia</strong> or within-cluster sum of squares; after fitting, scikit-learn stores it in <code>inertia_</code>.</p>
+    <p>Minimising <span class="m">J</span> exactly is hard: the number of ways to split <span class="m">n</span> points into <span class="m">k</span> groups grows roughly like <span class="m">k^n</span>. So k-means improves one split step by step instead.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is k-means?</p>
+      <p><b>In plain words:</b> a way to sort points into <span class="m">k</span> groups with no labels to learn from, by finding <span class="m">k</span> centres and sending each point to its nearest one, so that the groups are as tight as possible.</p>
+      <p><b>More precisely:</b> the search for centres <span class="m">\mu_1, \dots, \mu_k</span> and an assignment that minimise the inertia <span class="m">J</span>, carried out by Lloyd's alternating steps from a chosen start <a href="#ref-1">[1]</a>, <a href="#ref-2">[2]</a>. The problem is NP-hard in general; Lloyd's algorithm reaches a local minimum, and k-means++ seeding bounds how bad the start can be <a href="#ref-3">[3]</a>.</p>
+      <dl>
+        <dt>Centre, centroid</dt><dd>The point a cluster is measured from; at the optimum, the mean of its points.</dd>
+        <dt>Inertia</dt><dd><span class="m">J</span>: the total squared distance from each point to its own centre.</dd>
+        <dt>Local minimum</dt><dd>A split no single step can improve, though a different split could.</dd>
+        <dt>Seeding</dt><dd>How the starting centres are chosen before any step is taken.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="4-feature-scale-and-a-2-d-view-with-pca">4. Feature scale, and a 2-D view with PCA</h2>
-<p><strong>Scale.</strong> The distance <span class="math inline">\lVert x-\mu\rVert^2 = \sum_f (x_f-\mu_f)^2</span> adds squared
-differences from every feature, in whatever units each feature has. A feature with a
-large numerical spread dominates the sum. Suppose income were recorded in dollars
-instead of thousands of dollars: a gap of 10 thousand dollars would contribute
-<span class="math inline">10000^2 = 10^8</span>, while the largest possible gap in spending score, from 1 to 99,
-contributes only <span class="math inline">98^2 = 9604</span>. K-means would then cluster on income alone. In this
-data income and spending score have similar spreads (standard deviations of about
-26 each), so the chapter clusters them as they are. When age is added (standard
-deviation about 14 years), the three features are <strong>standardised</strong> first: each
-feature <span class="math inline">f</span> is replaced by</p>
-<div class="math display">z_f = \frac{x_f - m_f}{s_f},</div>
-<p>where <span class="math inline">m_f</span> and <span class="math inline">s_f</span> are that feature's mean and standard deviation over the data.
-Every standardised feature has mean 0 and standard deviation 1, so each gets a
-comparable say in the distance. This is what <code>StandardScaler</code> does.</p>
-<p><strong>PCA.</strong> With three features the clusters can no longer be drawn directly.
-Principal component analysis (PCA) finds the directions along which the data vary
-most. Take the standardised points <span class="math inline">z_i \in \mathbb{R}^d</span> (mean zero) and a unit vector
-<span class="math inline">v</span> (<span class="math inline">\lVert v\rVert = 1</span>). Projecting each point onto <span class="math inline">v</span> gives the number <span class="math inline">v^\top z_i</span>,
-and the variance of these numbers is <span class="math inline">v^\top \Sigma v</span>, where
-<span class="math inline">\Sigma = \frac1n\sum_i z_i z_i^\top</span> is the <span class="math inline">d\times d</span> covariance matrix. To find the
-direction of largest variance, maximise <span class="math inline">v^\top\Sigma v</span> subject to <span class="math inline">v^\top v = 1</span>. With
-a Lagrange multiplier <span class="math inline">\lambda</span>, set the gradient of <span class="math inline">v^\top\Sigma v - \lambda(v^\top v - 1)</span>
-to zero:</p>
-<div class="math display">2\Sigma v - 2\lambda v = 0 \quad\Longrightarrow\quad \Sigma v = \lambda v .</div>
-<p>So the best direction is an eigenvector of <span class="math inline">\Sigma</span>, and the variance along it is
-<span class="math inline">v^\top\Sigma v = \lambda v^\top v = \lambda</span>, its eigenvalue. The first principal
-component is the eigenvector with the largest eigenvalue <span class="math inline">\lambda_1</span>; the second is
-the eigenvector with the next largest, <span class="math inline">\lambda_2</span>, at right angles to the first. A
-2-D plot on these two directions keeps the share
-<span class="math inline">(\lambda_1+\lambda_2)/(\lambda_1+\lambda_2+\lambda_3)</span> of the total variance, which the
-code prints from <code>explained_variance_ratio_</code>. PCA is only used for viewing here: the
-clustering itself runs in the full 3-D space.</p>
-<p><strong>In the code.</strong> <code>KMeans(n_clusters=k, init=&quot;k-means++&quot;, n_init=10)</code> runs k-means++
-seeding followed by Lloyd's algorithm 10 times and keeps the run with the lowest <span class="math inline">J</span>.
-After fitting, <code>km.cluster_centers_</code> holds the centres <span class="math inline">\mu_j</span>, <code>km.labels_</code> each
-point's cluster, and <code>km.inertia_</code> is <span class="math inline">J</span>. Section 6 plots <span class="math inline">J</span> against <span class="math inline">k</span>; section 7
-compares <code>init=&quot;random&quot;</code> with <code>init=&quot;k-means++&quot;</code> using <code>n_init=1</code> (one Lloyd run
-each); section 8 standardises three features and views the clusters through <code>PCA</code>.</p>
-</div>
+<!-- =================================================================== -->
+<section id="lloyd">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Lloyd's algorithm, and why it only goes downhill</h2>
+  </div>
+  <div class="col prose">
+    <p><span class="m">J</span> depends on two things: the assignment (which cluster each point is in) and the centres. Fixing either one makes the other easy to choose. <strong>Lloyd's algorithm</strong> <a href="#ref-1">[1]</a> alternates the two choices:</p>
+    <ol>
+      <li><b>Assignment step.</b> Keep the centres fixed. Put each point in the cluster of its nearest centre.</li>
+      <li><b>Update step.</b> Keep the assignment fixed. Move each centre to the mean of its points, <span class="m">\mu_j = \frac{1}{\lvert C_j\rvert}\sum_{x\in C_j} x</span>, where <span class="m">\lvert C_j\rvert</span> is the number of points in <span class="m">C_j</span>.</li>
+    </ol>
+    <p>Repeat until no point changes cluster.</p>
+    <p><b>The assignment step cannot increase <span class="m">J</span>.</b> <span class="m">J</span> has one term per point, its squared distance to its centre. Choosing the nearest centre makes each term as small as the current centres allow, so no term grows and neither does the sum.</p>
+    <p><b>The update step cannot increase <span class="m">J</span>.</b> With the assignment fixed, the clusters no longer interact, so look at one cluster <span class="m">C</span> with <span class="m">m</span> points and ask which centre <span class="m">\mu</span> minimises</p>
+    <div class="math-block" data-narrow="\begin{aligned} g(\mu) &amp;= \sum_{x\in C} \lVert x - \mu\rVert^2 \\ &amp;= \sum_{x \in C}\sum_{f=1}^d (x_f - \mu_f)^2 . \end{aligned}">g(\mu) = \sum_{x\in C} \lVert x - \mu\rVert^2 = \sum_{x \in C}\sum_{f=1}^d (x_f - \mu_f)^2 .</div>
+    <p>Differentiate with respect to one coordinate <span class="m">\mu_f</span>. Only the terms containing <span class="m">\mu_f</span> matter, and the derivative of <span class="m">(x_f-\mu_f)^2</span> is <span class="m">-2(x_f-\mu_f)</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \frac{\partial g}{\partial \mu_f} &amp;= -2\sum_{x\in C}(x_f - \mu_f) \\ &amp;= -2\Big(\sum_{x\in C} x_f \;-\; m\,\mu_f\Big). \end{aligned}">\frac{\partial g}{\partial \mu_f} = -2\sum_{x\in C}(x_f - \mu_f) = -2\Big(\sum_{x\in C} x_f \;-\; m\,\mu_f\Big).</div>
+    <p>Setting this to zero gives <span class="m">\mu_f = \frac{1}{m} \sum_{x\in C} x_f</span>: each coordinate of the best centre is the average of that coordinate over the cluster. So the best centre is the cluster mean, written <span class="m">\bar x</span>. The second derivative is <span class="m">2m &gt; 0</span>, so this is a minimum.</p>
+    <p>A second derivation shows <em>how much</em> a misplaced centre costs. Write <span class="m">x - \mu = (x - \bar x) + (\bar x - \mu)</span> and expand the square. The cross terms add up to zero because <span class="m">\sum_{x\in C}(x-\bar x) = 0</span>, which leaves</p>
+    <div class="math-block" data-narrow="\begin{aligned} \sum_{x\in C}\lVert x-\mu\rVert^2 = {} &amp;\sum_{x\in C}\lVert x-\bar x\rVert^2 \\ &amp;+ m\,\lVert \bar x - \mu\rVert^2 . \end{aligned}">\sum_{x\in C}\lVert x-\mu\rVert^2 = \sum_{x\in C}\lVert x-\bar x\rVert^2 + m\,\lVert \bar x - \mu\rVert^2 .</div>
+    <p>The first term does not depend on <span class="m">\mu</span>. The second is a penalty: placing the centre a distance <span class="m">\delta</span> away from the mean adds exactly <span class="m">m\,\delta^2</span>. The mean is the only choice with zero penalty.</p>
+    <p><b>Convergence.</b> Each step lowers <span class="m">J</span> or leaves it unchanged, <span class="m">J \ge 0</span>, and there are only finitely many ways to assign <span class="m">n</span> points to <span class="m">k</span> clusters. So the algorithm stops after a finite number of steps. It stops at a <strong>local minimum</strong>: no single step can improve <span class="m">J</span>, but a completely different split may have a lower <span class="m">J</span>. Which local minimum it reaches depends on the starting centres.</p>
+    <p><b>Worked example.</b> Six points on a line, <span class="m">x = 1, 2, 3, 8, 9, 12</span>, with <span class="m">k = 2</span> and a poor start: <span class="m">\mu_1 = 1</span>, <span class="m">\mu_2 = 4</span>. The assignment step, with each point's distance to the two centres and its squared distance <span class="m">d^2</span> to the nearer one:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="stepT">
+      <thead><tr><th><span class="m">x</span></th><th><span class="m">\lvert x - 1 \rvert</span></th><th><span class="m">\lvert x - 4 \rvert</span></th><th>cluster</th><th><span class="m">d^2</span></th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>0</td><td>3</td><td>1</td><td>0</td></tr>
+        <tr><td>2</td><td>1</td><td>2</td><td>1</td><td>1</td></tr>
+        <tr><td>3</td><td>2</td><td>1</td><td>2</td><td>1</td></tr>
+        <tr><td>8</td><td>7</td><td>4</td><td>2</td><td>16</td></tr>
+        <tr><td>9</td><td>8</td><td>5</td><td>2</td><td>25</td></tr>
+        <tr><td>12</td><td>11</td><td>8</td><td>2</td><td>64</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>So <span class="m">J = 0+1+1+16+25+64 = 107</span>. The update step moves the centres to the means: <span class="m">\mu_1 = \frac{1+2}{2} = 1.5</span> and <span class="m">\mu_2 = \frac{3+8+9+12}{4} = 8</span>. With the same clusters, <span class="m">J = (0.25+0.25) + (25+0+1+16) = 42.5</span>. That completes one iteration.</p>
+    <p>The next assignment step moves the point <span class="m">3</span> to cluster 1 (it is <span class="m">1.5</span> from <span class="m">\mu_1</span> and <span class="m">5</span> from <span class="m">\mu_2</span>), and <span class="m">J</span> falls to <span class="m">19.75</span>. The next update gives <span class="m">\mu_1 = 2</span>, <span class="m">\mu_2 = \frac{29}{3} \approx 9.67</span> and <span class="m">J \approx 10.67</span>. After that no point changes cluster and the algorithm stops. <span class="m">J</span> went <span class="m">107 \to 42.5 \to 19.75 \to 10.67</span> and never rose. Step through it:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="lineW">
+      <canvas id="lineC" aria-label="Six points on a line coloured by cluster, with the two centres as crosses and each point joined to its centre" aria-describedby="lineCap"></canvas>
+      <p class="caption" id="lineCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn primary" type="button" id="lineStep">next half-step</button><button class="btn" type="button" id="lineReset">back to the start</button></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p class="big-idea">Each step can only lower <span class="m">J</span>; that is why k-means always stops, and why it stops at the first valley it finds.</p>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
+<!-- =================================================================== -->
+<section id="seeding">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Better starting centres (k-means++), and choosing k</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Random initialisation</b> picks <span class="m">k</span> data points uniformly at random as the starting centres. Two of them can fall inside the same natural group, and Lloyd's local moves often cannot pull one of them out to a group that has no centre.</p>
+    <p><b>k-means++</b> <a href="#ref-3">[3]</a> chooses the starting centres one at a time and favours points far from the centres already chosen. Let <span class="m">D(x)</span> be the distance from a point <span class="m">x</span> to the nearest centre chosen so far.</p>
+    <ol>
+      <li>Pick the first centre uniformly at random from the data.</li>
+      <li>Pick the next centre at random, choosing point <span class="m">x</span> with probability
+        <div class="math-block">P(x) = \frac{D(x)^2}{\sum_{x'} D(x')^2}.</div></li>
+      <li>Repeat step 2 until there are <span class="m">k</span> centres, then run Lloyd's algorithm from them.</li>
+    </ol>
+    <p>A point next to a chosen centre has <span class="m">D(x) \approx 0</span> and is almost never picked; a point in a region with no centre is likely to be picked.</p>
+    <p>With the six points above, suppose the first centre is <span class="m">1</span>. Then <span class="m">D(x)^2 = 0, 1, 4, 49, 64, 121</span>, which add to <span class="m">239</span>. The probability that the second centre lands in the far group <span class="m">\{8, 9, 12\}</span> is <span class="m">\frac{49+64+121}{239} \approx 0.98</span>. Uniform random choice among the five other points would give <span class="m">\frac{3}{5} = 0.6</span>. On the customers:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="seedW">
+      <canvas id="seedC" aria-label="The customers drawn with size proportional to their squared distance to the nearest chosen centre, with the chosen centres as crosses" aria-describedby="seedCap"></canvas>
+      <p class="caption" id="seedCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn primary" type="button" id="sNext">draw the next centre</button><button class="btn" type="button" id="sNew">start over</button><button class="btn" type="button" id="sGreedy" aria-pressed="false">greedy, as scikit-learn</button></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The guarantee, proved by Arthur and Vassilvitskii (2007) <a href="#ref-3">[3]</a>, concerns the seeding alone, before any Lloyd step:</p>
+    <div class="math-block">\mathbb{E}\big[J_{\text{k-means++}}\big] \le 8(\ln k + 2)\, J^{\ast},</div>
+    <p>where <span class="m">J^\ast</span> is the smallest inertia any <span class="m">k</span> centres can achieve and <span class="m">\mathbb{E}</span> is the average over the random choices. The expected cost is within a factor <span class="m">O(\log k)</span> of the best possible, and Lloyd's steps can only lower it further. Random seeding has no bound of this kind: its <span class="m">J</span> can be arbitrarily worse than <span class="m">J^\ast</span>. scikit-learn's seeding is the <em>greedy</em> k-means++ of the same paper: at each step it draws <span class="m">2 + \lfloor \ln k \rfloor</span> candidates from <span class="m">P(x)</span> and keeps the one that lowers the current <span class="m">J</span> most (the widget's third button).</p>
+    <p><b>Choosing <span class="m">k</span>: the elbow</b> <a href="#ref-6">[6]</a><b>.</b> Let <span class="m">J^\ast(k)</span> be the best inertia with <span class="m">k</span> clusters. It never increases with <span class="m">k</span>: given the best <span class="m">k</span>-cluster solution, put one extra centre exactly on a data point that is not yet a centre; that point's term drops to zero and no other term grows. At <span class="m">k = n</span> every point is its own centre and <span class="m">J = 0</span>. So "minimise <span class="m">J</span> over <span class="m">k</span>" always answers "as many clusters as points". Instead, plot <span class="m">J</span> against <span class="m">k</span> and look for the <strong>elbow</strong>. Before it, an extra centre separates groups that were forced together, and <span class="m">J</span> drops a lot. After it, an extra centre only splits a genuine group in two, and <span class="m">J</span> drops a little.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="scale">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Feature scale, and a 2-D view with PCA</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scale.</b> The distance <span class="m">\lVert x-\mu\rVert^2 = \sum_f (x_f-\mu_f)^2</span> adds squared differences from every feature, in whatever units each feature has. A feature with a large numerical spread dominates the sum. Suppose income were recorded in dollars instead of thousands of dollars: a gap of 10 thousand dollars would contribute <span class="m">10000^2 = 10^8</span>, while the largest possible gap in spending score, from 1 to 99, contributes only <span class="m">98^2 = 9604</span>. K-means would then cluster on income alone. In this data income and spending score have similar spreads (standard deviations of about 26 each), so the chapter clusters them as they are. When age is added (standard deviation about 14 years), the three features are <strong>standardised</strong> first: each feature <span class="m">f</span> is replaced by</p>
+    <div class="math-block">z_f = \frac{x_f - m_f}{s_f},</div>
+    <p>where <span class="m">m_f</span> and <span class="m">s_f</span> are that feature's mean and standard deviation over the data. Every standardised feature has mean 0 and standard deviation 1, so each gets a comparable say in the distance. This is what <code>StandardScaler</code> does.</p>
+    <p><b>PCA.</b> With three features the clusters can no longer be drawn directly. Principal component analysis (PCA) finds the directions along which the data vary most <a href="#ref-5">[5]</a>. Take the standardised points <span class="m">z_i \in \mathbb{R}^d</span> (mean zero) and a unit vector <span class="m">v</span> (<span class="m">\lVert v\rVert = 1</span>). Projecting each point onto <span class="m">v</span> gives the number <span class="m">v^\top z_i</span>, and the variance of these numbers is <span class="m">v^\top \Sigma v</span>, where <span class="m">\Sigma = \frac{1}{n}\sum_i z_i z_i^\top</span> is the <span class="m">d\times d</span> covariance matrix. To find the direction of largest variance, maximise <span class="m">v^\top\Sigma v</span> subject to <span class="m">v^\top v = 1</span>. With a Lagrange multiplier <span class="m">\lambda</span>, set the gradient of <span class="m">v^\top\Sigma v - \lambda(v^\top v - 1)</span> to zero:</p>
+    <div class="math-block">2\Sigma v - 2\lambda v = 0 \quad\Longrightarrow\quad \Sigma v = \lambda v .</div>
+    <p>So the best direction is an eigenvector of <span class="m">\Sigma</span>, and the variance along it is <span class="m">v^\top\Sigma v = \lambda v^\top v = \lambda</span>, its eigenvalue. The first principal component is the eigenvector with the largest eigenvalue <span class="m">\lambda_1</span>; the second is the eigenvector with the next largest, <span class="m">\lambda_2</span>, at right angles to the first. A 2-D plot on these two directions keeps the share <span class="m">\frac{\lambda_1+\lambda_2}{\lambda_1+\lambda_2+\lambda_3}</span> of the total variance, which the code prints from <code>explained_variance_ratio_</code>. PCA is only used for viewing here: the clustering itself runs in the full 3-D space.</p>
+    <p><b>In the code.</b> <code>KMeans(n_clusters=k, init="k-means++", n_init=10)</code> runs k-means++ seeding followed by Lloyd's algorithm 10 times and keeps the run with the lowest <span class="m">J</span>. Left to its default, <code>n_init="auto"</code>, scikit-learn runs k-means++ once and random initialisation 10 times. After fitting, <code>km.cluster_centers_</code> holds the centres <span class="m">\mu_j</span>, <code>km.labels_</code> each point's cluster, and <code>km.inertia_</code> is <span class="m">J</span>. Part 6 plots <span class="m">J</span> against <span class="m">k</span>; Part 7 compares <code>init="random"</code> with <code>init="k-means++"</code> using <code>n_init=1</code> (one Lloyd run each); Part 8 standardises three features and views the clusters through <code>PCA</code>.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="data">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The data</h2>
+  </div>
+  <div class="col prose">
+    <p>200 mall customers, from the Kaggle "Mall Customer Segmentation Data" <a href="#ref-7">[7]</a>: annual income and a spending score (1–100, assigned by the mall from purchase behaviour). No labels: this is genuinely unsupervised, the classic "segment our customers" problem.</p>
+    <pre><code class="language-python">import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
@@ -271,220 +231,244 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 import mlutils
-mlutils.set_style()</code></pre>
-</div>
+mlutils.set_style()
 
-<div class="md">
-<h2 id="5-the-data">5. The data</h2>
-<p>200 mall customers: annual income and a spending score (1-100, assigned by the mall
-from purchase behaviour). No labels — this is genuinely unsupervised, the classic
-&quot;segment our customers&quot; problem.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">mall = pd.read_csv(&quot;data/Mall_Customers.csv&quot;)
+mall = pd.read_csv("data/Mall_Customers.csv")
 print(mall.shape)
 mall.head()</code></pre>
-<pre class="output">(200, 5)
-   CustomerID  Gender  Age  Annual Income (k$)  Spending Score (1-100)
+    <pre class="output"><code class="nohl">(200, 5)</code></pre>
+  </div>
+  <div class="col prose">
+    <pre class="output"><code class="nohl">   CustomerID  Gender  Age  Annual Income (k$)  Spending Score (1-100)
 0           1    Male   19                  15                      39
 1           2    Male   21                  15                      81
 2           3  Female   20                  16                       6
 3           4  Female   23                  16                      77
-4           5  Female   31                  17                      40</pre>
-</div>
+4           5  Female   31                  17                      40</code></pre>
 
-<div class="cell">
-<pre class="source"><code class="language-python">X = mall[[&quot;Annual Income (k$)&quot;, &quot;Spending Score (1-100)&quot;]].values
-fig, ax = plt.subplots(figsize=(6, 5))
-ax.scatter(X[:, 0], X[:, 1], color=mlutils.BLUE, alpha=0.7)
-ax.set(xlabel=&quot;Annual income (k$)&quot;, ylabel=&quot;Spending score (1-100)&quot;, title=&quot;Mall customers&quot;)</code></pre>
-<pre class="output">[Text(0.5, 0, &#x27;Annual income (k$)&#x27;),
- Text(0, 0.5, &#x27;Spending score (1-100)&#x27;),
- Text(0.5, 1.0, &#x27;Mall customers&#x27;)]</pre>
-<figure class="output-figure"><img src="img/05-1.png" alt="Figure 1 produced by the code above" width="605" height="520" loading="lazy"></figure>
-</div>
+    <pre><code class="language-python">X = mall[["Annual Income (k$)", "Spending Score (1-100)"]].values</code></pre>
+    <p>Even by eye, in the demo at the top, there look to be a handful of natural groups: low income and low spending, high income and high spending, high income and low spending, and so on. K-means turns that visual impression into a rule. Four pairs of customers share exactly the same income and score; they count twice, as they should.</p>
+  </div>
+</section>
 
-<div class="md">
-<p>Even by eye there look to be a handful of natural groups: low income / low spending,
-high income / high spending, high income / low spending, and so on. K-means turns
-that visual impression into a rule.</p>
-<h2 id="6-choosing-k-the-elbow-method">6. Choosing k: the elbow method</h2>
-<p>K-means needs <span class="math inline">k</span> as an input. There's no single correct answer, but <strong>inertia</strong> —
-the objective <span class="math inline">J</span> of section 1 — always
-decreases as <span class="math inline">k</span> grows (section 3), so we look for where it stops decreasing <em>quickly</em>: the
-&quot;elbow&quot;.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">ks = range(1, 11)
-inertias = [KMeans(n_clusters=k, init=&quot;k-means++&quot;, n_init=10, random_state=42).fit(X).inertia_ for k in ks]
-
-fig, ax = plt.subplots(figsize=(6.5, 4.5))
-ax.plot(list(ks), inertias, color=mlutils.BLUE, marker=&quot;o&quot;)
-ax.set(xlabel=&quot;k&quot;, ylabel=&quot;inertia&quot;, title=&quot;Elbow method: inertia vs. number of clusters&quot;)
-ax.axvline(5, color=mlutils.ORANGE, ls=&quot;--&quot;, lw=1.5)</code></pre>
-<pre class="output">&lt;matplotlib.lines.Line2D at 0x22f54e63750&gt;</pre>
-<figure class="output-figure"><img src="img/05-2.png" alt="Figure 2 produced by the code above" width="675" height="478" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<p>The drop from <span class="math inline">k{=}1</span> to <span class="math inline">k{=}5</span> is steep; after that it flattens. <span class="math inline">k=5</span> is the
-classic answer for this dataset, and it lines up with the visual groups above.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">k = 5
-km = KMeans(n_clusters=k, init=&quot;k-means++&quot;, n_init=10, random_state=42).fit(X)
-mall[&quot;cluster&quot;] = km.labels_
-print(mall[&quot;cluster&quot;].value_counts().sort_index().rename(&quot;customers&quot;))
-
-fig, ax = plt.subplots(figsize=(6.5, 5))
-for c, color in zip(range(k), mlutils.PALETTE):
-    sub = X[km.labels_ == c]
-    ax.scatter(sub[:, 0], sub[:, 1], color=color, label=f&quot;cluster {c}&quot;, alpha=0.8)
-ax.scatter(km.cluster_centers_[:, 0], km.cluster_centers_[:, 1], color=mlutils.INK, marker=&quot;X&quot;, s=160,
-           label=&quot;centroids&quot;)
-ax.set(xlabel=&quot;Annual income (k$)&quot;, ylabel=&quot;Spending score (1-100)&quot;, title=f&quot;K-means, k={k}&quot;)
-ax.legend(fontsize=8)</code></pre>
-<pre class="output">cluster
+<!-- =================================================================== -->
+<section id="elbow-part">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Choosing k: the elbow method</h2>
+  </div>
+  <div class="col prose">
+    <p>K-means needs <span class="m">k</span> as an input. There is no single correct answer, but inertia, the objective <span class="m">J</span> of Part 1, always decreases as <span class="m">k</span> grows (Part 3), so we look for where it stops decreasing <em>quickly</em>: the "elbow".</p>
+    <pre><code class="language-python">ks = range(1, 11)
+inertias = [KMeans(n_clusters=k, init="k-means++", n_init=10, random_state=42).fit(X).inertia_ for k in ks]</code></pre>
+  </div>
+  <div class="col">
+    <div class="widget" id="elbow">
+      <div class="seg" role="group" aria-label="Which score">
+        <button class="btn" type="button" data-show="J" aria-pressed="true">inertia</button>
+        <button class="btn" type="button" data-show="S" aria-pressed="false">silhouette</button>
+      </div>
+      <canvas id="elbowC" aria-label="Inertia, or the silhouette score, against the number of clusters from 1 to 10, with k = 5 marked" aria-describedby="elbowCap"></canvas>
+      <p class="caption" id="elbowCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>The drop from <span class="m">k = 1</span> to <span class="m">k = 5</span> is steep; after that it flattens. <span class="m">k = 5</span> is the classic answer for this dataset, and it lines up with the visual groups.</p>
+    <pre><code class="language-python">k = 5
+km = KMeans(n_clusters=k, init="k-means++", n_init=10, random_state=42).fit(X)
+mall["cluster"] = km.labels_
+print(mall["cluster"].value_counts().sort_index().rename("customers"))</code></pre>
+    <pre class="output"><code class="nohl">cluster
 0    81
 1    39
 2    22
 3    35
 4    23
-Name: customers, dtype: int64
-&lt;matplotlib.legend.Legend at 0x22f52a54050&gt;</pre>
-<figure class="output-figure"><img src="img/05-3.png" alt="Figure 3 produced by the code above" width="646" height="520" loading="lazy"></figure>
-</div>
+Name: customers, dtype: int64</code></pre>
+    <p>Five clean, interpretable segments fall out, with <span class="m">J = 44{,}448</span>: a large middle group (81 customers around 55 k$ and a score of 50), high earners who spend (39), high earners who do not (35), and two small low-income groups, one spending freely (22) and one carefully (23). These are exactly the kind of customer segments a marketing team would want to target differently. Press <em>run to convergence</em> in the demo at the top from a k-means++ start, and you will usually land on them.</p>
+  </div>
+</section>
 
-<div class="md">
-<p>Five clean, interpretable segments fall out: budget-conscious high earners, careful
-low earners, big spenders regardless of income, and so on — exactly the kind of
-customer segments a marketing team would want to target differently.</p>
-<h2 id="7-random-init-vs-k-means">7. Random init vs. k-means++</h2>
-<p><code>init=&quot;random&quot;</code> just picks <span class="math inline">k</span> data points at random as starting centroids: two
-starting points can easily land close together, wasting a cluster and biasing where
-K-means gets stuck. <code>init=&quot;k-means++&quot;</code> instead picks starting centroids one at a
-time, favouring points <em>far</em> from centroids already chosen — spreading the starting
-guesses out before the iterating even begins.</p>
-<p>We compare them fairly: <strong>one single run each</strong> (<code>n_init=1</code>, so neither method gets
-to retry and keep its best attempt), repeated over 30 random seeds.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">random_inertias, pp_inertias = [], []
+<!-- =================================================================== -->
+<section id="race">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Random against k-means++</h2>
+  </div>
+  <div class="col prose">
+    <p><code>init="random"</code> just picks <span class="m">k</span> data points at random as starting centroids: two starting points can easily land close together, wasting a cluster and biasing where k-means gets stuck. <code>init="k-means++"</code> instead picks starting centroids one at a time, favouring points <em>far</em> from centroids already chosen, spreading the starting guesses out before the iterating even begins.</p>
+    <p>We compare them fairly: <strong>one single run each</strong> (<code>n_init=1</code>, so neither method gets to retry and keep its best attempt), repeated over 30 random seeds.</p>
+    <pre><code class="language-python">random_inertias, pp_inertias = [], []
 for seed in range(30):
     random_inertias.append(
-        KMeans(n_clusters=5, init=&quot;random&quot;, n_init=1, random_state=seed).fit(X).inertia_)
+        KMeans(n_clusters=5, init="random", n_init=1, random_state=seed).fit(X).inertia_)
     pp_inertias.append(
-        KMeans(n_clusters=5, init=&quot;k-means++&quot;, n_init=1, random_state=seed).fit(X).inertia_)
+        KMeans(n_clusters=5, init="k-means++", n_init=1, random_state=seed).fit(X).inertia_)
 
 random_inertias, pp_inertias = np.array(random_inertias), np.array(pp_inertias)
-print(f&quot;random init:   mean inertia {random_inertias.mean():,.0f}  &quot;
-      f&quot;(std {random_inertias.std():,.0f}, worst {random_inertias.max():,.0f})&quot;)
-print(f&quot;k-means++ init: mean inertia {pp_inertias.mean():,.0f}  &quot;
-      f&quot;(std {pp_inertias.std():,.0f}, worst {pp_inertias.max():,.0f})&quot;)</code></pre>
-<pre class="output">random init:   mean inertia 55,718  (std 14,855, worst 91,762)
-k-means++ init: mean inertia 48,140  (std 8,250, worst 66,733)</pre>
-</div>
+print(f"random init:   mean inertia {random_inertias.mean():,.0f}  "
+      f"(std {random_inertias.std():,.0f}, worst {random_inertias.max():,.0f})")
+print(f"k-means++ init: mean inertia {pp_inertias.mean():,.0f}  "
+      f"(std {pp_inertias.std():,.0f}, worst {pp_inertias.max():,.0f})")
+best = min(random_inertias.min(), pp_inertias.min())
+print(f"runs ending at the best inertia found, {best:,.0f}: "
+      f"random {np.sum(random_inertias < best + 1)} of 30, k-means++ {np.sum(pp_inertias < best + 1)} of 30")</code></pre>
+    <pre class="output"><code class="nohl">random init:   mean inertia 55,718  (std 14,855, worst 91,762)
+k-means++ init: mean inertia 48,140  (std 8,250, worst 66,733)
+runs ending at the best inertia found, 44,448: random 10 of 30, k-means++ 18 of 30</code></pre>
+    <p>k-means++ is <strong>better on average</strong> and <strong>more consistent</strong> (smaller spread) than random initialisation. The averages hide the shape of the thing: a single run ends either at the optimum, <span class="m">J = 44{,}448</span> (or a near-twin at <span class="m">44{,}454</span>), or at a bad local minimum between <span class="m">66{,}000</span> and <span class="m">92{,}000</span>, where two centres share one natural group and another group has none. Random initialisation reached the optimum in 10 of the 30 runs, k-means++ in 18 (over 1,000 seeds: 39% against 52%). Neither is safe on its own, which is why restarts exist (exercise 1); k-means++ makes each restart more likely to count, and that is why scikit-learn defaults to it. Run the race yourself, a hundred seeds at a time:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="raceW">
+      <canvas id="raceC" aria-label="Histograms of the inertia reached by single runs from random starts and from k-means++ starts, over a hundred seeds" aria-describedby="raceCap"></canvas>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>random start</span>
+        <span class="key"><span class="sw" style="background:var(--post)"></span>k-means++ start</span>
+      </div>
+      <p class="caption" id="raceCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn" type="button" id="raceAgain">another hundred seeds</button></div>
+    </div>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">fig, ax = plt.subplots(figsize=(6.5, 4.5))
-ax.boxplot([random_inertias, pp_inertias], tick_labels=[&quot;random init&quot;, &quot;k-means++ init&quot;],
-           patch_artist=True,
-           boxprops=dict(facecolor=mlutils.BLUE, alpha=0.5),
-           medianprops=dict(color=mlutils.ORANGE, linewidth=2))
-ax.set(ylabel=&quot;inertia (single run, no retries)&quot;, title=&quot;30 seeds: k-means++ wins on average and on worst case&quot;)</code></pre>
-<pre class="output">[Text(0, 0.5, &#x27;inertia (single run, no retries)&#x27;),
- Text(0.5, 1.0, &#x27;30 seeds: k-means++ wins on average and on worst case&#x27;)]</pre>
-<figure class="output-figure"><img src="img/05-4.png" alt="Figure 4 produced by the code above" width="675" height="455" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<p>k-means++ is both <strong>better on average</strong> and <strong>more consistent</strong> (smaller spread) than
-random initialisation, and its worst run across 30 seeds still beats random
-initialisation's <em>average</em> run. That's exactly why scikit-learn defaults to it, and
-why real code should almost never override that default.</p>
-<h2 id="8-a-2d-view-via-pca">8. A 2D view via PCA</h2>
-<p>The plots above already used income and spending directly because there were only two
-features. With more features (say, if we clustered on income, spending <em>and</em> age),
-we'd need to project down to 2D to plot anything — principal component analysis (PCA)
-does that by finding the directions of largest variance.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">X3 = StandardScaler().fit_transform(mall[[&quot;Annual Income (k$)&quot;, &quot;Spending Score (1-100)&quot;, &quot;Age&quot;]])
+<!-- =================================================================== -->
+<section id="pca-part">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>A 2-D view via PCA</h2>
+  </div>
+  <div class="col prose">
+    <p>The plots above used income and spending directly because there were only two features. With more features (say, income, spending <em>and</em> age), we need to project down to two dimensions to plot anything; principal component analysis does that by finding the directions of largest variance (Part 4).</p>
+    <pre><code class="language-python">X3 = StandardScaler().fit_transform(mall[["Annual Income (k$)", "Spending Score (1-100)", "Age"]])
 pca = PCA(n_components=2).fit(X3)
 X3_2d = pca.transform(X3)
-print(f&quot;variance explained by the first 2 components: {pca.explained_variance_ratio_.sum():.1%}&quot;)
+print(f"variance explained by the first 2 components: {pca.explained_variance_ratio_.sum():.1%}")
 
-km3 = KMeans(n_clusters=5, init=&quot;k-means++&quot;, n_init=10, random_state=42).fit(X3)
-fig, ax = plt.subplots(figsize=(6.5, 5))
-for c, color in zip(range(5), mlutils.PALETTE):
-    sub = X3_2d[km3.labels_ == c]
-    ax.scatter(sub[:, 0], sub[:, 1], color=color, label=f&quot;cluster {c}&quot;, alpha=0.8)
-ax.set(xlabel=&quot;PC1&quot;, ylabel=&quot;PC2&quot;, title=&quot;Clusters on income+spending+age, viewed via PCA&quot;)
-ax.legend(fontsize=8)</code></pre>
-<pre class="output">variance explained by the first 2 components: 77.6%
-&lt;matplotlib.legend.Legend at 0x22f573dcb90&gt;</pre>
-<figure class="output-figure"><img src="img/05-5.png" alt="Figure 5 produced by the code above" width="634" height="520" loading="lazy"></figure>
-</div>
+km3 = KMeans(n_clusters=5, init="k-means++", n_init=10, random_state=42).fit(X3)</code></pre>
+    <pre class="output"><code class="nohl">variance explained by the first 2 components: 77.6%</code></pre>
+  </div>
+  <div class="col">
+    <div class="widget" id="pcaW">
+      <canvas id="pcaC" aria-label="The customers on the first two principal components of standardised income, spending and age, coloured by the five clusters found in three dimensions" aria-describedby="pcaCap"></canvas>
+      <p class="caption" id="pcaCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>Adding <code>Age</code> changes which customers land together: the five 3-feature clusters are not the five 2-feature clusters above (an adjusted Rand index of 0.58 between the two labellings; the two high-income groups survive, the large middle group is cut by age). The plot lets us see the result of clustering in three dimensions at all; that is PCA's job here, not k-means's. The first two components keep 77.6% of the variance, so the picture is faithful but not complete.</p>
+  </div>
+</section>
 
-<div class="md">
-<p>Adding <code>Age</code> changes which customers land together (PCA chapter 05's clusters aren't
-the same groups as the 2-feature clustering above), but the plot lets us see the
-result of clustering in more than 2 dimensions at all — that's PCA's job here, not
-K-means's.</p>
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-n-init-in-practice">Exercise 1: <code>n_init</code> in practice</h3>
-<p>Refit with <code>init=&quot;random&quot;, n_init=10</code> (the scikit-learn old default: retry 10 times,
-keep the best). How does its inertia compare to a single k-means++ run? To 10 retries
-of k-means++?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">KMeans(n_clusters=5, init=&quot;random&quot;, n_init=10, random_state=0).fit(X).inertia_
-</code></pre>
-<p>Multiple restarts substantially close the gap — the whole risk of random init is a
-single <em>unlucky</em> draw, which retries mostly cure. K-means++ still wins because it
-also converges to good solutions <em>faster</em> per attempt.</p>
-</details>
-<h3 id="exercise-2-silhouette-score">Exercise 2: Silhouette score</h3>
-<p>Compute <code>sklearn.metrics.silhouette_score</code> for <span class="math inline">k=2 \ldots 8</span> instead of inertia. Does
-it pick the same <span class="math inline">k</span> as the elbow method?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">from sklearn.metrics import silhouette_score
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The objective</b>: the inertia <span class="m">J</span>, the total squared distance from each point to its own centre.</div></li>
+      <li><div><b>Lloyd's algorithm</b>: assign to the nearest centre, move each centre to its mean; each half-step lowers <span class="m">J</span>, so it stops, at a local minimum.</div></li>
+      <li><div><b>The mean is the best centre</b>: any other place costs exactly <span class="m">m\,\delta^2</span> more.</div></li>
+      <li><div><b>k-means++</b>: pick starts far from each other, with probability <span class="m">\propto D(x)^2</span>; the expected cost is within <span class="m">8(\ln k + 2)</span> of the best.</div></li>
+      <li><div><b>Choosing <span class="m">k</span></b>: the elbow of <span class="m">J</span>, or the peak of the silhouette; here both say 5.</div></li>
+      <li><div><b>Starts matter</b>: single runs end at the optimum or in a bad valley; k-means++ reaches the optimum more often, restarts cure most of the rest.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Inertia</td><td>The within-cluster sum of squares <span class="m">J</span>; smaller means tighter clusters.</td></tr>
+        <tr><td>Lloyd's algorithm</td><td>Alternating assignment and update steps until nothing changes.</td></tr>
+        <tr><td>Local minimum</td><td>A clustering no single step improves; not necessarily the best one.</td></tr>
+        <tr><td>k-means++</td><td>Seeding that draws each new centre with probability proportional to <span class="m">D(x)^2</span>.</td></tr>
+        <tr><td>Elbow</td><td>The <span class="m">k</span> after which extra clusters stop lowering <span class="m">J</span> by much.</td></tr>
+        <tr><td>Silhouette</td><td>How much closer a point is to its own cluster than to the nearest other one, from −1 to 1.</td></tr>
+        <tr><td>Standardising</td><td>Rescaling each feature to mean 0 and standard deviation 1 before measuring distances.</td></tr>
+        <tr><td>Principal components</td><td>The directions of largest variance: the eigenvectors of the covariance matrix.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b><code>n_init</code> in practice.</b> Refit with <code>init="random", n_init=10</code> (retry 10 times, keep the best). How does its inertia compare with a single k-means++ run? With 10 retries of k-means++?
+        <details class="sol"><summary>Hint</summary><p>Print <code>inertia_</code> and <code>n_iter_</code> for each. The race of Part 7 says how often a single random run misses; ten tries miss only if all ten do.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">for init, n_init in (("random", 10), ("k-means++", 1), ("k-means++", 10)):
+    km_ = KMeans(n_clusters=5, init=init, n_init=n_init, random_state=0).fit(X)
+    print(init, n_init, round(km_.inertia_, 1), km_.n_iter_)</code></pre>
+          <p>All three reach the same inertia, 44,448.5, the optimum of Part 7. The whole risk of random initialisation is a single unlucky draw, and ten retries almost always cure it: with <code>n_init=10</code>, random initialisation reached the optimum for 29 of 30 seeds. What k-means++ still buys is speed: a single run from k-means++ seeds averaged 4.9 Lloyd iterations against 6.9 from random seeds over the 30 seeds of Part 7, and with <code>n_init="auto"</code> scikit-learn runs it once where it would run random initialisation ten times.</p></details>
+      </div></li>
+      <li><div><b>Silhouette score.</b> Compute <code>sklearn.metrics.silhouette_score</code> for <span class="m">k = 2, \dots, 8</span> instead of inertia. Does it pick the same <span class="m">k</span> as the elbow method?
+        <details class="sol"><summary>Hint</summary><p>The widget of Part 6 has a <em>silhouette</em> button. Unlike inertia, the silhouette can go down when <span class="m">k</span> goes up.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">from sklearn.metrics import silhouette_score
 for k in range(2, 9):
-    labels = KMeans(n_clusters=k, init=&quot;k-means++&quot;, n_init=10, random_state=42).fit_predict(X)
-    print(k, silhouette_score(X, labels))
-</code></pre>
-<p>Silhouette score often agrees closely with the elbow's choice, but unlike inertia it
-doesn't automatically favour larger <span class="math inline">k</span>, so it's a useful second opinion.</p>
-</details>
-<h2 id="key-takeaways">Key takeaways</h2>
-<ul>
-<li>K-means alternates &quot;assign to nearest centroid&quot; and &quot;move centroid to the mean of
-its points&quot; until neither changes; it always converges, but only to a local
-optimum.</li>
-<li>The elbow method picks <span class="math inline">k</span> by looking for where adding another cluster stops buying
-much reduction in inertia.</li>
-<li>k-means++ initialisation spreads out the starting centroids instead of picking them
-purely at random, giving both a better <em>and</em> more consistent result across runs —
-which is why it's the library default.</li>
-</ul>
-</div>
-</main>
+    labels = KMeans(n_clusters=k, init="k-means++", n_init=10, random_state=42).fit_predict(X)
+    print(k, silhouette_score(X, labels))</code></pre>
+          <p>The silhouette score is 0.297, 0.468, 0.493, <b>0.554</b>, 0.540, 0.529, 0.455 for <span class="m">k = 2, \dots, 8</span>: it peaks at <span class="m">k = 5</span>, the elbow's choice. Unlike inertia it does not automatically favour larger <span class="m">k</span> (it falls again after 5), so it is a useful second opinion <a href="#ref-4">[4]</a>; it is also slower, since it compares every pair of points.</p></details>
+      </div></li>
+      <li><div><b>A bad valley.</b> Among the 30 single random-start runs of Part 7, take one that ended above 60,000 and cross-tabulate its labels against the five segments of Part 6. Which natural group has two centres, which has none, and why can no single assignment or update step repair it?
+        <details class="sol"><summary>Hint</summary><p>The demo at the top shows the same thing: choose a random start and press <em>new start</em> until a run converges above 60,000, then look at the crosses. A centre that owns half of a group is the mean of its half; moving it towards the empty group would first make <span class="m">J</span> worse.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">for seed in range(30):
+    km_ = KMeans(n_clusters=5, init="random", n_init=1, random_state=seed).fit(X)
+    if km_.inertia_ > 60000:
+        print(seed, round(km_.inertia_)); print(pd.crosstab(km.labels_, km_.labels_)); break</code></pre>
+          <p>Twelve of the 30 runs end above 60,000. The first, seed 4, is the worst of them, at 89,897: the large middle group has swallowed the careful low-income group, both high-income groups are split between two centres, and the free-spending low-income group is scattered over two clusters. The commoner valleys near 66,500 are simpler: one high-income group split in two, and the middle group swallowing one small low-income group (in 400 random single runs, that was the shape of about nine bad valleys in ten). Every point is already with its nearest centre, and every centre is already the mean of its points, so both half-steps leave everything unchanged: that is the definition of a local minimum. Getting out would need a <em>joint</em> move, taking one of the two sharing centres across empty space to the orphaned group, which makes <span class="m">J</span> larger before it makes it smaller. Lloyd's algorithm never takes such a move; k-means++ seeding and restarts exist to avoid starting in that valley at all.</p></details>
+      </div></li>
+      <li><div><b>Scale matters.</b> Cluster the same two features with income in dollars (multiply the column by 1,000) and <span class="m">k = 5</span>. What happens to the clusters, and why does standardising fix it?
+        <details class="sol"><summary>Hint</summary><p>Part 4 did the arithmetic: a gap of 10 thousand dollars contributes <span class="m">10^8</span> to the squared distance, the whole range of the spending score less than <span class="m">10^4</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">Xd = X * np.array([1000, 1])
+labels_d = KMeans(n_clusters=5, n_init=10, random_state=42).fit_predict(Xd)
+print(pd.crosstab(labels_d, km.labels_))</code></pre>
+          <p>With income in dollars the five clusters are five income bands, straight vertical stripes: the spending score, whose whole range is worth less than one thousandth of a 10 k$ income gap, no longer influences any assignment. Standardising both features (or, as here, leaving both in units with similar spreads of about 26) gives each a comparable say. K-means has no notion of what a feature means; it only sees squared differences, in whatever units it is given.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>S. P. Lloyd. "Least squares quantization in PCM". <em>IEEE Transactions on Information Theory</em> 28(2), 129–137, 1982 (written in 1957). <a href="https://doi.org/10.1109/TIT.1982.1056489">doi:10.1109/TIT.1982.1056489</a>. The alternating algorithm.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>J. MacQueen. "Some methods for classification and analysis of multivariate observations". <em>Proceedings of the Fifth Berkeley Symposium on Mathematical Statistics and Probability</em>, vol. 1, 281–297, 1967. The name "k-means".</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>D. Arthur and S. Vassilvitskii. "k-means++: the advantages of careful seeding". <em>Proceedings of the Eighteenth Annual ACM-SIAM Symposium on Discrete Algorithms</em>, 1027–1035, 2007. <a href="https://dl.acm.org/doi/10.5555/1283383.1283494">dl.acm.org/doi/10.5555/1283383.1283494</a>. The seeding, its guarantee, and the greedy variant.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>P. J. Rousseeuw. "Silhouettes: a graphical aid to the interpretation and validation of cluster analysis". <em>Journal of Computational and Applied Mathematics</em> 20, 53–65, 1987. <a href="https://doi.org/10.1016/0377-0427(87)90125-7">doi:10.1016/0377-0427(87)90125-7</a></div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>I. T. Jolliffe and J. Cadima. "Principal component analysis: a review and recent developments". <em>Philosophical Transactions of the Royal Society A</em> 374, 20150202, 2016. <a href="https://doi.org/10.1098/rsta.2015.0202">doi:10.1098/rsta.2015.0202</a></div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>T. Hastie, R. Tibshirani and J. Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed. Springer, 2009. <a href="https://doi.org/10.1007/978-0-387-84858-7">doi:10.1007/978-0-387-84858-7</a>. Chapter 14, clustering and principal components.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>V. Choudhary. "Mall Customer Segmentation Data". Kaggle. <a href="https://www.kaggle.com/datasets/vjchoudhary7/customer-segmentation-tutorial-in-python">kaggle.com/datasets/vjchoudhary7/customer-segmentation-tutorial-in-python</a>. The 200 customers.</div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="04-random-forest.html"><span class="lbl">Previous · 04</span><span class="t">Random Forest</span></a>
-  <a class="next" rel="next" href="06-neural-network-from-scratch.html"><span class="lbl">Next · 06</span><span class="t">A Neural Network from Scratch</span></a>
+  <a class="prev" rel="prev" href="04-random-forest.html"><span class="lbl">Previous · 04</span><span class="t">Random forest</span></a>
+  <a class="next" rel="next" href="06-neural-network-from-scratch.html"><span class="lbl">Next · 06</span><span class="t">A neural network from scratch</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 05 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+  <p>Chapter 05 of "A Tour of Machine Learning" by Elie Rouphael. The demos run k-means in your browser on the same 200 customers as the notebook; their random starts are the browser's own, so single runs differ from the notebook's, while the optimum they reach is the same. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch05.js"></script>
 </body>
 </html>
