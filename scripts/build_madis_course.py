@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
