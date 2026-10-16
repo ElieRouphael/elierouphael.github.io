@@ -7,6 +7,39 @@ export interface ResearchItem {
   href?: string;
 }
 
+export interface Thesis {
+  title: string;
+  subtitle: string;
+  abstract: string[];
+  university: string;
+  laboratory: string;
+  school: string;
+  defended: string;
+  supervisors: string;
+  jury: string;
+  keywords: string[];
+  href: string;
+  pdf: string;
+}
+
+export const thesis: Thesis = {
+  title: 'Towards Stochastic Realization Theory for Linear Switched Models',
+  subtitle: 'PhD thesis in Automatic Control and Computer Science',
+  abstract: [
+    'This thesis develops a stochastic realization theory for Generalized Linear Switched Systems (GLSS), a model class that unifies and extends linear switched systems, jump-Markov models, LPV systems and piecewise-linear systems: several linear subsystems governed by a switching signal, which together capture nonlinear and time-varying behaviour.',
+    'For GLSS with inputs and i.i.d. switching, it shows that any output process decomposes uniquely into deterministic and stochastic components, gives algebraic conditions under which a stochastic GLSS admits a minimal representation in innovation form, unique up to isomorphism, and derives a covariance-based realization algorithm that builds such a representation from input-output covariances alone. Replacing true covariances with empirical ones yields an asymptotically consistent and computationally efficient subspace identification procedure, completed by a gradient-based refinement step.',
+  ],
+  university: 'Université de Lille',
+  laboratory: 'CRIStAL (UMR 9189), CNRS',
+  school: 'Graduate school MADIS (ED 631)',
+  defended: '24 October 2025',
+  supervisors: 'Mihály Petreczky (CNRS, Centrale Lille) and Lotfi Belkoura (Université de Lille)',
+  jury: 'Yacouba Boubacar Mainassara and Laurent Mevel, reviewers; Pauline Kergus, Guillaume Mercère and Ralf Peeters, examiners',
+  keywords: ['Realization theory', 'System identification', 'Linear switched systems', 'Subspace identification', 'Minimality'],
+  href: 'https://theses.hal.science/tel-05509398v1',
+  pdf: 'https://theses.hal.science/tel-05509398v1/document',
+};
+
 export const research: ResearchItem[] = [
   {
     title: 'Toward Stochastic Realization Theory for Generalized Linear Switched Systems With Inputs: Decomposition Into Stochastic and Deterministic Components and Existence and Uniqueness of Innovation Form',
