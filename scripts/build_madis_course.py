@@ -58,7 +58,7 @@ CHAPTERS = [
          result="A hand-written 8-unit hidden layer reaches 96.0% test accuracy with a curved decision boundary no linear model could draw."),
     dict(stem="07_transfer_learning", short="Transfer Learning",
          build="A small CNN trained on clean digits, then its frozen features reused on the same digits shifted and rotated, with almost no labels.",
-         result="With 8 labelled examples per class, transfer learning reaches 37.1% accuracy versus 16.7% training from scratch on the same tiny label set — more than double."),
+         result="With 8 labelled examples per class, transfer learning reaches 37.2% accuracy versus 16.7% training from scratch on the same tiny label set — more than double."),
     dict(stem="08_lstm_for_sequences", short="LSTM for Sequences",
          build="Windowing a synthetic sequence, training a small LSTM, and checking it against the naive \"tomorrow looks like today\" baseline.",
          result="The LSTM's one-step forecast error is 2.31x lower than naive persistence (MSE 0.030 vs 0.069)."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch", "07_transfer_learning"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
