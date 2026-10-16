@@ -9,6 +9,14 @@ export interface ResearchItem {
 
 export const research: ResearchItem[] = [
   {
+    title: 'Towards Stochastic Realization Theory for Linear Switched Models',
+    description: 'This thesis develops a stochastic realization theory for Generalized Linear Switched Systems (GLSS), a model class that unifies linear switched, jump-Markov, LPV and piecewise-linear systems. For GLSS with inputs and i.i.d. switching, it shows that any output process decomposes uniquely into deterministic and stochastic components, gives algebraic conditions under which a stochastic GLSS admits a minimal representation in innovation form, unique up to isomorphism, and derives a covariance-based realization algorithm. Replacing true covariances with empirical ones yields an asymptotically consistent subspace identification procedure, completed by a gradient-based refinement step.',
+    tag: 'PhD Thesis',
+    year: '2025',
+    venue: 'Université de Lille · CRIStAL, CNRS',
+    href: 'https://theses.hal.science/tel-05509398v1'
+  },
+  {
     title: 'Toward Stochastic Realization Theory for Generalized Linear Switched Systems With Inputs: Decomposition Into Stochastic and Deterministic Components and Existence and Uniqueness of Innovation Form',
     description: 'We study a class of stochastic Generalized Linear Switched System (GLSS), which includes subclasses of jump-Markov, piecewise-linear and Linear Parameter-Varying (LPV) systems. We prove that the output of such systems can be decomposed into deterministic and stochastic components. Using this decomposition, we show existence of state-space representation in innovation form, and we provide sufficient conditions for such representations to be minimal and unique up to isomorphism.',
     tag: 'Journal Article',
