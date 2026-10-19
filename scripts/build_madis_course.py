@@ -64,7 +64,7 @@ CHAPTERS = [
          result="The LSTM's one-step forecast error is 2.31x lower than naive persistence (MSE 0.030 vs 0.069); a 31-parameter linear autoregression on the same windows does better still (0.025)."),
     dict(stem="09_anomaly_detection_autoencoder", short="Anomaly Detection with an Autoencoder",
          build="A convolutional autoencoder trained only on normal NAB-style sensor data, with a reconstruction-error threshold set from training data alone.",
-         result="With no anomaly labels used anywhere, 68 of the 69 windows it flags overlap the injected anomaly; the one false alarm is only 0.4% above the threshold."),
+         result="With no anomaly labels used anywhere, 74 of the 75 windows it flags overlap the injected jump, the one false alarm a hair above the threshold; a 4-component PCA finds the same edges, and a plain level rule does better."),
     dict(stem="10_transformers_self_attention", short="Transformers and Self-Attention",
          build="Scaled dot-product and multi-head attention implemented from scratch in NumPy, plus a causal mask for autoregressive generation.",
          result="In a hand-built toy sentence, the token \"it\" attends most strongly to \"animal\" (weight 0.147) — resolving the coreference with plain arithmetic, no training involved."),
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch", "07_transfer_learning", "08_lstm_for_sequences"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch", "07_transfer_learning", "08_lstm_for_sequences", "09_anomaly_detection_autoencoder"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'

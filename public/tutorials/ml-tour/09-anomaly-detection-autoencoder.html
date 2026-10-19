@@ -3,13 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>09 · Anomaly Detection with an Autoencoder — A Tour of Machine Learning</title>
-<meta name="description" content="A convolutional autoencoder trained only on normal NAB-style sensor data, with a reconstruction-error threshold set from training data alone.">
+<title>09 · Anomaly detection with an autoencoder · A Tour of Machine Learning</title>
+<meta name="description" content="A convolutional autoencoder trained on normal sensor windows and used as an anomaly detector, live in the browser with the notebook's trained weights: windows and reconstructions, the PCA view of a linear autoencoder, thresholds and the two kinds of mistake, and what the network really adds over a principal-component projection and a plain level rule.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  #exT tr.bad td:last-child { color: var(--warm); font-weight: 600; }
+  #layerT td, #layerT th { white-space: nowrap; }
+  #layerT td:first-child { white-space: normal; }
+  @media (max-width: 420px) { #layerT, #handT, #exT { font-size: 0.78rem; } #layerT th, #layerT td, #handT th, #handT td, #exT th, #exT td { padding-inline: 0.2rem; } #exT th:nth-child(3), #exT td:nth-child(3), #exT th:nth-child(4), #exT td:nth-child(4), #layerT th:nth-child(4), #layerT td:nth-child(4) { display: none; } }
+</style>
 </head>
 <body>
 
@@ -17,463 +23,452 @@
 
 <header class="hero col">
   <span class="eyebrow">A Tour of Machine Learning · Chapter 09 of 11</span>
-  <h1>Anomaly Detection with an Autoencoder</h1>
-  <div class="intro prose">
-<p><em>Follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an
-Autoencoder</a>
-example — same NAB-style synthetic data, same reconstruction-error idea — reworked
-here as one chapter of a broader tour rather than a standalone example.</em></p>
-<p><strong>Objectives:</strong> train an autoencoder to reconstruct <em>normal</em> sensor windows, use its
-reconstruction error as an anomaly score on unseen data, and flag the windows where
-that error is unusually high.</p>
-<p>The idea: an autoencoder is trained only on normal data to compress each window down
-to a small bottleneck and reconstruct it. It gets good at reconstructing the patterns
-it was trained on — and bad at reconstructing anything unfamiliar, because it never
-learned to compress <em>that</em>. High reconstruction error becomes the anomaly signal,
-with no labelled anomalies needed for training.</p>
-
-  </div>
+  <h1>Anomaly detection with an autoencoder</h1>
+  <p class="lede">Two weeks of a sensor's daily rhythm, one reading every five minutes, to teach a small network what normal looks like. Then two more weeks with a level jump hidden in them. Below, the notebook's trained autoencoder scores every window of the test series in your browser; move the threshold and watch the flagged windows, the false alarms and the misses change together.</p>
+  <p class="byline">Elie Rouphael · Needs Python, chapter 07's convolutions and chapter 05's PCA · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/09_anomaly_detection_autoencoder.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/09_anomaly_detection_autoencoder.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-learning-what-normal-looks-like">1. Learning what &quot;normal&quot; looks like</a></li>
-    <li><a href="#2-windows-standardisation-and-a-convolutional-autoencoder">2. Windows, standardisation and a convolutional autoencoder</a></li>
-    <li><a href="#3-the-training-objective-and-the-link-to-pca">3. The training objective, and the link to PCA</a></li>
-    <li><a href="#4-from-reconstruction-error-to-a-decision">4. From reconstruction error to a decision</a></li>
-    <li><a href="#5-the-data">5. The data</a></li>
-    <li><a href="#6-windows-and-a-convolutional-autoencoder">6. Windows, and a convolutional autoencoder</a></li>
-    <li><a href="#7-setting-a-threshold-from-normal-data-alone">7. Setting a threshold from normal data alone</a></li>
-    <li><a href="#8-flagging-anomalies-in-unseen-data">8. Flagging anomalies in unseen data</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-    <li><a href="#key-takeaways">Key takeaways</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-learning-what-normal-looks-like">1. Learning what &quot;normal&quot; looks like</h2>
-<p>A sensor produces a long stream of numbers. Almost always it behaves normally; once in a while something breaks, drifts or jumps, and we want to catch that moment. Anomalies are rare, and each tends to look different from the last. A classifier trained on labelled examples would need many labelled anomalies, and would only recognise the kinds it had already seen.</p>
-<p>Anomaly detection turns the question around: learn what <em>normal</em> looks like, and call anything that does not fit an anomaly. This needs only normal data, which is usually plentiful.</p>
-<p>An <strong>autoencoder</strong> is one way to learn &quot;normal&quot;. It is a neural network trained to output its own input. That sounds trivial, but the signal has to pass through a constrained middle layer, so the network cannot simply copy it. It has to discover the regularities of the data (here, the shape of a daily cycle) and keep only what it needs to redraw the input from them. On data that follows those regularities, the redrawing is good; on data that breaks them, it is poor. The size of the mistake is the anomaly signal.</p>
+<!-- ============ LIVE DEMO: score over time, movable threshold ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The test series, the reconstruction error of every window, and the threshold</p>
+        <canvas id="aeC" aria-label="Two panels: the raw test series with the injected jump and the flagged windows shaded, and the reconstruction error of each window with the threshold line" aria-describedby="heroStatus"></canvas>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Threshold <span class="m">\tau</span>: <b id="tauV"></b></span>
+        <span class="row"><input type="range" id="tau" min="0.05" max="0.4" step="0.0005" value="0.189"></span>
+      </label>
+      <div class="btn-row">
+        <button class="btn" type="button" data-rule="max">training maximum</button>
+        <button class="btn" type="button" data-rule="sd3">mean + 3 sd</button>
+        <button class="btn" type="button" data-rule="p99">99th percentile</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>windows flagged</span><span class="v" id="rFlag">–</span>
+        <span>overlapping the jump</span><span class="v" id="rHit">–</span>
+        <span>false alarms</span><span class="v" id="rFp">–</span>
+        <span>inside the jump, missed</span><span class="v" id="rMiss">–</span>
+      </div>
+      <p class="hint">The network, the windows and the scaling are the notebook's; the 8,018 windows are scored here. The jump's position is used only to grade the detector, never by it. The weights are rounded to five decimals, so a score can differ from the notebook's in the fourth decimal.</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-windows-standardisation-and-a-convolutional-autoencoder">2. Windows, standardisation and a convolutional autoencoder</h2>
-<p><strong>The series.</strong> Write the raw signal as <span class="math inline">x_1, x_2, \dots, x_T</span>: one reading every 5 minutes, <span class="math inline">T</span> readings in total.</p>
-<p><strong>Standardisation.</strong> Networks train best on inputs of order 1. We compute the mean <span class="math inline">\mu</span> and the standard deviation <span class="math inline">\sigma</span> of the <strong>training</strong> series only, and transform every reading, training and test alike:</p>
-<div class="math display">\tilde x_t = \frac{x_t - \mu}{\sigma}.</div>
-<p>A standardised value counts how many training standard deviations a reading sits above the training average; it has no units. If <span class="math inline">\mu = 20</span> and <span class="math inline">\sigma = 5</span>, a reading of 30 becomes <span class="math inline">\tilde x = 2</span>. The test series' own <span class="math inline">\mu</span> and <span class="math inline">\sigma</span> must not be used: a sustained jump would raise its mean and partly hide itself.</p>
-<p><strong>Windows.</strong> The network sees <span class="math inline">w = 24</span> consecutive standardised readings at a time (2 hours):</p>
-<div class="math display">\mathbf x^{(i)} = \big(\tilde x_i,\ \tilde x_{i+1},\ \dots,\ \tilde x_{i+w-1}\big), \qquad i = 1, \dots, T - w + 1.</div>
-<p>Consecutive windows share <span class="math inline">w - 1 = 23</span> readings, so a series of <span class="math inline">T</span> points gives <span class="math inline">T - w + 1</span> windows. Each window is one example, stored with shape <span class="math inline">24 \times 1</span>: 24 time steps, 1 channel.</p>
-<p><strong>Encoder, bottleneck, decoder.</strong> The autoencoder is two functions in a row. The <strong>encoder</strong> <span class="math inline">g_\phi</span> maps a window to a code <span class="math inline">\mathbf z</span>; the <strong>decoder</strong> <span class="math inline">f_\theta</span> maps the code back to a window-shaped output <span class="math inline">\hat{\mathbf x}</span>:</p>
-<div class="math display">\mathbf z = g_\phi(\mathbf x), \qquad \hat{\mathbf x} = f_\theta(\mathbf z) = f_\theta\big(g_\phi(\mathbf x)\big).</div>
-<p>The symbols <span class="math inline">\phi</span> and <span class="math inline">\theta</span> collect all the weights of the encoder and of the decoder. The code <span class="math inline">\mathbf z</span> is the <strong>bottleneck</strong>: the only thing the decoder knows about the input.</p>
-<p><strong>1-D convolution.</strong> Both halves are made of 1-D convolutions. A convolution slides a small filter along time. With a filter of width 5, weights <span class="math inline">a_{-2}, \dots, a_{2}</span> and a bias <span class="math inline">b</span>, one output channel at position <span class="math inline">t</span> is</p>
-<div class="math display">h_t = \mathrm{ReLU}\Big(b + \sum_{j=-2}^{2} a_j\, \tilde x_{t+j}\Big), \qquad \mathrm{ReLU}(u) = \max(0, u).</div>
-<p>The same five weights are used at every position, so a filter detects a local shape (a rise, a peak, a flat stretch) wherever it occurs. A layer with 16 filters produces 16 such channels; when the input already has several channels, the sum also runs over them. <strong>Stride 2</strong> applies the filter only at every second position, which halves the length. A <strong>transposed convolution</strong> with stride 2 does the reverse and doubles it. Following the shapes in the code (time steps <span class="math inline">\times</span> channels):</p>
-<table>
-<thead>
-<tr>
-<th>layer</th>
-<th>output shape</th>
-<th>numbers</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>input window</td>
-<td><span class="math inline">24 \times 1</span></td>
-<td>24</td>
-</tr>
-<tr>
-<td><code>Conv1D(16, 5, strides=2)</code></td>
-<td><span class="math inline">12 \times 16</span></td>
-<td>192</td>
-</tr>
-<tr>
-<td><code>Conv1D(8, 5, strides=2)</code>: bottleneck <span class="math inline">\mathbf z</span></td>
-<td><span class="math inline">6 \times 8</span></td>
-<td>48</td>
-</tr>
-<tr>
-<td><code>Conv1DTranspose(8, 5, strides=2)</code></td>
-<td><span class="math inline">12 \times 8</span></td>
-<td>96</td>
-</tr>
-<tr>
-<td><code>Conv1DTranspose(16, 5, strides=2)</code></td>
-<td><span class="math inline">24 \times 16</span></td>
-<td>384</td>
-</tr>
-<tr>
-<td><code>Conv1DTranspose(1, 5)</code>: reconstruction <span class="math inline">\hat{\mathbf x}</span></td>
-<td><span class="math inline">24 \times 1</span></td>
-<td>24</td>
-</tr>
-</tbody>
-</table>
-<p>The bottleneck holds 48 numbers, more than the 24 of the input, so the constraint here is not simply &quot;fewer numbers&quot;. It comes from the structure: time is squeezed to 6 coarse positions, every value is built by a few small filters shared across the whole window, and the whole network has fewer than 2,000 weights. Trained on normal windows only, those filters specialise in the shapes of the daily cycle.</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#normal"><span class="n">1</span><span class="t">Learning what normal looks like</span><span class="d">Why an autoencoder</span></a>
+    <a href="#windows"><span class="n">2</span><span class="t">Windows and the network</span><span class="d">Standardisation, 1-D convolutions, the bottleneck</span></a>
+    <a href="#pca"><span class="n">3</span><span class="t">The objective, and PCA</span><span class="d">A linear autoencoder is a projection</span></a>
+    <a href="#decision"><span class="n">4</span><span class="t">From error to decision</span><span class="d">Thresholds and the two mistakes</span></a>
+    <a href="#data"><span class="n">5</span><span class="t">The data</span><span class="d">Two NAB series</span></a>
+    <a href="#model"><span class="n">6</span><span class="t">Windows and training</span><span class="d">The input is its own target</span></a>
+    <a href="#threshold"><span class="n">7</span><span class="t">The threshold</span><span class="d">From normal data alone</span></a>
+    <a href="#flagging"><span class="n">8</span><span class="t">Flagging anomalies</span><span class="d">And grading the result</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="md">
-<h2 id="3-the-training-objective-and-the-link-to-pca">3. The training objective, and the link to PCA</h2>
-<p><strong>Reconstruction error.</strong> From here on, write a window as <span class="math inline">\mathbf x = (x_1, \dots, x_w)</span> (standardised values) and its reconstruction as <span class="math inline">\hat{\mathbf x} = (\hat x_1, \dots, \hat x_w)</span>. The mismatch is measured position by position. Two common choices:</p>
-<div class="math display">\mathrm{MSE}(\mathbf x, \hat{\mathbf x}) = \frac{1}{w}\sum_{t=1}^{w} (x_t - \hat x_t)^2, \qquad \mathrm{MAE}(\mathbf x, \hat{\mathbf x}) = \frac{1}{w}\sum_{t=1}^{w} \lvert x_t - \hat x_t \rvert .</div>
-<p>The mean squared error (MSE) punishes large misses heavily, because they are squared; the mean absolute error (MAE) grows in proportion to the miss. The code uses MAE (<code>loss=&quot;mae&quot;</code>). An MAE of 0.1 means the reconstruction is off by a tenth of a training standard deviation, on average.</p>
-<p><strong>Training.</strong> With <span class="math inline">N</span> training windows <span class="math inline">\mathbf x^{(1)}, \dots, \mathbf x^{(N)}</span>, all normal, training looks for the weights that minimise the average error:</p>
-<div class="math display">\min_{\phi,\,\theta}\; L(\phi, \theta) = \frac{1}{N}\sum_{i=1}^{N} \mathrm{MAE}\Big(\mathbf x^{(i)},\ f_\theta\big(g_\phi(\mathbf x^{(i)})\big)\Big).</div>
-<p>In words: find the encoder and decoder that redraw normal windows as faithfully as possible. The target is the input itself; no labels appear. Nothing in <span class="math inline">L</span> rewards redrawing windows that are <em>not</em> normal, so the network has no reason to become good at them.</p>
-<p><strong>The linear case is PCA.</strong> The simplest version of the network shows what it learns. Take windows <span class="math inline">\mathbf x \in \mathbb R^d</span> with mean zero, a linear encoder <span class="math inline">\mathbf z = E\mathbf x</span> (<span class="math inline">E</span> of shape <span class="math inline">k \times d</span>), a linear decoder <span class="math inline">\hat{\mathbf x} = D\mathbf z</span> (<span class="math inline">D</span> of shape <span class="math inline">d \times k</span>), a code smaller than the input (<span class="math inline">k &lt; d</span>), and the squared error. The reconstruction <span class="math inline">DE\mathbf x</span> always lies in a <span class="math inline">k</span>-dimensional subspace, and the point of a subspace closest to <span class="math inline">\mathbf x</span> is its orthogonal projection. So at the optimum <span class="math inline">DE = UU^\top</span>, where the <span class="math inline">k</span> columns of <span class="math inline">U</span> (<span class="math inline">d \times k</span>) are an orthonormal basis of some subspace. The error of a projection splits by Pythagoras, because <span class="math inline">\mathbf x - UU^\top\mathbf x</span> is perpendicular to <span class="math inline">UU^\top\mathbf x</span>:</p>
-<div class="math display">\mathbb E\,\lVert \mathbf x - UU^\top \mathbf x \rVert^2 = \mathbb E\,\lVert \mathbf x \rVert^2 - \mathbb E\,\lVert U^\top \mathbf x \rVert^2 = \mathrm{tr}(C) - \mathrm{tr}(U^\top C U).</div>
-<p>Here <span class="math inline">C = \mathbb E[\mathbf x \mathbf x^\top]</span> is the <span class="math inline">d \times d</span> covariance matrix and <span class="math inline">\mathrm{tr}</span> is the trace (the sum of the diagonal entries). The first term is the total variance of the data and does not depend on <span class="math inline">U</span>. So minimising the error means maximising <span class="math inline">\mathrm{tr}(U^\top C U)</span>, the variance that survives the projection, and that maximum is reached when <span class="math inline">U</span> spans the top <span class="math inline">k</span> eigenvectors of <span class="math inline">C</span>: the first <span class="math inline">k</span> principal components. A linear autoencoder trained with squared error therefore recovers the PCA subspace (Baldi and Hornik, 1989). Only the subspace is determined; the weights themselves need not be the eigenvectors.</p>
-<p>This gives the anomaly score a geometric meaning. Normal windows lie close to a low-dimensional surface inside <span class="math inline">\mathbb R^{24}</span>: flat for PCA, curved for a nonlinear network like ours. The reconstruction is roughly the nearest point on that surface, and the reconstruction error is roughly the distance to it. An anomalous window lies off the surface, far from anything normal.</p>
-</div>
+<!-- =================================================================== -->
+<section id="normal">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Learning what "normal" looks like</h2>
+  </div>
+  <div class="col prose">
+    <p>This chapter follows the general recipe of the Keras timeseries anomaly detection example <a href="#ref-5">[5]</a>, same NAB-style synthetic data, same reconstruction-error idea, reworked as one chapter of a broader tour. The objective: train an autoencoder to reconstruct <em>normal</em> sensor windows, use its reconstruction error as an anomaly score on unseen data, and flag the windows where that error is unusually high.</p>
+    <p>A sensor produces a long stream of numbers. Almost always it behaves normally; once in a while something breaks, drifts or jumps, and we want to catch that moment. Anomalies are rare, and each tends to look different from the last. A classifier trained on labelled examples would need many labelled anomalies, and would only recognise the kinds it had already seen.</p>
+    <p>Anomaly detection turns the question around <a href="#ref-1">[1]</a>: learn what <em>normal</em> looks like, and call anything that does not fit an anomaly. This needs only normal data, which is usually plentiful.</p>
+    <p>An <strong>autoencoder</strong> <a href="#ref-2">[2]</a> is one way to learn "normal". It is a neural network trained to output its own input. That sounds trivial, but the signal has to pass through a constrained middle layer, so the network cannot simply copy it. It has to discover the regularities of the data (here, the shape of a daily cycle) and keep only what it needs to redraw the input from them. On data that follows those regularities, the redrawing is good; on data that breaks them, it is poor. The size of the mistake is the anomaly signal.</p>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="4-from-reconstruction-error-to-a-decision">4. From reconstruction error to a decision</h2>
-<p><strong>Anomaly score.</strong> After training, every window gets a score, its reconstruction error:</p>
-<div class="math display">s(\mathbf x) = \mathrm{MAE}\big(\mathbf x,\ f_\theta(g_\phi(\mathbf x))\big).</div>
-<p><strong>Threshold.</strong> A window is flagged when <span class="math inline">s(\mathbf x) &gt; \tau</span>, for a cut-off <span class="math inline">\tau</span> that must come from normal data only. The code takes the largest score seen on the training windows:</p>
-<div class="math display">\tau = \max_{1 \le i \le N}\ s\big(\mathbf x^{(i)}\big).</div>
-<p>A new window is flagged only if the model redraws it worse than anything it saw in training. A common alternative is a quantile: with <span class="math inline">\tau</span> at the 99th percentile of the training scores, about 1% of normal windows are flagged by design.</p>
-<p><strong>Two kinds of mistake.</strong> A <strong>false positive</strong> is a normal window flagged as anomalous (a false alarm). A <strong>false negative</strong> is an anomalous window that stays under the threshold (a missed event). Raising <span class="math inline">\tau</span> trades one for the other: fewer false alarms, more misses. The maximum puts <span class="math inline">\tau</span> high; its weakness is that a single unusually noisy training window sets the bar for everyone.</p>
-<p><strong>A worked example.</strong> First, one score by hand, for a short window of 4 standardised values:</p>
-<table>
-<thead>
-<tr>
-<th><span class="math inline">t</span></th>
-<th>1</th>
-<th>2</th>
-<th>3</th>
-<th>4</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><span class="math inline">x_t</span></td>
-<td>0.5</td>
-<td>1.0</td>
-<td>1.5</td>
-<td>1.0</td>
-</tr>
-<tr>
-<td><span class="math inline">\hat x_t</span></td>
-<td>0.4</td>
-<td>1.1</td>
-<td>1.3</td>
-<td>1.0</td>
-</tr>
-<tr>
-<td><span class="math inline">\lvert x_t - \hat x_t \rvert</span></td>
-<td>0.1</td>
-<td>0.1</td>
-<td>0.2</td>
-<td>0.0</td>
-</tr>
-</tbody>
-</table>
-<p>The score is the average of the last row: <span class="math inline">s = (0.1 + 0.1 + 0.2 + 0.0)/4 = 0.10</span>.</p>
-<p>Now suppose the training scores ranged from 0.04 up to a worst case of 0.30, so <span class="math inline">\tau = 0.30</span>. Five new windows, with the truth that the detector never sees:</p>
-<table>
-<thead>
-<tr>
-<th>window</th>
-<th>score <span class="math inline">s</span></th>
-<th><span class="math inline">s &gt; \tau</span>?</th>
-<th>decision</th>
-<th>truth</th>
-<th>outcome</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>A</td>
-<td>0.10</td>
-<td>no</td>
-<td>normal</td>
-<td>normal</td>
-<td>correct</td>
-</tr>
-<tr>
-<td>B</td>
-<td>0.22</td>
-<td>no</td>
-<td>normal</td>
-<td>normal</td>
-<td>correct</td>
-</tr>
-<tr>
-<td>C</td>
-<td>0.29</td>
-<td>no</td>
-<td>normal</td>
-<td>anomaly</td>
-<td>false negative</td>
-</tr>
-<tr>
-<td>D</td>
-<td>0.31</td>
-<td>yes</td>
-<td>anomaly</td>
-<td>normal</td>
-<td>false positive</td>
-</tr>
-<tr>
-<td>E</td>
-<td>0.85</td>
-<td>yes</td>
-<td>anomaly</td>
-<td>anomaly</td>
-<td>correct</td>
-</tr>
-</tbody>
-</table>
-<p>Window E is the typical anomaly: an unfamiliar shape, redrawn badly, far above the threshold. C and D sit near the boundary. Lowering <span class="math inline">\tau</span> to 0.25 catches C but keeps the false alarm on D; raising it to 0.35 removes the false alarm but still misses C. No threshold gets both right. What helps is a model whose scores on normal and anomalous windows overlap as little as possible.</p>
-<p><strong>What the code does.</strong> Section 5 loads a normal training series and a test series with a hidden level jump. Section 6 computes <code>mu</code> and <code>sigma</code> from the training series only, cuts both series into windows of <code>window = 24</code> points with <code>make_windows</code> (arrays <code>X_train</code>, <code>X_test</code> of shape (windows, 24, 1)), builds the network of the table above and trains it with <code>autoencoder.fit(X_train, X_train, ...)</code>: the input is its own target. Section 7 scores every training window (<code>train_mae</code>) and sets <code>threshold = train_mae.max()</code>, the <span class="math inline">\tau</span> above. Section 8 scores the test windows (<code>test_mae</code>) and keeps those with <code>test_mae &gt; threshold</code> (<code>anomalous</code>).</p>
-</div>
+<!-- =================================================================== -->
+<section id="windows">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Windows, standardisation and a convolutional autoencoder</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The series.</b> Write the raw signal as <span class="m">x_1, x_2, \dots, x_T</span>: one reading every 5 minutes, <span class="m">T</span> readings in total.</p>
+    <p><b>Standardisation.</b> Networks train best on inputs of order 1. We compute the mean <span class="m">\mu</span> and the standard deviation <span class="m">\sigma</span> of the <strong>training</strong> series only, and transform every reading, training and test alike:</p>
+    <div class="math-block">\tilde x_t = \frac{x_t - \mu}{\sigma} .</div>
+    <p>A standardised value counts how many training standard deviations a reading sits above the training average; it has no units. If <span class="m">\mu = 20</span> and <span class="m">\sigma = 5</span>, a reading of 30 becomes <span class="m">\tilde x = 2</span>. The test series' own <span class="m">\mu</span> and <span class="m">\sigma</span> must not be used: a sustained jump would raise its mean and partly hide itself.</p>
+    <p><b>Windows.</b> The network sees <span class="m">w = 24</span> consecutive standardised readings at a time (2 hours):</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathbf x^{(i)} &amp;= \big(\tilde x_i,\ \tilde x_{i+1},\ \dots, \\ &amp;\qquad \tilde x_{i+w-1}\big), \\ i &amp;= 1, \dots, T - w + 1 . \end{aligned}">\mathbf x^{(i)} = \big(\tilde x_i,\ \tilde x_{i+1},\ \dots,\ \tilde x_{i+w-1}\big), \qquad i = 1, \dots, T - w + 1 .</div>
+    <p>Consecutive windows share <span class="m">w - 1 = 23</span> readings, so a series of <span class="m">T</span> points gives <span class="m">T - w + 1</span> windows. Each window is one example, stored with shape <span class="m">24 \times 1</span>: 24 time steps, 1 channel.</p>
+    <p><b>Encoder, bottleneck, decoder.</b> The autoencoder is two functions in a row. The <strong>encoder</strong> <span class="m">g_\phi</span> maps a window to a code <span class="m">\mathbf z</span>; the <strong>decoder</strong> <span class="m">f_\theta</span> maps the code back to a window-shaped output <span class="m">\hat{\mathbf x}</span>:</p>
+    <div class="math-block">\mathbf z = g_\phi(\mathbf x), \qquad \hat{\mathbf x} = f_\theta(\mathbf z) = f_\theta\big(g_\phi(\mathbf x)\big).</div>
+    <p>The symbols <span class="m">\phi</span> and <span class="m">\theta</span> collect all the weights of the encoder and of the decoder. The code <span class="m">\mathbf z</span> is the <strong>bottleneck</strong>: the only thing the decoder knows about the input.</p>
+    <p><b>1-D convolution.</b> Both halves are made of 1-D convolutions, the one-dimensional cousin of chapter 07's kernels. A convolution slides a small filter along time. With a filter of width 5, weights <span class="m">a_{-2}, \dots, a_{2}</span> and a bias <span class="m">b</span>, one output channel at position <span class="m">t</span> is</p>
+    <div class="math-block" data-narrow="\begin{aligned} h_t &amp;= \mathrm{ReLU}\Big(b + \sum_{j=-2}^{2} a_j\, \tilde x_{t+j}\Big), \\ \mathrm{ReLU}(u) &amp;= \max(0, u). \end{aligned}">h_t = \mathrm{ReLU}\Big(b + \sum_{j=-2}^{2} a_j\, \tilde x_{t+j}\Big), \qquad \mathrm{ReLU}(u) = \max(0, u).</div>
+    <p>The same five weights are used at every position, so a filter detects a local shape (a rise, a peak, a flat stretch) wherever it occurs. A layer with 16 filters produces 16 such channels; when the input already has several channels, the sum also runs over them. <strong>Stride 2</strong> applies the filter only at every second position, which halves the length. A <strong>transposed convolution</strong> with stride 2 does the reverse and doubles it. Following the shapes in the code (time steps <span class="m">\times</span> channels):</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="layerT">
+      <thead><tr><th>layer</th><th>output shape</th><th>numbers</th><th>weights</th></tr></thead>
+      <tbody>
+        <tr><td>input window</td><td><span class="m">24 \times 1</span></td><td>24</td><td>–</td></tr>
+        <tr><td><code>Conv1D(16, 5, strides=2)</code></td><td><span class="m">12 \times 16</span></td><td>192</td><td>96</td></tr>
+        <tr><td><code>Conv1D(8, 5, strides=2)</code>: bottleneck <span class="m">\mathbf z</span></td><td><span class="m">6 \times 8</span></td><td>48</td><td>648</td></tr>
+        <tr><td><code>Conv1DTranspose(8, 5, strides=2)</code></td><td><span class="m">12 \times 8</span></td><td>96</td><td>328</td></tr>
+        <tr><td><code>Conv1DTranspose(16, 5, strides=2)</code></td><td><span class="m">24 \times 16</span></td><td>384</td><td>656</td></tr>
+        <tr><td><code>Conv1DTranspose(1, 5)</code>: reconstruction <span class="m">\hat{\mathbf x}</span></td><td><span class="m">24 \times 1</span></td><td>24</td><td>81</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The bottleneck holds 48 numbers, more than the 24 of the input, so the constraint here is not simply "fewer numbers". It comes from the structure: time is squeezed to 6 coarse positions, every value is built by a few small filters shared across the whole window, and the whole network has 1,809 weights, fewer than 2,000. Trained on normal windows only, those filters specialise in the shapes of the daily cycle. Here is the trained network redrawing real windows:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="recW">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Which series">
+          <button class="btn" type="button" data-set="test" aria-pressed="true">test series</button>
+          <button class="btn" type="button" data-set="train" aria-pressed="false">training series</button>
+        </div>
+        <button class="btn" type="button" data-jump="3030">inside the jump</button>
+        <button class="btn" type="button" data-jump="2975">the jump's first edge</button>
+        <button class="btn" type="button" data-jump="1921">the false alarm</button>
+      </div>
+      <label class="field"><span>Window: <b id="rIV"></b></span><span class="row"><input type="range" id="rI" min="0" max="4008" step="1" value="2985"></span></label>
+      <canvas id="recC" aria-label="One window of standardised readings, its reconstruction by the autoencoder, and the gap at each position" aria-describedby="recCap"></canvas>
+      <p class="caption" id="recCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import os
-os.environ[&quot;TF_CPP_MIN_LOG_LEVEL&quot;] = &quot;3&quot;
-os.environ[&quot;TF_ENABLE_ONEDNN_OPTS&quot;] = &quot;0&quot;
-import warnings
-warnings.filterwarnings(&quot;ignore&quot;)
+<!-- =================================================================== -->
+<section id="pca">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The training objective, and the link to PCA</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Reconstruction error.</b> From here on, write a window as <span class="m">\mathbf x = (x_1, \dots, x_w)</span> (standardised values) and its reconstruction as <span class="m">\hat{\mathbf x} = (\hat x_1, \dots, \hat x_w)</span>. The mismatch is measured position by position. Two common choices:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathrm{MSE}(\mathbf x, \hat{\mathbf x}) &amp;= \frac{1}{w}\sum_{t=1}^{w} (x_t - \hat x_t)^2, \\ \mathrm{MAE}(\mathbf x, \hat{\mathbf x}) &amp;= \frac{1}{w}\sum_{t=1}^{w} \lvert x_t - \hat x_t \rvert . \end{aligned}">\mathrm{MSE}(\mathbf x, \hat{\mathbf x}) = \frac{1}{w}\sum_{t=1}^{w} (x_t - \hat x_t)^2, \qquad \mathrm{MAE}(\mathbf x, \hat{\mathbf x}) = \frac{1}{w}\sum_{t=1}^{w} \lvert x_t - \hat x_t \rvert .</div>
+    <p>The mean squared error (MSE) punishes large misses heavily, because they are squared; the mean absolute error (MAE) grows in proportion to the miss. The code uses MAE (<code>loss="mae"</code>). An MAE of 0.1 means the reconstruction is off by a tenth of a training standard deviation, on average.</p>
+    <p><b>Training.</b> With <span class="m">N</span> training windows <span class="m">\mathbf x^{(1)}, \dots, \mathbf x^{(N)}</span>, all normal, training looks for the weights that minimise the average error:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \min_{\phi,\,\theta}\; L(\phi, \theta) &amp;= \frac{1}{N}\sum_{i=1}^{N} \ell_i , \\ \ell_i &amp;= \mathrm{MAE}\big(\mathbf x^{(i)},\ \hat{\mathbf x}^{(i)}\big). \end{aligned}">\min_{\phi,\,\theta}\; L(\phi, \theta) = \frac{1}{N}\sum_{i=1}^{N} \mathrm{MAE}\Big(\mathbf x^{(i)},\ f_\theta\big(g_\phi(\mathbf x^{(i)})\big)\Big).</div>
+    <p>In words: find the encoder and decoder that redraw normal windows as faithfully as possible. The target is the input itself; no labels appear. Nothing in <span class="m">L</span> rewards redrawing windows that are <em>not</em> normal, so the network has no reason to become good at them.</p>
+    <p><b>The linear case is PCA.</b> The simplest version of the network shows what it learns. Take windows <span class="m">\mathbf x \in \mathbb R^d</span> with mean zero, a linear encoder <span class="m">\mathbf z = E\mathbf x</span> (<span class="m">E</span> of shape <span class="m">k \times d</span>), a linear decoder <span class="m">\hat{\mathbf x} = D\mathbf z</span> (<span class="m">D</span> of shape <span class="m">d \times k</span>), a code smaller than the input (<span class="m">k &lt; d</span>), and the squared error. The reconstruction <span class="m">DE\mathbf x</span> always lies in a <span class="m">k</span>-dimensional subspace, and the point of a subspace closest to <span class="m">\mathbf x</span> is its orthogonal projection. So at the optimum <span class="m">DE = UU^\top</span>, where the <span class="m">k</span> columns of <span class="m">U</span> (<span class="m">d \times k</span>) are an orthonormal basis of some subspace. The error of a projection splits by Pythagoras, because <span class="m">\mathbf x - UU^\top\mathbf x</span> is perpendicular to <span class="m">UU^\top\mathbf x</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathbb E\,\lVert \mathbf x - UU^\top \mathbf x \rVert^2 &amp;= \mathbb E\,\lVert \mathbf x \rVert^2 - \mathbb E\,\lVert U^\top \mathbf x \rVert^2 \\ &amp;= \mathrm{tr}(C) - \mathrm{tr}(U^\top C U). \end{aligned}">\mathbb E\,\lVert \mathbf x - UU^\top \mathbf x \rVert^2 = \mathbb E\,\lVert \mathbf x \rVert^2 - \mathbb E\,\lVert U^\top \mathbf x \rVert^2 = \mathrm{tr}(C) - \mathrm{tr}(U^\top C U).</div>
+    <p>Here <span class="m">C = \mathbb E[\mathbf x \mathbf x^\top]</span> is the <span class="m">d \times d</span> covariance matrix and <span class="m">\mathrm{tr}</span> is the trace (the sum of the diagonal entries). The first term is the total variance of the data and does not depend on <span class="m">U</span>. So minimising the error means maximising <span class="m">\mathrm{tr}(U^\top C U)</span>, the variance that survives the projection, and that maximum is reached when <span class="m">U</span> spans the top <span class="m">k</span> eigenvectors of <span class="m">C</span>: the first <span class="m">k</span> principal components of chapter 05. A linear autoencoder trained with squared error therefore recovers the PCA subspace <a href="#ref-3">[3]</a>. Only the subspace is determined; the weights themselves need not be the eigenvectors.</p>
+    <p>This gives the anomaly score a geometric meaning. Normal windows lie close to a low-dimensional surface inside <span class="m">\mathbb R^{24}</span>: flat for PCA, curved for a nonlinear network like ours. The reconstruction is roughly the nearest point on that surface, and the reconstruction error is roughly the distance to it. An anomalous window lies off the surface, far from anything normal.</p>
+    <p><b>So try the flat surface.</b> PCA on the 4,009 training windows is a 24 × 24 eigenvalue problem, solved here in a millisecond. Use the projection onto the top <span class="m">k</span> components as the "autoencoder", the same MAE as the score and the same training-maximum threshold, and grade it on the same test series:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="pcaW">
+      <label class="field"><span>Principal components kept, <span class="m">k</span>: <b id="pKV"></b></span><span class="row"><input type="range" id="pK" min="1" max="8" step="1" value="4"></span></label>
+      <canvas id="pcaC" aria-label="The PCA reconstruction error of every test window with the threshold line and the jump shaded" aria-describedby="pcaCap"></canvas>
+      <p class="caption" id="pcaCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>With four components, a linear projection flags the jump's two edges with no false alarm, just as the trained network does, and misses the raised plateau between them entirely, where the network catches 34 of 85 windows. A flat stretch at any level projects almost perfectly onto a subspace whose first direction is the level itself; the curved surface bends a little further and does a little better. The daily cycle here is simple enough that the flat surface gets most of the way. That is worth knowing before training a network: the cheap baseline tells you how much of the problem needed one.</p>
+  </div>
+</section>
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import tensorflow as tf
+<!-- =================================================================== -->
+<section id="decision">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>From reconstruction error to a decision</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Anomaly score.</b> After training, every window gets a score, its reconstruction error:</p>
+    <div class="math-block">s(\mathbf x) = \mathrm{MAE}\big(\mathbf x,\ f_\theta(g_\phi(\mathbf x))\big).</div>
+    <p><b>Threshold.</b> A window is flagged when <span class="m">s(\mathbf x) &gt; \tau</span>, for a cut-off <span class="m">\tau</span> that must come from normal data only. The code takes the largest score seen on the training windows:</p>
+    <div class="math-block">\tau = \max_{1 \le i \le N}\ s\big(\mathbf x^{(i)}\big).</div>
+    <p>A new window is flagged only if the model redraws it worse than anything it saw in training. A common alternative is a quantile: with <span class="m">\tau</span> at the 99th percentile of the training scores, about 1% of normal windows are flagged by design.</p>
+    <p><b>Two kinds of mistake.</b> A <strong>false positive</strong> is a normal window flagged as anomalous (a false alarm). A <strong>false negative</strong> is an anomalous window that stays under the threshold (a missed event). Raising <span class="m">\tau</span> trades one for the other: fewer false alarms, more misses. The maximum puts <span class="m">\tau</span> high; its weakness is that a single unusually noisy training window sets the bar for everyone. In the demo at the top, the training maximum is 0.1890 and the second-largest training score 0.1818: the line rests on one window, the one starting at 08:50 on April 9, which contains the daily step.</p>
+    <p><b>A worked example.</b> First, one score by hand, for a short window of 4 standardised values:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="handT">
+      <thead><tr><th><span class="m">t</span></th><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">x_t</span></td><td>0.5</td><td>1.0</td><td>1.5</td><td>1.0</td></tr>
+        <tr><td><span class="m">\hat x_t</span></td><td>0.4</td><td>1.1</td><td>1.3</td><td>1.0</td></tr>
+        <tr><td><span class="m">\lvert x_t - \hat x_t \rvert</span></td><td>0.1</td><td>0.1</td><td>0.2</td><td>0.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The score is the average of the last row: <span class="m">s = \frac{0.1 + 0.1 + 0.2 + 0.0}{4} = 0.10</span>.</p>
+    <p>Now suppose the training scores ranged from 0.04 up to a worst case of 0.30, so <span class="m">\tau = 0.30</span>. Five new windows, with the truth that the detector never sees; move the threshold:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="exW">
+      <label class="field"><span>Threshold <span class="m">\tau</span>: <b id="exTauV"></b></span><span class="row"><input type="range" id="exTau" min="0.05" max="0.9" step="0.01" value="0.3"></span></label>
+      <div class="table-wrap">
+        <table class="num" id="exT">
+          <thead><tr><th>window</th><th>score <span class="m">s</span></th><th><span class="m">s &gt; \tau</span>?</th><th>decision</th><th>truth</th><th>outcome</th></tr></thead>
+          <tbody>
+            <tr><td>A</td><td>0.10</td><td></td><td></td><td>normal</td><td></td></tr>
+            <tr><td>B</td><td>0.22</td><td></td><td></td><td>normal</td><td></td></tr>
+            <tr><td>C</td><td>0.29</td><td></td><td></td><td>anomaly</td><td></td></tr>
+            <tr><td>D</td><td>0.31</td><td></td><td></td><td>normal</td><td></td></tr>
+            <tr><td>E</td><td>0.85</td><td></td><td></td><td>anomaly</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="caption" id="exCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Window E is the typical anomaly: an unfamiliar shape, redrawn badly, far above the threshold. C and D sit near the boundary. Lowering <span class="m">\tau</span> to 0.25 catches C but keeps the false alarm on D; raising it to 0.35 removes the false alarm but still misses C. No threshold gets both right. What helps is a model whose scores on normal and anomalous windows overlap as little as possible.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is autoencoder anomaly detection?</p>
+      <p><b>In plain words:</b> teach a network to redraw normal data through a bottleneck, then distrust anything it redraws badly.</p>
+      <p><b>More precisely:</b> fit an encoder <span class="m">g_\phi</span> and decoder <span class="m">f_\theta</span> to minimise the reconstruction error on normal windows; score a new window by <span class="m">s(\mathbf x) = \mathrm{MAE}(\mathbf x, f_\theta(g_\phi(\mathbf x)))</span>; flag it when <span class="m">s(\mathbf x) &gt; \tau</span>, with <span class="m">\tau</span> chosen from the training scores alone <a href="#ref-1">[1]</a>, <a href="#ref-6">[6]</a>. Its linear special case is a projection onto principal components, and the score is the distance to the surface of normal data.</p>
+      <dl>
+        <dt>Bottleneck, code</dt><dd>The constrained middle of the network; what the decoder gets to see.</dd>
+        <dt>Reconstruction error</dt><dd>The gap between a window and its redrawing; the anomaly score.</dd>
+        <dt>False positive, false negative</dt><dd>A normal window flagged; an anomalous window missed.</dd>
+      </dl>
+    </div>
+    <p><b>What the code does.</b> Part 5 loads a normal training series and a test series with a hidden level jump. Part 6 computes <code>mu</code> and <code>sigma</code> from the training series only, cuts both series into windows of <code>window = 24</code> points with <code>make_windows</code> (arrays <code>X_train</code>, <code>X_test</code> of shape (windows, 24, 1)), builds the network of the table above and trains it with <code>autoencoder.fit(X_train, X_train, ...)</code>: the input is its own target. Part 7 scores every training window (<code>train_mae</code>) and sets <code>threshold = train_mae.max()</code>, the <span class="m">\tau</span> above. Part 8 scores the test windows (<code>test_mae</code>) and keeps those with <code>test_mae &gt; threshold</code> (<code>anomalous</code>).</p>
+  </div>
+</section>
 
-import mlutils
-mlutils.set_style()
-tf.get_logger().setLevel(&quot;ERROR&quot;)
-tf.keras.utils.set_random_seed(0)          # seeds Python, NumPy and TensorFlow together
-tf.config.experimental.enable_op_determinism()  # identical results on every run</code></pre>
-</div>
+<!-- =================================================================== -->
+<section id="data">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The data</h2>
+  </div>
+  <div class="col prose">
+    <p>Two NAB-style (Numenta Anomaly Benchmark <a href="#ref-4">[4]</a>) synthetic time series at 5-minute resolution: <code>art_daily_small_noise.csv</code> is clean daily-periodic data used only to teach the autoencoder what "normal" looks like, and <code>art_daily_jumpsup.csv</code> is the same kind of signal with a sustained level jump injected: the anomaly we are trying to catch, and one the model never sees labelled as such.</p>
+    <pre><code class="language-python">train_df = pd.read_csv("data/art_daily_small_noise.csv", parse_dates=["timestamp"])
+test_df = pd.read_csv("data/art_daily_jumpsup.csv", parse_dates=["timestamp"])
+print(f"train: {len(train_df)} points, test: {len(test_df)} points, "
+      f"both at {train_df['timestamp'].diff().mode()[0]} resolution")</code></pre>
+    <pre class="output"><code class="nohl">train: 4032 points, test: 4032 points, both at 0 days 00:05:00 resolution</code></pre>
+    <p>Both series run from April 1 to April 14, 2014: 14 days of 288 readings. The daily pattern is a step: the value sits near 20 overnight, rises to about 84 at 09:00, and drops back at 18:00, with noise of a few units. The jump in the test series is on April 11, from 09:00 to 17:55: during that day's high plateau the value sits near 150 instead of 84, about 3.7 training standard deviations above the mean where normal days reach 1.5. The widget of Part 2 shows windows from both series.</p>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="5-the-data">5. The data</h2>
-<p>Two NAB-style (Numenta Anomaly Benchmark) synthetic time series at 5-minute
-resolution: <code>art_daily_small_noise.csv</code> is clean daily-periodic data used only to
-teach the autoencoder what &quot;normal&quot; looks like, and <code>art_daily_jumpsup.csv</code> is the
-same kind of signal with a sustained level jump injected — the anomaly we're trying
-to catch, and one the model never sees labelled as such.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">train_df = pd.read_csv(&quot;data/art_daily_small_noise.csv&quot;, parse_dates=[&quot;timestamp&quot;])
-test_df = pd.read_csv(&quot;data/art_daily_jumpsup.csv&quot;, parse_dates=[&quot;timestamp&quot;])
-print(f&quot;train: {len(train_df)} points, test: {len(test_df)} points, &quot;
-      f&quot;both at {train_df[&#x27;timestamp&#x27;].diff().mode()[0]} resolution&quot;)
-
-fig, axes = plt.subplots(2, 1, figsize=(9, 5), sharex=True)
-axes[0].plot(train_df[&quot;timestamp&quot;], train_df[&quot;value&quot;], color=mlutils.BLUE, lw=0.8)
-axes[0].set_title(&quot;Training data: normal daily pattern, no anomalies&quot;)
-axes[1].plot(test_df[&quot;timestamp&quot;], test_df[&quot;value&quot;], color=mlutils.ORANGE, lw=0.8)
-axes[1].set_title(&quot;Test data: same pattern, with a hidden anomaly somewhere&quot;)
-fig.tight_layout()</code></pre>
-<pre class="output">train: 4032 points, test: 4032 points, both at 0 days 00:05:00 resolution</pre>
-<figure class="output-figure"><img src="img/09-1.png" alt="Figure: Training data: normal daily pattern, no anomalies; Test data: same pattern, with a hidden anomaly somewhere" width="969" height="535" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="6-windows-and-a-convolutional-autoencoder">6. Windows, and a convolutional autoencoder</h2>
-<p>As set out in section 2, we slice both series into overlapping 2-hour windows (24 points at 5-minute
-resolution) and normalise using the <strong>training</strong> mean and standard deviation only —
-the test set's own statistics must never leak into preprocessing, exactly as in
-chapter 08.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">mu, sigma = train_df[&quot;value&quot;].mean(), train_df[&quot;value&quot;].std()
-train_v = (train_df[&quot;value&quot;].values - mu) / sigma
-test_v = (test_df[&quot;value&quot;].values - mu) / sigma
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Windows, and a convolutional autoencoder</h2>
+  </div>
+  <div class="col prose">
+    <p>As set out in Part 2, we slice both series into overlapping 2-hour windows (24 points at 5-minute resolution) and normalise using the <strong>training</strong> mean and standard deviation only: the test set's own statistics must never leak into preprocessing, exactly as in chapter 08.</p>
+    <pre><code class="language-python">mu, sigma = train_df["value"].mean(), train_df["value"].std()
+train_v = (train_df["value"].values - mu) / sigma
+test_v = (test_df["value"].values - mu) / sigma
 
 window = 24
 def make_windows(values, w):
     return np.stack([values[i:i + w] for i in range(len(values) - w + 1)])
 
-X_train = make_windows(train_v, window)[..., np.newaxis].astype(&quot;float32&quot;)
-X_test = make_windows(test_v, window)[..., np.newaxis].astype(&quot;float32&quot;)
-print(f&quot;train windows: {X_train.shape}, test windows: {X_test.shape}&quot;)</code></pre>
-<pre class="output">train windows: (4009, 24, 1), test windows: (4009, 24, 1)</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">inp = tf.keras.Input(shape=(window, 1))
-z = tf.keras.layers.Conv1D(16, 5, activation=&quot;relu&quot;, padding=&quot;same&quot;, strides=2)(inp)
-z = tf.keras.layers.Conv1D(8, 5, activation=&quot;relu&quot;, padding=&quot;same&quot;, strides=2)(z)      # bottleneck: 6x8
-z = tf.keras.layers.Conv1DTranspose(8, 5, activation=&quot;relu&quot;, padding=&quot;same&quot;, strides=2)(z)
-z = tf.keras.layers.Conv1DTranspose(16, 5, activation=&quot;relu&quot;, padding=&quot;same&quot;, strides=2)(z)
-out = tf.keras.layers.Conv1DTranspose(1, 5, padding=&quot;same&quot;)(z)
+X_train = make_windows(train_v, window)[..., np.newaxis].astype("float32")
+X_test = make_windows(test_v, window)[..., np.newaxis].astype("float32")
+print(f"train windows: {X_train.shape}, test windows: {X_test.shape}")</code></pre>
+    <pre class="output"><code class="nohl">train windows: (4009, 24, 1), test windows: (4009, 24, 1)</code></pre>
+    <pre><code class="language-python">inp = tf.keras.Input(shape=(window, 1))
+z = tf.keras.layers.Conv1D(16, 5, activation="relu", padding="same", strides=2)(inp)
+z = tf.keras.layers.Conv1D(8, 5, activation="relu", padding="same", strides=2)(z)      # bottleneck: 6x8
+z = tf.keras.layers.Conv1DTranspose(8, 5, activation="relu", padding="same", strides=2)(z)
+z = tf.keras.layers.Conv1DTranspose(16, 5, activation="relu", padding="same", strides=2)(z)
+out = tf.keras.layers.Conv1DTranspose(1, 5, padding="same")(z)
 
 autoencoder = tf.keras.Model(inp, out)
-autoencoder.compile(optimizer=&quot;adam&quot;, loss=&quot;mae&quot;)
-autoencoder.summary()</code></pre>
-<pre class="output">Model: &quot;functional&quot;
-
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
-┃ Layer (type)                    ┃ Output Shape           ┃       Param # ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
-│ input_layer (InputLayer)        │ (None, 24, 1)          │             0 │
-├─────────────────────────────────┼────────────────────────┼───────────────┤
-│ conv1d (Conv1D)                 │ (None, 12, 16)         │            96 │
-├─────────────────────────────────┼────────────────────────┼───────────────┤
-│ conv1d_1 (Conv1D)               │ (None, 6, 8)           │           648 │
-├─────────────────────────────────┼────────────────────────┼───────────────┤
-│ conv1d_transpose                │ (None, 12, 8)          │           328 │
-│ (Conv1DTranspose)               │                        │               │
-├─────────────────────────────────┼────────────────────────┼───────────────┤
-│ conv1d_transpose_1              │ (None, 24, 16)         │           656 │
-│ (Conv1DTranspose)               │                        │               │
-├─────────────────────────────────┼────────────────────────┼───────────────┤
-│ conv1d_transpose_2              │ (None, 24, 1)          │            81 │
-│ (Conv1DTranspose)               │                        │               │
-└─────────────────────────────────┴────────────────────────┴───────────────┘
-
- Total params: 1,809 (7.07 KB)
-
- Trainable params: 1,809 (7.07 KB)
-
- Non-trainable params: 0 (0.00 B)</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">history = autoencoder.fit(X_train, X_train, epochs=20, batch_size=64,
+autoencoder.compile(optimizer="adam", loss="mae")</code></pre>
+    <p>The training mean is 42.4 and the training standard deviation 28.1, so the overnight level is about <span class="m">-0.8</span> standardised and the daytime plateau about <span class="m">+1.5</span>. The model summary lists the five layers of the table in Part 2, 1,809 parameters in all.</p>
+    <pre><code class="language-python">history = autoencoder.fit(X_train, X_train, epochs=20, batch_size=64,
                            validation_split=0.1, verbose=0)
-print(f&quot;final train MAE: {history.history[&#x27;loss&#x27;][-1]:.4f}, &quot;
-      f&quot;val MAE: {history.history[&#x27;val_loss&#x27;][-1]:.4f}&quot;)
+print(f"final train MAE: {history.history['loss'][-1]:.4f}, "
+      f"val MAE: {history.history['val_loss'][-1]:.4f}")</code></pre>
+    <pre class="output"><code class="nohl">final train MAE: 0.0522, val MAE: 0.0553</code></pre>
+    <p>The error falls from 0.58 in the first epoch to 0.05 in the twentieth and is still creeping down: a normal window is redrawn to within a twentieth of a standard deviation, on average.</p>
+  </div>
+</section>
 
-fig, ax = plt.subplots(figsize=(6.5, 4))
-ax.plot(history.history[&quot;loss&quot;], color=mlutils.BLUE, label=&quot;train&quot;)
-ax.plot(history.history[&quot;val_loss&quot;], color=mlutils.ORANGE, label=&quot;validation&quot;)
-ax.set(xlabel=&quot;epoch&quot;, ylabel=&quot;reconstruction MAE&quot;, title=&quot;Autoencoder training, normal data only&quot;)
-ax.legend()</code></pre>
-<pre class="output">final train MAE: 0.0524, val MAE: 0.0545
-&lt;matplotlib.legend.Legend at 0x252a836fb60&gt;</pre>
-<figure class="output-figure"><img src="img/09-2.png" alt="Figure 2 produced by the code above" width="636" height="435" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="7-setting-a-threshold-from-normal-data-alone">7. Setting a threshold from normal data alone</h2>
-<p>The threshold comes entirely from the <em>training</em> set's own reconstruction error — we
-still haven't looked at the test set's anomaly at all. The simplest reasonable choice:
-the worst reconstruction error the model ever produced on data it knows is normal.
-Anything worse than that, on new data, is suspicious.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">train_recon = autoencoder.predict(X_train, verbose=0)
+<!-- =================================================================== -->
+<section id="threshold">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Setting a threshold from normal data alone</h2>
+  </div>
+  <div class="col prose">
+    <p>The threshold comes entirely from the <em>training</em> set's own reconstruction error; we still have not looked at the test set's anomaly at all. The simplest reasonable choice: the worst reconstruction error the model ever produced on data it knows is normal. Anything worse than that, on new data, is suspicious.</p>
+    <pre><code class="language-python">train_recon = autoencoder.predict(X_train, verbose=0)
 train_mae = np.mean(np.abs(train_recon - X_train), axis=(1, 2))
-threshold = train_mae.max()
+threshold = train_mae.max()</code></pre>
+    <p>The training scores average 0.053 with a standard deviation of 0.034; their 99th percentile is 0.148 and their maximum, the threshold, 0.189. The tail is made of the windows that contain one of the two daily steps, which the network redraws least well: a sharp edge is the hardest thing for five-wide filters at a coarse resolution to place exactly.</p>
+  </div>
+</section>
 
-fig, ax = plt.subplots(figsize=(6.5, 4))
-ax.hist(train_mae, bins=40, color=mlutils.BLUE, alpha=0.8)
-ax.axvline(threshold, color=mlutils.ORANGE, lw=2, ls=&quot;--&quot;, label=f&quot;threshold = {threshold:.3f}&quot;)
-ax.set(xlabel=&quot;reconstruction MAE (training windows)&quot;, ylabel=&quot;count&quot;,
-       title=&quot;Threshold: the worst error ever seen on normal data&quot;)
-ax.legend()</code></pre>
-<pre class="output">&lt;matplotlib.legend.Legend at 0x252abf69590&gt;</pre>
-<figure class="output-figure"><img src="img/09-3.png" alt="Figure 3 produced by the code above" width="642" height="435" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="8-flagging-anomalies-in-unseen-data">8. Flagging anomalies in unseen data</h2>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">test_recon = autoencoder.predict(X_test, verbose=0)
+<!-- =================================================================== -->
+<section id="flagging">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Flagging anomalies in unseen data</h2>
+  </div>
+  <div class="col prose">
+    <pre><code class="language-python">test_recon = autoencoder.predict(X_test, verbose=0)
 test_mae = np.mean(np.abs(test_recon - X_test), axis=(1, 2))
-anomalous = np.where(test_mae &gt; threshold)[0]
-print(f&quot;flagged {len(anomalous)} of {len(test_mae)} windows as anomalous&quot;)
-if len(anomalous):
-    start = test_df[&quot;timestamp&quot;].iloc[anomalous.min()]
-    end = test_df[&quot;timestamp&quot;].iloc[anomalous.max() + window - 1]
-    print(f&quot;flagged windows span {start} to {end}&quot;)</code></pre>
-<pre class="output">flagged 69 of 4009 windows as anomalous
-flagged windows span 2014-04-11 07:05:00 to 2014-04-12 10:45:00</pre>
-</div>
+anomalous = np.where(test_mae > threshold)[0]
+print(f"flagged {len(anomalous)} of {len(test_mae)} windows as anomalous")
+flagged_days = test_df["timestamp"].iloc[anomalous].dt.strftime("%b %d")
+print(flagged_days.value_counts().sort_index().to_string())</code></pre>
+    <pre class="output"><code class="nohl">flagged 75 of 4009 windows as anomalous
+timestamp
+Apr 07     1
+Apr 11    74</code></pre>
+    <p>Now the truth, which the detector never saw, used only to grade it: the jump occupies readings 2988 to 3095, April 11 from 09:00 to 17:55.</p>
+    <pre><code class="language-python">jump = (2988, 3095)      # readings of the injected jump: April 11, 09:00 to 17:55 (used only to grade, never to train)
+overlaps = lambda i: i + window - 1 >= jump[0] and i <= jump[1]
+hits = [i for i in anomalous if overlaps(i)]
+false_alarms = [i for i in anomalous if not overlaps(i)]
+inside = [i for i in range(len(test_mae)) if i >= jump[0] and i + window - 1 <= jump[1]]
+print(f"{len(hits)} of {len(anomalous)} flagged windows overlap the jump; "
+      f"false alarms: {[str(test_df['timestamp'].iloc[i]) for i in false_alarms]}")
+print(f"windows wholly inside the jump: {len(inside)}, of which flagged: {sum(test_mae[i] > threshold for i in inside)}")</code></pre>
+    <pre class="output"><code class="nohl">74 of 75 flagged windows overlap the jump; false alarms: ['2014-04-07 16:05:00']
+windows wholly inside the jump: 85, of which flagged: 34</code></pre>
+    <p>The flagged windows sit where the injected level jump is, which is what an unsupervised detector trained on nothing but "normal" data should produce: no labelled anomalies were used anywhere in training or in setting the threshold. Three details the bare count hides, all visible in the demo at the top. First, one flagged window on April 7 is a false alarm; its score, 0.1891, is 0.08% above the threshold, which is itself set by a single training window, so the two are a coin toss apart. Second, the detector is surer of the jump's edges than of the jump itself: the windows that straddle the 09:00 rise or the 18:00 fall score up to 0.37, while 51 of the 85 windows lying wholly inside the raised plateau stay under the line, redrawn as a lower plateau. Third, the whole event is 3.7 standard deviations above the training mean where normal days reach 1.5; a rule that flags any reading beyond the training range catches all 108 of its readings with no false alarm (exercise 4), and a projection onto four principal components finds the same two edges as the network (exercise 3). The autoencoder earns its place on anomalies that stay inside the normal range but break the normal <em>shape</em>; this one does not test that.</p>
+    <p>A note on reproducibility. Even with the seeds and op determinism set, TensorFlow's 1-D convolutions are not bit-for-bit reproducible from one run to the next, even on the same machine. The author's runs of this notebook flagged 69 windows in one run (final MAE 0.0524, false alarm at 08:50 on April 12) and 75 in another (0.0522, false alarm at 16:05 on April 7); the page follows the second, which is the notebook shipped with this course. The shape of the result, the jump's two edges plus one borderline false alarm, is the same in both, and the exercise counts shift by a few windows with it.</p>
+    <p class="big-idea">Reconstruction error turns "what does normal look like?" into a number, with no labels; the threshold, the baselines and the grading decide whether that number is worth anything.</p>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-axes[0].plot(test_df[&quot;timestamp&quot;], test_df[&quot;value&quot;], color=mlutils.INK, lw=0.8)
-flag_times = test_df[&quot;timestamp&quot;].iloc[anomalous]
-flag_values = test_df[&quot;value&quot;].iloc[anomalous]
-axes[0].scatter(flag_times, flag_values, color=mlutils.ORANGE, s=10, zorder=5, label=&quot;flagged&quot;)
-axes[0].set_title(&quot;Flagged points overlaid on the raw series&quot;)
-axes[0].legend()
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Learn normal</b>: an autoencoder trained to redraw normal windows through a bottleneck; the redrawing error is the anomaly score.</div></li>
+      <li><div><b>Preprocess honestly</b>: standardise with the training mean and standard deviation only; cut 24-reading windows.</div></li>
+      <li><div><b>The linear case is PCA</b>: a linear autoencoder with squared error projects onto the top <span class="m">k</span> principal components; the score is a distance to the surface of normal data.</div></li>
+      <li><div><b>Threshold from normal data</b>: the training maximum (0.189 here) or a quantile; lower lines catch more and alarm more, first at the daily steps.</div></li>
+      <li><div><b>The result</b>: 75 windows flagged, 74 on the jump, one false alarm a hair over the line; 51 of the 85 windows inside the plateau missed.</div></li>
+      <li><div><b>The fine print</b>: PCA with four components finds the same two edges and none of the plateau; a plain level rule finds all 108 readings; the network's advantage, anomalies of shape rather than level, is not what this data tests.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Autoencoder</td><td>A network trained to output its own input through a constrained middle.</td></tr>
+        <tr><td>Encoder, decoder, bottleneck</td><td>Input to code; code to output; the code itself.</td></tr>
+        <tr><td>Reconstruction error</td><td>MAE or MSE between a window and its redrawing; the anomaly score.</td></tr>
+        <tr><td>Transposed convolution</td><td>A convolution that lengthens its input, undoing a stride.</td></tr>
+        <tr><td>Threshold</td><td>The score above which a window is flagged, chosen from normal data.</td></tr>
+        <tr><td>False positive, false negative</td><td>A false alarm; a missed event.</td></tr>
+        <tr><td>Principal components</td><td>The directions of largest variance; the linear autoencoder's subspace.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
-mae_times = test_df[&quot;timestamp&quot;].iloc[:len(test_mae)]    # one MAE value per window start
-axes[1].plot(mae_times, test_mae, color=mlutils.BLUE, lw=0.8, label=&quot;reconstruction MAE&quot;)
-axes[1].axhline(threshold, color=mlutils.ORANGE, ls=&quot;--&quot;, label=&quot;threshold&quot;)
-axes[1].set_title(&quot;Reconstruction error over time&quot;)
-axes[1].legend()
-fig.tight_layout()</code></pre>
-<figure class="output-figure"><img src="img/09-4.png" alt="Figure: Flagged points overlaid on the raw series; Reconstruction error over time" width="969" height="645" loading="lazy"></figure>
-</div>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>A stricter threshold.</b> Try <code>threshold = train_mae.mean() + 3 * train_mae.std()</code> instead of the max. Does it flag more or fewer windows? Look at whether any of the newly flagged windows fall outside the true anomaly period (false positives).
+        <details class="sol"><summary>Hint</summary><p>Print the time of day of each false alarm; the daily pattern has two steps.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">threshold2 = train_mae.mean() + 3 * train_mae.std()
+anomalous2 = np.where(test_mae > threshold2)[0]
+outside = [i for i in anomalous2 if not overlaps(i)]
+print(f"threshold {threshold2:.4f}: {len(anomalous2)} flagged, {len(outside)} outside the jump")
+print("times of day of the false alarms:", sorted({test_df['timestamp'].iloc[i].strftime('%H:%M') for i in outside}))</code></pre>
+          <p>Mean plus three standard deviations is 0.1557, lower than the maximum of 0.1890, so it flags more: 137 windows instead of 75, of which 116 overlap the jump and 21 are false alarms (125, 106 and 19 in the other run). The false alarms are not scattered: they fall at 08:35 to 08:55 and 16:05 to 16:15 on several different days, the windows that contain the daily step up or the start of the step down. The normal scores are heavy-tailed exactly there, so a threshold set from their mean and spread, which assumes a bell shape, trips on the edges. The threshold rule and the shape of the normal errors cannot be chosen separately.</p></details>
+      </div></li>
+      <li><div><b>A different anomaly type.</b> The notebook suggested rerunning on <code>art_flatline.csv</code> or <code>art_daily_jumpsdown.csv</code>, but the course's data folder holds only the two files used here. Make your own: copy the training series and inject a flatline (300 readings stuck at one value) and a downward jump (300 readings lowered by 1.5 training standard deviations). Does the same autoencoder, trained once on normal data, flag them?
+        <details class="sol"><summary>Hint</summary><p>Score the modified series with the same windows, scaling and threshold. Ask what a flat stretch at a normal level looks like to a model that has only seen a daily step.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">def score_series(values_v):
+    Xs = make_windows(values_v, window)[..., np.newaxis].astype("float32")
+    return np.mean(np.abs(autoencoder.predict(Xs, verbose=0) - Xs), axis=(1, 2))
 
-<div class="md">
-<p>The flagged windows form one contiguous block, right where the injected level-jump
-sits — exactly what an unsupervised detector trained on nothing but &quot;normal&quot; data
-should produce: no labelled anomalies were used anywhere in training or in setting
-the threshold, yet it isolates the anomalous stretch cleanly.</p>
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-a-stricter-threshold">Exercise 1: A stricter threshold</h3>
-<p>Try <code>threshold = train_mae.mean() + 3 * train_mae.std()</code> instead of the max. Does it
-flag more or fewer windows? Look at whether any of the newly-flagged windows fall
-outside the true anomaly period (false positives).</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">threshold2 = train_mae.mean() + 3 * train_mae.std()
-anomalous2 = np.where(test_mae &gt; threshold2)[0]
-print(len(anomalous2))
-</code></pre>
-<p>A mean-plus-k-sigma threshold is usually a bit stricter (lower) than the training
-max, so it flags a similar or slightly larger contiguous block; whether it introduces
-false positives depends on how heavy-tailed the <em>normal</em> reconstruction errors are.</p>
-</details>
-<h3 id="exercise-2-a-different-anomaly-type">Exercise 2: A different anomaly type</h3>
-<p>Rerun section 8 using <code>art_flatline.csv</code> or <code>art_daily_jumpsdown.csv</code> as the test set
-instead (same folder). Does the same autoencoder, trained only once on
-<code>art_daily_small_noise.csv</code>, still flag the new anomaly correctly?</p>
-<details><summary>Solution</summary>
-<p>The trained autoencoder generalises to other anomaly <em>shapes</em> it never saw, because it
-was never trained to recognise any specific anomaly — only to reconstruct normal
-patterns well. A flatline or a downward jump both reconstruct badly for the same
-reason a jump-up does: the model never learned to compress that shape.</p>
-</details>
-<h2 id="key-takeaways">Key takeaways</h2>
-<ul>
-<li>An autoencoder trained only on normal data learns to compress and reconstruct
-<em>that</em> pattern well; reconstruction error becomes an anomaly score with no labelled
-anomalies required anywhere in training.</li>
-<li>The detection threshold should come from the training data's own error
-distribution, never by peeking at the test set.</li>
-<li>This approach transfers to any anomaly <em>shape</em> the training data didn't contain —
-it doesn't need to know what an anomaly looks like in advance, only what normal
-looks like.</li>
-</ul>
-</div>
-</main>
+flat = train_v.copy(); flat[2000:2300] = flat[2000]      # 25 hours stuck at one reading
+down = train_v.copy(); down[2000:2300] -= 1.5            # 25 hours shifted down by 1.5 training sd
+for name, series in (("flatline", flat), ("jump down", down)):
+    s = score_series(series); flagged = np.where(s > threshold)[0]
+    print(f"{name}: {len(flagged)} windows flagged, max score {s.max():.4f}")</code></pre>
+          <p>The downward jump is caught: 228 windows flagged (230 in the other run), with scores up to 0.50. The flatline is not caught at all: zero windows, and its highest score is the threshold itself, which comes from an untouched part of the series. A flat stretch at a level the sensor often sits at is a perfectly normal shape to this model: the overnight and daytime plateaus are flat too, and the decoder redraws a constant window effortlessly. The claim that the method "transfers to any anomaly shape" is false; it transfers to anomalies that the normal data cannot be bent to fit. A sensor stuck at one value is a classic failure, and this detector would sleep through it.</p></details>
+      </div></li>
+      <li><div><b>PCA instead of the network.</b> Project the training windows onto their top 4 principal components, use the projection error as the score and the training maximum as the threshold, and grade the result like Part 8.
+        <details class="sol"><summary>Hint</summary><p>The widget in Part 3 does it live; in NumPy it is <code>np.linalg.eigh</code> on the covariance of the training windows.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">Xtr2, Xte2 = X_train[:, :, 0], X_test[:, :, 0]
+centre = Xtr2.mean(0)
+evals, evecs = np.linalg.eigh(np.cov((Xtr2 - centre).T))
+U = evecs[:, np.argsort(evals)[::-1][:4]]                      # top 4 principal components
+recon = lambda X: (X - centre) @ U @ U.T + centre
+pca_train = np.mean(np.abs(recon(Xtr2) - Xtr2), 1); pca_test = np.mean(np.abs(recon(Xte2) - Xte2), 1)
+flagged_pca = np.where(pca_test > pca_train.max())[0]
+print(f"PCA(4): threshold {pca_train.max():.4f}, {len(flagged_pca)} windows flagged, "
+      f"{sum(1 for i in flagged_pca if not overlaps(i))} outside the jump")
+print(f"windows wholly inside the jump flagged by PCA(4): {sum(pca_test[i] > pca_train.max() for i in inside)}")</code></pre>
+          <p>Four components keep 97.6% of the training windows' variance; the projection's training error averages 0.093, almost twice the network's 0.052, and its threshold is 0.329. It flags 46 windows, every one of them on the jump, with no false alarm, but not one of the 85 windows wholly inside the plateau: PCA catches the two edges and nothing else. The reason is instructive. The first principal component of a window is its level, so a flat stretch at any height projects onto the subspace almost perfectly; only the edges, where the shape changes within the window, fall off it. The network misses 51 of those 85 inside windows for the same reason in a milder form. Fewer components are worse (two leave the daily step itself badly drawn, so normal edge windows push the threshold above part of the jump); more than four changes little.</p></details>
+      </div></li>
+      <li><div><b>The simplest detector.</b> Flag any test reading whose standardised value lies beyond the range seen in training. How does it do, and what does that say about this anomaly?
+        <details class="sol"><summary>Hint</summary><p>One comparison with <code>np.abs(train_v).max()</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">limit = np.abs(train_v).max()
+above = np.where(np.abs(test_v) > limit)[0]
+print(f"readings beyond the training range: {len(above)}, "
+      f"from {test_df['timestamp'].iloc[above.min()]} to {test_df['timestamp'].iloc[above.max()]}")</code></pre>
+          <p>The training series never exceeds 1.62 standard deviations; 108 test readings do, from 09:00 to 17:55 on April 11: exactly the 108 readings of the jump, with no false alarm and no miss. A single comparison does better than the autoencoder, because this anomaly is one of level: the sensor reads values it never read before. An autoencoder is for anomalies of shape, readings in the normal range arranged in an abnormal way, such as the daytime plateau arriving at 03:00, or the step up never coming. The right test of this chapter's method would be an anomaly the level rule cannot see.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>V. Chandola, A. Banerjee and V. Kumar. "Anomaly detection: A survey". <em>ACM Computing Surveys</em> 41(3), 1–58, 2009. <a href="https://doi.org/10.1145/1541880.1541882">doi:10.1145/1541880.1541882</a>. The field laid out, reconstruction-based methods included.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>G. E. Hinton and R. R. Salakhutdinov. "Reducing the Dimensionality of Data with Neural Networks". <em>Science</em> 313(5786), 504–507, 2006. <a href="https://doi.org/10.1126/science.1127647">doi:10.1126/science.1127647</a>. Deep autoencoders, and why they beat PCA when the data are curved.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>P. Baldi and K. Hornik. "Neural networks and principal component analysis: Learning from examples without local minima". <em>Neural Networks</em> 2(1), 53–58, 1989. <a href="https://doi.org/10.1016/0893-6080(89)90014-2">doi:10.1016/0893-6080(89)90014-2</a>. The linear autoencoder recovers the PCA subspace.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>A. Lavin and S. Ahmad. "Evaluating Real-Time Anomaly Detection Algorithms: The Numenta Anomaly Benchmark". <em>IEEE ICMLA</em>, 38–44, 2015. <a href="https://doi.org/10.1109/ICMLA.2015.141">doi:10.1109/ICMLA.2015.141</a>. Where the two series come from.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>P. Vijay. "Timeseries anomaly detection using an Autoencoder". Keras code examples, 2020. <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">keras.io</a>. The recipe this chapter follows.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>I. Goodfellow, Y. Bengio and A. Courville. <em>Deep Learning</em>. MIT Press, 2016. <a href="https://www.deeplearningbook.org">deeplearningbook.org</a>. Chapter 14, autoencoders.</div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="08-lstm-for-sequences.html"><span class="lbl">Previous · 08</span><span class="t">LSTM for Sequences</span></a>
-  <a class="next" rel="next" href="10-transformers-self-attention.html"><span class="lbl">Next · 10</span><span class="t">Transformers and Self-Attention</span></a>
+  <a class="prev" rel="prev" href="08-lstm-for-sequences.html"><span class="lbl">Previous · 08</span><span class="t">LSTM for sequences</span></a>
+  <a class="next" rel="next" href="10-transformers-self-attention.html"><span class="lbl">Next · 10</span><span class="t">Transformers and self-attention</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 09 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+  <p>Chapter 09 of "A Tour of Machine Learning" by Elie Rouphael. The demos run the notebook's trained autoencoder in your browser on every window of both series; the PCA baseline is computed here. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch09-data.js"></script>
+<script src="interactive/ch09.js"></script>
 </body>
 </html>
