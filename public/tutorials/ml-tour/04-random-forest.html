@@ -3,13 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>04 · Random Forest — A Tour of Machine Learning</title>
-<meta name="description" content="A single decision tree vs. a 300-tree random forest on real heart-disease data, and the feature importances the forest learned.">
+<title>04 · Random forest · A Tour of Machine Learning</title>
+<meta name="description" content="Decision trees and random forests from the ground up: the Gini impurity worked by hand, why one deep tree overfits, bootstrap samples, the variance of an average of correlated trees, random feature subsets and feature importance, with a forest you grow in the browser on 303 cardiac patients.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  #handT td, #handT th, #bootT td, #bootT th, #varT td, #varT th { white-space: nowrap; }
+  @media (max-width: 420px) { #handT { font-size: 0.8rem; } #handT th, #handT td { padding-inline: 0.2rem; } #handT th:nth-child(4), #handT td:nth-child(4) { display: none; } }
+</style>
 </head>
 <body>
 
@@ -17,184 +21,248 @@
 
 <header class="hero col">
   <span class="eyebrow">A Tour of Machine Learning · Chapter 04 of 11</span>
-  <h1>Random Forest</h1>
-  <div class="intro prose">
-<p><strong>Objectives:</strong> train a random forest classifier on real patient data, read feature
-importances, and see why an ensemble of weak, decorrelated trees beats any single
-tree.</p>
-<p><em>Loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier
-Tutorial</a>
-on Kaggle, reworked here with a different dataset and a focus on feature importance.</em></p>
-<p>A single decision tree overfits easily — it can memorise the training set by growing
-deep enough. A <strong>random forest</strong> trains many trees, each on a bootstrap resample of
-the data and a random subset of features at every split, then averages their votes.
-The randomness decorrelates the trees' mistakes, so the average is much more stable
-than any one tree.</p>
-
-  </div>
+  <h1>Random forest</h1>
+  <p class="lede">A single decision tree overfits easily: grown deep enough, it memorises its training set. A random forest grows many trees, each on a resample of the data with a random subset of features at every split, and averages their votes. The randomness decorrelates the trees' mistakes, so the average is steadier than any one tree. Below, 303 cardiac patients: grow the forest yourself, one tree at a time.</p>
+  <p class="byline">Elie Rouphael · Needs Python and a little probability · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/04_random_forest.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/04_random_forest.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="ml-tour-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: the full course download has everything.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-a-decision-tree-splitting-into-purer-groups">1. A decision tree: splitting into purer groups</a></li>
-    <li><a href="#2-why-one-deep-tree-overfits">2. Why one deep tree overfits</a></li>
-    <li><a href="#3-from-trees-to-a-forest-bootstrap-averaging-random-features">3. From trees to a forest: bootstrap, averaging, random features</a></li>
-    <li><a href="#4-the-data">4. The data</a></li>
-    <li><a href="#5-one-tree-vs-a-forest">5. One tree vs. a forest</a></li>
-    <li><a href="#6-how-many-trees-are-enough">6. How many trees are enough?</a></li>
-    <li><a href="#7-which-features-matter">7. Which features matter?</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-    <li><a href="#key-takeaways">Key takeaways</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="1-a-decision-tree-splitting-into-purer-groups">1. A decision tree: splitting into purer groups</h2>
-<p>A decision tree predicts by asking a sequence of yes/no questions, such as &quot;is <code>chol</code> above 250?&quot;. Each question is a <strong>split</strong>: it picks one feature <span class="math inline">j</span> and a threshold <span class="math inline">s</span>, and sends a patient left if <span class="math inline">x_j \le s</span> and right otherwise. Training starts with all training patients in one node, the root. It picks the best split, applies it, and then repeats the same procedure inside each of the two new nodes, and so on (<strong>recursive splitting</strong>). A node that is not split any further is a <strong>leaf</strong>, and it predicts the majority class of the training patients that reached it. Geometrically, the tree cuts the feature space into boxes with sides parallel to the axes.</p>
-<p><strong>Impurity.</strong> &quot;Best split&quot; needs a score. Consider a node and let <span class="math inline">p_k</span> be the fraction of its patients in class <span class="math inline">k</span>, for <span class="math inline">k = 1, \dots, K</span> (below, <span class="math inline">K = 2</span>: heart disease or not). The <strong>Gini impurity</strong> is</p>
-<div class="math display">G = 1 - \sum_{k=1}^{K} p_k^2</div>
-<p>It has a direct reading: draw two patients at random (with replacement) from the node; <span class="math inline">G</span> is the probability that they belong to different classes. A pure node has <span class="math inline">G = 0</span>. With two classes, the worst case is a 50/50 mix, where <span class="math inline">G = 1 - 0.5^2 - 0.5^2 = 0.5</span>. A common alternative is the <strong>entropy</strong>, measured in bits:</p>
-<div class="math display">H = -\sum_{k=1}^{K} p_k \log_2 p_k</div>
-<p>It is also 0 for a pure node and reaches 1 bit for a 50/50 mix. Both scores behave very similarly; scikit-learn uses Gini by default.</p>
-<p><strong>Impurity decrease.</strong> A split sends <span class="math inline">n_L</span> of the node's <span class="math inline">n</span> patients left and <span class="math inline">n_R</span> right. Its quality is the drop in impurity, with each child weighted by its share of the patients:</p>
-<div class="math display">\Delta G = G_{\text{parent}} - \frac{n_L}{n}\, G_L - \frac{n_R}{n}\, G_R</div>
-<p>The weights matter: a large impure child costs more than a tiny one. At every node the tree tries all features and thresholds and keeps the split with the largest <span class="math inline">\Delta G</span>. It is greedy: it takes the best single step and never looks ahead.</p>
-<p><strong>A hand example.</strong> A node holds 10 patients, 5 with disease and 5 without. Two candidate splits:</p>
-<table>
-<thead>
-<tr>
-<th>node</th>
-<th>patients</th>
-<th>disease / no disease</th>
-<th><span class="math inline">p_{\text{disease}}</span></th>
-<th>Gini <span class="math inline">1 - p_1^2 - p_2^2</span></th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>parent</td>
-<td>10</td>
-<td>5 / 5</td>
-<td>0.5</td>
-<td><span class="math inline">1 - 0.25 - 0.25 = 0.5</span></td>
-</tr>
-<tr>
-<td>split A, left</td>
-<td>4</td>
-<td>1 / 3</td>
-<td>0.25</td>
-<td><span class="math inline">1 - 0.0625 - 0.5625 = 0.375</span></td>
-</tr>
-<tr>
-<td>split A, right</td>
-<td>6</td>
-<td>4 / 2</td>
-<td>0.667</td>
-<td><span class="math inline">1 - 0.444 - 0.111 = 0.444</span></td>
-</tr>
-<tr>
-<td>split B, left</td>
-<td>5</td>
-<td>4 / 1</td>
-<td>0.8</td>
-<td><span class="math inline">1 - 0.64 - 0.04 = 0.32</span></td>
-</tr>
-<tr>
-<td>split B, right</td>
-<td>5</td>
-<td>1 / 4</td>
-<td>0.2</td>
-<td><span class="math inline">1 - 0.04 - 0.64 = 0.32</span></td>
-</tr>
-</tbody>
-</table>
-<p>Split A: <span class="math inline">\Delta G = 0.5 - 0.4 \times 0.375 - 0.6 \times 0.444 = 0.5 - 0.150 - 0.267 = 0.083</span>.</p>
-<p>Split B: <span class="math inline">\Delta G = 0.5 - 0.5 \times 0.32 - 0.5 \times 0.32 = 0.18</span>.</p>
-<p>The tree chooses split B. Entropy agrees: split B lowers it from 1 bit to 0.722 bits, a gain of 0.278 bits, against 0.125 bits for split A.</p>
+<!-- ============ LIVE DEMO: grow the forest ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Accuracy against the number of trees</p>
+        <canvas id="curveC" aria-label="Training, out-of-bag and test accuracy of the forest against the number of trees, on a log scale, with the single tree's test accuracy as a dashed line and the chosen number of trees marked" aria-describedby="heroStatus"></canvas>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="key"><span class="sw" style="background:var(--warm)"></span>forest, test</span>
+        <span class="key"><span class="sw" style="background:var(--c4)"></span>forest, out-of-bag</span>
+        <span class="key"><span class="sw" style="background:var(--post)"></span>forest, training</span>
+        <span class="key"><span class="sw" style="background:var(--muted)"></span>one tree, test</span>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Trees in the forest: <b id="hBV"></b></span>
+        <span class="row"><input type="range" id="hB" min="0" max="9" step="1" value="9"></span>
+      </label>
+      <label class="field"><span>Maximum depth: <b id="hDV"></b></span>
+        <span class="row"><input type="range" id="hD" min="1" max="12" step="1" value="12"></span>
+      </label>
+      <label class="field"><span>Candidate features per split: <b id="hMV"></b></span>
+        <span class="row"><input type="range" id="hM" min="1" max="13" step="1" value="3"></span>
+      </label>
+      <div class="btn-row">
+        <button class="btn" id="hNew" type="button">new random draws</button>
+        <button class="btn" id="hReset" type="button">the notebook's setting</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>one tree, train / test</span><span class="v" id="rTree">–</span>
+        <span>forest, train / test</span><span class="v" id="rFor">–</span>
+        <span>forest, out-of-bag</span><span class="v" id="rOob">–</span>
+      </div>
+      <p class="hint">Defaults are the notebook's: 300 trees of unlimited depth, <span class="m">\lfloor\sqrt{13}\rfloor = 3</span> candidate features per split, trained on the same 227 patients and tested on the same 76. The draws are the browser's own, so the forest's numbers differ a little from the notebook's 0.789; the single tree's deepest splits have exact ties, broken differently here, so its test accuracy differs by a few patients too.</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<h2 id="2-why-one-deep-tree-overfits">2. Why one deep tree overfits</h2>
-<p>Left alone, a tree keeps splitting until every leaf is pure. It then classifies its training set almost perfectly. But the deepest splits are decided by two or three patients each, so they follow the noise in those particular patients rather than a real pattern. Replace a handful of training patients and the tree can change completely, from the first split down, and its predictions change with it.</p>
-<p>This is <strong>high variance</strong>. Think of the training set as one random draw from a population of possible training sets. The prediction <span class="math inline">\hat f(x)</span> of the fitted tree for a new patient <span class="math inline">x</span> is then a random quantity too. Its expected squared error splits into three parts: bias squared (how far the <em>average</em> prediction is from the truth), variance (how much the prediction jumps from one training set to another), and irreducible noise. A deep tree has low bias but high variance. Averaging many trees trained on <em>independent</em> training sets would keep the low bias and shrink the variance. We only have one training set, so a random forest manufactures new ones.</p>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#tree"><span class="n">1</span><span class="t">A decision tree</span><span class="d">Splitting into purer groups</span></a>
+    <a href="#overfit"><span class="n">2</span><span class="t">Why one deep tree overfits</span><span class="d">High variance</span></a>
+    <a href="#forest"><span class="n">3</span><span class="t">From trees to a forest</span><span class="d">Bootstrap, averaging, random features</span></a>
+    <a href="#data"><span class="n">4</span><span class="t">The data</span><span class="d">303 cardiac patients, and what the label means</span></a>
+    <a href="#versus"><span class="n">5</span><span class="t">One tree against a forest</span><span class="d">On held-out patients</span></a>
+    <a href="#howmany"><span class="n">6</span><span class="t">How many trees?</span><span class="d">The curve flattens, with noise</span></a>
+    <a href="#importance"><span class="n">7</span><span class="t">Which features matter?</span><span class="d">Two kinds of importance</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Going further</span><span class="d">References</span></a>
+  </nav>
+</section>
 
-<div class="md">
-<h2 id="3-from-trees-to-a-forest-bootstrap-averaging-random-features">3. From trees to a forest: bootstrap, averaging, random features</h2>
-<p><strong>Bootstrap samples.</strong> Each tree gets its own training set: <span class="math inline">n</span> patients drawn <em>with replacement</em> from the <span class="math inline">n</span> training patients. Some patients are drawn twice or more, and some are not drawn at all. A given patient is missed by one draw with probability <span class="math inline">1 - 1/n</span>, so it is missed by all <span class="math inline">n</span> independent draws with probability</p>
-<div class="math display">\Big(1 - \frac1n\Big)^n \;\longrightarrow\; e^{-1} \approx 0.368 \quad \text{as } n \text{ grows}</div>
-<table>
-<thead>
-<tr>
-<th><span class="math inline">n</span></th>
-<th>2</th>
-<th>3</th>
-<th>5</th>
-<th>10</th>
-<th>100</th>
-<th>227</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><span class="math inline">(1 - 1/n)^n</span></td>
-<td>0.250</td>
-<td>0.296</td>
-<td>0.328</td>
-<td>0.349</td>
-<td>0.366</td>
-<td>0.367</td>
-</tr>
-</tbody>
-</table>
-<p>For <span class="math inline">n = 3</span>: <span class="math inline">(2/3)^3 = 8/27 \approx 0.296</span>. So each tree sees about 63% of the distinct patients. The other 37% are its <strong>out-of-bag</strong> patients, a free test set for that tree (scikit-learn reports the resulting score with <code>oob_score=True</code>).</p>
-<p><strong>Averaging correlated predictors.</strong> Let <span class="math inline">T_1, \dots, T_B</span> be the predictions of <span class="math inline">B</span> trees at the same input <span class="math inline">x</span>. Each has variance <span class="math inline">\sigma^2</span>, and any two have correlation <span class="math inline">\rho</span>: they are not independent, because their bootstrap samples overlap. The forest outputs the average <span class="math inline">\bar T = \frac1B \sum_b T_b</span>. Its variance is the sum of all <span class="math inline">B^2</span> covariances, divided by <span class="math inline">B^2</span>. There are <span class="math inline">B</span> diagonal terms, each <span class="math inline">\sigma^2</span>, and <span class="math inline">B(B-1)</span> off-diagonal terms, each <span class="math inline">\rho\sigma^2</span>:</p>
-<div class="math display">\mathrm{Var}(\bar T) = \frac{1}{B^2}\Big(B\sigma^2 + B(B-1)\,\rho\sigma^2\Big) = \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2</div>
-<p>The second term shrinks as trees are added; the first does not. More trees always help, but only down to a floor <span class="math inline">\rho\sigma^2</span> set by how similar the trees are. With <span class="math inline">\sigma^2 = 1</span>:</p>
-<table>
-<thead>
-<tr>
-<th>trees <span class="math inline">B</span></th>
-<th>1</th>
-<th>10</th>
-<th>100</th>
-<th><span class="math inline">\infty</span></th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><span class="math inline">\rho = 0.5</span></td>
-<td>1</td>
-<td>0.55</td>
-<td>0.505</td>
-<td>0.5</td>
-</tr>
-<tr>
-<td><span class="math inline">\rho = 0.2</span></td>
-<td>1</td>
-<td>0.28</td>
-<td>0.208</td>
-<td>0.2</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Random feature subsets.</strong> The only way to lower the floor is to lower <span class="math inline">\rho</span>. If one feature is very strong, nearly every bootstrap tree splits on it first, and the trees end up alike. A random forest therefore lets each split choose only among <span class="math inline">m</span> features drawn at random from the <span class="math inline">p</span> available; a common choice for classification is <span class="math inline">m \approx \sqrt p</span>. Each individual tree gets a little worse, but the trees become much less correlated, and the average wins.</p>
-<p><strong>Voting.</strong> Each tree votes for a class and the forest predicts the majority. scikit-learn uses a soft version: it averages the trees' class probabilities and picks the largest, which almost always gives the same answer.</p>
-<p><strong>Feature importance.</strong> Every split in every tree lowers impurity by some <span class="math inline">\Delta G</span>. Add up these decreases for all splits that use feature <span class="math inline">j</span>, weighting each by the fraction <span class="math inline">n_t / N</span> of training samples that reach that node <span class="math inline">t</span>, and average over the trees:</p>
-<div class="math display">\mathrm{Imp}(j) = \frac1B \sum_{b=1}^{B} \ \sum_{\text{nodes } t \text{ of tree } b \text{ that split on } j} \frac{n_t}{N}\, \Delta G_t</div>
-<p>The scores are then rescaled to sum to 1. This is the <strong>mean decrease in impurity</strong>. It is computed on the training data, and it tends to favour features with many possible thresholds, so it is a quick guide rather than a final verdict.</p>
-<p><strong>In the code below.</strong> <code>X</code> has <span class="math inline">p = 13</span> clinical features and <code>y</code> is <code>output</code> (1 = disease). <code>DecisionTreeClassifier</code> grows one unrestricted Gini tree: the high-variance learner of Section 2. <code>RandomForestClassifier(n_estimators=300)</code> grows <span class="math inline">B = 300</span> trees, each on a bootstrap sample of the 227 training patients and, by default, with <span class="math inline">m = \lfloor\sqrt{13}\rfloor = 3</span> candidate features per split, then averages them. The loop over <code>tree_counts</code> traces how test accuracy settles as <span class="math inline">B</span> grows, and <code>forest.feature_importances_</code> is the mean decrease in impurity defined above.</p>
-</div>
+<!-- =================================================================== -->
+<section id="tree">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>A decision tree: splitting into purer groups</h2>
+  </div>
+  <div class="col prose">
+    <p>A decision tree predicts by asking a sequence of yes/no questions, such as "is <code>chol</code> above 250?". Each question is a <strong>split</strong>: it picks one feature <span class="m">j</span> and a threshold <span class="m">s</span>, and sends a patient left if <span class="m">x_j \le s</span> and right otherwise. Training starts with all training patients in one node, the root. It picks the best split, applies it, and then repeats the same procedure inside each of the two new nodes, and so on (<strong>recursive splitting</strong>) <a href="#ref-3">[3]</a>. A node that is not split any further is a <strong>leaf</strong>, and it predicts the majority class of the training patients that reached it. Geometrically, the tree cuts the feature space into boxes with sides parallel to the axes.</p>
+    <p><b>Impurity.</b> "Best split" needs a score. Consider a node and let <span class="m">p_k</span> be the fraction of its patients in class <span class="m">k</span>, for <span class="m">k = 1, \dots, K</span> (below, <span class="m">K = 2</span>). The <strong>Gini impurity</strong> is</p>
+    <div class="math-block">G = 1 - \sum_{k=1}^{K} p_k^2.</div>
+    <p>It has a direct reading: draw two patients at random (with replacement) from the node; <span class="m">G</span> is the probability that they belong to different classes. A pure node has <span class="m">G = 0</span>. With two classes, the worst case is a 50/50 mix, where <span class="m">G = 1 - 0.5^2 - 0.5^2 = 0.5</span>. A common alternative is the <strong>entropy</strong>, measured in bits:</p>
+    <div class="math-block">H = -\sum_{k=1}^{K} p_k \log_2 p_k.</div>
+    <p>It is also 0 for a pure node and reaches 1 bit for a 50/50 mix. Both scores behave very similarly; scikit-learn uses Gini by default.</p>
+    <p><b>Impurity decrease.</b> A split sends <span class="m">n_L</span> of the node's <span class="m">n</span> patients left and <span class="m">n_R</span> right. Its quality is the drop in impurity, with each child weighted by its share of the patients:</p>
+    <div class="math-block">\Delta G = G_{\text{parent}} - \frac{n_L}{n}\, G_L - \frac{n_R}{n}\, G_R.</div>
+    <p>The weights matter: a large impure child costs more than a tiny one. At every node the tree tries all features and thresholds and keeps the split with the largest <span class="m">\Delta G</span>. It is greedy: it takes the best single step and never looks ahead.</p>
+    <p><b>A hand example.</b> A node holds 10 patients, 5 with one label and 5 with the other. Two candidate splits:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="handT">
+      <thead><tr><th class="words">node</th><th>patients</th><th>1 / 0</th><th><span class="m">p_1</span></th><th class="words">Gini <span class="m">1 - p_1^2 - p_0^2</span></th></tr></thead>
+      <tbody>
+        <tr><td class="words">parent</td><td>10</td><td>5 / 5</td><td>0.5</td><td class="words"><span class="m">1 - 0.25 - 0.25 = 0.5</span></td></tr>
+        <tr><td class="words">split A, left</td><td>4</td><td>1 / 3</td><td>0.25</td><td class="words"><span class="m">1 - 0.0625 - 0.5625 = 0.375</span></td></tr>
+        <tr><td class="words">split A, right</td><td>6</td><td>4 / 2</td><td>0.667</td><td class="words"><span class="m">1 - 0.444 - 0.111 = 0.444</span></td></tr>
+        <tr><td class="words">split B, left</td><td>5</td><td>4 / 1</td><td>0.8</td><td class="words"><span class="m">1 - 0.64 - 0.04 = 0.32</span></td></tr>
+        <tr><td class="words">split B, right</td><td>5</td><td>1 / 4</td><td>0.2</td><td class="words"><span class="m">1 - 0.04 - 0.64 = 0.32</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <div class="math-block" data-narrow="\begin{aligned} \text{A:}\ \Delta G &amp;= 0.5 - 0.4 \times 0.375 \\ &amp;\quad - 0.6 \times 0.444 \\ &amp;= 0.5 - 0.150 - 0.267 \\ &amp;= 0.083, \\ \text{B:}\ \Delta G &amp;= 0.5 - 0.5 \times 0.32 \\ &amp;\quad - 0.5 \times 0.32 = 0.18. \end{aligned}">\text{A:}\ \Delta G = 0.5 - 0.4 \times 0.375 - 0.6 \times 0.444 = 0.083, \qquad \text{B:}\ \Delta G = 0.5 - 0.5 \times 0.32 - 0.5 \times 0.32 = 0.18.</div>
+    <p>The tree chooses split B. Entropy agrees: split B lowers it from 1 bit to 0.722 bits, a gain of 0.278 bits, against 0.125 bits for split A. Try other splits of the same ten patients:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="giniW">
+      <div class="params">
+        <label class="field"><span>Patients sent left: <b id="gNV"></b></span>
+          <span class="row"><input type="range" id="gN" min="1" max="9" step="1" value="5"></span>
+        </label>
+        <label class="field"><span>Of them with label 1: <b id="gDV"></b></span>
+          <span class="row"><input type="range" id="gD" min="0" max="5" step="1" value="4"></span>
+        </label>
+      </div>
+      <canvas id="giniC" aria-label="The two children of the split as bars, each showing its mix of the two labels" aria-describedby="giniCap"></canvas>
+      <p class="caption" id="giniCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <div class="define" id="definition">
+      <p class="define-title">What is a random forest?</p>
+      <p><b>In plain words:</b> many decision trees, each grown on a slightly different version of the data and allowed to look at only a few features at each question, voting together. No single tree is trusted; their average is.</p>
+      <p><b>More precisely:</b> an ensemble of <span class="m">B</span> CART trees, each fitted to a bootstrap sample of the training set with <span class="m">m</span> features drawn at random as candidates at every split, whose class probabilities are averaged <a href="#ref-1">[1]</a>, <a href="#ref-4">[4]</a>. The bootstrap and the feature subsets lower the correlation <span class="m">\rho</span> between trees, and the average's variance falls to <span class="m">\rho\sigma^2 + \frac{1-\rho}{B}\sigma^2</span>.</p>
+      <dl>
+        <dt>Split, leaf</dt><dd>A question on one feature and a threshold; a node that asks no further question.</dd>
+        <dt>Gini impurity</dt><dd>The chance that two patients drawn from a node have different labels.</dd>
+        <dt>Bootstrap sample</dt><dd><span class="m">n</span> patients drawn with replacement from the <span class="m">n</span> training patients.</dd>
+        <dt>Out-of-bag</dt><dd>The patients a tree's bootstrap sample missed: its free test set.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
+<!-- =================================================================== -->
+<section id="overfit">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Why one deep tree overfits</h2>
+  </div>
+  <div class="col prose">
+    <p>Left alone, a tree keeps splitting until every leaf is pure. It then classifies its training set almost perfectly. But the deepest splits are decided by two or three patients each, so they follow the noise in those particular patients rather than a real pattern. Replace a handful of training patients and the tree can change completely, from the first split down, and its predictions change with it.</p>
+    <p>This is <strong>high variance</strong>, in the sense of chapter 00. Think of the training set as one random draw from a population of possible training sets. The prediction <span class="m">\hat f(x)</span> of the fitted tree for a new patient <span class="m">x</span> is then a random quantity too. Its expected squared error splits into three parts: bias squared (how far the <em>average</em> prediction is from the truth), variance (how much the prediction jumps from one training set to another), and irreducible noise. A deep tree has low bias but high variance. Averaging many trees trained on <em>independent</em> training sets would keep the low bias and shrink the variance. We only have one training set, so a random forest manufactures new ones.</p>
+    <p>Here is the tree itself, on the 227 training patients of Part 4, cut at a chosen depth:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="treeW">
+      <label class="field"><span>Depth: <b id="tDV"></b></span>
+        <span class="row"><input type="range" id="tD" min="1" max="3" step="1" value="1"></span>
+      </label>
+      <canvas id="treeC" aria-label="The decision tree drawn as boxes: each split names its feature and threshold, each leaf its counts of the two labels and the class it predicts" aria-describedby="treeCap"></canvas>
+      <p class="caption" id="treeCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>Let the depth run, and the training accuracy climbs to 1 while the test accuracy wanders; the full tree has 41 leaves for 227 patients, five or six patients per leaf:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="depthT">
+      <thead><tr><th>max depth</th><th>leaves</th><th>train acc.</th><th>test acc.</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>2</td><td>0.780</td><td>0.697</td></tr>
+        <tr><td>2</td><td>4</td><td>0.802</td><td>0.671</td></tr>
+        <tr><td>3</td><td>8</td><td>0.859</td><td>0.737</td></tr>
+        <tr><td>4</td><td>15</td><td>0.916</td><td>0.737</td></tr>
+        <tr><td>5</td><td>22</td><td>0.947</td><td>0.697</td></tr>
+        <tr><td>6</td><td>29</td><td>0.965</td><td>0.711</td></tr>
+        <tr><td>8</td><td>39</td><td>0.991</td><td>0.684</td></tr>
+        <tr><td>none (9)</td><td>41</td><td>1.000</td><td>0.724</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The test column moves by a patient or two (each is 1.3 points) and never gets near the training column: the gap is the variance. The demo at the top has the same depth slider for the forest, where the gap closes differently.</p>
+    <p class="big-idea">A deep tree memorises; the cure is not a shallower tree but many deep trees that disagree.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="forest">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>From trees to a forest: bootstrap, averaging, random features</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Bootstrap samples.</b> Each tree gets its own training set: <span class="m">n</span> patients drawn <em>with replacement</em> from the <span class="m">n</span> training patients <a href="#ref-2">[2]</a>. Some patients are drawn twice or more, and some are not drawn at all. A given patient is missed by one draw with probability <span class="m">1 - \frac{1}{n}</span>, so it is missed by all <span class="m">n</span> independent draws with probability</p>
+    <div class="math-block" data-narrow="\begin{aligned} \Big(1 - \frac{1}{n}\Big)^n &amp;\longrightarrow e^{-1} \approx 0.368 \\ &amp;\text{as } n \text{ grows}. \end{aligned}">\Big(1 - \frac{1}{n}\Big)^n \;\longrightarrow\; e^{-1} \approx 0.368 \quad \text{as } n \text{ grows}.</div>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="bootT">
+      <thead><tr><th><span class="m">n</span></th><th><span class="m">(1 - 1/n)^n</span></th></tr></thead>
+      <tbody>
+        <tr><td>2</td><td>0.250</td></tr><tr><td>3</td><td>0.296</td></tr><tr><td>5</td><td>0.328</td></tr>
+        <tr><td>10</td><td>0.349</td></tr><tr><td>100</td><td>0.366</td></tr><tr><td>227</td><td>0.367</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>For <span class="m">n = 3</span>: <span class="m">(\frac{2}{3})^3 = \frac{8}{27} \approx 0.296</span>. So each tree sees about 63% of the distinct patients. The other 37% are its <strong>out-of-bag</strong> patients, a free test set for that tree (scikit-learn reports the resulting score with <code>oob_score=True</code>; the demo at the top shows it as the green curve). Draw a sample:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="bootW">
+      <canvas id="bootC" aria-label="How many of the 227 training patients were drawn zero, one, two, three or more times in one bootstrap sample" aria-describedby="bootCap"></canvas>
+      <p class="caption" id="bootCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn" type="button" id="bootAgain">draw again</button></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p><b>Averaging correlated predictors.</b> Let <span class="m">T_1, \dots, T_B</span> be the predictions of <span class="m">B</span> trees at the same input <span class="m">x</span>. Each has variance <span class="m">\sigma^2</span>, and any two have correlation <span class="m">\rho</span>: they are not independent, because their bootstrap samples overlap. The forest outputs the average <span class="m">\bar T = \frac{1}{B} \sum_b T_b</span>. Its variance is the sum of all <span class="m">B^2</span> covariances, divided by <span class="m">B^2</span>. There are <span class="m">B</span> diagonal terms, each <span class="m">\sigma^2</span>, and <span class="m">B(B-1)</span> off-diagonal terms, each <span class="m">\rho\sigma^2</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathrm{Var}(\bar T) &amp;= \frac{B\sigma^2 + B(B-1)\,\rho\sigma^2}{B^2} \\ &amp;= \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2. \end{aligned}">\mathrm{Var}(\bar T) = \frac{1}{B^2}\Big(B\sigma^2 + B(B-1)\,\rho\sigma^2\Big) = \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2.</div>
+    <p>The second term shrinks as trees are added; the first does not. More trees always help, but only down to a floor <span class="m">\rho\sigma^2</span> set by how similar the trees are <a href="#ref-4">[4]</a>. With <span class="m">\sigma^2 = 1</span>:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="varT">
+      <thead><tr><th>trees <span class="m">B</span></th><th>1</th><th>10</th><th>100</th><th><span class="m">\infty</span></th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">\rho = 0.5</span></td><td>1</td><td>0.55</td><td>0.505</td><td>0.5</td></tr>
+        <tr><td><span class="m">\rho = 0.2</span></td><td>1</td><td>0.28</td><td>0.208</td><td>0.2</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <div class="widget" id="varW">
+      <label class="field"><span>Correlation between trees <span class="m">\rho</span>: <b id="vRV"></b></span>
+        <span class="row"><input type="range" id="vR" min="0" max="1" step="0.05" value="0.5"></span>
+      </label>
+      <canvas id="varC" aria-label="The variance of the average of B correlated trees against B, with the floor rho marked" aria-describedby="varCap"></canvas>
+      <p class="caption" id="varCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose">
+    <p><b>Random feature subsets.</b> The only way to lower the floor is to lower <span class="m">\rho</span>. If one feature is very strong, nearly every bootstrap tree splits on it first, and the trees end up alike. A random forest therefore lets each split choose only among <span class="m">m</span> features drawn at random from the <span class="m">p</span> available; a common choice for classification is <span class="m">m \approx \sqrt{p}</span> <a href="#ref-1">[1]</a>. Each individual tree gets a little worse, but the trees become much less correlated, and the average wins. The demo's third slider sets <span class="m">m</span>: push it to 13, and the trees differ only through their bootstrap samples.</p>
+    <p><b>Voting.</b> Each tree votes for a class and the forest predicts the majority. scikit-learn uses a soft version: it averages the trees' class probabilities and picks the largest, which almost always gives the same answer.</p>
+    <p><b>Feature importance.</b> Every split in every tree lowers impurity by some <span class="m">\Delta G</span>. Add up these decreases for all splits that use feature <span class="m">j</span>, weighting each by the fraction <span class="m">\frac{n_t}{N}</span> of training samples that reach that node <span class="m">t</span>, and average over the trees:</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;\mathrm{Imp}(j) = \tfrac{1}{B} \sum_{b} \sum_{t} \tfrac{n_t}{N}\, \Delta G_t, \\ &amp;\text{over the nodes } t \text{ of tree } b \\ &amp;\text{that split on } j. \end{aligned}">\mathrm{Imp}(j) = \frac{1}{B} \sum_{b=1}^{B} \ \sum_{\text{nodes } t \text{ of tree } b \text{ that split on } j} \frac{n_t}{N}\, \Delta G_t.</div>
+    <p>The scores are then rescaled to sum to 1. This is the <strong>mean decrease in impurity</strong>. It is computed on the training data, and it tends to favour features with many possible thresholds <a href="#ref-5">[5]</a>, so it is a quick guide rather than a final verdict; Part 7 sets a second kind of importance beside it.</p>
+    <p><b>In the code below.</b> <code>X</code> has <span class="m">p = 13</span> clinical features and <code>y</code> is <code>output</code>, coded 1 or 0. <code>DecisionTreeClassifier</code> grows one unrestricted Gini tree: the high-variance learner of Part 2. <code>RandomForestClassifier(n_estimators=300)</code> grows <span class="m">B = 300</span> trees, each on a bootstrap sample of the 227 training patients and, by default, with <span class="m">m = \lfloor\sqrt{13}\rfloor = 3</span> candidate features per split, then averages them. The loop over <code>tree_counts</code> traces how test accuracy settles as <span class="m">B</span> grows, and <code>forest.feature_importances_</code> is the mean decrease in impurity defined above.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="data">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The data</h2>
+  </div>
+  <div class="col prose">
+    <p>303 patients referred for a cardiac evaluation, 13 clinical measurements, and <code>output</code>, coded 1 or 0. The columns are the Kaggle release of the Cleveland heart-disease data <a href="#ref-6">[6]</a>, <a href="#ref-7">[7]</a>: a realistic mix of continuous measurements (cholesterol, maximum heart rate) and coded categorical ones (chest-pain type, ECG results). The notebook's structure loosely follows a Kaggle tutorial <a href="#ref-8">[8]</a>, reworked with this dataset and a focus on feature importance.</p>
+    <pre><code class="language-python">import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
@@ -203,112 +271,104 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
 import mlutils
-mlutils.set_style()</code></pre>
-</div>
+mlutils.set_style()
 
-<div class="md">
-<h2 id="4-the-data">4. The data</h2>
-<p>303 patients referred for a cardiac evaluation, 13 clinical measurements, and
-<code>output</code>: whether significant heart disease was found. A realistic mix of continuous
-measurements (cholesterol, max heart rate) and coded categorical ones (chest-pain
-type, ECG results).</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">heart = pd.read_csv(&quot;data/heart.csv&quot;)
+heart = pd.read_csv("data/heart.csv")
 print(heart.shape)
-print(heart[&quot;output&quot;].value_counts().rename(&quot;count&quot;))
+print(heart["output"].value_counts().rename("count"))
 heart.head()</code></pre>
-<pre class="output">(303, 14)
+    <pre class="output"><code class="nohl">(303, 14)
 output
 1    165
 0    138
-Name: count, dtype: int64
-   age  sex  cp  trtbps  chol  fbs  restecg  thalachh  exng  oldpeak  slp  \
-0   63    1   3     145   233    1        0       150     0      2.3    0   
-1   37    1   2     130   250    0        1       187     0      3.5    0   
-2   41    0   1     130   204    0        0       172     0      1.4    2   
-3   56    1   1     120   236    0        1       178     0      0.8    2   
-4   57    0   0     120   354    0        1       163     1      0.6    2   
+Name: count, dtype: int64</code></pre>
+  </div>
+  <div class="col prose">
+    <pre class="output"><code class="nohl">   age  sex  cp  trtbps  chol  fbs  restecg  thalachh  exng  oldpeak  slp  \
+0   63    1   3     145   233    1        0       150     0      2.3    0
+1   37    1   2     130   250    0        1       187     0      3.5    0
+2   41    0   1     130   204    0        0       172     0      1.4    2
+3   56    1   1     120   236    0        1       178     0      0.8    2
+4   57    0   0     120   354    0        1       163     1      0.6    2
 
-   caa  thall  output  
-0    0      1       1  
-1    0      2       1  
-2    0      2       1  
-3    0      2       1  
-4    0      2       1</pre>
-</div>
+   caa  thall  output
+0    0      1       1
+1    0      2       1
+2    0      2       1
+3    0      2       1
+4    0      2       1  </code></pre>
 
-<div class="cell">
-<pre class="source"><code class="language-python">X = heart.drop(columns=[&quot;output&quot;])
-y = heart[&quot;output&quot;]
+    <div class="callout warm">
+      <p><b>What does <code>output = 1</code> mean?</b> The Kaggle page, and the first version of this chapter, read it as "heart disease found". The measurements say the opposite. Averaged by group, the <code>output = 1</code> patients have exercise-induced angina 14% of the time against 55%, an ST depression of 0.58 against 1.59, a peak heart rate of 158 against 139, 0.36 blocked vessels on the angiogram against 1.17, and are four years younger: on every known risk sign, <code>output = 1</code> is the healthier group. This copy's label is the reverse of the usual reading of the Cleveland data, where the disease group is the minority. The forest does not care which way a label is coded, so nothing below changes; what changes is how a result is read, and this chapter therefore speaks of the two codes, 1 and 0, rather than of disease.</p>
+    </div>
+    <pre><code class="language-python">print(heart.groupby("output")[["exng", "oldpeak", "thalachh", "caa", "age"]].mean().round(2))</code></pre>
+    <pre class="output"><code class="nohl">        exng  oldpeak  thalachh   caa   age
+output                                     
+0       0.55     1.59    139.10  1.17  56.6
+1       0.14     0.58    158.47  0.36  52.5</code></pre>
+    <pre><code class="language-python">X = heart.drop(columns=["output"])
+y = heart["output"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
-print(f&quot;train: {len(X_train)}, test: {len(X_test)}&quot;)</code></pre>
-<pre class="output">train: 227, test: 76</pre>
-</div>
+print(f"train: {len(X_train)}, test: {len(X_test)}")</code></pre>
+    <pre class="output"><code class="nohl">train: 227, test: 76</code></pre>
+    <p>One pair of rows is an exact duplicate (patients 163 and 164); it stays, as in the source. The test set holds 41 patients with <code>output = 1</code> and 35 with <code>output = 0</code>, so guessing 1 for everyone would score 0.539.</p>
+  </div>
+</section>
 
-<div class="md">
-<h2 id="5-one-tree-vs-a-forest">5. One tree vs. a forest</h2>
-<p>First, a single unrestricted decision tree — it can split on anything, as many times
-as it wants, so it fits the training set almost perfectly and often pays for it on
-new data.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">tree = DecisionTreeClassifier(random_state=42).fit(X_train, y_train)
-print(f&quot;single tree — train accuracy: {tree.score(X_train, y_train):.3f}, &quot;
-      f&quot;test accuracy: {accuracy_score(y_test, tree.predict(X_test)):.3f}&quot;)</code></pre>
-<pre class="output">single tree — train accuracy: 1.000, test accuracy: 0.724</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">forest = RandomForestClassifier(n_estimators=300, random_state=42).fit(X_train, y_train)
+<!-- =================================================================== -->
+<section id="versus">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>One tree against a forest</h2>
+  </div>
+  <div class="col prose">
+    <p>First, a single unrestricted decision tree. It can split on anything, as many times as it wants, so it fits the training set perfectly and pays for it on new data.</p>
+    <pre><code class="language-python">tree = DecisionTreeClassifier(random_state=42).fit(X_train, y_train)
+print(f"single tree — train accuracy: {tree.score(X_train, y_train):.3f}, "
+      f"test accuracy: {accuracy_score(y_test, tree.predict(X_test)):.3f}")</code></pre>
+    <pre class="output"><code class="nohl">single tree — train accuracy: 1.000, test accuracy: 0.724</code></pre>
+    <pre><code class="language-python">forest = RandomForestClassifier(n_estimators=300, random_state=42).fit(X_train, y_train)
 acc_forest = accuracy_score(y_test, forest.predict(X_test))
-print(f&quot;forest (300 trees) — train accuracy: {forest.score(X_train, y_train):.3f}, &quot;
-      f&quot;test accuracy: {acc_forest:.3f}&quot;)</code></pre>
-<pre class="output">forest (300 trees) — train accuracy: 1.000, test accuracy: 0.789</pre>
-</div>
+print(f"forest (300 trees) — train accuracy: {forest.score(X_train, y_train):.3f}, "
+      f"test accuracy: {acc_forest:.3f}")</code></pre>
+    <pre class="output"><code class="nohl">forest (300 trees) — train accuracy: 1.000, test accuracy: 0.789</code></pre>
+    <p>Both score 1.000 on the training set. Each tree alone sees only a bootstrap resample and 3 features per split, but 300 of them together still reproduce every training label, as any patient's in-bag trees vote for it. Memorising the training set is not what separates them; the test set is: the forest gets 60 of the 76 held-out patients right, the tree 55. That is 5 patients on one split. Across 20 other random splits of the same data the forest averages 0.841 against 0.753 for the tree, and beats it on 19 of the 20; ten-fold cross-validation gives 0.832 against 0.775. The gain is real, and larger than this one split shows.</p>
+  </div>
+</section>
 
-<div class="md">
-<p>The forest's <em>training</em> accuracy is lower than the single tree's — each tree only
-ever saw a bootstrap resample and a random slice of features, so no individual tree
-memorises everything. But averaging over 300 such trees usually <strong>generalises</strong>
-better, which is the number that matters.</p>
-<h2 id="6-how-many-trees-are-enough">6. How many trees are enough?</h2>
-<p>Trees are cheap to add and never hurt on their own (with this scheme); the only
-question is how many are needed before the ensemble average stops moving.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">tree_counts = [1, 2, 5, 10, 25, 50, 100, 200, 300]
+<!-- =================================================================== -->
+<section id="howmany">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>How many trees are enough?</h2>
+  </div>
+  <div class="col prose">
+    <p>Adding trees never raises the variance of the average (Part 3), and a tree costs only compute; the question is how many are needed before the average stops moving.</p>
+    <pre><code class="language-python">tree_counts = [1, 2, 5, 10, 25, 50, 100, 200, 300]
 accs = []
 for n in tree_counts:
     m = RandomForestClassifier(n_estimators=n, random_state=42).fit(X_train, y_train)
     accs.append(accuracy_score(y_test, m.predict(X_test)))
+print({n: round(float(a), 3) for n, a in zip(tree_counts, accs)})</code></pre>
+    <pre class="output"><code class="nohl">{1: 0.711, 2: 0.724, 5: 0.776, 10: 0.829, 25: 0.776, 50: 0.763, 100: 0.803, 200: 0.789, 300: 0.789}</code></pre>
+    <p>The curve rises steeply over the first ten trees and then wanders between 0.76 and 0.83. Those wanderings are two to five patients out of 76, and a forest with another random seed wanders differently (over 20 seeds, 300 trees score between 0.763 and 0.803 on this split). The test accuracy at 10 trees, 0.829, is the luckiest point, not the best setting. The demo at the top draws the same curve for every number of trees from 1 to 300, and the out-of-bag curve beside it, which uses the 227 training patients and is steadier.</p>
+  </div>
+</section>
 
-fig, ax = plt.subplots(figsize=(6.5, 4.5))
-ax.plot(tree_counts, accs, color=mlutils.BLUE, marker=&quot;o&quot;)
-ax.set(xlabel=&quot;number of trees&quot;, ylabel=&quot;test accuracy&quot;, title=&quot;Test accuracy vs. forest size&quot;)</code></pre>
-<pre class="output">[Text(0.5, 0, &#x27;number of trees&#x27;),
- Text(0, 0.5, &#x27;test accuracy&#x27;),
- Text(0.5, 1.0, &#x27;Test accuracy vs. forest size&#x27;)]</pre>
-<figure class="output-figure"><img src="img/04-1.png" alt="Figure 1 produced by the code above" width="647" height="478" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="7-which-features-matter">7. Which features matter?</h2>
-<p>Section 3 defined each feature's <strong>importance</strong> as its mean decrease in impurity: the
-impurity reduction of every split on that feature, weighted by how many samples reach
-the split, averaged over all trees.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">importances = pd.Series(forest.feature_importances_, index=X.columns).sort_values(ascending=False)
+<!-- =================================================================== -->
+<section id="importance">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Which features matter?</h2>
+  </div>
+  <div class="col prose">
+    <p>Part 3 defined each feature's <strong>importance</strong> as its mean decrease in impurity: the impurity reduction of every split on that feature, weighted by how many samples reach the split, averaged over all trees.</p>
+    <pre><code class="language-python">importances = pd.Series(forest.feature_importances_, index=X.columns).sort_values(ascending=False)
 fig, ax = plt.subplots(figsize=(6.5, 5))
 ax.barh(importances.index[::-1], importances.values[::-1], color=mlutils.BLUE)
-ax.set(xlabel=&quot;importance (mean impurity decrease)&quot;, title=&quot;Random forest feature importances&quot;)
+ax.set(xlabel="importance (mean impurity decrease)", title="Random forest feature importances")
 importances</code></pre>
-<pre class="output">cp          0.157507
+    <pre class="output"><code class="nohl">cp          0.157507
 oldpeak     0.123321
 thall       0.120078
 thalachh    0.114468
@@ -321,64 +381,145 @@ exng        0.062523
 sex         0.030288
 restecg     0.019888
 fbs         0.007461
-dtype: float64</pre>
-<figure class="output-figure"><img src="img/04-2.png" alt="Figure 2 produced by the code above" width="661" height="520" loading="lazy"></figure>
-</div>
+dtype: float64</code></pre>
+    <p><code>cp</code> (chest-pain type), <code>oldpeak</code> (ST depression on exercise) and <code>thall</code> (the thallium stress test) come out on top, all signs a cardiologist would look at, which is a reasonable check that the model learned something sensible rather than an artefact. Two cautions. Importance says which features the trees <em>split on</em>, not in which direction they act, so it cannot tell whether <code>output = 1</code> is the sick or the healthy group. And the middle of the list (<code>chol</code>, <code>age</code>, <code>trtbps</code>) holds continuous features with hundreds of thresholds to choose from, exactly the ones this measure flatters. A second measure asks a different question: shuffle one feature's values among the test patients, and see how much accuracy the forest loses.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="impW">
+      <canvas id="impC" aria-label="Horizontal bars of feature importance for the demo's forest, with the notebook's values as ticks, or the permutation importance on the test set" aria-describedby="impCap"></canvas>
+      <p class="caption" id="impCap" aria-live="polite"></p>
+      <div class="controls"><button class="btn" type="button" id="impPerm" aria-pressed="false">permutation importance instead</button></div>
+    </div>
+  </div>
+  <div class="col prose">
+    <p>Exercise 4 runs the permutation test in the notebook. The two measures agree on <code>oldpeak</code> and <code>caa</code>, and disagree on the continuous features and on <code>cp</code>; with 76 test patients, the permutation test is itself noisy. A feature's importance is a property of the forest and the data together, not of the feature alone.</p>
+  </div>
+</section>
 
-<div class="md">
-<p><code>cp</code> (chest pain type), <code>oldpeak</code> (ST depression from exercise) and <code>thall</code>
-(thalassemia test result) come out on top — all clinically plausible signals for
-heart disease, which is a good sanity check that the model learned something
-sensible rather than an artefact of the data.</p>
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-feature-ablation">Exercise 1: Feature ablation</h3>
-<p>Drop the top feature from <code>X</code> entirely and retrain. Does test accuracy drop by much?
-What does that tell you about redundancy between features?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">top_feature = importances.index[0]
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>A tree</b> splits greedily, one feature and one threshold at a time, to lower the Gini impurity; its leaves predict the majority.</div></li>
+      <li><div><b>A deep tree memorises</b>: training accuracy 1, test accuracy 0.724. Its predictions swing with the training set: high variance, low bias.</div></li>
+      <li><div><b>Bootstrap samples</b> manufacture new training sets; each leaves out about 37% of the patients, a free test set.</div></li>
+      <li><div><b>Averaging</b> <span class="m">B</span> trees with correlation <span class="m">\rho</span> gives variance <span class="m">\rho\sigma^2 + \frac{1-\rho}{B}\sigma^2</span>: a floor set by <span class="m">\rho</span>, which random feature subsets lower.</div></li>
+      <li><div><b>On the patients</b>: 300 trees get 60 of 76 right against the tree's 55; the gain holds across splits and in cross-validation.</div></li>
+      <li><div><b>Importance</b>: the mean decrease in impurity is quick and flatters many-threshold features; a permutation test asks what the forest actually relies on.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table>
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Split, node, leaf</td><td>A yes/no question on one feature; a group of patients; a group that is not split further.</td></tr>
+        <tr><td>Gini impurity, entropy</td><td>Two measures of how mixed a node's labels are; both are 0 when pure.</td></tr>
+        <tr><td>Impurity decrease</td><td>The parent's impurity minus the size-weighted impurity of the children.</td></tr>
+        <tr><td>Bootstrap sample</td><td>A training set drawn with replacement from the original, the same size.</td></tr>
+        <tr><td>Out-of-bag</td><td>The patients a tree never saw; the forest's accuracy on them estimates the test accuracy.</td></tr>
+        <tr><td>Bagging</td><td>Bootstrap aggregating: averaging predictors fitted to bootstrap samples.</td></tr>
+        <tr><td>Random feature subset</td><td>The <span class="m">m</span> features a split may choose among; it lowers the correlation between trees.</td></tr>
+        <tr><td>Feature importance</td><td>How much a feature's splits lower impurity, or how much shuffling it costs the forest.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>Feature ablation.</b> Drop the top feature from <code>X</code> entirely and retrain. Does the test accuracy drop by much? What does that tell you about redundancy between features?
+        <details class="sol"><summary>Hint</summary><p>Split the reduced <code>X2</code> with the same <code>random_state</code> and <code>stratify</code>, so the test patients stay the same. Then try dropping the second and third features too.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">top_feature = importances.index[0]
 X2 = X.drop(columns=[top_feature])
 X2_train, X2_test, _, _ = train_test_split(X2, y, test_size=0.25, random_state=42, stratify=y)
 m2 = RandomForestClassifier(n_estimators=300, random_state=42).fit(X2_train, y_train)
-print(accuracy_score(y_test, m2.predict(X2_test)))
-</code></pre>
-<p>Accuracy usually drops only a little: other correlated features (e.g. <code>thalachh</code>,
-<code>oldpeak</code>) carry overlapping information, so the forest routes around a missing
-feature.</p>
-</details>
-<h3 id="exercise-2-depth-limited-trees">Exercise 2: Depth-limited trees</h3>
-<p>Retrain the single <code>DecisionTreeClassifier</code> with <code>max_depth=3</code>. Compare its train and
-test accuracy to the unrestricted tree. Is a shallow single tree competitive with the
-forest here?</p>
-<details><summary>Solution</summary>
-<p>A depth-3 tree trades away training accuracy but usually closes much of the test-
-accuracy gap to the unrestricted tree, since it can no longer memorise noise — though
-it typically still falls short of the forest, which averages away variance without
-having to sacrifice any single tree's depth.</p>
-</details>
-<h2 id="key-takeaways">Key takeaways</h2>
-<ul>
-<li>A random forest averages many trees, each trained on a bootstrap resample with a
-random subset of features per split; the randomness decorrelates their errors so
-the average generalises better than any single deep tree.</li>
-<li>Feature importances come free from training and are a fast way to sanity-check that
-a model is picking up on plausible signal.</li>
-<li>More trees essentially never hurts (only costs compute); the accuracy curve
-flattens once there are enough to average out tree-to-tree variance.</li>
-</ul>
-</div>
-</main>
+print(accuracy_score(y_test, m2.predict(X2_test)))</code></pre>
+          <p>Without <code>cp</code>, the most important feature, the test accuracy is 0.776: one patient fewer than 0.789. Dropping <code>oldpeak</code> instead gives 0.763, dropping <code>thall</code> 0.789, unchanged. Other features carry overlapping information (chest pain, ST depression, the stress test and exercise angina all reflect the same ischaemia), so the forest routes around a missing one. Importance measures what the forest <em>used</em>, not what it <em>needed</em>.</p></details>
+      </div></li>
+      <li><div><b>Depth-limited trees.</b> Retrain the single <code>DecisionTreeClassifier</code> with <code>max_depth=3</code>. Compare its train and test accuracy with the unrestricted tree's. Is a shallow single tree competitive with the forest here?
+        <details class="sol"><summary>Hint</summary><p>The tree widget of Part 2 draws exactly this tree at depth 3, and the table below it has the whole sweep.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">tree3 = DecisionTreeClassifier(max_depth=3, random_state=42).fit(X_train, y_train)
+print(tree3.score(X_train, y_train), tree3.score(X_test, y_test), tree3.get_n_leaves())</code></pre>
+          <p>The depth-3 tree has 8 leaves, a training accuracy of 0.859 and a test accuracy of 0.737: one patient better than the unrestricted tree's 0.724, and four short of the forest's 0.789. Limiting the depth trades training accuracy for stability, but on these 76 patients the difference between a depth-3 tree and a full tree is within the noise, and neither reaches the forest. Across 20 random splits the depth-3 tree averages 0.774, between the full tree's 0.753 and the forest's 0.841: the forest averages away the variance without giving up any tree's depth.</p></details>
+      </div></li>
+      <li><div><b>The free test set.</b> Refit the 300-tree forest with <code>oob_score=True</code> and compare its out-of-bag score with the test accuracy. Why can it be computed at all, and why might it differ from the test accuracy?
+        <details class="sol"><summary>Hint</summary><p>Each training patient is out of the bag for about 37% of the trees, 110 or so of the 300. Those trees never saw it, so their vote on it is an honest prediction.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">oob = RandomForestClassifier(n_estimators=300, random_state=42, oob_score=True).fit(X_train, y_train)
+print(oob.oob_score_)</code></pre>
+          <p>The out-of-bag score is 0.819, against 0.789 on the test set. Each training patient is predicted by the trees whose bootstrap sample missed it, about 110 of the 300, so every one of the 227 training patients gets an honest prediction without any held-out data. The two estimates differ because they are measured on different patients (227 against 76) and the out-of-bag vote uses a third of the forest; with these sample sizes a three-point gap is ordinary. When data are scarce, the out-of-bag score lets the whole data set be used for training and still gives an estimate of the test accuracy.</p></details>
+      </div></li>
+      <li><div><b>Permutation importance.</b> Compute the permutation importance of each feature on the test set with <code>sklearn.inspection.permutation_importance</code>, and compare its ranking with <code>feature_importances_</code>. Where do the two disagree, and why?
+        <details class="sol"><summary>Hint</summary><p>The widget of Part 7 has a button for it. Look at the continuous features, and at the sign of the smallest values.</p></details>
+        <details class="sol"><summary>Solution</summary><pre><code class="language-python">from sklearn.inspection import permutation_importance
+pi = permutation_importance(forest, X_test, y_test, n_repeats=50, random_state=0)
+print(pd.Series(pi.importances_mean, index=X.columns).sort_values(ascending=False).round(3))</code></pre>
+          <pre><code class="nohl">caa         0.030
+oldpeak     0.025
+exng        0.021
+sex         0.015
+slp         0.012
+trtbps      0.004
+fbs         0.000
+thalachh   -0.002
+restecg    -0.010
+age        -0.011
+thall      -0.015
+cp         -0.017
+chol       -0.032
+dtype: float64</code></pre>
+          <p>By permutation, <code>caa</code>, <code>oldpeak</code> and <code>exng</code> lead, and shuffling <code>chol</code>, <code>cp</code> or <code>thall</code> does not hurt at all; it even helps, by chance. The impurity ranking put <code>cp</code> first and <code>chol</code> in the middle. Two things are at work: the impurity measure credits a feature for every split that used it on the training data, even splits that only memorised noise, and it favours continuous features with many thresholds; and the permutation measure on 76 patients is noisy (one patient is 1.3 points, and the mean drop for <code>caa</code> is 2.3 patients). Neither is the truth. Together they say that <code>oldpeak</code> and <code>caa</code> are reliably useful, and that the rest is shared among correlated features.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Going further</h2>
+  </div>
+  <div class="col prose">
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>L. Breiman. "Random forests". <em>Machine Learning</em> 45(1), 5–32, 2001. <a href="https://doi.org/10.1023/A:1010933404324">doi:10.1023/A:1010933404324</a>. The method, with the random feature subsets and the out-of-bag estimate.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>L. Breiman. "Bagging predictors". <em>Machine Learning</em> 24(2), 123–140, 1996. <a href="https://doi.org/10.1007/BF00058655">doi:10.1007/BF00058655</a>. Averaging predictors fitted to bootstrap samples.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>L. Breiman, J. H. Friedman, R. A. Olshen and C. J. Stone. <em>Classification and Regression Trees</em>. Wadsworth, 1984; reissued by Routledge, 2017, <a href="https://doi.org/10.1201/9781315139470">doi:10.1201/9781315139470</a>. The CART algorithm scikit-learn implements.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>T. Hastie, R. Tibshirani and J. Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed. Springer, 2009. <a href="https://doi.org/10.1007/978-0-387-84858-7">doi:10.1007/978-0-387-84858-7</a>. Chapter 15, random forests, including the variance of the average.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>C. Strobl, A.-L. Boulesteix, A. Zeileis and T. Hothorn. "Bias in random forest variable importance measures: illustrations, sources and a solution". <em>BMC Bioinformatics</em> 8, 25, 2007. <a href="https://doi.org/10.1186/1471-2105-8-25">doi:10.1186/1471-2105-8-25</a></div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>R. Detrano et al. "International application of a new probability algorithm for the diagnosis of coronary artery disease". <em>American Journal of Cardiology</em> 64(5), 304–310, 1989. <a href="https://doi.org/10.1016/0002-9149(89)90524-9">doi:10.1016/0002-9149(89)90524-9</a>. The Cleveland heart-disease data.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>R. Rahman. "Heart Attack Analysis &amp; Prediction Dataset". Kaggle. <a href="https://www.kaggle.com/datasets/rashikrahmanpritom/heart-attack-analysis-prediction-dataset">kaggle.com/datasets/rashikrahmanpritom/heart-attack-analysis-prediction-dataset</a>. The copy of the data used here, with its column names.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>P. Banerjee. "Random Forest Classifier Tutorial". Kaggle. <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">kaggle.com/code/prashant111/random-forest-classifier-tutorial</a>. The notebook loosely follows its structure, with a different dataset.</div></li>
+    </ul>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="03-support-vector-machines.html"><span class="lbl">Previous · 03</span><span class="t">Support Vector Machines</span></a>
-  <a class="next" rel="next" href="05-kmeans-and-kmeans-plusplus.html"><span class="lbl">Next · 05</span><span class="t">K-Means and K-Means++</span></a>
+  <a class="prev" rel="prev" href="03-support-vector-machines.html"><span class="lbl">Previous · 03</span><span class="t">Support vector machines</span></a>
+  <a class="next" rel="next" href="05-kmeans-and-kmeans-plusplus.html"><span class="lbl">Next · 05</span><span class="t">K-means and k-means++</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 04 of the A Tour of Machine Learning by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built on material from the author's own MADIS Machine Learning Workshop. Chapter 04 loosely follows the structure of Prashant Banerjee's <a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">Random Forest Classifier Tutorial</a> on Kaggle; chapter 09 follows the general recipe of the Keras <a href="https://keras.io/examples/timeseries/timeseries_anomaly_detection/">Timeseries anomaly detection using an Autoencoder</a> example.</p>
+  <p>Chapter 04 of "A Tour of Machine Learning" by Elie Rouphael. The demos grow their trees in your browser, as scikit-learn grows them, on the same patients as the notebook; the forest's random draws are the browser's own, so its numbers vary a little from the notebook's. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="../kit/stats.js"></script>
+<script src="interactive/ch04.js"></script>
 </body>
 </html>

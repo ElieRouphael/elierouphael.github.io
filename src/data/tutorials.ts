@@ -83,7 +83,7 @@ export const tutorials: Tutorial[] = [
   {
     title: 'A Tour of Machine Learning',
     description:
-      'Eleven standalone notebooks, one machine-learning idea each, every one on real data judged by its own honest result: linear regression, the calculus behind training, a from-scratch SVM decision boundary on iris flowers, a random forest against a single tree on heart-disease data, K-means vs. k-means++ on mall customers, a neural network written in plain NumPy, transfer learning on shifted digits, an LSTM against a naive baseline, an autoencoder that catches an anomaly it was never shown, attention worked out by hand, and federated learning simulated from scratch.',
+      'An overview of how models learn and why they overfit, then eleven standalone notebooks, one machine-learning idea each, every one on real data judged by its own honest result: linear regression, the calculus behind training, a from-scratch SVM decision boundary on iris flowers, a random forest against a single tree on heart-disease data, K-means vs. k-means++ on mall customers, a neural network written in plain NumPy, transfer learning on shifted digits, an LSTM against a naive baseline, an autoencoder that catches an anomaly it was never shown, attention worked out by hand, and federated learning simulated from scratch.',
     topics: ['Machine Learning', 'Deep Learning', 'scikit-learn', 'NumPy', 'TensorFlow/Keras'],
     prerequisites: 'Python and a little numpy/pandas; no prior ML background needed',
     level: 'Beginner',

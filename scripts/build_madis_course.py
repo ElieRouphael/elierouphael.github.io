@@ -1,10 +1,11 @@
 """Build the "A Tour of Machine Learning" course pages from the executed notebooks.
 
-Reads the eleven executed notebooks of the course
+Reads the twelve executed notebooks of the course (an overview, 00, and eleven chapters)
 (MADIS Machine Learning Workshop/course/executed) and writes static pages into
 public/tutorials/ml-tour/:
 
     index.html                                    course landing page
+    00-what-machine-learning-is.html              the overview (an interactive page, kept)
     01-linear-regression.html ... 11-federated-learning.html
     img/, notebooks/                              extracted figures, notebooks for download
     ml-tour-course.zip                            notebooks, mlutils.py, data and requirements
@@ -34,45 +35,50 @@ DEFAULT_COURSE = SITE.parents[1] / "MADIS Machine Learning Workshop" / "course"
 
 # `result` lines quote the notebooks' own outputs; re-check them if the notebooks change.
 CHAPTERS = [
+    dict(stem="00_what_machine_learning_is", short="What Machine Learning Is",
+         build="The families of machine learning, the recipe every chapter shares, and the overfitting every chapter guards against, with polynomials of rising degree.",
+         result="Training error falls at every degree, while test error is lowest at degree 3 (0.379) and passes 100 at degree 12; cross-validation picks degree 3 without the test set."),
     dict(stem="01_linear_regression", short="Linear Regression",
-         build="Simple and multiple regression on real car data, reading coefficients as rates of change, and R².",
-         result="Weight and engine volume together reach R²=0.377 (up from 0.305 with weight alone); a 1300kg/1300cm³ car is predicted at 99.7 g/km of CO2."),
+         build="Least squares derived and worked by hand, then simple and multiple regression on 36 cars: coefficients as rates and as partial effects, and R².",
+         result="Weight and engine volume together reach R² = 0.377 (0.305 with weight alone), a gain an F test calls suggestive (p = 0.06); a 1,300 kg, 1,300 cm³ car is predicted at 99.7 g/km of CO2."),
     dict(stem="02_minima_and_maxima", short="Finding Minima and Maxima",
-         build="Critical points and the second-derivative test with sympy, then the same calculus behind a training loop, checked against gradient descent.",
-         result="Gradient descent converges to w*=2.3342 after 200 steps — the exact closed-form minimiser found by solving L'(w)=0 by hand."),
+         build="Derivatives, critical points and the second-derivative test, gradients and Hessians, then gradient descent derived from a Taylor expansion and checked against the closed form.",
+         result="Gradient descent matches the closed-form minimiser w* = 2.3342 to 4 decimals after 69 of its 200 steps; above a learning rate of 1/a = 0.028 the same loop explodes."),
     dict(stem="03_support_vector_machines", short="Support Vector Machines",
-         build="An RBF-kernel SVM on real iris measurements, its decision boundary drawn directly, and a confusion matrix on held-out flowers.",
-         result="93.3% test accuracy using only 34 of 105 training points as support vectors."),
+         build="The widest margin worked by hand, the hinge loss and kernels, then an RBF-kernel SVM on Fisher's iris petals, its decision boundary drawn directly, and a confusion matrix on held-out flowers.",
+         result="42 of 45 held-out flowers right (93.3%) with 34 of 105 training points as support vectors; the three errors sit where versicolor and virginica overlap."),
     dict(stem="04_random_forest", short="Random Forest",
-         build="A single decision tree vs. a 300-tree random forest on real heart-disease data, and the feature importances the forest learned.",
-         result="The forest reaches 78.9% test accuracy against 72.4% for one unrestricted tree; chest-pain type is the most important feature."),
+         build="The Gini impurity by hand, why one deep tree overfits, bootstrap samples and the variance of an average of correlated trees, then a single tree against a 300-tree forest on real heart-disease data, and two kinds of feature importance.",
+         result="The forest gets 60 of 76 held-out patients right (78.9%) against 55 for one unrestricted tree, a gain that holds across splits; chest-pain type leads the impurity importance, and the data's own label turns out to be coded the other way round."),
     dict(stem="05_kmeans_and_kmeans_plusplus", short="K-Means and K-Means++",
-         build="Customer segmentation by the elbow method, then 30 seeds of random vs. k-means++ initialisation compared head to head, plus a PCA view.",
-         result="Across 30 seeds, k-means++ averages 14% lower inertia than random init (48,140 vs 55,718) and is far more consistent (std 8,250 vs 14,855)."),
+         build="The inertia k-means minimises, Lloyd's algorithm stepped by hand, k-means++ seeding and its guarantee, the elbow, feature scale and a PCA view, then 30 seeds of random vs. k-means++ initialisation compared head to head.",
+         result="Single runs end at the optimum (J = 44,448) or in a bad valley: random starts reach the optimum in 10 of 30 runs, k-means++ in 18, with a 14% lower mean inertia (48,140 vs 55,718) and half the spread."),
     dict(stem="06_neural_network_from_scratch", short="A Neural Network from Scratch",
          build="Forward pass, backpropagation and gradient descent implemented in plain NumPy, trained on two interleaving moons.",
          result="A hand-written 8-unit hidden layer reaches 96.0% test accuracy with a curved decision boundary no linear model could draw."),
     dict(stem="07_transfer_learning", short="Transfer Learning",
          build="A small CNN trained on clean digits, then its frozen features reused on the same digits shifted and rotated, with almost no labels.",
-         result="With 8 labelled examples per class, transfer learning reaches 37.1% accuracy versus 16.7% training from scratch on the same tiny label set — more than double."),
+         result="With 8 labelled examples per class, transfer learning reaches 37.2% accuracy versus 16.7% training from scratch on the same tiny label set — more than double."),
     dict(stem="08_lstm_for_sequences", short="LSTM for Sequences",
          build="Windowing a synthetic sequence, training a small LSTM, and checking it against the naive \"tomorrow looks like today\" baseline.",
-         result="The LSTM's one-step forecast error is 2.31x lower than naive persistence (MSE 0.030 vs 0.069)."),
+         result="The LSTM's one-step forecast error is 2.31x lower than naive persistence (MSE 0.030 vs 0.069); a 31-parameter linear autoregression on the same windows does better still (0.025)."),
     dict(stem="09_anomaly_detection_autoencoder", short="Anomaly Detection with an Autoencoder",
          build="A convolutional autoencoder trained only on normal NAB-style sensor data, with a reconstruction-error threshold set from training data alone.",
-         result="With no anomaly labels used anywhere, 68 of the 69 windows it flags overlap the injected anomaly; the one false alarm is only 0.4% above the threshold."),
+         result="With no anomaly labels used anywhere, 74 of the 75 windows it flags overlap the injected jump, the one false alarm a hair above the threshold; a 4-component PCA finds the same edges, and a plain level rule does better."),
     dict(stem="10_transformers_self_attention", short="Transformers and Self-Attention",
          build="Scaled dot-product and multi-head attention implemented from scratch in NumPy, plus a causal mask for autoregressive generation.",
-         result="In a hand-built toy sentence, the token \"it\" attends most strongly to \"animal\" (weight 0.147) — resolving the coreference with plain arithmetic, no training involved."),
+         result="In a hand-built toy sentence, the token \"it\" attends most to \"animal\" (0.147 against 0.142 for itself and 0.119 for every other token): the coreference by plain arithmetic, faint by design, with no training involved."),
     dict(stem="11_federated_learning", short="Federated Learning",
          build="An original FedAvg simulation: three clients train locally on real patient data and average their models, compared to a centrally-trained baseline.",
-         result="After 15 rounds, the federated model matches the centrally-trained baseline exactly — 71.4% test accuracy for both — without the clients' data ever being pooled."),
+         result="After 15 rounds the federated model predicts the same 154 test patients as the centrally trained one, 71.4% for both, without the clients' data ever being pooled; on this small linear table each clinic alone does about as well."),
 ]
+HERO = next(i for i, ch in enumerate(CHAPTERS) if ch["stem"].startswith("05_"))   # the landing page's figure
 NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: "
         "the full course download has everything.")
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch", "07_transfer_learning", "08_lstm_for_sequences", "09_anomaly_detection_autoencoder", "10_transformers_self_attention", "11_federated_learning"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
@@ -99,7 +105,7 @@ def index_page(results: list[dict]) -> str:
     </li>""")
     chapters = "\n".join(items)
     zip_name = f"{COURSE.folder}-course.zip"
-    hero = results[4]   # chapter 05's labelled cluster figure
+    hero = results[HERO]   # chapter 05's labelled cluster figure
     return page_head(
         "A Tour of Machine Learning",
         "Eleven standalone notebooks, one machine-learning idea each: linear regression, the calculus behind "
@@ -110,7 +116,7 @@ def index_page(results: list[dict]) -> str:
 <nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
 
 <header class="hero col">
-  <span class="eyebrow">Eleven notebooks · scikit-learn, NumPy, sympy, TensorFlow/Keras</span>
+  <span class="eyebrow">An overview and eleven chapters · scikit-learn, NumPy, sympy, TensorFlow/Keras</span>
   <h1>A tour of machine learning</h1>
   <p class="lede">Eleven standalone notebooks, each covering one machine-learning idea start to finish, on real
   data: regression, the calculus that training is secretly doing, support vector machines, random forests,
@@ -119,7 +125,7 @@ def index_page(results: list[dict]) -> str:
   learning. No chapter depends on another — read the one you're curious about.</p>
   <p class="byline">Elie Rouphael · Assumes Python and a little numpy/pandas; no prior ML background needed</p>
   <div class="downloads">
-    <a class="btn" href="{slug(CHAPTERS[0])}.html">Start with chapter 01</a>
+    <a class="btn" href="{slug(CHAPTERS[0])}.html">Start with the overview</a>
     <a class="btn ghost" href="{zip_name}" download>Download the course (.zip)</a>
   </div>
 </header>
@@ -148,7 +154,8 @@ def index_page(results: list[dict]) -> str:
 
 <section class="col" aria-labelledby="chapters">
   <h2 id="chapters">Chapters</h2>
-  <p class="section-lede">Chapters 01-02 are the foundations: fitting a line, and the calculus every model's
+  <p class="section-lede">Chapter 00 is the map: the families of machine learning, the recipe every chapter
+  shares, and the overfitting every chapter guards against. Chapters 01-02 are the foundations: fitting a line, and the calculus every model's
   training loop is quietly doing. Chapters 03-05 are the classical toolkit: SVMs, random forests, K-means.
   Chapters 06-10 are deep learning and modern architectures, built up from a from-scratch neural network to
   from-scratch self-attention. Chapter 11 closes with federated learning, simulated end to end from nothing
@@ -171,7 +178,7 @@ jupyter lab                 # then open any chapter directly, in any order</code
 
 <section class="col prose" aria-labelledby="data">
   <h2 id="data">Data and sources</h2>
-  <p>Chapter 01 uses a small car-emissions dataset; chapter 03 uses Fisher's iris measurements; chapter 04 uses
+  <p>Chapter 01 uses a small car-emissions dataset, the one in the W3Schools Python tutorial; chapter 03 uses Fisher's iris measurements; chapter 04 uses
   a real cardiac-evaluation dataset; chapter 05 uses a mall customer-segmentation dataset; chapter 09 uses
   Numenta Anomaly Benchmark (NAB) style synthetic sensor data; chapter 11 uses the Pima Indians Diabetes
   dataset. Chapters 02, 06, 07, 08 and 10 use synthetic or built-in (scikit-learn digits) data by design, so
@@ -234,7 +241,7 @@ def main() -> None:
         pass  # build_chapters already copies executed notebooks into out/notebooks/
 
     w, h = png_size((out / "img" / "05-3.png").read_bytes())
-    results[4].update(hero_w=w, hero_h=h)
+    results[HERO].update(hero_w=w, hero_h=h)
     (out / "index.html").write_text(index_page(results), encoding="utf-8")
 
     members = [(course / rel, rel) for rel in ("README.md", "requirements.txt", "mlutils.py", "build_notebooks.py")]
