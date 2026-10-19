@@ -70,7 +70,7 @@ CHAPTERS = [
          result="In a hand-built toy sentence, the token \"it\" attends most to \"animal\" (0.147 against 0.142 for itself and 0.119 for every other token): the coreference by plain arithmetic, faint by design, with no training involved."),
     dict(stem="11_federated_learning", short="Federated Learning",
          build="An original FedAvg simulation: three clients train locally on real patient data and average their models, compared to a centrally-trained baseline.",
-         result="After 15 rounds, the federated model matches the centrally-trained baseline exactly — 71.4% test accuracy for both — without the clients' data ever being pooled."),
+         result="After 15 rounds the federated model predicts the same 154 test patients as the centrally trained one, 71.4% for both, without the clients' data ever being pooled; on this small linear table each clinic alone does about as well."),
 ]
 HERO = next(i for i, ch in enumerate(CHAPTERS) if ch["stem"].startswith("05_"))   # the landing page's figure
 NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most chapters, a data file: "
@@ -78,7 +78,7 @@ NOTE = ("To run a chapter you also need <code>mlutils.py</code> and, for most ch
 COURSE = Course(
     name="A Tour of Machine Learning", folder="ml-tour", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch", "07_transfer_learning", "08_lstm_for_sequences", "09_anomaly_detection_autoencoder", "10_transformers_self_attention"},
+    interactive={"00_what_machine_learning_is", "01_linear_regression", "02_minima_and_maxima", "03_support_vector_machines", "04_random_forest", "05_kmeans_and_kmeans_plusplus", "06_neural_network_from_scratch", "07_transfer_learning", "08_lstm_for_sequences", "09_anomaly_detection_autoencoder", "10_transformers_self_attention", "11_federated_learning"},
     license=('Built on material from the author\'s own MADIS Machine Learning Workshop. '
              'Chapter 04 loosely follows the structure of Prashant Banerjee\'s '
              '<a href="https://www.kaggle.com/code/prashant111/random-forest-classifier-tutorial">'
