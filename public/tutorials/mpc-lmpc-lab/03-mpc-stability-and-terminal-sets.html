@@ -3,13 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>03 · Model Predictive Control: Receding Horizon, Feasibility, and Stability — Advanced MPC and Learning MPC</title>
-<meta name="description" content="The receding-horizon law, recursive feasibility by the shifted sequence, the Lyapunov argument with its three conditions, and LQR terminal ingredients.">
+<title>03 · MPC stability and terminal sets · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Why solving a finite-horizon problem repeatedly can be a stabilising feedback law, run live: the receding-horizon law, feasibility against recursive feasibility, the horizon-one pathology and its Riccati repair, the zero terminal constraint and its proofs, general terminal sets, the LQR terminal ingredients built from the DARE and the maximal invariant set, the feasible regions they certify, and a closed loop whose Lyapunov residual is checked at every step. Every number is checked in Python.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .two canvas { display: block; width: 100%; }
+  #termT { font-size: 0.82rem; margin-top: 0.5rem; }
+  @media (max-width: 480px) { #termT { font-size: 0.72rem; } #termT th, #termT td { padding-inline: 0.2rem; } #vocT, #guarT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .seg.stack { display: grid; gap: 0.3rem; }
+  .seg.stack .btn { text-align: left; white-space: normal; }
+</style>
 </head>
 <body>
 
@@ -17,2055 +26,489 @@
 
 <header class="hero col">
   <span class="eyebrow">Advanced MPC and Learning MPC · Chapter 03 of 09</span>
-  <h1>Model Predictive Control: Receding Horizon, Feasibility, and Stability</h1>
-  <div class="intro prose">
-<h2 id="why-solving-a-finite-horizon-optimization-problem-repeatedly-can-become-a-stabilizing-feedback-law">Why solving a finite-horizon optimization problem repeatedly can become a stabilizing feedback law</h2>
-<p>A finite-horizon optimal-control problem computes a sequence</p>
-<div class="math display">
-u_0^\star,\ldots,u_{N-1}^\star.
-</div>
-<p>Model Predictive Control changes the interpretation of that sequence:</p>
-<ol>
-<li>solve the finite-horizon problem at the current state;</li>
-<li>apply <strong>only the first input</strong>;</li>
-<li>measure the new state;</li>
-<li>shift the prediction horizon;</li>
-<li>solve again.</li>
-</ol>
-<p>This creates a feedback law through repeated optimization.</p>
-<p>But an important question immediately appears:</p>
-<blockquote>
-<p>If the optimization problem is feasible now, why should it still be feasible after applying the
-first input?</p>
-</blockquote>
-<p>And an even deeper question is:</p>
-<blockquote>
-<p>Even if it remains feasible forever, why should the closed-loop state converge to the desired
-equilibrium?</p>
-</blockquote>
-<p>These are the two central topics of this notebook:</p>
-<div class="math display">
-\boxed{\text{recursive feasibility}}
-\qquad\text{and}\qquad
-\boxed{\text{closed-loop stability}}.
-</div>
-<p>The main mechanism is the careful design of <strong>terminal ingredients</strong>:</p>
-<div class="math display">
-\boxed{
-\text{terminal constraint}
-+
-\text{terminal cost}.
-}
-</div>
-
-  </div>
+  <h1>MPC stability and terminal sets</h1>
+  <p class="lede">A finite-horizon problem computes a sequence of inputs; MPC applies only the first, measures, shifts and solves again. Two questions follow at once. If the problem is feasible now, why is it still feasible after the first move? And if it stays feasible forever, why does the state converge? The answers are two designed ingredients, a terminal constraint and a terminal cost. Below, both designs run on the constrained double integrator: click a start state and watch which design can handle it, how the feasible regions compare, and whether the optimal value really falls by at least the stage cost at every step.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 01's QP, chapter 02's invariant sets and chapter 00's LQR · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/03_mpc_stability_and_terminal_sets.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/03_mpc_stability_and_terminal_sets.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need the <code>advanced_mpc_lmpc</code> package: the full course download has it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#why-solving-a-finite-horizon-optimization-problem-repeatedly-can-become-a-stabilizing-feedback-law">Why solving a finite-horizon optimization problem repeatedly can become a stabilizing feedback law</a></li>
-    <li><a href="#learning-objectives">Learning objectives</a></li>
-    <li><a href="#table-of-contents">Table of Contents</a></li>
-    <li><a href="#part-i-from-finite-horizon-optimal-control-to-feedback">Part I — From finite-horizon optimal control to feedback</a></li>
-    <li><a href="#i-1-the-ideal-infinite-horizon-problem">I.1 The ideal infinite-horizon problem</a></li>
-    <li><a href="#i-2-finite-horizon-problem-solved-at-real-time-t">I.2 Finite-horizon problem solved at real time <span class="math inline">t</span></a></li>
-    <li><a href="#i-3-the-receding-horizon-law">I.3 The receding-horizon law</a></li>
-    <li><a href="#i-4-predicted-trajectory-versus-closed-loop-trajectory">I.4 Predicted trajectory versus closed-loop trajectory</a></li>
-    <li><a href="#part-ii-what-exactly-must-be-guaranteed">Part II — What exactly must be guaranteed?</a></li>
-    <li><a href="#ii-1-feasibility">II.1 Feasibility</a></li>
-    <li><a href="#ii-2-recursive-feasibility">II.2 Recursive feasibility</a></li>
-    <li><a href="#ii-3-constraint-satisfaction">II.3 Constraint satisfaction</a></li>
-    <li><a href="#ii-4-stability-and-region-of-attraction">II.4 Stability and region of attraction</a></li>
-    <li><a href="#part-iii-why-a-short-horizon-can-fail">Part III — Why a short horizon can fail</a></li>
-    <li><a href="#iii-1-one-step-mpc-without-a-terminal-cost">III.1 One-step MPC without a terminal cost</a></li>
-    <li><a href="#iii-2-add-the-infinite-horizon-lqr-terminal-cost">III.2 Add the infinite-horizon LQR terminal cost</a></li>
-    <li><a href="#part-iv-the-zero-terminal-constraint">Part IV — The zero terminal constraint</a></li>
-    <li><a href="#iv-1-mpc-with-x-n-0">IV.1 MPC with <span class="math inline">x_N=0</span></a></li>
-    <li><a href="#iv-2-recursive-feasibility-proof-for-x-n-0">IV.2 Recursive-feasibility proof for <span class="math inline">x_N=0</span></a></li>
-    <li><a href="#iv-3-stability-proof-for-the-zero-terminal-constraint">IV.3 Stability proof for the zero terminal constraint</a></li>
-    <li><a href="#part-v-horizon-length-and-the-feasible-region">Part V — Horizon length and the feasible region</a></li>
-    <li><a href="#v-1-double-integrator-example">V.1 Double-integrator example</a></li>
-    <li><a href="#v-2-interpretation">V.2 Interpretation</a></li>
-    <li><a href="#part-vi-general-terminal-sets">Part VI — General terminal sets</a></li>
-    <li><a href="#vi-1-why-replace-x-n-0-by-x-n-in-mathcal-x-f">VI.1 Why replace <span class="math inline">x_N=0</span> by <span class="math inline">x_N\in\mathcal X_f</span>?</a></li>
-    <li><a href="#vi-2-general-terminal-set-assumptions">VI.2 General terminal-set assumptions</a></li>
-    <li><a href="#vi-3-recursive-feasibility-with-a-general-terminal-set">VI.3 Recursive feasibility with a general terminal set</a></li>
-    <li><a href="#vi-4-optimal-value-decrease-with-the-terminal-controller">VI.4 Optimal-value decrease with the terminal controller</a></li>
-    <li><a href="#vi-5-the-conceptual-role-of-the-terminal-ingredients">VI.5 The conceptual role of the terminal ingredients</a></li>
-    <li><a href="#part-vii-linear-quadratic-terminal-ingredients">Part VII — Linear-quadratic terminal ingredients</a></li>
-    <li><a href="#vii-1-quadratic-stage-and-terminal-costs">VII.1 Quadratic stage and terminal costs</a></li>
-    <li><a href="#vii-2-dare-and-feedback-sign-convention">VII.2 DARE and feedback-sign convention</a></li>
-    <li><a href="#vii-3-the-lqr-terminal-cost-identity">VII.3 The LQR terminal-cost identity</a></li>
-    <li><a href="#vii-4-input-constraints-restrict-the-lqr-terminal-region">VII.4 Input constraints restrict the LQR terminal region</a></li>
-    <li><a href="#vii-5-verify-the-terminal-set-assumptions-numerically">VII.5 Verify the terminal-set assumptions numerically</a></li>
-    <li><a href="#part-viii-zero-terminal-point-versus-invariant-terminal-region">Part VIII — Zero terminal point versus invariant terminal region</a></li>
-    <li><a href="#viii-1-same-horizon-different-terminal-ingredients">VIII.1 Same horizon, different terminal ingredients</a></li>
-    <li><a href="#viii-2-a-state-that-exposes-the-difference">VIII.2 A state that exposes the difference</a></li>
-    <li><a href="#part-ix-receding-horizon-simulation-with-stabilizing-terminal-ingredients">Part IX — Receding-horizon simulation with stabilizing terminal ingredients</a></li>
-    <li><a href="#ix-1-mpc-controller">IX.1 MPC controller</a></li>
-    <li><a href="#ix-2-use-the-full-theoretical-finite-horizon-cost">IX.2 Use the <strong>full</strong> theoretical finite-horizon cost</a></li>
-    <li><a href="#ix-3-check-the-lyapunov-decrease-inequality-numerically">IX.3 Check the Lyapunov decrease inequality numerically</a></li>
-    <li><a href="#ix-4-why-the-equality-is-nearly-exact-in-this-example">IX.4 Why the equality is nearly exact in this example</a></li>
-    <li><a href="#part-x-what-the-terminal-theorem-does-and-does-not-say">Part X — What the terminal theorem does and does not say</a></li>
-    <li><a href="#x-1-it-is-a-sufficient-design-mechanism">X.1 It is a sufficient design mechanism</a></li>
-    <li><a href="#x-2-zero-terminal-set-is-simple-but-conservative">X.2 Zero terminal set is simple but conservative</a></li>
-    <li><a href="#x-3-increasing-the-horizon-is-another-lever">X.3 Increasing the horizon is another lever</a></li>
-    <li><a href="#x-4-nominal-versus-robust-guarantees">X.4 Nominal versus robust guarantees</a></li>
-    <li><a href="#x-5-nonlinear-extension">X.5 Nonlinear extension</a></li>
-    <li><a href="#part-xi-common-conceptual-pitfalls">Part XI — Common conceptual pitfalls</a></li>
-    <li><a href="#xi-1-pitfall-feasible-now-means-recursively-feasible">XI.1 Pitfall: feasible now means recursively feasible</a></li>
-    <li><a href="#xi-2-pitfall-a-long-horizon-automatically-proves-stability">XI.2 Pitfall: a long horizon automatically proves stability</a></li>
-    <li><a href="#xi-3-pitfall-p-from-the-dare-is-enough-by-itself">XI.3 Pitfall: <span class="math inline">P</span> from the DARE is enough by itself</a></li>
-    <li><a href="#xi-4-pitfall-the-terminal-set-must-be-the-origin">XI.4 Pitfall: the terminal set must be the origin</a></li>
-    <li><a href="#xi-5-pitfall-continuous-time-and-discrete-time-stability-conditions-are-interchangeable">XI.5 Pitfall: continuous-time and discrete-time stability conditions are interchangeable</a></li>
-    <li><a href="#xi-6-pitfall-the-solver-objective-is-automatically-the-lyapunov-value">XI.6 Pitfall: the solver objective is automatically the Lyapunov value</a></li>
-    <li><a href="#part-xii-check-your-understanding">Part XII — Check your understanding</a></li>
-    <li><a href="#part-xiii-exercises">Part XIII — Exercises</a></li>
-    <li><a href="#part-xiv-scope-and-references">Part XIV — Scope and references</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="learning-objectives">Learning objectives</h2>
-<p>After completing this notebook, you should be able to:</p>
-<ol>
-<li>write the receding-horizon MPC algorithm using prediction notation <span class="math inline">x_{k|t}</span> and <span class="math inline">u_{k|t}</span>;</li>
-<li>distinguish an open-loop finite-horizon solution from the MPC closed-loop law;</li>
-<li>distinguish:
-<ul>
-<li>feasibility,</li>
-<li>recursive feasibility,</li>
-<li>constraint satisfaction,</li>
-<li>stability,</li>
-<li>region of attraction;</li>
-</ul>
-</li>
-<li>explain why a finite prediction horizon can lose stability;</li>
-<li>prove recursive feasibility for the zero terminal constraint <span class="math inline">x_N=0</span>;</li>
-<li>prove decrease of the optimal value function in that special case, and state the bounds
-needed to conclude asymptotic stability;</li>
-<li>state the general terminal-set/terminal-cost assumptions;</li>
-<li>reproduce the shifted-sequence proof with a local terminal controller;</li>
-<li>derive the LQR terminal cost from the discrete algebraic Riccati equation;</li>
-<li>construct an admissible LQR terminal invariant set;</li>
-<li>verify the terminal Lyapunov decrease numerically;</li>
-<li>compare zero-terminal and invariant-terminal feasible regions;</li>
-<li>explain how the horizon length affects the feasible/attraction region;</li>
-<li>verify the MPC value-function decrease along a closed-loop simulation.</li>
-</ol>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">from pathlib import Path
-import sys
-import numpy as np
-import matplotlib.pyplot as plt
-
-ROOT = Path.cwd().resolve()
-if ROOT.name == &quot;notebooks&quot;:
-    ROOT = ROOT.parent
-
-sys.path.insert(0, str(ROOT / &quot;src&quot;))
-
-from advanced_mpc_lmpc.linear import dlqr
-from advanced_mpc_lmpc.mpc import LinearMPC
-from advanced_mpc_lmpc.polytopes import (
-    HPolytope,
-    closed_loop_admissible_set_scalar_input,
-    maximal_invariant,
-    maximal_control_invariant,
-    n_step_controllable_sets,
-)
-from advanced_mpc_lmpc.plotting import plot_polytope
-
-np.set_printoptions(precision=6, suppress=True)
-plt.rcParams.update({
-    &quot;figure.figsize&quot;: (8, 5),
-    &quot;axes.grid&quot;: True,
-})
-</code></pre>
-</div>
-
-<div class="md">
-<h2 id="table-of-contents">Table of Contents</h2>
-<ul>
-<li><strong><a href="#part-1">Part I — From finite-horizon optimal control to feedback</a></strong> — I.1 The ideal infinite-horizon problem · I.2 Finite-horizon problem solved at real time <span class="math inline">t</span> · I.3 The receding-horizon law · I.4 Predicted trajectory versus closed-loop trajectory</li>
-<li><strong><a href="#part-2">Part II — What exactly must be guaranteed?</a></strong> — II.1 Feasibility · II.2 Recursive feasibility · II.3 Constraint satisfaction · II.4 Stability and region of attraction</li>
-<li><strong><a href="#part-3">Part III — Why a short horizon can fail</a></strong> — III.1 One-step MPC without a terminal cost · III.2 Add the infinite-horizon LQR terminal cost</li>
-<li><strong><a href="#part-4">Part IV — The zero terminal constraint</a></strong> — IV.1 MPC with <span class="math inline">x_N=0</span> · IV.2 Recursive-feasibility proof for <span class="math inline">x_N=0</span> · IV.3 Stability proof for the zero terminal constraint</li>
-<li><strong><a href="#part-5">Part V — Horizon length and the feasible region</a></strong> — V.1 Double-integrator example · V.2 Interpretation</li>
-<li><strong><a href="#part-6">Part VI — General terminal sets</a></strong> — VI.1 Why replace <span class="math inline">x_N=0</span> by <span class="math inline">x_N\in\mathcal X_f</span>? · VI.2 General terminal-set assumptions · VI.3 Recursive feasibility with a general terminal set · VI.4 Optimal-value decrease with the terminal controller · VI.5 The conceptual role of the terminal ingredients</li>
-<li><strong><a href="#part-7">Part VII — Linear-quadratic terminal ingredients</a></strong> — VII.1 Quadratic stage and terminal costs · VII.2 DARE and feedback-sign convention · VII.3 The LQR terminal-cost identity · VII.4 Input constraints restrict the LQR terminal region · VII.5 Verify the terminal-set assumptions numerically</li>
-<li><strong><a href="#part-8">Part VIII — Zero terminal point versus invariant terminal region</a></strong> — VIII.1 Same horizon, different terminal ingredients · VIII.2 A state that exposes the difference</li>
-<li><strong><a href="#part-9">Part IX — Receding-horizon simulation with stabilizing terminal ingredients</a></strong> — IX.1 MPC controller · IX.2 Use the <strong>full</strong> theoretical finite-horizon cost · IX.3 Check the Lyapunov decrease inequality numerically · IX.4 Why the equality is nearly exact in this example</li>
-<li><strong><a href="#part-10">Part X — What the terminal theorem does and does not say</a></strong> — X.1 It is a sufficient design mechanism · X.2 Zero terminal set is simple but conservative · X.3 Increasing the horizon is another lever · X.4 Nominal versus robust guarantees · X.5 Nonlinear extension</li>
-<li><strong><a href="#part-11">Part XI — Common conceptual pitfalls</a></strong> — XI.1 Pitfall: feasible now means recursively feasible · XI.2 Pitfall: a long horizon automatically proves stability · XI.3 Pitfall: <span class="math inline">P</span> from the DARE is enough by itself · XI.4 Pitfall: the terminal set must be the origin · XI.5 Pitfall: continuous-time and discrete-time stability conditions are interchangeable · XI.6 Pitfall: the solver objective is automatically the Lyapunov value</li>
-<li><strong><a href="#part-12">Part XII — Check your understanding</a></strong></li>
-<li><strong><a href="#part-13">Part XIII — Exercises</a></strong></li>
-<li><strong><a href="#part-14">Part XIV — Scope and references</a></strong></li>
-</ul>
-</div>
-
-<div class="md">
-<p><a id="part-1"></a></p>
-<h2 id="part-i-from-finite-horizon-optimal-control-to-feedback">Part I — From finite-horizon optimal control to feedback</h2>
-<h2 id="i-1-the-ideal-infinite-horizon-problem">I.1 The ideal infinite-horizon problem</h2>
-<p>For</p>
-<div class="math display">
-x_{k+1}=Ax_k+Bu_k,
-</div>
-<p>the ideal constrained control objective can be written as</p>
-<div class="math display">
-J_\infty^\star(x(0))
-=
-\min_{\{u_k\}_{k=0}^{\infty}}
-\sum_{k=0}^{\infty}q(x_k,u_k)
-</div>
-<p>subject to the dynamics and constraints</p>
-<div class="math display">
-x_k\in\mathcal X,
-\qquad
-u_k\in\mathcal U.
-</div>
-<p>The stage cost <span class="math inline">q(x,u)</span> expresses the cost of being in state <span class="math inline">x</span> and applying input <span class="math inline">u</span>.</p>
-<p>The difficulty is immediate: the optimization contains an infinite number of future decisions.</p>
-<p>MPC replaces this impossible online problem by a finite-horizon approximation and repeats that
-approximation in feedback.</p>
-</div>
-
-<div class="md">
-<h2 id="i-2-finite-horizon-problem-solved-at-real-time-t">I.2 Finite-horizon problem solved at real time <span class="math inline">t</span></h2>
-<p>At time <span class="math inline">t</span>, denote predicted quantities by</p>
-<div class="math display">
-x_{k|t},
-\qquad
-u_{k|t}.
-</div>
-<p>Here:</p>
-<ul>
-<li>the second index <span class="math inline">t</span> is the real time at which the prediction is made;</li>
-<li>the first index <span class="math inline">k</span> identifies the future time represented by that prediction.</li>
-</ul>
-<p>The current measured state initializes the prediction:</p>
-<div class="math display">
-x_{t|t}=x(t).
-</div>
-<p>A horizon-<span class="math inline">N</span> problem is</p>
-<div class="math display">
-\begin{aligned}
-J_t^\star(x(t))
-=
-\min_{\{u_{k|t}\}}
-\quad&amp;
-p(x_{t+N|t})
-+
-\sum_{k=t}^{t+N-1}
-q(x_{k|t},u_{k|t})
-\\
-\text{s.t.}\quad&amp;
-x_{k+1|t}=Ax_{k|t}+Bu_{k|t},
-\\
-&amp;
-x_{k|t}\in\mathcal X,
-\qquad
-u_{k|t}\in\mathcal U,
-\\
-&amp;
-x_{t+N|t}\in\mathcal X_f,
-\\
-&amp;
-x_{t|t}=x(t).
-\end{aligned}
-</div>
-</div>
-
-<div class="md">
-<h2 id="i-3-the-receding-horizon-law">I.3 The receding-horizon law</h2>
-<p>Let</p>
-<div class="math display">
-U_{t\to t+N|t}^\star
-=
-\left\{
-u_{t|t}^\star,
-u_{t+1|t}^\star,
-\ldots,
-u_{t+N-1|t}^\star
-\right\}.
-</div>
-<p>MPC applies only</p>
-<div class="math display">
-\boxed{
-u(t)=u_{t|t}^\star.
-}
-</div>
-<p>The real system evolves to</p>
-<div class="math display">
-x(t+1)=Ax(t)+Bu(t).
-</div>
-<p>At time <span class="math inline">t+1</span>, the old prediction is discarded as an optimization plan and a <strong>new problem is
-solved from the new state</strong>.</p>
-<p>Therefore the MPC feedback law is</p>
-<div class="math display">
-u(t)=\kappa_N(x(t)),
-</div>
-<p>where <span class="math inline">\kappa_N(\cdot)</span> is defined implicitly by an optimization problem.</p>
-<p>For a time-invariant model, cost, and constraint sets, this map is itself time invariant.</p>
-</div>
-
-<div class="md">
-<h2 id="i-4-predicted-trajectory-versus-closed-loop-trajectory">I.4 Predicted trajectory versus closed-loop trajectory</h2>
-<p>This distinction is fundamental.</p>
-<p>At time <span class="math inline">t</span>, the optimizer predicts</p>
-<div class="math display">
-x_{t|t},
-x_{t+1|t},
-\ldots,
-x_{t+N|t}.
-</div>
-<p>At time <span class="math inline">t+1</span>, it predicts a new sequence</p>
-<div class="math display">
-x_{t+1|t+1},
-x_{t+2|t+1},
-\ldots.
-</div>
-<p>Only the first transition of each predicted trajectory is actually executed before replanning.</p>
-<p>So MPC is <strong>not</strong> “optimize once and execute the complete sequence.”</p>
-<p>It is</p>
-<div class="math display">
-\boxed{
-\text{optimize}
-\rightarrow
-\text{apply one action}
-\rightarrow
-\text{measure}
-\rightarrow
-\text{optimize again}.
-}
-</div>
-</div>
-
-<div class="md">
-<p><a id="part-2"></a></p>
-<h2 id="part-ii-what-exactly-must-be-guaranteed">Part II — What exactly must be guaranteed?</h2>
-<h2 id="ii-1-feasibility">II.1 Feasibility</h2>
-<p>At state <span class="math inline">x</span>, the horizon-<span class="math inline">N</span> problem is feasible if there exists at least one admissible input
-sequence satisfying all predicted constraints and the terminal constraint.</p>
-<p>Define the finite-horizon feasible set</p>
-<div class="math display">
-\mathcal X_N
-=
-\{x:\text{the MPC optimization is feasible from }x\}.
-</div>
-<p>This is a statement about the optimization <strong>now</strong>.</p>
-</div>
-
-<div class="md">
-<h2 id="ii-2-recursive-feasibility">II.2 Recursive feasibility</h2>
-<p>MPC is <strong>recursively feasible</strong> if</p>
-<div class="math display">
-x(t)\in\mathcal X_N
-</div>
-<p>implies that, after applying the MPC action,</p>
-<div class="math display">
-x(t+1)\in\mathcal X_N.
-</div>
-<p>In words:</p>
-<blockquote>
-<p>feasible now <span class="math inline">\Longrightarrow</span> feasible again at the next sampling instant.</p>
-</blockquote>
-<p>If this implication holds repeatedly, the optimization never “paints itself into a corner.”</p>
-<p>Current feasibility alone does <strong>not</strong> imply recursive feasibility.</p>
-</div>
-
-<div class="md">
-<h2 id="ii-3-constraint-satisfaction">II.3 Constraint satisfaction</h2>
-<p>If the prediction model is exact, the current state is known, and the MPC problem remains
-recursively feasible, then the executed first input/state pair inherits the constraints imposed
-on the prediction.</p>
-<p>This is distinct from stability:</p>
-<ul>
-<li>a trajectory may satisfy all constraints but fail to converge;</li>
-<li>a stable unconstrained controller may violate actuator or state limits.</li>
-</ul>
-<p>Constraint satisfaction and stability are different properties.</p>
-</div>
-
-<div class="md">
-<h2 id="ii-4-stability-and-region-of-attraction">II.4 Stability and region of attraction</h2>
-<p>For regulation to the origin, asymptotic stability requires</p>
-<div class="math display">
-x(t)\to0
-\qquad
-\text{as}
-\qquad
-t\to\infty,
-</div>
-<p>for initial states in some neighborhood/set.</p>
-<p>The <strong>region of attraction</strong> is the set of initial states from which the closed-loop trajectory
-converges to the equilibrium while preserving the required properties.</p>
-<p>For MPC designs based on stabilizing terminal ingredients, the finite-horizon feasible set becomes
-a natural certified region of attraction under the theorem assumptions.</p>
-</div>
-
-<div class="md">
-<p><a id="part-3"></a></p>
-<h2 id="part-iii-why-a-short-horizon-can-fail">Part III — Why a short horizon can fail</h2>
-<p>Reducing the prediction horizon can destroy stability, even when every finite-horizon problem is
-solved exactly. The following scalar example is a deliberately minimal illustration of that
-mechanism.</p>
-<h2 id="iii-1-one-step-mpc-without-a-terminal-cost">III.1 One-step MPC without a terminal cost</h2>
-<p>Consider the unstable scalar plant</p>
-<div class="math display">
-x^+=ax+u,
-\qquad
-a=1.2.
-</div>
-<p>Use the stage cost</p>
-<div class="math display">
-q(x,u)=x^2+ru^2,
-\qquad
-r&gt;0.
-</div>
-<p>For horizon</p>
-<div class="math display">
-N=1
-</div>
-<p>with <strong>no terminal cost</strong>, the optimization is</p>
-<div class="math display">
-\min_{u_0}
-x_0^2+ru_0^2.
-</div>
-<p>The future state <span class="math inline">x_1</span> does not appear in the objective.</p>
-<p>Therefore</p>
-<div class="math display">
-u_0^\star=0.
-</div>
-<p>The receding-horizon closed loop becomes</p>
-<div class="math display">
-x(t+1)=1.2x(t),
-</div>
-<p>which is unstable.</p>
-<p>The optimizer is solving its finite-horizon problem perfectly.
-The design of that finite-horizon problem is the issue.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">a = 1.2
-r = 4.0
-
-x = 1.0
-xs_short = [x]
-us_short = []
-
-for _ in range(15):
-    # N=1, q(x,u)=x^2+r u^2, no terminal penalty:
-    # x^2 is constant w.r.t. u, so u*=0.
-    u = 0.0
-    us_short.append(u)
-    x = a * x + u
-    xs_short.append(x)
-
-plt.figure()
-plt.plot(xs_short, marker=&quot;o&quot;)
-plt.axhline(0.0, linewidth=1)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(r&quot;$x$&quot;)
-plt.title(&quot;Horizon-one MPC with no terminal penalty: finite-horizon optimal, closed-loop unstable&quot;)
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/03-1.png" alt="Figure: Horizon-one MPC with no terminal penalty: finite-horizon optimal, closed-loop unstable" width="740" height="470" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="iii-2-add-the-infinite-horizon-lqr-terminal-cost">III.2 Add the infinite-horizon LQR terminal cost</h2>
-<p>Now choose</p>
-<div class="math display">
-p(x)=Px^2,
-</div>
-<p>where <span class="math inline">P</span> solves the discrete algebraic Riccati equation.</p>
-<p>The one-step optimization becomes</p>
-<div class="math display">
-\min_u
-x^2+ru^2+P(ax+u)^2.
-</div>
-<p>Differentiating with respect to <span class="math inline">u</span> gives</p>
-<div class="math display">
-2ru+2P(ax+u)=0,
-</div>
-<p>hence</p>
-<div class="math display">
-u^\star
-=
--\frac{Pa}{r+P}x.
-</div>
-<p>This is exactly the scalar discrete-time LQR feedback when <span class="math inline">P</span> is the Riccati solution.</p>
-<p>A carefully chosen terminal cost can therefore inject information about the infinite future into
-a short finite horizon.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">A_scalar = np.array([[a]])
-B_scalar = np.array([[1.0]])
-Q_scalar = np.array([[1.0]])
-R_scalar = np.array([[r]])
-
-K_scalar, P_scalar, eig_scalar = dlqr(
-    A_scalar, B_scalar, Q_scalar, R_scalar
-)
-
-print(&quot;P =&quot;, P_scalar.item())
-print(&quot;K =&quot;, K_scalar.item())
-print(&quot;closed-loop eigenvalue =&quot;, eig_scalar.item())
-
-x = 1.0
-xs_terminal_cost = [x]
-us_terminal_cost = []
-
-for _ in range(15):
-    u = float((-K_scalar @ np.array([x])).item())
-    us_terminal_cost.append(u)
-    x = a * x + u
-    xs_terminal_cost.append(x)
-
-plt.figure()
-plt.plot(xs_short, marker=&quot;o&quot;, label=&quot;N=1, no terminal cost&quot;)
-plt.plot(xs_terminal_cost, marker=&quot;o&quot;, label=&quot;N=1, Riccati terminal cost&quot;)
-plt.axhline(0.0, linewidth=1)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(r&quot;$x$&quot;)
-plt.title(&quot;Terminal cost can restore the missing long-term information&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<pre class="output">P = 3.8098971171636027
-K = 0.5853952327424176
-closed-loop eigenvalue = 0.6146047672575824</pre>
-<figure class="output-figure"><img src="img/03-2.png" alt="Figure: Terminal cost can restore the missing long-term information" width="687" height="470" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<p><a id="part-4"></a></p>
-<h2 id="part-iv-the-zero-terminal-constraint">Part IV — The zero terminal constraint</h2>
-<h2 id="iv-1-mpc-with-x-n-0">IV.1 MPC with <span class="math inline">x_N=0</span></h2>
-<p>Consider</p>
-<div class="math display">
-\begin{aligned}
-J_N^\star(x)
-=
-\min_{U}
-\quad&amp;
-\sum_{k=0}^{N-1}q(x_k,u_k)
-\\
-\text{s.t.}\quad&amp;
-x_{k+1}=Ax_k+Bu_k,
-\\
-&amp;
-x_k\in\mathcal X,
-\quad
-u_k\in\mathcal U,
-\\
-&amp;
-\boxed{x_N=0},
-\\
-&amp;
-x_0=x.
-\end{aligned}
-</div>
-<p>This is the simplest stabilizing terminal constraint.</p>
-<p>Its advantage is theoretical clarity.
-Its disadvantage is that reaching exactly zero within <span class="math inline">N</span> steps can make the feasible set small.</p>
-</div>
-
-<div class="md">
-<h2 id="iv-2-recursive-feasibility-proof-for-x-n-0">IV.2 Recursive-feasibility proof for <span class="math inline">x_N=0</span></h2>
-<p>Assume the optimization at state <span class="math inline">x(0)</span> is feasible and produces</p>
-<div class="math display">
-U^\star
-=
-\{u_0^\star,u_1^\star,\ldots,u_{N-1}^\star\}
-</div>
-<p>with predicted states</p>
-<div class="math display">
-x_0=x(0),x_1,\ldots,x_N=0.
-</div>
-<p>Apply the first optimal input:</p>
-<div class="math display">
-u(0)=u_0^\star.
-</div>
-<p>Under the nominal model,</p>
-<div class="math display">
-x(1)=x_1.
-</div>
-<p>At the next time instant, consider the <strong>shifted candidate</strong></p>
-<div class="math display">
-\tilde U
-=
-\{
-u_1^\star,
-u_2^\star,
-\ldots,
-u_{N-1}^\star,
-0
-\}.
-</div>
-<p>The old prediction already guarantees that all shifted intermediate states satisfy their
-constraints.</p>
-<p>Because</p>
-<div class="math display">
-x_N=0
-</div>
-<p>and the equilibrium satisfies</p>
-<div class="math display">
-A0+B0=0,
-</div>
-<p>the appended zero input keeps the new terminal state at zero.</p>
-<p>Hence the shifted sequence is feasible at <span class="math inline">x(1)</span>.</p>
-<p>Therefore</p>
-<div class="math display">
-\boxed{
-x(0)\in\mathcal X_N
-\Longrightarrow
-x(1)\in\mathcal X_N.
-}
-</div>
-</div>
-
-<div class="md">
-<h2 id="iv-3-stability-proof-for-the-zero-terminal-constraint">IV.3 Stability proof for the zero terminal constraint</h2>
-<p>Let the optimal value at <span class="math inline">x_0</span> be</p>
-<div class="math display">
-J_N^\star(x_0)
-=
-\sum_{k=0}^{N-1}
-q(x_k,u_k^\star).
-</div>
-<p>At the next state <span class="math inline">x_1</span>, the shifted sequence is feasible, so the new optimum cannot cost more
-than that candidate:</p>
-<div class="math display">
-J_N^\star(x_1)
-\le
-\sum_{k=1}^{N-1}
-q(x_k,u_k^\star)
-+
-q(0,0).
-</div>
-<p>Assuming</p>
-<div class="math display">
-q(0,0)=0,
-</div>
-<p>we obtain</p>
-<div class="math display">
-\boxed{
-J_N^\star(x_1)
--
-J_N^\star(x_0)
-\le
--q(x_0,u_0^\star).
-}
-</div>
-<p>If the stage cost is positive definite with respect to the origin, then the optimal value decreases
-strictly away from the equilibrium.</p>
-<p>This makes <span class="math inline">J_N^\star</span> a Lyapunov-function candidate. Decrease alone, however, does not prove
-asymptotic stability: <span class="math inline">J_N^\star</span> must also be bounded from below and from above by functions of
-<span class="math inline">\lVert x\rVert</span>.</p>
-<h3 id="from-value-decrease-to-asymptotic-stability">From value decrease to asymptotic stability</h3>
-<p>A function <span class="math inline">\alpha:[0,\infty)\to[0,\infty)</span> is of class <span class="math inline">\mathcal K</span> if it is continuous, strictly
-increasing and satisfies <span class="math inline">\alpha(0)=0</span>. Write the closed loop as <span class="math inline">x^+=Ax+B\kappa_N(x)</span> and suppose
-there are class-<span class="math inline">\mathcal K</span> functions <span class="math inline">\alpha_1,\alpha_2</span> and a radius <span class="math inline">r&gt;0</span> such that:</p>
-<ol>
-<li><strong>Lower bound.</strong> <span class="math inline">q(x,u)\ge\alpha_1(\lVert x\rVert)</span> for all admissible <span class="math inline">(x,u)</span>. Since
-<span class="math inline">J_N^\star(x)\ge q(x,u_0^\star)</span>, this gives <span class="math inline">J_N^\star(x)\ge\alpha_1(\lVert x\rVert)</span> on <span class="math inline">\mathcal X_N</span>.</li>
-<li><strong>Upper bound near the origin.</strong> <span class="math inline">J_N^\star(x)\le\alpha_2(\lVert x\rVert)</span> for all <span class="math inline">x\in\mathcal X_N</span>
-with <span class="math inline">\lVert x\rVert\le r</span>. Because <span class="math inline">J_N^\star\ge0</span> and <span class="math inline">J_N^\star(0)=0</span>, this is equivalent to
-<span class="math inline">J_N^\star</span> being continuous at the origin.</li>
-<li><strong>Decrease.</strong> <span class="math inline">J_N^\star(x^+)-J_N^\star(x)\le-q(x,\kappa_N(x))\le-\alpha_1(\lVert x\rVert)</span> for all
-<span class="math inline">x\in\mathcal X_N</span>: the boxed inequality above.</li>
-</ol>
-<p>Then the origin is asymptotically stable for the closed loop, with region of attraction
-<span class="math inline">\mathcal X_N</span> (positively invariant by IV.2). If moreover <span class="math inline">\alpha_1(s)=c_1s^2</span> and
-<span class="math inline">J_N^\star(x)\le c_2\lVert x\rVert^2</span> on <span class="math inline">\mathcal X_N</span>, the origin is exponentially stable on <span class="math inline">\mathcal X_N</span>:
-<span class="math inline">J_N^\star(x(t+1))\le(1-c_1/c_2)\,J_N^\star(x(t))</span>, hence
-<span class="math inline">\lVert x(t)\rVert\le\sqrt{c_2/c_1}\,(1-c_1/c_2)^{t/2}\lVert x(0)\rVert</span>. On a bounded <span class="math inline">\mathcal X_N</span>, a
-quadratic upper bound near the origin extends to all of <span class="math inline">\mathcal X_N</span>, because <span class="math inline">J_N^\star</span> is bounded there.</p>
-<p>The conditions do different jobs. Summing the decrease along the closed loop gives
-<span class="math inline">\sum_{t\ge0}\alpha_1(\lVert x(t)\rVert)\le J_N^\star(x(0))&lt;\infty</span>, so <span class="math inline">x(t)\to0</span> from every
-<span class="math inline">x(0)\in\mathcal X_N</span>. The upper bound adds Lyapunov stability, that is, small initial states stay
-small: for <span class="math inline">\lVert x(0)\rVert\le r</span> and all <span class="math inline">t</span>,
-<span class="math inline">\alpha_1(\lVert x(t)\rVert)\le J_N^\star(x(t))\le J_N^\star(x(0))\le\alpha_2(\lVert x(0)\rVert)</span>, and the
-right-hand side vanishes as <span class="math inline">x(0)\to0</span>.</p>
-<h3 id="why-the-upper-bound-needs-an-extra-assumption-when-x-n-0">Why the upper bound needs an extra assumption when <span class="math inline">x_N=0</span></h3>
-<p>The lower bound comes from the stage cost and the decrease from the shifted sequence, but nothing so
-far gives the upper bound. With <span class="math inline">x_N=0</span>, the only admissible plans are those that reach the origin
-exactly in <span class="math inline">N</span> steps, and for some systems (typically nonlinear ones) this forces large inputs, and
-hence a large cost, even from very small states. Then <span class="math inline">J_N^\star(x)</span> does not tend to <span class="math inline">0</span> as <span class="math inline">x\to0</span>: <span class="math inline">J_N^\star</span> is
-discontinuous at the origin and no class-<span class="math inline">\mathcal K</span> upper bound exists. An extra assumption is
-needed, for example <strong>local controllability with small inputs</strong>: every <span class="math inline">x</span> with <span class="math inline">\lVert x\rVert\le r</span>
-can be steered to the origin in <span class="math inline">N</span> admissible steps with inputs <span class="math inline">\lVert u_k\rVert\le\gamma(\lVert x\rVert)</span>,
-for some class-<span class="math inline">\mathcal K</span> function <span class="math inline">\gamma</span>. The cost of that plan bounds <span class="math inline">J_N^\star(x)</span> by a
-class-<span class="math inline">\mathcal K</span> function of <span class="math inline">\lVert x\rVert</span>.</p>
-<p>For the linear model used here, the assumption holds when <span class="math inline">(A,B)</span> is controllable, <span class="math inline">N\ge n</span>, and the
-origin lies in the interior of <span class="math inline">\mathcal X</span> and <span class="math inline">\mathcal U</span>. The minimum-norm plan
-<span class="math inline">U=-\mathcal C_N^{\dagger}A^Nx</span>, with <span class="math inline">\mathcal C_N=\begin{bmatrix}A^{N-1}B&amp;\cdots&amp;AB&amp;B\end{bmatrix}</span>,
-reaches <span class="math inline">x_N=0</span> and is linear in <span class="math inline">x</span>, so it is admissible for small <span class="math inline">x</span>; with a quadratic stage cost it
-gives <span class="math inline">J_N^\star(x)\le c\lVert x\rVert^2</span> near the origin.</p>
-<h3 id="a-terminal-set-provides-the-upper-bound">A terminal set provides the upper bound</h3>
-<p>Now consider the terminal-set formulation of Part VI, with a terminal set <span class="math inline">\mathcal X_f</span> that contains
-the origin in its interior, a local controller <span class="math inline">v</span> and a terminal cost <span class="math inline">p</span>. For <span class="math inline">x\in\mathcal X_f</span>,
-applying <span class="math inline">v</span> for <span class="math inline">N</span> steps is a feasible plan, and summing the terminal decrease along it bounds its
-cost by <span class="math inline">p(x)</span>. Hence the optimal value of that problem satisfies</p>
-<div class="math display">
-J_N^\star(x)\le p(x)\qquad\text{for all }x\in\mathcal X_f.
-</div>
-<p>Any terminal cost with <span class="math inline">p(x)\le\alpha_2(\lVert x\rVert)</span>, such as the quadratic <span class="math inline">p(x)=x^\top Px</span> of
-Part VII, therefore gives the upper bound on a ball around the origin inside <span class="math inline">\mathcal X_f</span>, with no
-extra controllability assumption. This is one reason the terminal-set design of Part VI is preferred
-to <span class="math inline">x_N=0</span>.</p>
-</div>
-
-<div class="md">
-<p><a id="part-5"></a></p>
-<h2 id="part-v-horizon-length-and-the-feasible-region">Part V — Horizon length and the feasible region</h2>
-<h2 id="v-1-double-integrator-example">V.1 Double-integrator example</h2>
-<p>We now use a constrained double integrator:</p>
-<div class="math display">
-x^+
-=
-\begin{bmatrix}
-1&amp;1\\
-0&amp;1
-\end{bmatrix}x
-+
-\begin{bmatrix}
-0\\1
-\end{bmatrix}u,
-</div>
-<p>with</p>
-<div class="math display">
--5\le x_i\le5,
-</div>
-<p>and</p>
-<div class="math display">
--0.5\le u\le0.5.
-</div>
-<p>We compare the set of states that can reach</p>
-<div class="math display">
-x_N=0
-</div>
-<p>for different horizons.</p>
-<p>Geometrically, this is precisely a finite-step controllability calculation.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">A = np.array([
-    [1.0, 1.0],
-    [0.0, 1.0],
-])
-
-B = np.array([
-    [0.0],
-    [1.0],
-])
-
-X = HPolytope.box(
-    [-5.0, -5.0],
-    [ 5.0,  5.0],
-)
-
-umin, umax = -0.5, 0.5
-
-# Exact singleton {0}: +x&lt;=0 and -x&lt;=0.
-zero_terminal = HPolytope(
-    np.vstack([np.eye(2), -np.eye(2)]),
-    np.zeros(4),
-)
-
-zero_sets = {}
-for N in [5, 10, 20]:
-    zero_sets[N] = n_step_controllable_sets(
-        A, B, X, zero_terminal,
-        umin, umax, N
-    )[-1]
-
-Cinf, _ = maximal_control_invariant(
-    A, B, X,
-    umin, umax
-)
-
-plt.figure()
-ax = plt.gca()
-plot_polytope(ax, Cinf, linewidth=2.8,
-              label=r&quot;$\mathcal{C}_\infty$&quot;)
-for N, S_N in zero_sets.items():
-    plot_polytope(ax, S_N, linewidth=1.7,
-                  label=rf&quot;$x_N=0,\;N={N}$&quot;)
-
-plt.xlabel(r&quot;$x_1$&quot;)
-plt.ylabel(r&quot;$x_2$&quot;)
-plt.title(&quot;Longer horizon enlarges the zero-terminal feasible region&quot;)
-plt.axis(&quot;equal&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/03-3.png" alt="Figure: Longer horizon enlarges the zero-terminal feasible region" width="690" height="471" loading="lazy"></figure>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def polygon_area(P):
-    V = P.vertices_2d()
-    if len(V) &lt; 3:
-        return 0.0
-    x = V[:, 0]
-    y = V[:, 1]
-    return 0.5 * abs(
-        np.dot(x, np.roll(y, -1))
-        - np.dot(y, np.roll(x, -1))
-    )
-
-area_Cinf = polygon_area(Cinf)
-
-print(f&quot;area(C_inf) = {area_Cinf:.4f}&quot;)
-for N, S_N in zero_sets.items():
-    area = polygon_area(S_N)
-    print(
-        f&quot;N={N:2d}: area={area:.4f}, &quot;
-        f&quot;fraction of C_inf={area/area_Cinf:.3f}&quot;
-    )
-</code></pre>
-<pre class="output">area(C_inf) = 37.2917
-N= 5: area=16.1250, fraction of C_inf=0.432
-N=10: area=34.9479, fraction of C_inf=0.937
-N=20: area=37.2917, fraction of C_inf=1.000</pre>
-</div>
-
-<div class="md">
-<h2 id="v-2-interpretation">V.2 Interpretation</h2>
-<p>For the zero terminal condition, the horizon controls how much time the optimizer has to drive
-the state exactly to the origin.</p>
-<p>A small <span class="math inline">N</span> excludes states that are perfectly manageable over a longer time scale.</p>
-<p>As <span class="math inline">N</span> increases, the feasible set grows toward the underlying constrained controllability
-limits.</p>
-<p>This illustrates a general point:</p>
-<blockquote>
-<p>the horizon can have a strong impact on the region of attraction.</p>
-</blockquote>
-<p>The price of simply increasing <span class="math inline">N</span> is computational: more future decision variables and
-constraints must be handled online.</p>
-</div>
-
-<div class="md">
-<p><a id="part-6"></a></p>
-<h2 id="part-vi-general-terminal-sets">Part VI — General terminal sets</h2>
-<h2 id="vi-1-why-replace-x-n-0-by-x-n-in-mathcal-x-f">VI.1 Why replace <span class="math inline">x_N=0</span> by <span class="math inline">x_N\in\mathcal X_f</span>?</h2>
-<p>The exact terminal equality is conservative.</p>
-<p>Instead, choose a terminal region</p>
-<div class="math display">
-\boxed{
-x_N\in\mathcal X_f
-}
-</div>
-<p>with a local controller</p>
-<div class="math display">
-u=v(x).
-</div>
-<p>The interpretation is:</p>
-<blockquote>
-<p>the online optimizer only has to reach a region from which a known local controller can safely
-complete the infinite tail of the task.</p>
-</blockquote>
-<p>The terminal set enlarges the finite-horizon feasible region, while the local controller and
-terminal cost provide the information needed for the proof.</p>
-</div>
-
-<div class="md">
-<h2 id="vi-2-general-terminal-set-assumptions">VI.2 General terminal-set assumptions</h2>
-<p>The standard terminal-set stability theorem uses three ingredients.</p>
-<h3 id="assumption-1-positive-definite-stage-cost">Assumption 1 — positive-definite stage cost</h3>
-<p>The stage cost is positive away from the desired equilibrium:</p>
-<div class="math display">
-q(x,u)&gt;0
-</div>
-<p>for non-equilibrium state/input pairs of interest, and</p>
-<div class="math display">
-q(0,0)=0.
-</div>
-<p>For the stability conclusion, this positivity is used in the quantitative form
-<span class="math inline">q(x,u)\ge\alpha_1(\lVert x\rVert)</span> with <span class="math inline">\alpha_1</span> of class <span class="math inline">\mathcal K</span> (see IV.3). For
-<span class="math inline">q(x,u)=x^\top Qx+u^\top Ru</span> with <span class="math inline">Q\succ0</span>, it holds with <span class="math inline">\alpha_1(s)=\lambda_{\min}(Q)s^2</span>.</p>
-<h3 id="assumption-2-terminal-invariance-and-admissibility">Assumption 2 — terminal invariance and admissibility</h3>
-<p>There exists a local terminal control law <span class="math inline">v(x)</span> such that for all</p>
-<div class="math display">
-x\in\mathcal X_f,
-</div>
-<p>we have</p>
-<div class="math display">
-v(x)\in\mathcal U,
-</div>
-<p>and</p>
-<div class="math display">
-Ax+Bv(x)\in\mathcal X_f.
-</div>
-<p>Also,</p>
-<div class="math display">
-\mathcal X_f\subseteq\mathcal X.
-</div>
-<h3 id="assumption-3-terminal-lyapunov-decrease">Assumption 3 — terminal Lyapunov decrease</h3>
-<p>The terminal cost satisfies</p>
-<div class="math display">
-\boxed{
-p(Ax+Bv(x))-p(x)
-\le
--q(x,v(x))
-}
-</div>
-<p>for all <span class="math inline">x\in\mathcal X_f</span>.</p>
-<p>These assumptions mimic the missing infinite-horizon tail.</p>
-</div>
-
-<div class="md">
-<h2 id="vi-3-recursive-feasibility-with-a-general-terminal-set">VI.3 Recursive feasibility with a general terminal set</h2>
-<p>Suppose the optimal sequence at <span class="math inline">x_0</span> is</p>
-<div class="math display">
-\{
-u_0^\star,
-u_1^\star,
-\ldots,
-u_{N-1}^\star
-\},
-</div>
-<p>and</p>
-<div class="math display">
-x_N\in\mathcal X_f.
-</div>
-<p>After applying <span class="math inline">u_0^\star</span>, use the shifted candidate</p>
-<div class="math display">
-\boxed{
-\tilde U
-=
-\{
-u_1^\star,
-\ldots,
-u_{N-1}^\star,
-v(x_N)
-\}.
-}
-</div>
-<p>Because the old intermediate predictions were feasible, the shifted part remains admissible.</p>
-<p>Because <span class="math inline">\mathcal X_f</span> is invariant under <span class="math inline">v</span>,</p>
-<div class="math display">
-x_{N+1}
-=
-Ax_N+Bv(x_N)
-\in\mathcal X_f.
-</div>
-<p>Therefore the shifted candidate is feasible at the next state.</p>
-<p>This proves recursive feasibility.</p>
-</div>
-
-<div class="md">
-<h2 id="vi-4-optimal-value-decrease-with-the-terminal-controller">VI.4 Optimal-value decrease with the terminal controller</h2>
-<p>At <span class="math inline">x_0</span>,</p>
-<div class="math display">
-J_N^\star(x_0)
-=
-\sum_{i=0}^{N-1}
-q(x_i,u_i^\star)
-+
-p(x_N).
-</div>
-<p>At <span class="math inline">x_1</span>, the shifted candidate gives</p>
-<div class="math display">
-J_N^\star(x_1)
-\le
-\sum_{i=1}^{N-1}
-q(x_i,u_i^\star)
-+
-q(x_N,v(x_N))
-+
-p(x_{N+1}).
-</div>
-<p>Subtract the old optimal value:</p>
-<div class="math display">
-\begin{aligned}
-J_N^\star(x_1)-J_N^\star(x_0)
-\le{}&amp;
--q(x_0,u_0^\star)
-\\
-&amp;+
-q(x_N,v(x_N))
-+
-p(x_{N+1})-p(x_N).
-\end{aligned}
-</div>
-<p>The terminal decrease assumption gives</p>
-<div class="math display">
-q(x_N,v(x_N))
-+
-p(x_{N+1})-p(x_N)
-\le0.
-</div>
-<p>Therefore</p>
-<div class="math display">
-\boxed{
-J_N^\star(x_1)-J_N^\star(x_0)
-\le
--q(x_0,u_0^\star).
-}
-</div>
-<p>The same fundamental decrease inequality reappears.</p>
-<p>The other two conditions of IV.3 hold as well. The lower bound is Assumption 1 in its quantitative
-form, and the upper bound is <span class="math inline">J_N^\star(x)\le p(x)</span> on <span class="math inline">\mathcal X_f</span> (end of IV.3), valid when
-<span class="math inline">\mathcal X_f</span> contains the origin in its interior and <span class="math inline">p(x)\le\alpha_2(\lVert x\rVert)</span> there. Under
-Assumptions 1–3 and this condition, the origin is asymptotically stable for the MPC closed loop, with
-region of attraction <span class="math inline">\mathcal X_N</span>. In the linear-quadratic design of Part VII,
-<span class="math inline">q(x,u)\ge\lambda_{\min}(Q)\lVert x\rVert^2</span> and <span class="math inline">p(x)\le\lambda_{\max}(P)\lVert x\rVert^2</span>, so the
-bounds are quadratic and the stability is exponential on the bounded set <span class="math inline">\mathcal X_N</span>.</p>
-</div>
-
-<div class="md">
-<h2 id="vi-5-the-conceptual-role-of-the-terminal-ingredients">VI.5 The conceptual role of the terminal ingredients</h2>
-<p>The proof reveals why the two terminal ingredients have different jobs.</p>
-<h3 id="terminal-set">Terminal set</h3>
-<p>It gives a <strong>feasible tail</strong>:</p>
-<div class="math display">
-x_N\in\mathcal X_f
-\quad\Longrightarrow\quad
-v(x_N)
-\text{ can continue admissibly}.
-</div>
-<h3 id="terminal-cost">Terminal cost</h3>
-<p>It gives a <strong>cost bound on that tail</strong>:</p>
-<div class="math display">
-p(x^+)-p(x)
-\le
--q(x,v(x)).
-</div>
-<p>So:</p>
-<div class="math display">
-\boxed{
-\text{terminal set}
-\Rightarrow
-\text{recursive-feasibility mechanism}
-}
-</div>
-<p>and</p>
-<div class="math display">
-\boxed{
-\text{terminal cost}
-\Rightarrow
-\text{Lyapunov-decrease mechanism}.
-}
-</div>
-</div>
-
-<div class="md">
-<p><a id="part-7"></a></p>
-<h2 id="part-vii-linear-quadratic-terminal-ingredients">Part VII — Linear-quadratic terminal ingredients</h2>
-<h2 id="vii-1-quadratic-stage-and-terminal-costs">VII.1 Quadratic stage and terminal costs</h2>
-<p>For the linear system, take</p>
-<div class="math display">
-q(x,u)
-=
-x^\top Qx+u^\top Ru,
-</div>
-<p>with</p>
-<div class="math display">
-Q\succ0,
-\qquad
-R\succ0.
-</div>
-<p>Choose the terminal cost</p>
-<div class="math display">
-\boxed{
-p(x)=x^\top Px,
-}
-</div>
-<p>where <span class="math inline">P</span> is the infinite-horizon discrete-time LQR Riccati solution.</p>
-</div>
-
-<div class="md">
-<h2 id="vii-2-dare-and-feedback-sign-convention">VII.2 DARE and feedback-sign convention</h2>
-<p>The repository uses</p>
-<div class="math display">
-\boxed{
-u=-Kx.
-}
-</div>
-<p>Many texts write the local law as</p>
-<div class="math display">
-v=F_\infty x.
-</div>
-<p>These are the same convention if</p>
-<div class="math display">
-F_\infty=-K.
-</div>
-<p>The discrete algebraic Riccati equation is</p>
-<div class="math display">
-P
-=
-A^\top PA
--
-A^\top PB
-(R+B^\top PB)^{-1}
-B^\top PA
-+
-Q,
-</div>
-<p>and</p>
-<div class="math display">
-\boxed{
-K
-=
-(R+B^\top PB)^{-1}B^\top PA.
-}
-</div>
-<p>Hence</p>
-<div class="math display">
-A_{\mathrm{cl}}
-=
-A-BK.
-</div>
-<p>For discrete-time asymptotic stability we require</p>
-<div class="math display">
-\rho(A_{\mathrm{cl}})&lt;1.
-</div>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">Q = np.eye(2)
-R = np.array([[10.0]])
-
-K, P, eig_cl = dlqr(A, B, Q, R)
-Acl = A - B @ K
-
-print(&quot;K =&quot;)
-print(K)
-print(&quot;\nP =&quot;)
-print(P)
-print(&quot;\nclosed-loop eigenvalues =&quot;, eig_cl)
-print(&quot;spectral radius =&quot;, np.max(np.abs(eig_cl)))
-</code></pre>
-<pre class="output">K =
-[[0.205395 0.783524]]
-
-P =
-[[ 3.814714  4.868665]
- [ 4.868665 13.703901]]
-
-closed-loop eigenvalues = [0.608238+0.227855j 0.608238-0.227855j]
-spectral radius = 0.6495163430137743</pre>
-</div>
-
-<div class="md">
-<h2 id="vii-3-the-lqr-terminal-cost-identity">VII.3 The LQR terminal-cost identity</h2>
-<p>Under</p>
-<div class="math display">
-u=-Kx,
-</div>
-<p>the next state is</p>
-<div class="math display">
-x^+=(A-BK)x.
-</div>
-<p>With</p>
-<div class="math display">
-p(x)=x^\top Px,
-</div>
-<p>we have</p>
-<div class="math display">
-p(x^+)-p(x)
-=
-x^\top
-\left[
-(A-BK)^\top P(A-BK)-P
-\right]
-x.
-</div>
-<p>The DARE implies</p>
-<div class="math display">
-\boxed{
-(A-BK)^\top P(A-BK)-P
-=
--\left(Q+K^\top RK\right).
-}
-</div>
-<p>Therefore</p>
-<div class="math display">
-\boxed{
-p(x^+)-p(x)
-=
--\left(
-x^\top Qx
-+
-(-Kx)^\top R(-Kx)
-\right)
-=
--q(x,-Kx).
-}
-</div>
-<p>So the terminal cost satisfies the required Lyapunov decrease <strong>with equality</strong> for the nominal
-LQR closed loop.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">dare_identity_residual = (
-    Acl.T @ P @ Acl
-    - P
-    + Q
-    + K.T @ R @ K
-)
-
-print(&quot;DARE terminal-decrease residual:&quot;)
-print(dare_identity_residual)
-print(&quot;infinity norm =&quot;, np.linalg.norm(dare_identity_residual, ord=np.inf))
-</code></pre>
-<pre class="output">DARE terminal-decrease residual:
-[[0. 0.]
- [0. 0.]]
-infinity norm = 4.440892098500626e-14</pre>
-</div>
-
-<div class="md">
-<h2 id="vii-4-input-constraints-restrict-the-lqr-terminal-region">VII.4 Input constraints restrict the LQR terminal region</h2>
-<p>The LQR law itself does not automatically respect actuator bounds.</p>
-<p>We require</p>
-<div class="math display">
--0.5
-\le
--Kx
-\le
-0.5.
-</div>
-<p>Define</p>
-<div class="math display">
-\mathcal X_K
-=
-\left\{
-x\in\mathcal X:
--0.5\le-Kx\le0.5
-\right\}.
-</div>
-<p>We then compute the maximal positively invariant set for</p>
-<div class="math display">
-x^+=(A-BK)x
-</div>
-<p>inside <span class="math inline">\mathcal X_K</span>.</p>
-<p>That set becomes the terminal set</p>
-<div class="math display">
-\boxed{
-\mathcal X_f.
-}
-</div>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">XK = closed_loop_admissible_set_scalar_input(
-    X, K,
-    umin, umax
-)
-
-Xf, Xf_history = maximal_invariant(
-    Acl, XK
-)
-
-print(&quot;terminal-set fixed-point iterations:&quot;,
-      len(Xf_history) - 1)
-print(&quot;terminal-set vertices:&quot;)
-print(Xf.vertices_2d())
-
-plt.figure()
-ax = plt.gca()
-plot_polytope(ax, X, linestyle=&quot;:&quot;, label=r&quot;$\mathcal{X}$&quot;)
-plot_polytope(ax, XK, linestyle=&quot;--&quot;, linewidth=2,
-              label=r&quot;$\mathcal{X}_K$&quot;)
-plot_polytope(ax, Xf, linewidth=2.6,
-              label=r&quot;$\mathcal{X}_f$&quot;)
-plt.xlabel(r&quot;$x_1$&quot;)
-plt.ylabel(r&quot;$x_2$&quot;)
-plt.title(&quot;Admissible LQR terminal region&quot;)
-plt.axis(&quot;equal&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<pre class="output">terminal-set fixed-point iterations: 2
-terminal-set vertices:
-[[-5.        1.926127]
- [-5.        0.672571]
- [ 4.84169  -1.907357]
- [ 5.       -1.926127]
- [ 5.       -0.672571]
- [-4.84169   1.907357]]</pre>
-<figure class="output-figure"><img src="img/03-4.png" alt="Figure: Admissible LQR terminal region" width="690" height="471" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="vii-5-verify-the-terminal-set-assumptions-numerically">VII.5 Verify the terminal-set assumptions numerically</h2>
-<p>For every vertex <span class="math inline">v</span> of <span class="math inline">\mathcal X_f</span>, we check:</p>
-<ol>
-<li><span class="math inline">v\in\mathcal X</span>;</li>
-<li><span class="math inline">u=-Kv</span> satisfies the input bounds;</li>
-<li><span class="math inline">A_{\mathrm{cl}}v\in\mathcal X_f</span>.</li>
-</ol>
-<p>For a convex polytope and linear maps, checking vertices is a useful computational diagnostic for
-these linear inequalities.</p>
-<p>We also evaluate the terminal decrease identity.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">terminal_checks = []
-
-for v in Xf.vertices_2d():
-    u = float((-K @ v).item())
-    v_next = Acl @ v
-
-    p_now = float(v @ P @ v)
-    p_next = float(v_next @ P @ v_next)
-    q_local = float(v @ Q @ v + np.array([u]) @ R @ np.array([u]))
-
-    terminal_checks.append([
-        X.contains(v),
-        u,
-        Xf.contains(v_next, tol=1e-7),
-        p_next - p_now + q_local,
-    ])
-
-terminal_checks = np.asarray(terminal_checks, dtype=float)
-
-print(&quot;columns: [state admissible, local input, next in Xf, Lyapunov residual]&quot;)
-print(terminal_checks)
-print(&quot;\nmax |terminal decrease residual| =&quot;,
-      np.max(np.abs(terminal_checks[:, 3])))
-</code></pre>
-<pre class="output">columns: [state admissible, local input, next in Xf, Lyapunov residual]
-[[ 1.       -0.482191  1.        0.      ]
- [ 1.        0.5       1.       -0.      ]
- [ 1.        0.5       1.        0.      ]
- [ 1.        0.482191  1.        0.      ]
- [ 1.       -0.5       1.       -0.      ]
- [ 1.       -0.5       1.        0.      ]]
-
-max |terminal decrease residual| = 2.842170943040401e-14</pre>
-</div>
-
-<div class="md">
-<p><a id="part-8"></a></p>
-<h2 id="part-viii-zero-terminal-point-versus-invariant-terminal-region">Part VIII — Zero terminal point versus invariant terminal region</h2>
-<h2 id="viii-1-same-horizon-different-terminal-ingredients">VIII.1 Same horizon, different terminal ingredients</h2>
-<p>For the same online horizon <span class="math inline">N=5</span>, compare:</p>
-<h3 id="design-a">Design A</h3>
-<div class="math display">
-x_N=0.
-</div>
-<h3 id="design-b">Design B</h3>
-<div class="math display">
-x_N\in\mathcal X_f,
-</div>
-<p>with LQR terminal cost</p>
-<div class="math display">
-p(x_N)=x_N^\top Px_N.
-</div>
-<p>The second design allows the online optimizer to stop at any state in the certified terminal
-region because the local LQR law can safely take over from there.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">N_compare = 5
-
-zero_N5 = n_step_controllable_sets(
-    A, B, X, zero_terminal,
-    umin, umax, N_compare
-)[-1]
-
-terminal_N5 = n_step_controllable_sets(
-    A, B, X, Xf,
-    umin, umax, N_compare
-)[-1]
-
-plt.figure()
-ax = plt.gca()
-plot_polytope(ax, Cinf, linestyle=&quot;:&quot;, linewidth=2,
-              label=r&quot;$\mathcal{C}_\infty$&quot;)
-plot_polytope(ax, zero_N5, linewidth=2,
-              label=r&quot;$N=5,\;x_N=0$&quot;)
-plot_polytope(ax, terminal_N5, linewidth=2.6,
-              label=r&quot;$N=5,\;x_N\in\mathcal{X}_f$&quot;)
-plot_polytope(ax, Xf, linestyle=&quot;--&quot;, linewidth=1.6,
-              label=r&quot;$\mathcal{X}_f$&quot;)
-plt.xlabel(r&quot;$x_1$&quot;)
-plt.ylabel(r&quot;$x_2$&quot;)
-plt.title(&quot;A terminal region can enlarge the certified feasible region&quot;)
-plt.axis(&quot;equal&quot;)
-plt.legend()
-plt.show()
-
-print(&quot;area zero-terminal N=5     :&quot;, polygon_area(zero_N5))
-print(&quot;area invariant-terminal N=5:&quot;, polygon_area(terminal_N5))
-print(&quot;area maximal control invariant:&quot;, polygon_area(Cinf))
-</code></pre>
-<figure class="output-figure"><img src="img/03-5.png" alt="Figure: A terminal region can enlarge the certified feasible region" width="690" height="471" loading="lazy"></figure>
-<pre class="output">area zero-terminal N=5     : 16.125
-area invariant-terminal N=5: 34.548490411584815
-area maximal control invariant: 37.291666666750004</pre>
-</div>
-
-<div class="md">
-<h2 id="viii-2-a-state-that-exposes-the-difference">VIII.2 A state that exposes the difference</h2>
-<p>Consider</p>
-<div class="math display">
-x_0=
-\begin{bmatrix}
-4.5\\
-0.5
-\end{bmatrix}.
-</div>
-<p>For the chosen horizon:</p>
-<ul>
-<li>it is <strong>not</strong> feasible for the exact-zero terminal requirement;</li>
-<li>it <strong>is</strong> feasible when the terminal condition is <span class="math inline">x_N\in\mathcal X_f</span>.</li>
-</ul>
-<p>The terminal region reduces the burden placed on the finite online horizon.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">x_demo = np.array([4.5, 0.5])
-
-print(&quot;x_demo in zero-terminal N=5 set? &quot;,
-      zero_N5.contains(x_demo))
-print(&quot;x_demo in invariant-terminal N=5 set?&quot;,
-      terminal_N5.contains(x_demo))
-</code></pre>
-<pre class="output">x_demo in zero-terminal N=5 set?  False
-x_demo in invariant-terminal N=5 set? True</pre>
-</div>
-
-<div class="md">
-<p><a id="part-9"></a></p>
-<h2 id="part-ix-receding-horizon-simulation-with-stabilizing-terminal-ingredients">Part IX — Receding-horizon simulation with stabilizing terminal ingredients</h2>
-<h2 id="ix-1-mpc-controller">IX.1 MPC controller</h2>
-<p>We now solve at every time step</p>
-<div class="math display">
-\begin{aligned}
-\min\quad&amp;
-x_N^\top Px_N
-+
-\sum_{k=0}^{N-1}
-\left(
-x_k^\top Qx_k+u_k^\top Ru_k
-\right)
-\\
-\text{s.t.}\quad&amp;
-x_{k+1}=Ax_k+Bu_k,
-\\
-&amp;
-x_k\in\mathcal X,
-\qquad
-u_k\in\mathcal U,
-\\
-&amp;
-x_N\in\mathcal X_f.
-\end{aligned}
-</div>
-<p>with</p>
-<div class="math display">
-N=5.
-</div>
-<p>The controller applies only the first optimized input and resolves at the next state.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">controller = LinearMPC(
-    A, B, Q, R,
-    N=5,
-    P=P,
-    x_lower=np.array([-5.0, -5.0]),
-    x_upper=np.array([5.0, 5.0]),
-    u_lower=np.array([umin]),
-    u_upper=np.array([umax]),
-    terminal_H=Xf.H,
-    terminal_h=Xf.h,
-)
-
-first_solution = controller.solve(x_demo)
-
-print(&quot;initial optimization success:&quot;,
-      first_solution.success)
-print(&quot;first control:&quot;,
-      first_solution.U[0])
-print(&quot;predicted terminal state:&quot;,
-      first_solution.X[-1])
-print(&quot;terminal state in Xf?&quot;,
-      Xf.contains(first_solution.X[-1], tol=1e-6))
-</code></pre>
-<pre class="output">initial optimization success: True
-first control: [-0.5]
-predicted terminal state: [ 2.359246 -0.965829]
-terminal state in Xf? True</pre>
-</div>
-
-<div class="md">
-<h2 id="ix-2-use-the-full-theoretical-finite-horizon-cost">IX.2 Use the <strong>full</strong> theoretical finite-horizon cost</h2>
-<p>The QP solver internally drops terms that are constant with respect to the decision vector.
-That is legitimate for optimization, but those dropped constants matter when we want to evaluate
-the Lyapunov inequality.</p>
-<p>So, for diagnostics, we reconstruct</p>
-<div class="math display">
-J_N(x)
-=
-x_0^\top Qx_0
-+
-\sum_{k=1}^{N-1}x_k^\top Qx_k
-+
-\sum_{k=0}^{N-1}u_k^\top Ru_k
-+
-x_N^\top Px_N.
-</div>
-<p>This is the quantity appearing in the stability proof.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def full_quadratic_mpc_cost(x0, Xpred, Upred, Q, R, P):
-    value = float(x0 @ Q @ x0)
-
-    for x in Xpred[:-1]:
-        value += float(x @ Q @ x)
-
-    for u in Upred:
-        value += float(u @ R @ u)
-
-    value += float(Xpred[-1] @ P @ Xpred[-1])
-    return value
-
-
-def stage_cost(x, u, Q, R):
-    return float(x @ Q @ x + u @ R @ u)
-</code></pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">x = x_demo.copy()
-
-xs = [x.copy()]
-us = []
-values = []
-stages = []
-terminal_predictions = []
-
-for t in range(30):
-    sol = controller.solve(x)
-
-    if not sol.success:
-        raise RuntimeError(
-            f&quot;MPC unexpectedly infeasible at closed-loop step {t}: {sol.message}&quot;
-        )
-
-    J = full_quadratic_mpc_cost(
-        x, sol.X, sol.U,
-        Q, R, P
-    )
-
-    u = sol.U[0].copy()
-
-    values.append(J)
-    stages.append(stage_cost(x, u, Q, R))
-    terminal_predictions.append(sol.X[-1].copy())
-    us.append(u.copy())
-
-    x = A @ x + B @ u
-    xs.append(x.copy())
-
-    if np.linalg.norm(x) &lt; 1e-5:
-        break
-
-xs = np.asarray(xs)
-us = np.asarray(us)
-values = np.asarray(values)
-stages = np.asarray(stages)
-terminal_predictions = np.asarray(terminal_predictions)
-
-print(&quot;closed-loop steps:&quot;, len(us))
-print(&quot;final state:&quot;, xs[-1])
-print(&quot;max |u|:&quot;, np.max(np.abs(us)))
-print(&quot;all predicted terminal states in Xf?&quot;,
-      all(Xf.contains(v, tol=1e-6)
-          for v in terminal_predictions))
-</code></pre>
-<pre class="output">closed-loop steps: 30
-final state: [-0.000049  0.000011]
-max |u|: 0.4999999999999978
-all predicted terminal states in Xf? True</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">t_x = np.arange(len(xs))
-t_u = np.arange(len(us))
-
-plt.figure()
-plt.plot(t_x, xs[:, 0], marker=&quot;o&quot;, label=r&quot;$x_1$&quot;)
-plt.plot(t_x, xs[:, 1], marker=&quot;o&quot;, label=r&quot;$x_2$&quot;)
-plt.axhline(5.0, linestyle=&quot;:&quot;)
-plt.axhline(-5.0, linestyle=&quot;:&quot;)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(&quot;state&quot;)
-plt.title(&quot;MPC closed-loop states&quot;)
-plt.legend()
-plt.show()
-
-plt.figure()
-plt.step(t_u, us[:, 0], where=&quot;post&quot;, label=r&quot;$u$&quot;)
-plt.axhline(umax, linestyle=&quot;:&quot;)
-plt.axhline(umin, linestyle=&quot;:&quot;)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(&quot;input&quot;)
-plt.title(&quot;MPC input and saturation limits&quot;)
-plt.legend()
-plt.show()
-
-plt.figure()
-plt.semilogy(np.maximum(values, 1e-14), marker=&quot;o&quot;)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(r&quot;$J_N^\star(x(t))$&quot;)
-plt.title(&quot;Optimal finite-horizon value decreases along the closed loop&quot;)
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/03-6.png" alt="Figure: MPC closed-loop states; MPC input and saturation limits; Optimal finite-horizon value decreases along the closed loop" width="689" height="470" loading="lazy"></figure>
-<figure class="output-figure"><img src="img/03-7.png" alt="Figure: MPC closed-loop states; MPC input and saturation limits; Optimal finite-horizon value decreases along the closed loop" width="702" height="470" loading="lazy"></figure>
-<figure class="output-figure"><img src="img/03-8.png" alt="Figure: MPC closed-loop states; MPC input and saturation limits; Optimal finite-horizon value decreases along the closed loop" width="707" height="470" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="ix-3-check-the-lyapunov-decrease-inequality-numerically">IX.3 Check the Lyapunov decrease inequality numerically</h2>
-<p>The theorem predicts</p>
-<div class="math display">
-J_N^\star(x(t+1))
--
-J_N^\star(x(t))
-\le
--q(x(t),u(t)).
-</div>
-<p>Equivalently,</p>
-<div class="math display">
-J_N^\star(x(t+1))
--
-J_N^\star(x(t))
-+
-q(x(t),u(t))
-\le0.
-</div>
-<p>We evaluate that residual along the simulated trajectory.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">delta_J = np.diff(values)
-decrease_residual = delta_J + stages[:-1]
-
-print(&quot;maximum decrease residual:&quot;,
-      np.max(decrease_residual))
-print(&quot;minimum decrease residual:&quot;,
-      np.min(decrease_residual))
-
-plt.figure()
-plt.plot(delta_J, marker=&quot;o&quot;,
-         label=r&quot;$J_{t+1}^\star-J_t^\star$&quot;)
-plt.plot(-stages[:-1], &quot;--&quot;,
-         label=r&quot;$-q(x_t,u_t)$&quot;)
-plt.axhline(0.0, linewidth=1)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(&quot;cost change&quot;)
-plt.title(&quot;Numerical verification of the MPC Lyapunov inequality&quot;)
-plt.legend()
-plt.show()
-
-plt.figure()
-plt.plot(decrease_residual, marker=&quot;o&quot;)
-plt.axhline(0.0, linewidth=1)
-plt.xlabel(&quot;closed-loop step&quot;)
-plt.ylabel(r&quot;$\Delta J^\star + q$&quot;)
-plt.title(&quot;Residual should be non-positive up to numerical solver tolerance&quot;)
-plt.show()
-</code></pre>
-<pre class="output">maximum decrease residual: 1.1931717835977906e-09
-minimum decrease residual: -1.2174048436008889e-09</pre>
-<figure class="output-figure"><img src="img/03-9.png" alt="Figure: Numerical verification of the MPC Lyapunov inequality; Residual should be non-positive up to numerical solver tolerance" width="698" height="470" loading="lazy"></figure>
-<figure class="output-figure"><img src="img/03-10.png" alt="Figure: Numerical verification of the MPC Lyapunov inequality; Residual should be non-positive up to numerical solver tolerance" width="707" height="470" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="ix-4-why-the-equality-is-nearly-exact-in-this-example">IX.4 Why the equality is nearly exact in this example</h2>
-<p>For this linear-quadratic design, the appended terminal controller is the infinite-horizon LQR
-controller and the Riccati terminal cost satisfies</p>
-<div class="math display">
-p(x^+)-p(x)=-q(x,-Kx).
-</div>
-<p>So the terminal tail inequality is exact.</p>
-<p>When the shifted candidate is itself optimal at the next step, the MPC value decrease can also
-appear numerically very close to equality:</p>
-<div class="math display">
-J_N^\star(x^+)-J_N^\star(x)
-\approx
--q(x,u^\star).
-</div>
-<p>The theorem itself requires only the inequality.</p>
-</div>
-
-<div class="md">
-<p><a id="part-10"></a></p>
-<h2 id="part-x-what-the-terminal-theorem-does-and-does-not-say">Part X — What the terminal theorem does and does not say</h2>
-<h2 id="x-1-it-is-a-sufficient-design-mechanism">X.1 It is a sufficient design mechanism</h2>
-<p>The terminal-set/terminal-cost assumptions provide a constructive route to recursive feasibility
-and stability.</p>
-<p>They are <strong>sufficient conditions</strong>.</p>
-<p>They are not a statement that every stable MPC controller must explicitly contain exactly these
-terminal ingredients.</p>
-<p>MPC without a terminal constraint may have a larger actual region of attraction, but
-characterizing that region can be much harder.</p>
-</div>
-
-<div class="md">
-<h2 id="x-2-zero-terminal-set-is-simple-but-conservative">X.2 Zero terminal set is simple but conservative</h2>
-<p>Choosing</p>
-<div class="math display">
-\mathcal X_f=\{0\}
-</div>
-<p>makes the proof almost immediate.</p>
-<p>But the finite horizon must do all the work of reaching the equilibrium exactly.</p>
-<p>For small <span class="math inline">N</span>, this can make the certified feasible region substantially smaller than necessary.</p>
-</div>
-
-<div class="md">
-<h2 id="x-3-increasing-the-horizon-is-another-lever">X.3 Increasing the horizon is another lever</h2>
-<p>A longer horizon allows the online optimizer to see farther into the future.</p>
-<p>This can enlarge the feasible/attraction region.</p>
-<p>But it also increases online computational effort.</p>
-<p>Terminal ingredients provide a different mechanism: encode reliable information about the tail
-instead of forcing the online horizon to explicitly optimize that entire tail.</p>
-</div>
-
-<div class="md">
-<h2 id="x-4-nominal-versus-robust-guarantees">X.4 Nominal versus robust guarantees</h2>
-<p>The recursive-feasibility proof uses the predicted successor</p>
-<div class="math display">
-x^+=Ax+Bu
-</div>
-<p>as the actual successor.</p>
-<p>If disturbances or model errors move the real system away from the nominal prediction, the shifted
-sequence may no longer be feasible.</p>
-<p>Therefore the guarantee in this notebook is a <strong>nominal MPC guarantee for the stated model and
-constraints</strong>.</p>
-<p>Robust MPC requires additional constructions that explicitly account for uncertainty.</p>
-</div>
-
-<div class="md">
-<h2 id="x-5-nonlinear-extension">X.5 Nonlinear extension</h2>
-<p>The same finite-horizon problem can be posed for nonlinear dynamics</p>
-<div class="math display">
-x_{k+1}=g(x_k,u_k),
-</div>
-<p>with the same terminal-set and terminal-cost structure.</p>
-<p>The logic of the theorem is not fundamentally tied to linear dynamics:</p>
-<ul>
-<li>terminal invariance still provides the shifted feasible tail;</li>
-<li>terminal Lyapunov decrease still provides the cost-decrease argument;</li>
-<li>the bound <span class="math inline">J_N^\star\le p</span> on <span class="math inline">\mathcal X_f</span> still provides the upper bound near the origin,
-provided <span class="math inline">\mathcal X_f</span> contains the origin in its interior and <span class="math inline">p</span> is continuous with <span class="math inline">p(0)=0</span>.</li>
-</ul>
-<p>The difficult part is constructive:</p>
-<blockquote>
-<p>computing a useful nonlinear terminal invariant set and terminal Lyapunov function can be much
-harder than in the linear-quadratic case.</p>
-</blockquote>
-<p>This notebook therefore keeps the complete numerical construction in the linear setting.</p>
-</div>
-
-<div class="md">
-<p><a id="part-11"></a></p>
-<h2 id="part-xi-common-conceptual-pitfalls">Part XI — Common conceptual pitfalls</h2>
-<h2 id="xi-1-pitfall-feasible-now-means-recursively-feasible">XI.1 Pitfall: feasible now means recursively feasible</h2>
-<p>No.</p>
-<p>A feasible finite-horizon trajectory can end in a state from which the next optimization has no
-feasible continuation.</p>
-<p>The terminal construction is designed specifically to prevent this.</p>
-<hr />
-<h2 id="xi-2-pitfall-a-long-horizon-automatically-proves-stability">XI.2 Pitfall: a long horizon automatically proves stability</h2>
-<p>No.</p>
-<p>A longer horizon can improve behavior and enlarge the feasible region, but “large enough” is not
-itself a formal Lyapunov proof unless additional conditions are established.</p>
-<hr />
-<h2 id="xi-3-pitfall-p-from-the-dare-is-enough-by-itself">XI.3 Pitfall: <span class="math inline">P</span> from the DARE is enough by itself</h2>
-<p>Not under constraints.</p>
-<p>The terminal cost may have the desired LQR decrease, while the LQR action</p>
-<div class="math display">
-u=-Kx
-</div>
-<p>violates actuator constraints.</p>
-<p>That is why an admissible invariant terminal region is constructed.</p>
-<hr />
-<h2 id="xi-4-pitfall-the-terminal-set-must-be-the-origin">XI.4 Pitfall: the terminal set must be the origin</h2>
-<p>No.</p>
-<p>The whole point of the general theorem is to replace the conservative equality</p>
-<div class="math display">
-x_N=0
-</div>
-<p>by a nontrivial invariant region</p>
-<div class="math display">
-x_N\in\mathcal X_f.
-</div>
-<hr />
-<h2 id="xi-5-pitfall-continuous-time-and-discrete-time-stability-conditions-are-interchangeable">XI.5 Pitfall: continuous-time and discrete-time stability conditions are interchangeable</h2>
-<p>No.</p>
-<p>For</p>
-<div class="math display">
-x_{k+1}=A_{\rm cl}x_k,
-</div>
-<p>discrete-time asymptotic stability requires</p>
-<div class="math display">
-\rho(A_{\rm cl})&lt;1.
-</div>
-<p>It is not a condition of the form “eigenvalues <span class="math inline">&lt;0</span>,” which belongs to continuous-time reasoning.</p>
-<hr />
-<h2 id="xi-6-pitfall-the-solver-objective-is-automatically-the-lyapunov-value">XI.6 Pitfall: the solver objective is automatically the Lyapunov value</h2>
-<p>Not necessarily in software.</p>
-<p>QP implementations routinely drop terms that are constant with respect to the decision variables.
-That does not change the optimizer, but it changes the number reported as the solver objective.</p>
-<p>For Lyapunov diagnostics, reconstruct the complete theoretical cost.</p>
-</div>
-
-<div class="md">
-<p><a id="part-12"></a></p>
-<h2 id="part-xii-check-your-understanding">Part XII — Check your understanding</h2>
-<p>Try answering each question before opening the answer.</p>
-<h3 id="q1-why-is-mpc-a-feedback-controller-if-the-optimization-computes-an-open-loop-sequence">Q1. Why is MPC a feedback controller if the optimization computes an open-loop sequence?</h3>
-<details><summary>Answer</summary>
-<p>Because the complete sequence is not executed. Only its first element is applied, then the state is
-measured again and a new optimization is solved. The first optimized action therefore becomes an
-implicit state-feedback map.</p>
-</details>
-<h3 id="q2-define-recursive-feasibility">Q2. Define recursive feasibility.</h3>
-<details><summary>Answer</summary>
-<p>If the MPC problem is feasible at the current state and the MPC action is applied, the MPC problem
-must also be feasible at the next state. Repeating this property prevents future optimization
-infeasibility under the nominal assumptions.</p>
-</details>
-<h3 id="q3-why-can-a-horizon-one-mpc-be-unstable">Q3. Why can a horizon-one MPC be unstable?</h3>
-<details><summary>Answer</summary>
-<p>If the cost sees only the current state and current control and contains no terminal information,
-the current state term is constant with respect to the control. For an unstable plant the optimizer
-may choose no corrective action because the effect on the future lies outside the horizon.</p>
-</details>
-<h3 id="q4-how-does-the-zero-terminal-constraint-prove-recursive-feasibility">Q4. How does the zero terminal constraint prove recursive feasibility?</h3>
-<details><summary>Answer</summary>
-<p>Shift the old optimal sequence by one step and append zero. Since the old terminal state is exactly
-the origin and zero input keeps the origin invariant, the shifted sequence is feasible.</p>
-</details>
-<h3 id="q5-why-does-the-optimal-cost-decrease-for-x-n-0">Q5. Why does the optimal cost decrease for <span class="math inline">x_N=0</span>?</h3>
-<details><summary>Answer</summary>
-<p>The shifted candidate at the next state has exactly the old cost minus the first positive stage
-cost. The new optimum can only be cheaper than that candidate.</p>
-</details>
-<h3 id="q6-state-the-three-general-terminal-assumptions">Q6. State the three general terminal assumptions.</h3>
-<details><summary>Answer</summary>
-<p>A positive-definite stage cost; a terminal set invariant under an admissible local terminal
-controller; and a terminal cost that decreases under that local controller by at least the local
-stage cost.</p>
-</details>
-<h3 id="q7-what-sequence-is-used-in-the-general-shifted-sequence-proof">Q7. What sequence is used in the general shifted-sequence proof?</h3>
-<details><summary>Answer</summary>
-<div class="math display">
-\{u_1^\star,\ldots,u_{N-1}^\star,v(x_N)\}.
-</div>
-<p>The final local input replaces the zero appended in the special <span class="math inline">x_N=0</span> proof.</p>
-</details>
-<h3 id="q8-what-are-the-roles-of-the-terminal-set-and-terminal-cost">Q8. What are the roles of the terminal set and terminal cost?</h3>
-<details><summary>Answer</summary>
-<p>The terminal set supplies a feasible infinite-tail mechanism through an invariant local controller.
-The terminal cost supplies a Lyapunov bound on the cost of that tail.</p>
-</details>
-<h3 id="q9-why-use-the-dare-solution-as-terminal-cost-for-a-linear-quadratic-mpc">Q9. Why use the DARE solution as terminal cost for a linear-quadratic MPC?</h3>
-<details><summary>Answer</summary>
-<p>Because with the LQR feedback it satisfies the exact decrease identity
-<span class="math inline">p(x^+)-p(x)=-q(x,-Kx)</span>, providing the terminal Lyapunov condition.</p>
-</details>
-<h3 id="q10-why-compute-an-invariant-terminal-set-after-computing-lqr">Q10. Why compute an invariant terminal set after computing LQR?</h3>
-<details><summary>Answer</summary>
-<p>LQR stabilizes the unconstrained linear system (globally, under the usual stabilizability and
-detectability assumptions), but its input may exceed actuator bounds. The invariant terminal
-set restricts operation to a region where the state and local LQR action remain admissible
-indefinitely.</p>
-</details>
-<h3 id="q11-why-does-a-nonzero-terminal-region-enlarge-feasibility-relative-to-x-n-0">Q11. Why does a nonzero terminal region enlarge feasibility relative to <span class="math inline">x_N=0</span>?</h3>
-<details><summary>Answer</summary>
-<p>The online horizon only has to reach a state from which the local controller can safely continue,
-rather than reaching the exact equilibrium inside the finite horizon.</p>
-</details>
-<h3 id="q12-what-is-the-correct-discrete-time-closed-loop-matrix-under-u-kx">Q12. What is the correct discrete-time closed-loop matrix under <span class="math inline">u=-Kx</span>?</h3>
-<details><summary>Answer</summary>
-<div class="math display">
-A_{\rm cl}=A-BK.
-</div>
-<p>Discrete-time asymptotic stability requires all eigenvalues to lie strictly inside the unit disk.</p>
-</details>
-<h3 id="q13-why-is-the-decrease-inequality-alone-not-a-proof-of-asymptotic-stability">Q13. Why is the decrease inequality alone not a proof of asymptotic stability?</h3>
-<details><summary>Answer</summary>
-<p>With the lower bound <span class="math inline">J_N^\star(x)\ge\alpha_1(\lVert x\rVert)</span>, the decrease gives convergence
-<span class="math inline">x(t)\to0</span>, but Lyapunov stability also needs an upper bound <span class="math inline">J_N^\star(x)\le\alpha_2(\lVert x\rVert)</span>
-near the origin, so that small initial states keep <span class="math inline">J_N^\star</span>, and hence the state, small. With
-<span class="math inline">x_N=0</span> this requires an extra assumption (for example, local controllability with inputs bounded by
-a class-<span class="math inline">\mathcal K</span> function of the state), because <span class="math inline">J_N^\star</span> can be discontinuous at the origin.
-With a terminal set containing the origin in its interior, it follows from <span class="math inline">J_N^\star(x)\le p(x)</span> on
-<span class="math inline">\mathcal X_f</span>.</p>
-</details>
-</div>
-
-<div class="md">
-<p><a id="part-13"></a></p>
-<h2 id="part-xiii-exercises">Part XIII — Exercises</h2>
-<h3 id="exercise-1-horizon-one-pathology">Exercise 1 — Horizon-one pathology</h3>
-<p>For</p>
-<div class="math display">
-x^+=1.1x+u
-</div>
-<p>and</p>
-<div class="math display">
-q(x,u)=x^2+5u^2,
-</div>
-<p>show analytically that horizon-one MPC with no terminal cost chooses <span class="math inline">u=0</span>.</p>
-<p>What is the resulting closed-loop eigenvalue?</p>
-<hr />
-<h3 id="exercise-2-one-step-terminal-cost">Exercise 2 — One-step terminal cost</h3>
-<p>For the same scalar system, add</p>
-<div class="math display">
-p(x_1)=Px_1^2.
-</div>
-<p>Derive the optimal feedback</p>
-<div class="math display">
-u=-K(P)x
-</div>
-<p>as a function of <span class="math inline">P</span>.</p>
-<hr />
-<h3 id="exercise-3-zero-terminal-shifted-sequence">Exercise 3 — Zero-terminal shifted sequence</h3>
-<p>Write the complete predicted state sequence at time <span class="math inline">t</span> and explicitly construct the candidate
-sequence at time <span class="math inline">t+1</span>.</p>
-<p>Identify exactly where the equilibrium assumption is used.</p>
-<hr />
-<h3 id="exercise-4-general-terminal-cost-proof">Exercise 4 — General-terminal cost proof</h3>
-<p>Starting from</p>
-<div class="math display">
-J_N^\star(x_0),
-</div>
-<p>derive</p>
-<div class="math display">
-J_N^\star(x_1)-J_N^\star(x_0)
-\le
--q(x_0,u_0^\star)
-</div>
-<p>line by line.</p>
-<p>Do not skip the terminal terms.</p>
-<hr />
-<h3 id="exercise-5-dare-identity">Exercise 5 — DARE identity</h3>
-<p>Starting from the DARE, prove</p>
-<div class="math display">
-(A-BK)^\top P(A-BK)-P
-=
--(Q+K^\top RK).
-</div>
-<hr />
-<h3 id="exercise-6-input-admissible-lqr-region">Exercise 6 — Input-admissible LQR region</h3>
-<p>Given a scalar input bound</p>
-<div class="math display">
-|u|\le u_{\max}
-</div>
-<p>and</p>
-<div class="math display">
-u=-Kx,
-</div>
-<p>derive the pair of half-space constraints that must be added to the state constraint set.</p>
-<hr />
-<h3 id="exercise-7-horizon-effect">Exercise 7 — Horizon effect</h3>
-<p>Recompute the zero-terminal feasible sets for</p>
-<div class="math display">
-N=3,5,8,12.
-</div>
-<p>Plot their areas versus <span class="math inline">N</span>.</p>
-<hr />
-<h3 id="exercise-8-terminal-set-effect">Exercise 8 — Terminal-set effect</h3>
-<p>Change</p>
-<div class="math display">
-R=10
-</div>
-<p>to a smaller and a larger value.</p>
-<p>Recompute <span class="math inline">K</span>, <span class="math inline">P</span>, <span class="math inline">\mathcal X_f</span>, and the <span class="math inline">N=5</span> feasible region.</p>
-<p>Explain the trade-off between control aggressiveness and the actuator-admissible terminal region.</p>
-<hr />
-<h3 id="exercise-9-numerical-lyapunov-inequality">Exercise 9 — Numerical Lyapunov inequality</h3>
-<p>For several feasible initial states, simulate the terminal MPC and calculate</p>
-<div class="math display">
-J_N^\star(x(t+1))
--
-J_N^\star(x(t))
-+
-q(x(t),u(t)).
-</div>
-<p>Investigate the effect of solver tolerance.</p>
-<hr />
-<h3 id="exercise-10-model-mismatch-thought-experiment">Exercise 10 — Model mismatch thought experiment</h3>
-<p>Suppose the real plant is</p>
-<div class="math display">
-x^+=(A+\Delta A)x+Bu
-</div>
-<p>while the optimizer uses <span class="math inline">A</span>.</p>
-<p>Which step of the recursive-feasibility proof can fail?
-Why does the nominal proof no longer suffice?</p>
-</div>
-
-<div class="md">
-<p><a id="part-14"></a></p>
-<h2 id="part-xiv-scope-and-references">Part XIV — Scope and references</h2>
-<p><strong>Scope.</strong> This notebook treats nominal MPC for linear systems with polytopic state and input
-constraints and a measured state: the receding-horizon law; the differences between feasibility,
-recursive feasibility, constraint satisfaction and stability; the zero terminal constraint and the
-conditions under which its value function proves asymptotic stability; general terminal sets and
-costs; linear-quadratic terminal ingredients built from the DARE and the maximal positively invariant
-set; and numerical checks of the Lyapunov decrease. It assumes an exact prediction model and no
-disturbances. Robust and output-feedback MPC are outside its scope, and the nonlinear case is
-discussed only qualitatively (X.5).</p>
-<p><strong>Notation.</strong> Many texts write the local terminal feedback as <span class="math inline">v=F_\infty x</span>. This notebook uses the
-implementation convention <span class="math inline">u=-Kx</span>, so <span class="math inline">F_\infty=-K</span>.</p>
-<p><strong>References.</strong></p>
-<ul>
-<li>F. Borrelli, A. Bemporad and M. Morari, <em>Predictive Control for Linear and Hybrid Systems</em>,
-Cambridge University Press, 2017: receding-horizon control, and feasibility and stability with
-terminal sets and costs.</li>
-<li>J. B. Rawlings, D. Q. Mayne and M. M. Diehl, <em>Model Predictive Control: Theory, Computation, and
-Design</em>, 2nd ed., Nob Hill Publishing, 2022: Lyapunov-based stability analysis of MPC (Chapter 2).</li>
-<li>D. Q. Mayne, J. B. Rawlings, C. V. Rao and P. O. M. Scokaert, &quot;Constrained model predictive
-control: Stability and optimality&quot;, <em>Automatica</em>, 36(6), 789–814, 2000: the terminal-set and
-terminal-cost conditions for stability.</li>
-<li>S. S. Keerthi and E. G. Gilbert, &quot;Optimal infinite-horizon feedback laws for a general class of
-constrained discrete-time systems: Stability and moving-horizon approximations&quot;, <em>Journal of
-Optimization Theory and Applications</em>, 57(2), 265–293, 1988: stability with a terminal equality
-constraint.</li>
-<li>E. G. Gilbert and K. T. Tan, &quot;Linear systems with state and control constraints: The theory and
-application of maximal output admissible sets&quot;, <em>IEEE Transactions on Automatic Control</em>, 36(9),
-1008–1020, 1991: the maximal positively invariant set used as <span class="math inline">\mathcal X_f</span>.</li>
-</ul>
-</div>
-</main>
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Feasible regions of two terminal designs, and the closed loop from the chosen start</p>
+        <canvas id="planeC" aria-label="The state box with the N-step feasible regions for the zero terminal constraint and for the invariant terminal set, the terminal set itself, the maximal control-invariant set, and the closed-loop trajectory from a movable start" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+        <canvas id="valueC" aria-label="The full finite-horizon optimal value along the closed loop on a logarithmic scale" aria-describedby="heroStatus"></canvas>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg stack" role="group" aria-label="Terminal design">
+        <button class="btn" type="button" data-design="zero" aria-pressed="false">A: x<sub>N</sub> = 0</button>
+        <button class="btn" type="button" data-design="set" aria-pressed="true">B: x<sub>N</sub> ∈ X<sub>f</sub> with the Riccati cost P</button>
+        <button class="btn" type="button" data-design="none" aria-pressed="false">no terminal constraint, cost P only</button>
+      </div>
+      <label class="field"><span>Horizon <span class="m">N</span>: <b id="hNV"></b></span>
+        <span class="row"><input type="range" id="hN" min="2" max="12" step="1" value="5"></span>
+      </label>
+      <label class="field"><span>Input weight <span class="m">R</span>: <b id="hRV"></b></span>
+        <span class="row"><input type="range" id="hR" min="0" max="6" step="1" value="3"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>region A area</span><span class="v" id="rZero">–</span>
+        <span>region B area</span><span class="v" id="rTerm">–</span>
+        <span>terminal set</span><span class="v" id="rXf">–</span>
+        <span>closed loop</span><span class="v" id="rLoop">–</span>
+      </div>
+      <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the notebook's run</button></div>
+      <p class="hint"><span class="m">x^+ = \begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \end{pmatrix} x + \begin{pmatrix} 0 \\ 1 \end{pmatrix} u</span>, <span class="m">|x_i| \le 5</span>, <span class="m">|u| \le 0.5</span>, <span class="m">Q = I</span>. Every set is an exact polytope, every QP is solved to <span class="m">10^{-10}</span>, and the value plotted is the full <span class="m">J_N^\star</span>, constants included. The loop stops at <span class="m">\lVert x \rVert &lt; 10^{-3}</span> or after 40 steps.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#feedback"><span class="n">1</span><span class="t">From finite-horizon control to feedback</span><span class="d">The receding-horizon law</span></a>
+    <a href="#guarantees"><span class="n">2</span><span class="t">What exactly must be guaranteed?</span><span class="d">Four properties, kept apart</span></a>
+    <a href="#short"><span class="n">3</span><span class="t">Why a short horizon can fail</span><span class="d">The horizon-one pathology and its repair</span></a>
+    <a href="#zero"><span class="n">4</span><span class="t">The zero terminal constraint</span><span class="d">Recursive feasibility and stability, proved</span></a>
+    <a href="#horizon"><span class="n">5</span><span class="t">Horizon length and the feasible region</span><span class="d">Areas against N</span></a>
+    <a href="#general"><span class="n">6</span><span class="t">General terminal sets</span><span class="d">Three assumptions and the shifted sequence</span></a>
+    <a href="#lq"><span class="n">7</span><span class="t">Linear-quadratic terminal ingredients</span><span class="d">DARE, the identity, the invariant region</span></a>
+    <a href="#compare"><span class="n">8</span><span class="t">Zero point versus invariant region</span><span class="d">Same horizon, different reach</span></a>
+    <a href="#simulation"><span class="n">9</span><span class="t">The closed loop, checked</span><span class="d">The full value and its decrease</span></a>
+    <a href="#theorem"><span class="n">10</span><span class="t">What the theorem does and does not say</span><span class="d">Sufficiency, levers, nominal only</span></a>
+    <a href="#pitfalls"><span class="n">11</span><span class="t">Common pitfalls</span><span class="d">Six confusions</span></a>
+    <a href="#check"><span class="n">12</span><span class="t">Check your understanding</span><span class="d">Thirteen questions with answers</span></a>
+    <a href="#exercises"><span class="n">13</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">14</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="feedback">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>From finite-horizon optimal control to feedback</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The ideal infinite-horizon problem.</b> For <span class="m">x_{k+1} = Ax_k + Bu_k</span>, the constrained objective one would like to solve is</p>
+    <div class="math-block" data-narrow="\begin{aligned} J_\infty^\star(x(0)) = \min_{\{u_k\}}\ &amp;\textstyle\sum_{k=0}^{\infty} q(x_k, u_k) \\ \text{s.t. } &amp;x_k \in \mathcal X,\ u_k \in \mathcal U, \end{aligned}">J_\infty^\star(x(0)) = \min_{\{u_k\}_{k=0}^{\infty}} \sum_{k=0}^{\infty} q(x_k, u_k) \quad \text{subject to}\quad x_k \in \mathcal X,\ u_k \in \mathcal U,</div>
+    <p>with the stage cost <span class="m">q(x, u)</span> pricing the state and the input. It contains infinitely many decisions. MPC replaces it by a finite-horizon approximation and repeats that approximation in feedback.</p>
+    <p><b>The problem solved at real time <span class="m">t</span>.</b> Predicted quantities carry two indices, <span class="m">x_{k|t}</span> and <span class="m">u_{k|t}</span>: <span class="m">t</span> is when the prediction is made, <span class="m">k</span> the future time it refers to, and <span class="m">x_{t|t} = x(t)</span> is the measurement. The horizon-<span class="m">N</span> problem is</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;J_t^\star(x(t)) = \min_{\{u_{k|t}\}}\ p(x_{t+N|t}) \\ &amp;\qquad + \textstyle\sum_{k=t}^{t+N-1} q(x_{k|t}, u_{k|t}) \\ &amp;\text{s.t. } x_{k+1|t} = A x_{k|t} + B u_{k|t}, \\ &amp;\quad x_{k|t} \in \mathcal X,\ u_{k|t} \in \mathcal U, \\ &amp;\quad x_{t+N|t} \in \mathcal X_f,\ x_{t|t} = x(t). \end{aligned}">\begin{aligned} J_t^\star(x(t)) = \min_{\{u_{k|t}\}}\ &amp; p(x_{t+N|t}) + \sum_{k=t}^{t+N-1} q(x_{k|t}, u_{k|t}) \\ \text{s.t. } &amp; x_{k+1|t} = A x_{k|t} + B u_{k|t}, \quad x_{k|t} \in \mathcal X, \quad u_{k|t} \in \mathcal U, \quad x_{t+N|t} \in \mathcal X_f, \quad x_{t|t} = x(t). \end{aligned}</div>
+    <p><b>The receding-horizon law.</b> Of the optimal sequence <span class="m">U^\star_{t \to t+N|t} = (u_{t|t}^\star, \dots, u_{t+N-1|t}^\star)</span>, MPC applies only</p>
+    <div class="math-block">\boxed{u(t) = u_{t|t}^\star}.</div>
+    <p>The real system moves to <span class="m">x(t+1) = Ax(t) + Bu(t)</span>, the old plan is discarded, and a new problem is solved from the new state. The feedback law <span class="m">u(t) = \kappa_N(x(t))</span> is defined implicitly by the optimisation, and for a time-invariant model, cost and constraints it is itself time invariant.</p>
+    <p><b>Predicted versus closed-loop trajectory.</b> At time <span class="m">t</span> the optimiser predicts <span class="m">x_{t|t}, x_{t+1|t}, \dots, x_{t+N|t}</span>; at <span class="m">t+1</span> it predicts a new sequence <span class="m">x_{t+1|t+1}, x_{t+2|t+1}, \dots</span>. Only the first transition of each plan is executed. MPC is not "optimise once and execute the whole sequence"; it is</p>
+    <div class="math-block" data-narrow="\boxed{\begin{aligned} &amp;\text{optimise} \to \text{apply one action} \\ &amp;\to \text{measure} \to \text{optimise again} \end{aligned}}">\boxed{\text{optimise} \to \text{apply one action} \to \text{measure} \to \text{optimise again}}.</div>
+    <div class="define" id="definition">
+      <p class="define-title">What are terminal ingredients?</p>
+      <p><b>In plain words:</b> a region where the plan must end and a price put on ending there, chosen so that a known local controller could always take over from that region, safely and at a cost the price already accounts for.</p>
+      <p><b>More precisely:</b> a terminal set <span class="m">\mathcal X_f \subseteq \mathcal X</span>, a local law <span class="m">v(x)</span> and a terminal cost <span class="m">p</span> with, for every <span class="m">x \in \mathcal X_f</span>: <span class="m">v(x) \in \mathcal U</span> and <span class="m">Ax + Bv(x) \in \mathcal X_f</span> (invariance and admissibility), and <span class="m">p(Ax + Bv(x)) - p(x) \le -q(x, v(x))</span> (terminal decrease). With a positive-definite stage cost, these make MPC recursively feasible and the optimal value <span class="m">J_N^\star</span> a Lyapunov function on the feasible set <span class="m">\mathcal X_N</span>. For linear-quadratic problems they are the LQR pair <span class="m">(K, P)</span> and the maximal invariant subset of the states where <span class="m">u = -Kx</span> is admissible.</p>
+      <dl>
+        <dt>Recursive feasibility</dt><dd>Feasible now implies feasible after the applied move.</dd>
+        <dt>Shifted sequence</dt><dd>Yesterday's plan minus its first move, plus one move of the local law: always a feasible candidate.</dd>
+        <dt>Region of attraction</dt><dd>The feasible set <span class="m">\mathcal X_N</span>, certified by the theorem.</dd>
+        <dt>Zero terminal constraint</dt><dd><span class="m">\mathcal X_f = \{0\}</span>: the simplest, most conservative choice.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="guarantees">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>What exactly must be guaranteed?</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Feasibility.</b> At state <span class="m">x</span>, the horizon-<span class="m">N</span> problem is feasible if at least one admissible input sequence satisfies all predicted constraints and the terminal constraint. The feasible set is <span class="m">\mathcal X_N = \{x : \text{feasible from } x\}</span>. A statement about the optimisation now.</p>
+    <p><b>Recursive feasibility.</b> MPC is recursively feasible if <span class="m">x(t) \in \mathcal X_N</span> implies <span class="m">x(t+1) \in \mathcal X_N</span> after the MPC action: feasible now implies feasible again at the next instant, so the optimisation never paints itself into a corner. Current feasibility alone does not imply it.</p>
+    <p><b>Constraint satisfaction.</b> If the model is exact, the state is known and the problem stays recursively feasible, the executed first input and state inherit the constraints imposed on the prediction. Distinct from stability: a trajectory may satisfy every constraint and never converge, and a stable unconstrained controller may violate limits.</p>
+    <p><b>Stability and the region of attraction.</b> Asymptotic stability of the origin means <span class="m">x(t) \to 0</span> from every initial state in some set, with small starts staying small. The region of attraction is the set of initial states from which the closed loop converges while keeping the required properties. For designs with stabilising terminal ingredients, the feasible set <span class="m">\mathcal X_N</span> becomes a certified region of attraction.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="guarT">
+      <thead><tr><th>Property</th><th>Question it answers</th><th>Where it comes from</th></tr></thead>
+      <tbody>
+        <tr><td>Feasibility</td><td>Is there a plan from here, now?</td><td>The constraints and the horizon</td></tr>
+        <tr><td>Recursive feasibility</td><td>Will there be a plan after I move?</td><td>The terminal set and the shifted sequence</td></tr>
+        <tr><td>Constraint satisfaction</td><td>Do the executed moves obey the limits?</td><td>An exact model plus recursive feasibility</td></tr>
+        <tr><td>Stability</td><td>Does the state go home and stay?</td><td>The terminal cost and a Lyapunov argument</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="short">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Why a short horizon can fail</h2>
+  </div>
+  <div class="col prose">
+    <p>Reducing the horizon can destroy stability even when every finite-horizon problem is solved exactly. A scalar example shows the mechanism in one line.</p>
+    <p><b>One-step MPC without a terminal cost.</b> Take the unstable plant <span class="m">x^+ = ax + u</span> with <span class="m">a = 1.2</span> and the stage cost <span class="m">q(x, u) = x^2 + ru^2</span>, <span class="m">r &gt; 0</span>. For <span class="m">N = 1</span> and no terminal cost the problem is <span class="m">\min_{u_0} x_0^2 + ru_0^2</span>. The future state <span class="m">x_1</span> does not appear, so <span class="m">u_0^\star = 0</span>, and the closed loop is <span class="m">x(t+1) = 1.2\,x(t)</span>: unstable. The optimiser solves its problem perfectly; the design of the problem is the issue.</p>
+    <p><b>Add the infinite-horizon LQR terminal cost.</b> With <span class="m">p(x) = Px^2</span>, where <span class="m">P</span> solves the discrete algebraic Riccati equation, the one-step problem is <span class="m">\min_u x^2 + ru^2 + P(ax + u)^2</span>. Differentiating, <span class="m">2ru + 2P(ax + u) = 0</span>, hence</p>
+    <div class="math-block">u^\star = -\frac{Pa}{r + P}\, x,</div>
+    <p>which is exactly the scalar LQR feedback when <span class="m">P</span> is the Riccati solution. With <span class="m">r = 4</span>: <span class="m">P = 3.8099</span>, <span class="m">K = 0.5854</span>, closed-loop eigenvalue <span class="m">a - K = 0.6146</span>. A carefully chosen terminal cost injects the infinite future into a short horizon.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="scalarW">
+      <div class="two">
+        <label class="field"><span>Plant <span class="m">a</span>: <b id="sAV"></b></span><span class="row"><input type="range" id="sA" min="0.8" max="1.6" step="0.05" value="1.2"></span></label>
+        <label class="field"><span>Input weight <span class="m">r</span>: <b id="sRV"></b></span><span class="row"><input type="range" id="sR" min="0.5" max="20" step="0.5" value="4"></span></label>
+      </div>
+      <canvas id="scalarC" aria-label="Two closed-loop state trajectories of the scalar plant: horizon one without terminal cost, diverging, and horizon one with the Riccati terminal cost, converging" aria-describedby="scalarCap"></canvas>
+      <p class="caption" id="scalarCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="zero">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The zero terminal constraint</h2>
+  </div>
+  <div class="col prose">
+    <p><b>MPC with <span class="m">x_N = 0</span>.</b></p>
+    <div class="math-block" data-narrow="\begin{aligned} J_N^\star(x) = \min_U\ &amp; \textstyle\sum_{k=0}^{N-1} q(x_k, u_k) \\ \text{s.t. } &amp; x_{k+1} = Ax_k + Bu_k, \\ &amp; x_k \in \mathcal X,\ u_k \in \mathcal U, \\ &amp; \boxed{x_N = 0},\ x_0 = x. \end{aligned}">J_N^\star(x) = \min_U \sum_{k=0}^{N-1} q(x_k, u_k) \quad \text{s.t.}\quad x_{k+1} = Ax_k + Bu_k, \quad x_k \in \mathcal X, \quad u_k \in \mathcal U, \quad \boxed{x_N = 0}, \quad x_0 = x.</div>
+    <p>The simplest stabilising terminal constraint <a href="#ref-4">[4]</a>: theoretically clear, and conservative, since reaching exactly zero within <span class="m">N</span> steps can make the feasible set small.</p>
+    <p><b>Recursive feasibility for <span class="m">x_N = 0</span>.</b> Suppose the problem at <span class="m">x(0)</span> is feasible with optimal inputs <span class="m">u_0^\star, \dots, u_{N-1}^\star</span> and predicted states <span class="m">x_0 = x(0), x_1, \dots, x_N = 0</span>. Apply <span class="m">u(0) = u_0^\star</span>; under the nominal model <span class="m">x(1) = x_1</span>. At the next instant consider the <strong>shifted candidate</strong></p>
+    <div class="math-block">\tilde U = (u_1^\star, u_2^\star, \dots, u_{N-1}^\star, 0).</div>
+    <p>The old prediction already guarantees that all shifted intermediate states satisfy their constraints; because <span class="m">x_N = 0</span> and the equilibrium satisfies <span class="m">A0 + B0 = 0</span>, the appended zero input keeps the new terminal state at zero. So the shifted sequence is feasible at <span class="m">x(1)</span>:</p>
+    <div class="math-block">\boxed{x(0) \in \mathcal X_N \ \Longrightarrow\ x(1) \in \mathcal X_N}.</div>
+    <p><b>The value decreases.</b> At <span class="m">x_1</span> the shifted sequence is feasible, so the new optimum cannot cost more than that candidate: <span class="m">J_N^\star(x_1) \le \sum_{k=1}^{N-1} q(x_k, u_k^\star) + q(0, 0)</span>. With <span class="m">q(0, 0) = 0</span>,</p>
+    <div class="math-block" data-narrow="\boxed{\begin{aligned} &amp;J_N^\star(x_1) - J_N^\star(x_0) \\ &amp;\quad \le -q(x_0, u_0^\star) \end{aligned}}.">\boxed{J_N^\star(x_1) - J_N^\star(x_0) \le -q(x_0, u_0^\star)}.</div>
+    <p>With a positive-definite stage cost the optimal value decreases strictly away from the equilibrium: a Lyapunov-function candidate. Decrease alone, however, does not prove asymptotic stability; <span class="m">J_N^\star</span> must also be bounded below and above by functions of <span class="m">\lVert x \rVert</span>.</p>
+    <p><b>From value decrease to asymptotic stability.</b> A function <span class="m">\alpha : [0, \infty) \to [0, \infty)</span> is of class <span class="m">\mathcal K</span> if it is continuous, strictly increasing and <span class="m">\alpha(0) = 0</span>. Suppose there are class-<span class="m">\mathcal K</span> functions <span class="m">\alpha_1, \alpha_2</span> and a radius <span class="m">r &gt; 0</span> with:</p>
+    <ol>
+      <li><b>Lower bound.</b> <span class="m">q(x, u) \ge \alpha_1(\lVert x \rVert)</span> for all admissible pairs; since <span class="m">J_N^\star(x) \ge q(x, u_0^\star)</span>, this gives <span class="m">J_N^\star(x) \ge \alpha_1(\lVert x \rVert)</span> on <span class="m">\mathcal X_N</span>.</li>
+      <li><b>Upper bound near the origin.</b> <span class="m">J_N^\star(x) \le \alpha_2(\lVert x \rVert)</span> for <span class="m">x \in \mathcal X_N</span> with <span class="m">\lVert x \rVert \le r</span>; since <span class="m">J_N^\star \ge 0</span> and <span class="m">J_N^\star(0) = 0</span>, this is continuity of <span class="m">J_N^\star</span> at the origin.</li>
+      <li><b>Decrease.</b> <span class="m">J_N^\star(x^+) - J_N^\star(x) \le -q(x, \kappa_N(x)) \le -\alpha_1(\lVert x \rVert)</span> on <span class="m">\mathcal X_N</span>: the boxed inequality.</li>
+    </ol>
+    <p>Then the origin is asymptotically stable with region of attraction <span class="m">\mathcal X_N</span>, which is positively invariant by the feasibility argument <a href="#ref-2">[2]</a>. If moreover <span class="m">\alpha_1(s) = c_1 s^2</span> and <span class="m">J_N^\star(x) \le c_2 \lVert x \rVert^2</span> on <span class="m">\mathcal X_N</span>, the origin is exponentially stable there:</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;J_N^\star(x(t+1)) \le (1 - c_1/c_2)\, J_N^\star(x(t)), \\ &amp;\lVert x(t) \rVert \le \sqrt{c_2/c_1} \\ &amp;\qquad\cdot (1 - c_1/c_2)^{t/2} \lVert x(0) \rVert . \end{aligned}">J_N^\star(x(t+1)) \le (1 - c_1/c_2)\, J_N^\star(x(t)), \qquad \lVert x(t) \rVert \le \sqrt{c_2/c_1}\,(1 - c_1/c_2)^{t/2} \lVert x(0) \rVert .</div>
+    <p>The conditions do different jobs. Summing the decrease along the loop gives <span class="m">\sum_{t \ge 0} \alpha_1(\lVert x(t) \rVert) \le J_N^\star(x(0)) &lt; \infty</span>, so <span class="m">x(t) \to 0</span> from every feasible start. The upper bound adds Lyapunov stability, small starts staying small: for <span class="m">\lVert x(0) \rVert \le r</span>, <span class="m">\alpha_1(\lVert x(t) \rVert) \le J_N^\star(x(t)) \le J_N^\star(x(0)) \le \alpha_2(\lVert x(0) \rVert)</span>, and the right-hand side vanishes as <span class="m">x(0) \to 0</span>.</p>
+    <p><b>Why the upper bound needs an extra assumption when <span class="m">x_N = 0</span>.</b> The lower bound comes from the stage cost and the decrease from the shifted sequence, but nothing gives the upper bound. With <span class="m">x_N = 0</span> the only admissible plans reach the origin exactly in <span class="m">N</span> steps, and for some systems, typically nonlinear ones, that forces large inputs and a large cost even from tiny states: <span class="m">J_N^\star</span> is then discontinuous at the origin. The extra assumption is <strong>local controllability with small inputs</strong>: every <span class="m">x</span> with <span class="m">\lVert x \rVert \le r</span> can be steered to the origin in <span class="m">N</span> admissible steps with <span class="m">\lVert u_k \rVert \le \gamma(\lVert x \rVert)</span> for a class-<span class="m">\mathcal K</span> function <span class="m">\gamma</span>; that plan's cost bounds <span class="m">J_N^\star</span>. For the linear model it holds when <span class="m">(A, B)</span> is controllable, <span class="m">N \ge n</span>, and the origin is interior to <span class="m">\mathcal X</span> and <span class="m">\mathcal U</span>: the minimum-norm plan <span class="m">U = -\mathcal C_N^{\dagger} A^N x</span>, with the controllability matrix <span class="m">\mathcal C_N = (A^{N-1}B, \dots, AB, B)</span>, reaches zero, is linear in <span class="m">x</span>, hence admissible for small <span class="m">x</span>, and with a quadratic stage cost gives <span class="m">J_N^\star(x) \le c \lVert x \rVert^2</span> near the origin.</p>
+    <p><b>A terminal set provides the upper bound.</b> With a terminal set <span class="m">\mathcal X_f</span> containing the origin in its interior, a local controller <span class="m">v</span> and a terminal cost <span class="m">p</span> as in Part 6, applying <span class="m">v</span> for <span class="m">N</span> steps from any <span class="m">x \in \mathcal X_f</span> is a feasible plan, and summing the terminal decrease along it bounds its cost by <span class="m">p(x)</span>:</p>
+    <div class="math-block">J_N^\star(x) \le p(x) \qquad \text{for all } x \in \mathcal X_f .</div>
+    <p>Any terminal cost with <span class="m">p(x) \le \alpha_2(\lVert x \rVert)</span>, such as <span class="m">x^\top P x</span>, gives the upper bound on a ball around the origin with no extra controllability assumption. One reason the terminal-set design is preferred to <span class="m">x_N = 0</span>.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="horizon">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Horizon length and the feasible region</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The double-integrator example.</b> <span class="m">x^+ = \begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \end{pmatrix} x + \begin{pmatrix} 0 \\ 1 \end{pmatrix} u</span> with <span class="m">-5 \le x_i \le 5</span> and <span class="m">-0.5 \le u \le 0.5</span>. The set of states that can reach <span class="m">x_N = 0</span> is a finite-step controllability calculation of chapter 02 with the singleton target <span class="m">\{0\}</span>. The notebook finds areas 16.13 for <span class="m">N = 5</span>, 34.95 for <span class="m">N = 10</span> and 37.29 for <span class="m">N = 20</span>, against 37.29 for the maximal control-invariant set <span class="m">\mathcal C_\infty</span>: fractions 0.432, 0.937 and 1.000.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="areasW">
+      <label class="field"><span>Input bound <span class="m">u_{\max}</span>: <b id="aUV"></b></span><span class="row"><input type="range" id="aU" min="0.2" max="1" step="0.1" value="0.5"></span></label>
+      <canvas id="areasC" aria-label="Bar chart of the area of the zero-terminal feasible region against the horizon from 1 to 20, with the area of the maximal control-invariant set as a dashed line" aria-describedby="areasCap"></canvas>
+      <p class="caption" id="areasCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p><b>Interpretation.</b> For the zero terminal condition, the horizon is how much time the optimiser has to drive the state exactly to the origin. A small <span class="m">N</span> excludes states that are perfectly manageable over a longer time scale; as <span class="m">N</span> grows the feasible set approaches the constrained controllability limit. The horizon has a strong effect on the region of attraction, and its price is computational: more decision variables and constraints online.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="general">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>General terminal sets</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Why replace <span class="m">x_N = 0</span> by <span class="m">x_N \in \mathcal X_f</span>?</b> The exact equality is conservative. Choose instead a terminal region with a local controller <span class="m">u = v(x)</span>: the online optimiser only has to reach a region from which a known local controller can safely complete the infinite tail. The region enlarges the feasible set; the controller and the terminal cost provide what the proof needs.</p>
+    <p><b>The three assumptions</b> <a href="#ref-3">[3]</a>.</p>
+    <ol>
+      <li><b>Positive-definite stage cost</b>: <span class="m">q(x, u) &gt; 0</span> away from the equilibrium and <span class="m">q(0, 0) = 0</span>; quantitatively, <span class="m">q(x, u) \ge \alpha_1(\lVert x \rVert)</span>, which for <span class="m">x^\top Qx + u^\top Ru</span> with <span class="m">Q \succ 0</span> holds with <span class="m">\alpha_1(s) = \lambda_{\min}(Q) s^2</span>.</li>
+      <li><b>Terminal invariance and admissibility</b>: a local law <span class="m">v</span> with <span class="m">v(x) \in \mathcal U</span> and <span class="m">Ax + Bv(x) \in \mathcal X_f</span> for all <span class="m">x \in \mathcal X_f</span>, and <span class="m">\mathcal X_f \subseteq \mathcal X</span>.</li>
+      <li><b>Terminal Lyapunov decrease</b>: <div class="math-block" data-narrow="\begin{aligned} &amp;\boxed{\begin{aligned} &amp;p(Ax + Bv(x)) - p(x) \\ &amp;\quad \le -q(x, v(x)) \end{aligned}} \\ &amp;\text{for all } x \in \mathcal X_f . \end{aligned}">\boxed{p(Ax + Bv(x)) - p(x) \le -q(x, v(x))} \qquad \text{for all } x \in \mathcal X_f .</div></li>
+    </ol>
+    <p>These mimic the missing infinite-horizon tail.</p>
+    <p><b>Recursive feasibility with a general terminal set.</b> With the optimal sequence at <span class="m">x_0</span> ending at <span class="m">x_N \in \mathcal X_f</span>, after applying <span class="m">u_0^\star</span> use the shifted candidate</p>
+    <div class="math-block">\boxed{\tilde U = (u_1^\star, \dots, u_{N-1}^\star, v(x_N))}.</div>
+    <p>The shifted part is admissible because the old predictions were; <span class="m">v(x_N)</span> is admissible and <span class="m">x_{N+1} = Ax_N + Bv(x_N) \in \mathcal X_f</span> by invariance. Feasible again.</p>
+    <p><b>The value decreases.</b> At <span class="m">x_0</span>, <span class="m">J_N^\star(x_0) = \sum_{i=0}^{N-1} q(x_i, u_i^\star) + p(x_N)</span>. At <span class="m">x_1</span> the candidate gives</p>
+    <div class="math-block" data-narrow="\begin{aligned} J_N^\star(x_1) \le\ &amp; \textstyle\sum_{i=1}^{N-1} q(x_i, u_i^\star) \\ &amp; + q(x_N, v(x_N)) + p(x_{N+1}), \end{aligned}">J_N^\star(x_1) \le \sum_{i=1}^{N-1} q(x_i, u_i^\star) + q(x_N, v(x_N)) + p(x_{N+1}),</div>
+    <p>and subtracting the old value,</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;J_N^\star(x_1) - J_N^\star(x_0) \\ &amp;\quad \le -q(x_0, u_0^\star) + \big[ q(x_N, v(x_N)) \\ &amp;\qquad + p(x_{N+1}) - p(x_N) \big]. \end{aligned}">J_N^\star(x_1) - J_N^\star(x_0) \le -q(x_0, u_0^\star) + \underbrace{q(x_N, v(x_N)) + p(x_{N+1}) - p(x_N)}_{\le 0 \text{ by assumption 3}}.</div>
+    <p>The bracket is at most zero by assumption 3. Hence</p>
+    <div class="math-block" data-narrow="\boxed{\begin{aligned} &amp;J_N^\star(x_1) - J_N^\star(x_0) \\ &amp;\quad \le -q(x_0, u_0^\star) \end{aligned}}.">\boxed{J_N^\star(x_1) - J_N^\star(x_0) \le -q(x_0, u_0^\star)}.</div>
+    <p>The same decrease inequality reappears. The other two conditions of Part 4 hold as well: the lower bound is assumption 1, and the upper bound is <span class="m">J_N^\star \le p</span> on <span class="m">\mathcal X_f</span> when the origin is interior to <span class="m">\mathcal X_f</span> and <span class="m">p(x) \le \alpha_2(\lVert x \rVert)</span>. Under assumptions 1 to 3 and that condition, the origin is asymptotically stable with region of attraction <span class="m">\mathcal X_N</span>; in the linear-quadratic design, <span class="m">q \ge \lambda_{\min}(Q) \lVert x \rVert^2</span> and <span class="m">p \le \lambda_{\max}(P) \lVert x \rVert^2</span>, so the stability is exponential on the bounded set <span class="m">\mathcal X_N</span>.</p>
+    <p><b>The two ingredients have different jobs.</b> The terminal set gives a feasible tail: <span class="m">x_N \in \mathcal X_f</span> means <span class="m">v</span> can continue admissibly. The terminal cost gives a cost bound on that tail: <span class="m">p(x^+) - p(x) \le -q(x, v(x))</span>.</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;\boxed{\text{terminal set} \Rightarrow \text{recursive feasibility}} \\ &amp;\boxed{\text{terminal cost} \Rightarrow \text{Lyapunov decrease}} \end{aligned}">\boxed{\text{terminal set} \Rightarrow \text{recursive-feasibility mechanism}}, \qquad \boxed{\text{terminal cost} \Rightarrow \text{Lyapunov-decrease mechanism}}.</div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="lq">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Linear-quadratic terminal ingredients</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Quadratic costs.</b> <span class="m">q(x, u) = x^\top Qx + u^\top Ru</span> with <span class="m">Q \succ 0</span>, <span class="m">R \succ 0</span>, and the terminal cost <span class="m">\boxed{p(x) = x^\top Px}</span> with <span class="m">P</span> the infinite-horizon Riccati solution.</p>
+    <p><b>DARE and the sign convention.</b> The course writes <span class="m">u = -Kx</span>; texts that write the local law as <span class="m">v = F_\infty x</span> agree with <span class="m">F_\infty = -K</span>. With</p>
+    <div class="math-block" data-narrow="\begin{aligned} P = {}&amp;A^\top PA + Q \\ &amp;- A^\top PB (R + B^\top PB)^{-1} \\ &amp;\qquad \cdot B^\top PA, \\ K = {}&amp;(R + B^\top PB)^{-1} B^\top PA, \\ A_{\mathrm{cl}} = {}&amp;A - BK, \end{aligned}">P = A^\top PA - A^\top PB(R + B^\top PB)^{-1} B^\top PA + Q, \qquad \boxed{K = (R + B^\top PB)^{-1} B^\top PA}, \qquad A_{\mathrm{cl}} = A - BK,</div>
+    <p>discrete-time stability requires <span class="m">\rho(A_{\mathrm{cl}}) &lt; 1</span>. For <span class="m">Q = I</span>, <span class="m">R = 10</span>: <span class="m">K = (0.2054, 0.7835)</span>, <span class="m">P = \begin{pmatrix} 3.815 &amp; 4.869 \\ 4.869 &amp; 13.704 \end{pmatrix}</span>, eigenvalues <span class="m">0.608 \pm 0.228\,i</span>, spectral radius 0.6495.</p>
+    <p><b>The LQR terminal-cost identity.</b> Under <span class="m">u = -Kx</span>, <span class="m">p(x^+) - p(x) = x^\top [(A - BK)^\top P (A - BK) - P]\, x</span>, and the DARE implies</p>
+    <div class="math-block" data-narrow="\boxed{\begin{aligned} &amp;(A - BK)^\top P (A - BK) - P \\ &amp;\quad = -(Q + K^\top RK), \\ \text{so } &amp;p(x^+) - p(x) = -q(x, -Kx) \end{aligned}}">\boxed{(A - BK)^\top P (A - BK) - P = -(Q + K^\top RK)}, \qquad \text{so}\qquad \boxed{p(x^+) - p(x) = -q(x, -Kx)}.</div>
+    <p>The terminal cost satisfies the required decrease with equality for the nominal LQR loop; the notebook's residual matrix is zero to <span class="m">4 \times 10^{-14}</span>. Exercise 5 proves the identity.</p>
+    <p><b>Input constraints restrict the LQR terminal region.</b> The LQR law does not respect actuator bounds by itself. Require <span class="m">-0.5 \le -Kx \le 0.5</span>, define <span class="m">\mathcal X_K = \{x \in \mathcal X : -0.5 \le -Kx \le 0.5\}</span>, and compute the maximal positively invariant set of <span class="m">x^+ = (A - BK)x</span> inside <span class="m">\mathcal X_K</span> <a href="#ref-5">[5]</a>. That set is the terminal set <span class="m">\mathcal X_f</span>: for the notebook's <span class="m">R = 10</span>, two fixed-point iterations and six vertices, <span class="m">(\pm 5, \mp 1.926)</span>, <span class="m">(\pm 5, \mp 0.673)</span>, <span class="m">(\pm 4.842, \mp 1.907)</span>.</p>
+    <p><b>Verifying the assumptions numerically.</b> For a convex polytope and linear maps it suffices to check the vertices: each lies in <span class="m">\mathcal X</span>, its LQR input is within the bounds, its successor lies in <span class="m">\mathcal X_f</span>, and the terminal decrease residual is zero. The widget does this for any <span class="m">R</span>.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="termW">
+      <label class="field"><span>Input weight <span class="m">R</span>: <b id="tRV"></b></span><span class="row"><input type="range" id="tR" min="0" max="6" step="1" value="3"></span></label>
+      <canvas id="termC" aria-label="The state box, the region where the LQR input is admissible, the invariant terminal set, and short LQR trajectories from each of its vertices staying inside" aria-describedby="termCap"></canvas>
+      <div class="table-wrap"><table class="num" id="termT" aria-live="off"></table></div>
+      <p class="caption" id="termCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="compare">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Zero terminal point versus invariant terminal region</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Same horizon, different terminal ingredients.</b> For <span class="m">N = 5</span>: design A, <span class="m">x_N = 0</span>; design B, <span class="m">x_N \in \mathcal X_f</span> with the LQR terminal cost. Design B lets the optimiser stop at any state of the certified region because the local LQR law can safely take over. The notebook's areas: 16.13 for A, 34.55 for B, 37.29 for <span class="m">\mathcal C_\infty</span>. With the same five online steps, the terminal region more than doubles the certified feasible region.</p>
+    <p><b>A state that exposes the difference.</b> <span class="m">x_0 = (4.5, 0.5)</span> is not feasible for the exact-zero requirement and is feasible with <span class="m">x_N \in \mathcal X_f</span>. The demo at the top starts there: select design A to see the first problem fail.</p>
+    <p>Exercise 8 turns the input weight: a smaller <span class="m">R</span> gives a more aggressive gain that saturates sooner, so <span class="m">\mathcal X_f</span> shrinks (area 5.6 at <span class="m">R = 1</span>) and so does the region (31.8); a larger <span class="m">R</span> gives a gentle gain, a larger <span class="m">\mathcal X_f</span> (22.3 at <span class="m">R = 100</span>) and a region of 37.2, at the price of a slower local loop with spectral radius 0.79. The sliders in the demo and in Part 7 show it.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="simulation">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Receding-horizon simulation with stabilising terminal ingredients</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The controller</b> solves at every step</p>
+    <div class="math-block" data-narrow="\begin{aligned} \min\ &amp;x_N^\top Px_N \\ &amp;+ \textstyle\sum_{k=0}^{N-1} (x_k^\top Qx_k + u_k^\top Ru_k) \\ \text{s.t. } &amp;x_{k+1} = Ax_k + Bu_k, \\ &amp;x_k \in \mathcal X,\ u_k \in \mathcal U,\ x_N \in \mathcal X_f, \end{aligned}">\min\ x_N^\top Px_N + \sum_{k=0}^{N-1} (x_k^\top Qx_k + u_k^\top Ru_k) \quad \text{s.t.}\quad x_{k+1} = Ax_k + Bu_k, \quad x_k \in \mathcal X, \quad u_k \in \mathcal U, \quad x_N \in \mathcal X_f,</div>
+    <p>with <span class="m">N = 5</span>, applies the first input and re-solves. From <span class="m">x_0 = (4.5, 0.5)</span> the first problem succeeds with first input <span class="m">-0.5</span> and predicted terminal state <span class="m">(2.359, -0.966)</span>, inside <span class="m">\mathcal X_f</span>.</p>
+    <p><b>Use the full theoretical cost.</b> The QP solver drops terms that are constant in the decision vector, which is legitimate for optimisation and wrong for a Lyapunov check. For diagnostics, reconstruct</p>
+    <div class="math-block" data-narrow="\begin{aligned} J_N(x) = {}&amp; x_0^\top Qx_0 + \textstyle\sum_{k=1}^{N-1} x_k^\top Qx_k \\ &amp;+ \textstyle\sum_{k=0}^{N-1} u_k^\top Ru_k + x_N^\top Px_N, \end{aligned}">J_N(x) = x_0^\top Qx_0 + \sum_{k=1}^{N-1} x_k^\top Qx_k + \sum_{k=0}^{N-1} u_k^\top Ru_k + x_N^\top Px_N,</div>
+    <p>the quantity in the proof. The notebook's loop runs 30 steps, reaching <span class="m">(-0.00005, 0.00001)</span>; that is the loop's cap of 30 iterations, not its stopping tolerance of <span class="m">10^{-5}</span>, which the state's norm of <span class="m">5 \times 10^{-5}</span> had not yet met. The input saturates at <span class="m">-0.5</span> for the first three steps and every predicted terminal state lies in <span class="m">\mathcal X_f</span>.</p>
+    <p><b>The Lyapunov inequality, checked.</b> The theorem predicts <span class="m">J_N^\star(x(t+1)) - J_N^\star(x(t)) + q(x(t), u(t)) \le 0</span>. Along the notebook's trajectory the residual lies between <span class="m">-1.2 \times 10^{-9}</span> and <span class="m">+1.2 \times 10^{-9}</span>, which is its SLSQP solver's tolerance; the interior-point solver of this page gives residuals within <span class="m">10^{-11}</span>. The value falls from 125.38 to 102.38 in the first step, by exactly the first stage cost 23.00.</p>
+    <p><b>Why the inequality is nearly an equality here.</b> The appended terminal controller is the infinite-horizon LQR and the Riccati cost satisfies <span class="m">p(x^+) - p(x) = -q(x, -Kx)</span> exactly, so the terminal tail term is zero. And once no constraint is active, the MPC with this terminal cost <em>is</em> the LQR, whose value drops by exactly <span class="m">q</span> at every step. The theorem requires only the inequality; the example happens to attain it.</p>
+    <div class="tryit"><p><b>Try it on the demo.</b> Switch to "no terminal constraint, cost P only": from the notebook's start the loop still converges and the residual stays tiny, because the LQR region is reached quickly. Now start at <span class="m">(-4, 2.5)</span>, outside design B's region: the unconstrained design runs and converges, but its value rises on one step, which design B never allows. Then set <span class="m">N = 3</span> and start at <span class="m">(-5, 3)</span>: the unconstrained design is feasible for the first steps and then finds no plan at all, a loss of recursive feasibility; design B reports the start infeasible at once. A start such as <span class="m">(4, 4)</span> is infeasible for every design, because the next position <span class="m">x_1 + x_2 = 8</span> violates the box whatever the input. The unconstrained-terminal design has the larger region, but no theorem stands behind it.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="theorem">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>What the terminal theorem does and does not say</h2>
+  </div>
+  <div class="col prose">
+    <p><b>It is a sufficient design mechanism.</b> The assumptions provide a constructive route to recursive feasibility and stability. They are sufficient conditions, not a claim that every stable MPC must contain exactly these ingredients. MPC without a terminal constraint may have a larger actual region of attraction, but characterising it can be much harder.</p>
+    <p><b>The zero terminal set is simple but conservative.</b> <span class="m">\mathcal X_f = \{0\}</span> makes the proof almost immediate, and forces the finite horizon to do all the work of reaching the equilibrium exactly; for small <span class="m">N</span> the certified region is much smaller than necessary.</p>
+    <p><b>Increasing the horizon is another lever.</b> A longer horizon sees farther and enlarges the region, at more online cost. Terminal ingredients encode reliable information about the tail instead of forcing the horizon to optimise it explicitly.</p>
+    <p><b>Nominal versus robust.</b> The feasibility proof uses the predicted successor <span class="m">x^+ = Ax + Bu</span> as the actual one. If disturbances or model errors move the real system elsewhere, the shifted sequence may no longer be feasible. The guarantee here is a nominal MPC guarantee for the stated model and constraints; robust MPC needs constructions that account for uncertainty explicitly.</p>
+    <p><b>Nonlinear extension.</b> The same problem can be posed for <span class="m">x_{k+1} = g(x_k, u_k)</span> with the same terminal structure, and the logic survives: invariance gives the shifted feasible tail, terminal decrease gives the cost argument, and <span class="m">J_N^\star \le p</span> on <span class="m">\mathcal X_f</span> gives the upper bound when the origin is interior and <span class="m">p</span> is continuous with <span class="m">p(0) = 0</span>. The hard part is constructive: a useful nonlinear invariant set and terminal Lyapunov function are much harder to compute than in the linear-quadratic case, which is why the chapter keeps the full numerical construction linear.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Common conceptual pitfalls</h2>
+  </div>
+  <div class="col prose">
+    <ol>
+      <li><b>"Feasible now means recursively feasible."</b> No. A feasible plan can end in a state from which the next optimisation has no feasible continuation; the terminal construction exists to prevent this.</li>
+      <li><b>"A long horizon automatically proves stability."</b> No. It can improve behaviour and enlarge the region, but "large enough" is not a Lyapunov proof unless further conditions are established.</li>
+      <li><b>"<span class="m">P</span> from the DARE is enough by itself."</b> Not under constraints. The terminal cost may decrease as required while the LQR action violates the actuator limits; hence the admissible invariant terminal region.</li>
+      <li><b>"The terminal set must be the origin."</b> No. The point of the general theorem is to replace <span class="m">x_N = 0</span> by a nontrivial invariant region.</li>
+      <li><b>"Continuous- and discrete-time stability conditions are interchangeable."</b> No. For <span class="m">x_{k+1} = A_{\mathrm{cl}} x_k</span> the condition is <span class="m">\rho(A_{\mathrm{cl}}) &lt; 1</span>, not negative real parts.</li>
+      <li><b>"The solver objective is the Lyapunov value."</b> Not in software. QP implementations drop constants; for diagnostics, reconstruct the complete cost.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <p>Try to answer each question before opening it.</p>
+    <details class="sol"><summary>1. Why is MPC a feedback controller if the optimisation computes an open-loop sequence?</summary><p>Because the sequence is not executed. Only its first element is applied, the state is measured again and a new optimisation is solved; the first optimised action is an implicit state-feedback map.</p></details>
+    <details class="sol"><summary>2. Define recursive feasibility.</summary><p>If the MPC problem is feasible at the current state and the MPC action is applied, the problem is also feasible at the next state. Repeated, this prevents future infeasibility under the nominal assumptions.</p></details>
+    <details class="sol"><summary>3. Why can a horizon-one MPC be unstable?</summary><p>If the cost sees only the current state and input and carries no terminal information, the state term is constant in the input, and for an unstable plant the optimiser takes no corrective action because its effect lies outside the horizon.</p></details>
+    <details class="sol"><summary>4. How does the zero terminal constraint prove recursive feasibility?</summary><p>Shift the old optimal sequence by one step and append zero. The old terminal state is the origin and zero input keeps it there, so the shifted sequence is feasible.</p></details>
+    <details class="sol"><summary>5. Why does the optimal cost decrease for x<sub>N</sub> = 0?</summary><p>The shifted candidate at the next state costs exactly the old cost minus the first stage cost, and the new optimum can only be cheaper than that candidate.</p></details>
+    <details class="sol"><summary>6. State the three general terminal assumptions.</summary><p>A positive-definite stage cost; a terminal set invariant under an admissible local controller; a terminal cost that decreases under that controller by at least the local stage cost.</p></details>
+    <details class="sol"><summary>7. What sequence is used in the general shifted-sequence proof?</summary><p><span class="m">(u_1^\star, \dots, u_{N-1}^\star, v(x_N))</span>: the local input replaces the zero appended in the special case.</p></details>
+    <details class="sol"><summary>8. What are the roles of the terminal set and the terminal cost?</summary><p>The set supplies a feasible infinite tail through an invariant local controller; the cost supplies a Lyapunov bound on the cost of that tail.</p></details>
+    <details class="sol"><summary>9. Why use the DARE solution as terminal cost for a linear-quadratic MPC?</summary><p>With the LQR feedback it satisfies the exact decrease identity <span class="m">p(x^+) - p(x) = -q(x, -Kx)</span>, the terminal Lyapunov condition.</p></details>
+    <details class="sol"><summary>10. Why compute an invariant terminal set after computing the LQR?</summary><p>LQR stabilises the unconstrained system, but its input may exceed the actuator bounds. The invariant terminal set restricts operation to a region where the state and the LQR action remain admissible indefinitely.</p></details>
+    <details class="sol"><summary>11. Why does a nonzero terminal region enlarge feasibility relative to x<sub>N</sub> = 0?</summary><p>The horizon only has to reach a state from which the local controller can safely continue, rather than the exact equilibrium.</p></details>
+    <details class="sol"><summary>12. What is the discrete-time closed-loop matrix under u = −Kx?</summary><p><span class="m">A_{\mathrm{cl}} = A - BK</span>, and asymptotic stability requires all its eigenvalues strictly inside the unit disk.</p></details>
+    <details class="sol"><summary>13. Why is the decrease inequality alone not a proof of asymptotic stability?</summary><p>With the lower bound it gives convergence, but Lyapunov stability needs an upper bound near the origin so that small starts keep the value, and the state, small. With <span class="m">x_N = 0</span> this needs an extra assumption, local controllability with small inputs, because <span class="m">J_N^\star</span> can be discontinuous at the origin; with a terminal set containing the origin in its interior it follows from <span class="m">J_N^\star \le p</span> on <span class="m">\mathcal X_f</span>.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>Each exercise has a hint and a solution; the code runs after the notebook's cells. Try first, then peek.</p>
+    <ol class="exercises">
+      <li><div><b>Horizon-one pathology.</b> For <span class="m">x^+ = 1.1x + u</span> and <span class="m">q = x^2 + 5u^2</span>, show that horizon-one MPC with no terminal cost chooses <span class="m">u = 0</span>. What is the closed-loop eigenvalue?
+        <details class="sol"><summary>Hint</summary><p>Which terms of the objective depend on <span class="m">u_0</span>?</p></details>
+        <details class="sol"><summary>Solution</summary><p>The objective <span class="m">x_0^2 + 5u_0^2</span> contains <span class="m">u_0</span> only through <span class="m">5u_0^2 \ge 0</span>, minimised at <span class="m">u_0 = 0</span>; <span class="m">x_1</span> never enters. The loop is <span class="m">x^+ = 1.1x</span>, eigenvalue 1.1, unstable. Set <span class="m">a = 1.1</span>, <span class="m">r = 5</span> in the Part 3 widget.</p></details>
+      </div></li>
+      <li><div><b>One-step terminal cost.</b> For the same system add <span class="m">p(x_1) = Px_1^2</span> and derive the optimal feedback <span class="m">u = -K(P)\,x</span>.
+        <details class="sol"><summary>Hint</summary><p>Differentiate <span class="m">x^2 + 5u^2 + P(1.1x + u)^2</span> in <span class="m">u</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">10u + 2P(1.1x + u) = 0</span> gives <span class="m">u = -\frac{1.1P}{5 + P}\,x</span>, so <span class="m">K(P) = \frac{1.1P}{5 + P}</span>. With the Riccati <span class="m">P = 3.4848</span>, <span class="m">K = 0.4518</span> and the eigenvalue is <span class="m">1.1 - 0.4518 = 0.6482</span>. Any <span class="m">P &gt; 0</span> lowers the eigenvalue, but the loop is stable only when <span class="m">K(P) &gt; 0.1</span>, that is <span class="m">P &gt; 0.5</span>; and only the Riccati <span class="m">P</span> makes the one-step law optimal for the infinite horizon.</p>
+          <pre><code class="language-python">K11, P11, e11 = dlqr(np.array([[1.1]]), np.array([[1.0]]), np.array([[1.0]]), np.array([[5.0]]))
+print(P11.item(), K11.item(), 1.1 * P11.item() / (5.0 + P11.item()), e11.item())   # 3.4848 0.4518 0.4518 0.6482</code></pre></details>
+      </div></li>
+      <li><div><b>Zero-terminal shifted sequence.</b> Write the predicted state sequence at time <span class="m">t</span> and construct the candidate at <span class="m">t + 1</span>. Where exactly is the equilibrium assumption used?
+        <details class="sol"><summary>Hint</summary><p>Follow the last predicted state one more step under the appended input.</p></details>
+        <details class="sol"><summary>Solution</summary><p>At <span class="m">t</span>: states <span class="m">x_{t|t} = x(t), x_{t+1|t}, \dots, x_{t+N|t} = 0</span> under <span class="m">u_{t|t}^\star, \dots, u_{t+N-1|t}^\star</span>. Apply <span class="m">u(t) = u_{t|t}^\star</span>, so nominally <span class="m">x(t+1) = x_{t+1|t}</span>. Candidate at <span class="m">t+1</span>: inputs <span class="m">(u_{t+1|t}^\star, \dots, u_{t+N-1|t}^\star, 0)</span>, states <span class="m">x_{t+1|t}, \dots, x_{t+N|t} = 0</span> and then <span class="m">x_{t+N+1} = A\cdot 0 + B\cdot 0</span>. The equilibrium assumption <span class="m">A0 + B0 = 0</span> is used exactly there, to conclude <span class="m">x_{t+N+1} = 0</span>, and <span class="m">0 \in \mathcal U</span> is needed for the appended input to be admissible. The intermediate states are feasible because they were feasible in the old plan.</p></details>
+      </div></li>
+      <li><div><b>General-terminal cost proof.</b> Derive <span class="m">J_N^\star(x_1) - J_N^\star(x_0) \le -q(x_0, u_0^\star)</span> line by line, keeping the terminal terms.
+        <details class="sol"><summary>Hint</summary><p>Write the candidate's cost at <span class="m">x_1</span> with its own terminal term <span class="m">p(x_{N+1})</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><div class="math-block" data-narrow="\begin{aligned} &amp;J_N^\star(x_0) = \textstyle\sum_{i=0}^{N-1} q(x_i, u_i^\star) \\ &amp;\qquad + p(x_N), \\ &amp;J_N^\star(x_1) \le \textstyle\sum_{i=1}^{N-1} q(x_i, u_i^\star) \\ &amp;\qquad + q(x_N, v(x_N)) + p(x_{N+1}), \\ &amp;J_N^\star(x_1) - J_N^\star(x_0) \\ &amp;\quad \le -q(x_0, u_0^\star) \\ &amp;\qquad + [q(x_N, v(x_N)) \\ &amp;\qquad\quad + p(x_{N+1}) - p(x_N)] \\ &amp;\quad \le -q(x_0, u_0^\star). \end{aligned}">\begin{aligned} J_N^\star(x_0) &amp;= \sum_{i=0}^{N-1} q(x_i, u_i^\star) + p(x_N), \\ J_N^\star(x_1) &amp;\le \sum_{i=1}^{N-1} q(x_i, u_i^\star) + q(x_N, v(x_N)) + p(x_{N+1}) \quad \text{(the candidate is feasible, optimality)}, \\ J_N^\star(x_1) - J_N^\star(x_0) &amp;\le -q(x_0, u_0^\star) + \big[ q(x_N, v(x_N)) + p(x_{N+1}) - p(x_N) \big] \le -q(x_0, u_0^\star) \quad \text{(assumption 3)}. \end{aligned}</div><p>The first inequality uses feasibility of the shifted candidate (assumption 2) and the definition of the minimum; the last uses the terminal decrease with <span class="m">x_{N+1} = Ax_N + Bv(x_N)</span>.</p></details>
+      </div></li>
+      <li><div><b>DARE identity.</b> From the DARE, prove <span class="m">(A - BK)^\top P(A - BK) - P = -(Q + K^\top RK)</span>.
+        <details class="sol"><summary>Hint</summary><p>Expand the left side and use <span class="m">B^\top PA = (R + B^\top PB)K</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Let <span class="m">S = R + B^\top PB</span>, so <span class="m">K = S^{-1} B^\top PA</span> and <span class="m">B^\top PA = SK</span>. Expand: <span class="m">(A - BK)^\top P (A - BK) = A^\top PA - A^\top PBK - K^\top B^\top PA + K^\top B^\top PB K = A^\top PA - K^\top SK - K^\top SK + K^\top (S - R) K = A^\top PA - K^\top SK - K^\top RK</span>. The DARE reads <span class="m">P = A^\top PA - A^\top PB S^{-1} B^\top PA + Q = A^\top PA - K^\top SK + Q</span>. Subtracting, <span class="m">(A - BK)^\top P(A - BK) - P = -K^\top RK - Q</span>. The notebook's residual is <span class="m">4 \times 10^{-14}</span>.</p></details>
+      </div></li>
+      <li><div><b>Input-admissible LQR region.</b> For <span class="m">|u| \le u_{\max}</span> and <span class="m">u = -Kx</span>, derive the two half-spaces to add to the state constraints.
+        <details class="sol"><summary>Hint</summary><p>Two linear inequalities in <span class="m">x</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">-Kx \le u_{\max}</span> and <span class="m">Kx \le u_{\max}</span>: rows <span class="m">-K</span> and <span class="m">K</span>, both with right-hand side <span class="m">u_{\max}</span>. Stacked under the box rows they define <span class="m">\mathcal X_K</span>; for <span class="m">K = (0.2054, 0.7835)</span> and <span class="m">u_{\max} = 0.5</span> they are the two sloped edges of the strip in the Part 7 widget.</p></details>
+      </div></li>
+      <li><div><b>Horizon effect.</b> Recompute the zero-terminal feasible sets for <span class="m">N = 3, 5, 8, 12</span> and plot their areas against <span class="m">N</span>.
+        <details class="sol"><summary>Hint</summary><p>Loop over <code>n_step_controllable_sets</code> with the singleton target; <code>polygon_area</code> is defined in Part V.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Areas 4.0, 16.1, 29.2 and 37.3: the region reaches all of <span class="m">\mathcal C_\infty</span> (37.29) at <span class="m">N = 13</span>, as the Part 5 widget shows for every <span class="m">N</span> up to 20.</p>
+          <pre><code class="language-python">Ns = [3, 5, 8, 12]
+areas = [polygon_area(n_step_controllable_sets(A, B, X, zero_terminal, umin, umax, N)[-1]) for N in Ns]
+print(dict(zip(Ns, np.round(areas, 3))))      # {3: 4.0, 5: 16.125, 8: 29.238, 12: 37.278}
+plt.figure(); plt.plot(Ns, areas, marker="o"); plt.axhline(area_Cinf, linestyle=":")
+plt.xlabel("N"); plt.ylabel("area of the zero-terminal feasible set"); plt.show()</code></pre></details>
+      </div></li>
+      <li><div><b>Terminal-set effect.</b> Change <span class="m">R = 10</span> to a smaller and a larger value; recompute <span class="m">K</span>, <span class="m">P</span>, <span class="m">\mathcal X_f</span> and the <span class="m">N = 5</span> region, and explain the trade-off.
+        <details class="sol"><summary>Hint</summary><p>Wrap the Part VII cells in a function of <span class="m">R</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">R = 1</span>: <span class="m">K = (0.422, 1.244)</span>, spectral radius 0.42, <span class="m">\mathcal X_f</span> of area 5.6 (4 vertices), <span class="m">N = 5</span> region 31.8. <span class="m">R = 10</span>: 12.8 and 34.5. <span class="m">R = 100</span>: <span class="m">K = (0.080, 0.448)</span>, radius 0.79, <span class="m">\mathcal X_f</span> of area 22.3, region 37.2. A cheap input makes the LQR aggressive: it converges fast but exceeds <span class="m">\pm 0.5</span> almost everywhere, so the admissible strip is thin and the terminal region small. An expensive input makes it gentle: admissible on a wide strip, hence a large terminal region and a large certified feasible set, but a slow local loop. The terminal region trades control aggressiveness for actuator admissibility.</p>
+          <pre><code class="language-python">def terminal_design(Rval, N=5):
+    K_, P_, e_ = dlqr(A, B, Q, np.array([[Rval]])); Acl_ = A - B @ K_
+    Xf_, _ = maximal_invariant(Acl_, closed_loop_admissible_set_scalar_input(X, K_, umin, umax))
+    reg = n_step_controllable_sets(A, B, X, Xf_, umin, umax, N)[-1]
+    return K_, P_, np.max(np.abs(e_)), polygon_area(Xf_), polygon_area(reg)
+for Rval in (1.0, 10.0, 100.0):
+    K_, P_, rho_, aXf, aReg = terminal_design(Rval)
+    print(f"R={Rval:5.1f}  K={K_.ravel().round(3)}  rho={rho_:.3f}  area(Xf)={aXf:.2f}  area(N=5 region)={aReg:.2f}")
+# R=1: 5.61, 31.77 | R=10: 12.76, 34.55 | R=100: 22.25, 37.24</code></pre></details>
+      </div></li>
+      <li><div><b>Numerical Lyapunov inequality.</b> For several feasible initial states, simulate the terminal MPC and compute <span class="m">J_N^\star(x(t+1)) - J_N^\star(x(t)) + q(x(t), u(t))</span>. Investigate the effect of solver tolerance.
+        <details class="sol"><summary>Hint</summary><p>Reuse <code>full_quadratic_mpc_cost</code>; the residual's size is set by the solver, not by the theorem.</p></details>
+        <details class="sol"><summary>Solution</summary><p>From <span class="m">(4.5, 0.5)</span>, <span class="m">(-3, 2)</span>, <span class="m">(2, -2)</span> and <span class="m">(0.5, 0.5)</span> the largest residuals are <span class="m">1.2 \times 10^{-9}</span>, <span class="m">6.3 \times 10^{-8}</span>, <span class="m">3.9 \times 10^{-9}</span> and <span class="m">1.4 \times 10^{-9}</span>: all of the order of the SLSQP tolerance (<span class="m">10^{-8}</span> in the course's solver, with the worst case under <span class="m">10^{-7}</span>), never genuinely positive. Tightening the tolerance in <code>solve_qp</code> shrinks them; loosening it makes them look like violations that are not. The inequality is about exact optima; a numerical check must know its solver's accuracy.</p>
+          <pre><code class="language-python">for x0 in (np.array([4.5, 0.5]), np.array([-3.0, 2.0]), np.array([2.0, -2.0]), np.array([0.5, 0.5])):
+    x = x0.copy(); vals_, stg_ = [], []
+    for t in range(15):
+        sol = controller.solve(x); vals_.append(full_quadratic_mpc_cost(x, sol.X, sol.U, Q, R, P))
+        u = sol.U[0]; stg_.append(stage_cost(x, u, Q, R)); x = A @ x + B @ u
+    print(x0, "max residual:", np.max(np.diff(vals_) + np.array(stg_[:-1])))</code></pre></details>
+      </div></li>
+      <li><div><b>Model mismatch thought experiment.</b> Suppose the real plant is <span class="m">x^+ = (A + \Delta A)x + Bu</span> while the optimiser uses <span class="m">A</span>. Which step of the recursive-feasibility proof fails, and why does the nominal proof no longer suffice?
+        <details class="sol"><summary>Hint</summary><p>Find the one line of the proof that says "under the nominal model".</p></details>
+        <details class="sol"><summary>Solution</summary><p>The step "<span class="m">x(1) = x_1</span>", the claim that the measured next state equals the predicted one. With mismatch, <span class="m">x(1) = x_1 + \Delta A\, x(0)</span>, so the shifted candidate starts from a state it was not planned for: its intermediate states are no longer the old predictions, may leave <span class="m">\mathcal X</span>, and its terminal state need not land in <span class="m">\mathcal X_f</span>. Nothing in the nominal argument bounds the effect of <span class="m">\Delta A</span>; feasibility at <span class="m">x(1)</span> is then a hope, not a theorem. Robust MPC repairs this by planning for the whole set of states the mismatch can produce, for instance by tightening the constraints by a tube around the nominal prediction.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 14</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The law</b>: solve the horizon-<span class="m">N</span> problem at <span class="m">x(t)</span>, apply <span class="m">u_{t|t}^\star</span>, measure, repeat; the plan is replaced, not executed.</div></li>
+      <li><div><b>Four properties</b>: feasibility, recursive feasibility, constraint satisfaction, stability; none implies another.</div></li>
+      <li><div><b>Short horizons fail</b>: with <span class="m">N = 1</span> and no terminal cost, <span class="m">u = 0</span> and <span class="m">x^+ = 1.2x</span>; the Riccati cost restores the LQR law with eigenvalue 0.615.</div></li>
+      <li><div><b><span class="m">x_N = 0</span></b>: the shifted sequence plus a zero proves recursive feasibility and <span class="m">J_N^\star(x_1) - J_N^\star(x_0) \le -q(x_0, u_0^\star)</span>; the upper bound needs local controllability.</div></li>
+      <li><div><b>The horizon lever</b>: zero-terminal areas 16.1, 34.9, 37.3 for <span class="m">N = 5, 10, 20</span>, filling <span class="m">\mathcal C_\infty</span> at <span class="m">N = 13</span>.</div></li>
+      <li><div><b>Terminal ingredients</b>: invariant admissible <span class="m">\mathcal X_f</span> gives feasibility, decreasing <span class="m">p</span> gives the Lyapunov argument, and <span class="m">J_N^\star \le p</span> on <span class="m">\mathcal X_f</span> gives the upper bound.</div></li>
+      <li><div><b>Linear-quadratic</b>: <span class="m">(K, P)</span> from the DARE with the exact identity, <span class="m">\mathcal X_f</span> the maximal invariant set inside <span class="m">\mathcal X_K</span>: six vertices, two iterations.</div></li>
+      <li><div><b>The payoff</b>: with <span class="m">N = 5</span>, region area 16.1 for <span class="m">x_N = 0</span> and 34.5 for <span class="m">x_N \in \mathcal X_f</span>; the loop from <span class="m">(4.5, 0.5)</span> has Lyapunov residuals within <span class="m">10^{-9}</span>.</div></li>
+      <li><div><b>The fine print</b>: sufficient conditions, nominal model, no disturbances.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">x_{k|t}, u_{k|t}</span></td><td>Prediction for time <span class="m">k</span> made at time <span class="m">t</span>.</td></tr>
+        <tr><td>Receding-horizon law <span class="m">\kappa_N</span></td><td>The first optimised input, as a function of the state.</td></tr>
+        <tr><td>Feasible set <span class="m">\mathcal X_N</span></td><td>States from which the horizon-<span class="m">N</span> problem has a solution.</td></tr>
+        <tr><td>Recursive feasibility</td><td>Feasible now implies feasible after the applied move.</td></tr>
+        <tr><td>Shifted sequence</td><td>Old inputs minus the first, plus one local move: the feasibility witness.</td></tr>
+        <tr><td>Terminal set, terminal cost</td><td>Where the plan must end; the price of ending there.</td></tr>
+        <tr><td>Class-<span class="m">\mathcal K</span> function</td><td>Continuous, strictly increasing, zero at zero.</td></tr>
+        <tr><td>Region of attraction</td><td>Starts from which the loop converges; here <span class="m">\mathcal X_N</span>.</td></tr>
+        <tr><td><span class="m">\mathcal X_K</span>, <span class="m">\mathcal X_f</span></td><td>Where the LQR input is admissible; its maximal invariant subset.</td></tr>
+        <tr><td>Lyapunov residual</td><td><span class="m">J_N^\star(x^+) - J_N^\star(x) + q(x, u)</span>, non-positive by the theorem.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1.2rem">
+    <p><b>Scope.</b> Nominal MPC for linear systems with polytopic constraints and a measured state: the receding-horizon law; feasibility, recursive feasibility, constraint satisfaction and stability told apart; the zero terminal constraint and the conditions under which its value function proves asymptotic stability; general terminal sets and costs; the linear-quadratic ingredients from the DARE and the maximal positively invariant set; and numerical checks of the decrease. An exact model and no disturbances are assumed; robust and output-feedback MPC are outside the scope, and the nonlinear case is discussed only qualitatively.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Receding-horizon control, feasibility and stability with terminal sets and costs.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Lyapunov-based stability analysis of MPC, chapter 2, including the class-<span class="m">\mathcal K</span> bounds of Part 4.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>D. Q. Mayne, J. B. Rawlings, C. V. Rao and P. O. M. Scokaert. "Constrained model predictive control: Stability and optimality". <em>Automatica</em> 36(6), 789–814, 2000. <a href="https://doi.org/10.1016/S0005-1098(99)00214-9">doi:10.1016/S0005-1098(99)00214-9</a>. The terminal-set and terminal-cost conditions.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>S. S. Keerthi and E. G. Gilbert. "Optimal infinite-horizon feedback laws for a general class of constrained discrete-time systems: Stability and moving-horizon approximations". <em>Journal of Optimization Theory and Applications</em> 57(2), 265–293, 1988. <a href="https://doi.org/10.1007/BF00938540">doi:10.1007/BF00938540</a>. Stability with a terminal equality constraint.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>E. G. Gilbert and K. T. Tan. "Linear systems with state and control constraints: The theory and application of maximal output admissible sets". <em>IEEE Transactions on Automatic Control</em> 36(9), 1008–1020, 1991. <a href="https://doi.org/10.1109/9.83532">doi:10.1109/9.83532</a>. The maximal positively invariant set used as <span class="m">\mathcal X_f</span>.</div></li>
+    </ul>
+    <p>Borrelli, Bemporad and Morari <a href="#ref-1">[1]</a> is the textbook this chapter follows. Next, chapter 04 adds logical decisions to the finite-horizon problem, and chapter 05 replaces the designed pair <span class="m">(\mathcal X_f, p)</span> by a pair learned from successful runs.</p>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="02-polytopes-reachability-invariance.html"><span class="lbl">Previous · 02</span><span class="t">Polytopes, Reachability and Invariant Sets</span></a>
-  <a class="next" rel="next" href="04-collision-avoidance-cftoc.html"><span class="lbl">Next · 04</span><span class="t">Vehicle–Bike Collision Avoidance</span></a>
+  <a class="prev" rel="prev" href="02-polytopes-reachability-invariance.html"><span class="lbl">Previous · 02</span><span class="t">Polytopes, reachability and invariance</span></a>
+  <a class="next" rel="next" href="04-collision-avoidance-cftoc.html"><span class="lbl">Next · 04</span><span class="t">Collision avoidance CFTOC</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 03 of the Advanced MPC and Learning MPC by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 03 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos compute every set, every QP and every closed loop in your browser with the same algorithms as the course's code. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch03.js"></script>
 </body>
 </html>
