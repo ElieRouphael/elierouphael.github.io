@@ -3,13 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>05 · Learning Model Predictive Control on a Repeated Double-Integrator Task — Advanced MPC and Learning MPC</title>
-<meta name="description" content="Sampled and convex safe sets, a terminal cost learned from realized costs-to-go, and the guarantees of Learning MPC, iteration after iteration.">
+<title>05 · Learning MPC on the double integrator · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Learning Model Predictive Control for a task repeated from the same initial state: the sampled safe set and its convex hull, why both are control invariant, the barycentric terminal value as a linear program, the learned-value decrease, the LMPC quadratic program, and a complete double-integrator experiment run live in the browser: a short-horizon seed, nine learning iterations, the learning curve, safe-set growth, and what the experiment does and does not establish. Every number is checked in Python.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .two canvas, .widget canvas { display: block; width: 100%; }
+  @media (max-width: 480px) { #vocT, #dataT, #pairT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+</style>
 </head>
 <body>
 
@@ -17,2132 +23,504 @@
 
 <header class="hero col">
   <span class="eyebrow">Advanced MPC and Learning MPC · Chapter 05 of 09</span>
-  <h1>Learning Model Predictive Control on a Repeated Double-Integrator Task</h1>
-  <div class="intro prose">
-<h2 id="learning-terminal-safety-and-terminal-value-from-successful-executions">Learning terminal safety and terminal value from successful executions</h2>
-<p>Classical stabilizing MPC uses carefully designed terminal ingredients:</p>
-<div class="math display">
-x_N\in\mathcal X_f,
-\qquad
-p(x_N).
-</div>
-<p>Learning Model Predictive Control (LMPC) asks a different question:</p>
-<blockquote>
-<p>If the same constrained task is executed repeatedly, can previous successful executions provide
-the terminal set and terminal value function for future executions?</p>
-</blockquote>
-<p>LMPC answers it with two data objects:</p>
-<div class="math display">
-\boxed{\text{a safe set learned from successful state trajectories}}
-</div>
-<p>and</p>
-<div class="math display">
-\boxed{\text{a value / cost-to-go function learned from realized costs}}.
-</div>
-<p>For linear dynamics and convex constraints, the stored safe states can be convexified, leading to
-a convex online MPC problem.</p>
-<p>This notebook first develops those ideas geometrically in one dimension and then works through a
-complete <strong>double-integrator LMPC example</strong>: a short-horizon MPC seed, repeated LMPC iterations,
-and the resulting learning curve.</p>
-
-  </div>
+  <h1>Learning Model Predictive Control on a repeated double-integrator task</h1>
+  <p class="lede">Chapter 03 designed the terminal set and terminal cost by hand, from a Riccati equation and an invariant polytope. Learning MPC asks a different question: if the same constrained task is run again and again from the same start, can the earlier successful runs supply those terminal ingredients? They can. The states visited by successful runs form a safe set, the costs they accumulated form a value function, and for linear dynamics with convex constraints both can be convexified into one quadratic program. Below, a three-step MPC with no terminal ingredients produces a feasible but poor first run, and nine learning iterations, computed live, close almost all of its gap to a long-horizon reference.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 01 and 03 · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/05_learning_mpc_double_integrator.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/05_learning_mpc_double_integrator.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need the <code>advanced_mpc_lmpc</code> package: the full course download has it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#learning-terminal-safety-and-terminal-value-from-successful-executions">Learning terminal safety and terminal value from successful executions</a></li>
-    <li><a href="#scope">Scope</a></li>
-    <li><a href="#learning-objectives">Learning objectives</a></li>
-    <li><a href="#table-of-contents">Table of Contents</a></li>
-    <li><a href="#part-i-repetitive-tasks">Part I — Repetitive tasks</a></li>
-    <li><a href="#i-1-iteration-index-versus-time-index">I.1 Iteration index versus time index</a></li>
-    <li><a href="#i-2-target-set-and-successful-iteration">I.2 Target set and successful iteration</a></li>
-    <li><a href="#i-3-what-does-safe-mean-here">I.3 What does “safe” mean here?</a></li>
-    <li><a href="#part-ii-sampled-safe-sets">Part II — Sampled safe sets</a></li>
-    <li><a href="#ii-1-sampled-safe-set">II.1 Sampled safe set</a></li>
-    <li><a href="#ii-2-why-the-sampled-safe-set-is-control-invariant">II.2 Why the sampled safe set is control invariant</a></li>
-    <li><a href="#ii-3-the-important-quantifier">II.3 The important quantifier</a></li>
-    <li><a href="#part-iii-convex-safe-sets">Part III — Convex safe sets</a></li>
-    <li><a href="#iii-1-why-convexify">III.1 Why convexify?</a></li>
-    <li><a href="#iii-2-barycentric-coordinates">III.2 Barycentric coordinates</a></li>
-    <li><a href="#iii-3-why-the-convex-safe-set-is-control-invariant">III.3 Why the convex safe set is control invariant</a></li>
-    <li><a href="#part-iv-learning-a-terminal-value-function">Part IV — Learning a terminal value function</a></li>
-    <li><a href="#iv-1-roll-out-cost-to-go">IV.1 Roll-out cost-to-go</a></li>
-    <li><a href="#iv-2-sampled-value-function">IV.2 Sampled value function</a></li>
-    <li><a href="#iv-3-convex-terminal-value">IV.3 Convex terminal value</a></li>
-    <li><a href="#part-v-a-one-dimensional-example">Part V — A one-dimensional example</a></li>
-    <li><a href="#v-1-constrained-integrator">V.1 Constrained integrator</a></li>
-    <li><a href="#v-2-how-to-read-this-figure">V.2 How to read this figure</a></li>
-    <li><a href="#part-vi-why-the-learned-value-can-act-like-a-terminal-lyapunov-function">Part VI — Why the learned value can act like a terminal Lyapunov function</a></li>
-    <li><a href="#vi-1-data-recursion">VI.1 Data recursion</a></li>
-    <li><a href="#vi-2-learned-value-decrease">VI.2 Learned-value decrease</a></li>
-    <li><a href="#part-vii-the-lmpc-online-optimization">Part VII — The LMPC online optimization</a></li>
-    <li><a href="#vii-1-finite-horizon-problem">VII.1 Finite-horizon problem</a></li>
-    <li><a href="#vii-2-geometric-meaning">VII.2 Geometric meaning</a></li>
-    <li><a href="#vii-3-recursive-feasibility-shifted-sequence-argument">VII.3 Recursive feasibility: shifted-sequence argument</a></li>
-    <li><a href="#part-viii-the-double-integrator-task">Part VIII — The double-integrator task</a></li>
-    <li><a href="#viii-1-numerical-model">VIII.1 Numerical model</a></li>
-    <li><a href="#viii-2-stage-cost">VIII.2 Stage cost</a></li>
-    <li><a href="#viii-3-epigraph-formulation-of-the-ell-1-term">VIII.3 Epigraph formulation of the <span class="math inline">\ell_1</span> term</a></li>
-    <li><a href="#viii-4-choice-of-the-short-horizon">VIII.4 Choice of the short horizon</a></li>
-    <li><a href="#part-ix-long-horizon-reference">Part IX — Long-horizon reference</a></li>
-    <li><a href="#ix-1-reference-computation">IX.1 Reference computation</a></li>
-    <li><a href="#part-x-generate-the-initial-feasible-trajectory-with-short-horizon-mpc">Part X — Generate the initial feasible trajectory with short-horizon MPC</a></li>
-    <li><a href="#x-1-a-feasible-but-suboptimal-seed">X.1 A feasible but suboptimal seed</a></li>
-    <li><a href="#x-2-compare-complete-task-costs">X.2 Compare complete task costs</a></li>
-    <li><a href="#part-xi-initialize-the-lmpc-database">Part XI — Initialize the LMPC database</a></li>
-    <li><a href="#xi-1-store-the-seed">XI.1 Store the seed</a></li>
-    <li><a href="#xi-2-inspect-one-stored-continuation">XI.2 Inspect one stored continuation</a></li>
-    <li><a href="#part-xii-numerical-check-of-convex-safe-set-invariance">Part XII — Numerical check of convex-safe-set invariance</a></li>
-    <li><a href="#xii-1-construct-a-convex-combination">XII.1 Construct a convex combination</a></li>
-    <li><a href="#part-xiii-first-lmpc-optimization">Part XIII — First LMPC optimization</a></li>
-    <li><a href="#xiii-1-solve-from-the-repeated-initial-state">XIII.1 Solve from the repeated initial state</a></li>
-    <li><a href="#xiii-2-why-a-sparse-barycentric-representation-exists">XIII.2 Why a sparse barycentric representation exists</a></li>
-    <li><a href="#part-xiv-repeated-lmpc-iterations">Part XIV — Repeated LMPC iterations</a></li>
-    <li><a href="#xiv-1-iteration-algorithm">XIV.1 Iteration algorithm</a></li>
-    <li><a href="#xiv-2-limited-active-data-for-numerical-scalability">XIV.2 Limited active data for numerical scalability</a></li>
-    <li><a href="#part-xv-learning-curves">Part XV — Learning curves</a></li>
-    <li><a href="#xv-1-closed-loop-cost-versus-iteration">XV.1 Closed-loop cost versus iteration</a></li>
-    <li><a href="#xv-2-what-is-guaranteed-and-what-is-observed">XV.2 What is guaranteed and what is observed?</a></li>
-    <li><a href="#part-xvi-how-the-trajectories-change">Part XVI — How the trajectories change</a></li>
-    <li><a href="#xvi-1-phase-plane-evolution">XVI.1 Phase-plane evolution</a></li>
-    <li><a href="#xvi-2-control-evolution">XVI.2 Control evolution</a></li>
-    <li><a href="#part-xvii-safe-set-growth-in-the-state-plane">Part XVII — Safe-set growth in the state plane</a></li>
-    <li><a href="#xvii-1-convex-hull-of-accumulated-successful-data">XVII.1 Convex hull of accumulated successful data</a></li>
-    <li><a href="#xvii-2-safe-set-geometry-is-only-half-of-the-learning">XVII.2 Safe-set geometry is only half of the learning</a></li>
-    <li><a href="#part-xviii-stored-cost-to-go-values">Part XVIII — Stored cost-to-go values</a></li>
-    <li><a href="#xviii-1-backward-recursion">XVIII.1 Backward recursion</a></li>
-    <li><a href="#part-xix-what-exactly-is-learned">Part XIX — What exactly is learned?</a></li>
-    <li><a href="#xix-1-the-plant-model-is-not-learned-here">XIX.1 The plant model is not learned here</a></li>
-    <li><a href="#xix-2-lmpc-is-not-dqn">XIX.2 LMPC is not DQN</a></li>
-    <li><a href="#xix-3-lmpc-versus-iterative-learning-control">XIX.3 LMPC versus iterative learning control</a></li>
-    <li><a href="#part-xx-do-different-initializations-converge-to-the-same-solution">Part XX — Do different initializations converge to the same solution?</a></li>
-    <li><a href="#xx-1-a-natural-question">XX.1 A natural question</a></li>
-    <li><a href="#part-xxi-time-varying-safe-sets-and-data-growth">Part XXI — Time-varying safe sets and data growth</a></li>
-    <li><a href="#xxi-1-why-stored-data-management-matters">XXI.1 Why stored-data management matters</a></li>
-    <li><a href="#part-xxii-what-the-experiment-establishes">Part XXII — What the experiment establishes</a></li>
-    <li><a href="#xxii-1-supported-conclusions">XXII.1 Supported conclusions</a></li>
-    <li><a href="#xxii-2-unsupported-conclusions">XXII.2 Unsupported conclusions</a></li>
-    <li><a href="#part-xxiii-common-pitfalls">Part XXIII — Common pitfalls</a></li>
-    <li><a href="#xxiii-1-pitfall-every-stored-state-is-optimal">XXIII.1 Pitfall: every stored state is optimal</a></li>
-    <li><a href="#xxiii-2-pitfall-the-convex-hull-is-always-safe">XXIII.2 Pitfall: the convex hull is always safe</a></li>
-    <li><a href="#xxiii-3-pitfall-the-terminal-value-is-a-neural-network">XXIII.3 Pitfall: the terminal value is a neural network</a></li>
-    <li><a href="#xxiii-4-pitfall-safe-set-growth-alone-explains-learning">XXIII.4 Pitfall: safe-set growth alone explains learning</a></li>
-    <li><a href="#xxiii-5-pitfall-the-long-horizon-reference-proves-the-exact-infinite-horizon-optimum">XXIII.5 Pitfall: the long-horizon reference proves the exact infinite-horizon optimum</a></li>
-    <li><a href="#xxiii-6-pitfall-a-three-step-horizon-only-sees-three-steps-ahead">XXIII.6 Pitfall: a three-step horizon only sees three steps ahead</a></li>
-    <li><a href="#xxiii-7-pitfall-lmpc-is-reinforcement-learning-simply-because-it-learns-from-data">XXIII.7 Pitfall: LMPC is reinforcement learning simply because it learns from data</a></li>
-    <li><a href="#part-xxiv-check-your-understanding">Part XXIV — Check your understanding</a></li>
-    <li><a href="#part-xxv-exercises">Part XXV — Exercises</a></li>
-    <li><a href="#part-xxvi-references">Part XXVI — References</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="md">
-<h2 id="scope">Scope</h2>
-<p>This notebook covers Learning Model Predictive Control (LMPC) for a task that is executed
-repeatedly from the same initial state. It builds the sampled safe set <span class="math inline">SS^j</span> from successful
-trajectories and its convex hull <span class="math inline">CS^j=\operatorname{conv}(SS^j)</span>, proves that both are control
-invariant, learns a terminal value from stored roll-out costs-to-go through barycentric
-coordinates, assembles the LMPC terminal constraint and terminal cost, and shows the resulting
-iterative performance improvement. The ideas are developed first on a scalar integrator and then on
-a complete double-integrator example, with derivations and numerical checks at each step.</p>
-<p>The modelling assumptions are those under which the convex constructions are justified: a
-deterministic task, known linear dynamics <span class="math inline">x^+=Ax+Bu</span>, convex state and input constraints, and a
-convex stage cost. Only the terminal ingredients (stored safe states with their continuation inputs
-and costs-to-go) are learned from data; the plant model is not.</p>
-<p>The LMPC framework is developed in U. Rosolia and F. Borrelli, “Learning Model Predictive Control
-for Iterative Tasks. A Data-Driven Control Framework,” <em>IEEE Transactions on Automatic Control</em>,
-63(7), 2018. For terminal sets, terminal costs and invariance in classical MPC, see F. Borrelli,
-A. Bemporad and M. Morari, <em>Predictive Control for Linear and Hybrid Systems</em>, Cambridge University
-Press, 2017.</p>
-</div>
-
-<div class="md">
-<h2 id="learning-objectives">Learning objectives</h2>
-<p>After completing this notebook, you should be able to:</p>
-<ol>
-<li>define an iterative/repetitive control task;</li>
-<li>define a successful iteration and a target set <span class="math inline">\mathcal O</span>;</li>
-<li>construct the sampled safe set <span class="math inline">SS^j</span>;</li>
-<li>prove its one-step control-invariance property by replaying stored inputs;</li>
-<li>construct the convex safe set <span class="math inline">CS^j=\operatorname{conv}(SS^j)</span>;</li>
-<li>prove why convexification preserves control invariance for linear dynamics and convex
-constraints;</li>
-<li>compute stored roll-out cost-to-go values;</li>
-<li>distinguish the sampled value function from its convex extension;</li>
-<li>formulate barycentric coordinates and the convex terminal value as a linear program;</li>
-<li>write the complete LMPC finite-horizon problem;</li>
-<li>explain why LMPC terminal ingredients play the same role as terminal ingredients in
-stabilizing MPC;</li>
-<li>write the double-integrator stage cost used here, including its <span class="math inline">\ell_1</span> term;</li>
-<li>understand the epigraph formulation of that <span class="math inline">\ell_1</span> penalty;</li>
-<li>generate a feasible seed trajectory with short-horizon MPC;</li>
-<li>run repeated LMPC iterations and interpret the learning curve;</li>
-<li>explain what is actually “learned”;</li>
-<li>understand why different initial safe trajectories need not universally produce the same final
-solution;</li>
-<li>distinguish LMPC from reinforcement learning and iterative learning control.</li>
-</ol>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">from pathlib import Path
-import sys
-import time
-import numpy as np
-import matplotlib.pyplot as plt
-
-from scipy.spatial import ConvexHull
-
-ROOT = Path.cwd().resolve()
-if ROOT.name == &quot;notebooks&quot;:
-    ROOT = ROOT.parent
-
-sys.path.insert(0, str(ROOT / &quot;src&quot;))
-
-from advanced_mpc_lmpc.lmpc import (
-    stage_cost,
-    trajectory_cost_to_go,
-    solve_ftocp_l1,
-    convex_safe_value,
-    LMPCController,
-)
-
-np.set_printoptions(precision=6, suppress=True)
-plt.rcParams.update({
-    &quot;figure.figsize&quot;: (8, 5),
-    &quot;axes.grid&quot;: True,
-})
-</code></pre>
-</div>
-
-<div class="md">
-<h2 id="table-of-contents">Table of Contents</h2>
-<ul>
-<li><strong><a href="#part-1">Part I — Repetitive tasks</a></strong> — I.1 Iteration index versus time index · I.2 Target set and successful iteration · I.3 What does “safe” mean here?</li>
-<li><strong><a href="#part-2">Part II — Sampled safe sets</a></strong> — II.1 Sampled safe set · II.2 Why the sampled safe set is control invariant · II.3 The important quantifier</li>
-<li><strong><a href="#part-3">Part III — Convex safe sets</a></strong> — III.1 Why convexify? · III.2 Barycentric coordinates · III.3 Why the convex safe set is control invariant</li>
-<li><strong><a href="#part-4">Part IV — Learning a terminal value function</a></strong> — IV.1 Roll-out cost-to-go · IV.2 Sampled value function · IV.3 Convex terminal value</li>
-<li><strong><a href="#part-5">Part V — A one-dimensional example</a></strong> — V.1 Constrained integrator · V.2 How to read this figure</li>
-<li><strong><a href="#part-6">Part VI — Why the learned value can act like a terminal Lyapunov function</a></strong> — VI.1 Data recursion · VI.2 Learned-value decrease</li>
-<li><strong><a href="#part-7">Part VII — The LMPC online optimization</a></strong> — VII.1 Finite-horizon problem · VII.2 Geometric meaning · VII.3 Recursive feasibility: shifted-sequence argument</li>
-<li><strong><a href="#part-8">Part VIII — The double-integrator task</a></strong> — VIII.1 Numerical model · VIII.2 Stage cost · VIII.3 Epigraph formulation of the <span class="math inline">\ell_1</span> term · VIII.4 Choice of the short horizon</li>
-<li><strong><a href="#part-9">Part IX — Long-horizon reference</a></strong> — IX.1 Reference computation</li>
-<li><strong><a href="#part-10">Part X — Generate the initial feasible trajectory with short-horizon MPC</a></strong> — X.1 A feasible but suboptimal seed · X.2 Compare complete task costs</li>
-<li><strong><a href="#part-11">Part XI — Initialize the LMPC database</a></strong> — XI.1 Store the seed · XI.2 Inspect one stored continuation</li>
-<li><strong><a href="#part-12">Part XII — Numerical check of convex-safe-set invariance</a></strong> — XII.1 Construct a convex combination</li>
-<li><strong><a href="#part-13">Part XIII — First LMPC optimization</a></strong> — XIII.1 Solve from the repeated initial state · XIII.2 Why a sparse barycentric representation exists</li>
-<li><strong><a href="#part-14">Part XIV — Repeated LMPC iterations</a></strong> — XIV.1 Iteration algorithm · XIV.2 Limited active data for numerical scalability</li>
-<li><strong><a href="#part-15">Part XV — Learning curves</a></strong> — XV.1 Closed-loop cost versus iteration · XV.2 What is guaranteed and what is observed?</li>
-<li><strong><a href="#part-16">Part XVI — How the trajectories change</a></strong> — XVI.1 Phase-plane evolution · XVI.2 Control evolution</li>
-<li><strong><a href="#part-17">Part XVII — Safe-set growth in the state plane</a></strong> — XVII.1 Convex hull of accumulated successful data · XVII.2 Safe-set geometry is only half of the learning</li>
-<li><strong><a href="#part-18">Part XVIII — Stored cost-to-go values</a></strong> — XVIII.1 Backward recursion</li>
-<li><strong><a href="#part-19">Part XIX — What exactly is learned?</a></strong> — XIX.1 The plant model is not learned here · XIX.2 LMPC is not DQN · XIX.3 LMPC versus iterative learning control</li>
-<li><strong><a href="#part-20">Part XX — Do different initializations converge to the same solution?</a></strong> — XX.1 A natural question</li>
-<li><strong><a href="#part-21">Part XXI — Time-varying safe sets and data growth</a></strong> — XXI.1 Why stored-data management matters</li>
-<li><strong><a href="#part-22">Part XXII — What the experiment establishes</a></strong> — XXII.1 Supported conclusions · XXII.2 Unsupported conclusions</li>
-<li><strong><a href="#part-23">Part XXIII — Common pitfalls</a></strong> — XXIII.1 Pitfall: every stored state is optimal · XXIII.2 Pitfall: the convex hull is always safe · XXIII.3 Pitfall: the terminal value is a neural network · XXIII.4 Pitfall: safe-set growth alone explains learning · XXIII.5 Pitfall: the long-horizon reference proves the exact infinite-horizon optimum · XXIII.6 Pitfall: a three-step horizon only sees three steps ahead · XXIII.7 Pitfall: LMPC is reinforcement learning simply because it learns from data</li>
-<li><strong><a href="#part-24">Part XXIV — Check your understanding</a></strong></li>
-<li><strong><a href="#part-25">Part XXV — Exercises</a></strong></li>
-<li><strong><a href="#part-26">Part XXVI — References</a></strong></li>
-</ul>
-</div>
-
-<div class="md">
-<p><a id="part-1"></a></p>
-<h2 id="part-i-repetitive-tasks">Part I — Repetitive tasks</h2>
-<h2 id="i-1-iteration-index-versus-time-index">I.1 Iteration index versus time index</h2>
-<p>LMPC has two different indices.</p>
-<ul>
-<li><span class="math inline">j</span> denotes the <strong>iteration</strong> of the repeated task.</li>
-<li><span class="math inline">t</span> denotes <strong>time within one iteration</strong>.</li>
-</ul>
-<p>A trajectory from iteration <span class="math inline">j</span> is written</p>
-<div class="math display">
-x^j[0],u^j[0],x^j[1],u^j[1],\ldots,x^j[T_j].
-</div>
-<p>The plant is</p>
-<div class="math display">
-x^j[t+1]
-=
-f\!\left(x^j[t],u^j[t]\right).
-</div>
-<p>For the linear case developed later,</p>
-<div class="math display">
-f(x,u)=Ax+Bu.
-</div>
-<p>The task is repeated from the same initial condition</p>
-<div class="math display">
-x^j[0]=x_S.
-</div>
-<p>This repeated-task structure is fundamental.</p>
-</div>
-
-<div class="md">
-<h2 id="i-2-target-set-and-successful-iteration">I.2 Target set and successful iteration</h2>
-<p>Let <span class="math inline">\mathcal O</span> be the target set.</p>
-<p>An iteration is <strong>successful</strong> if all state/input constraints are respected and</p>
-<div class="math display">
-x^j[T_j]\in\mathcal O.
-</div>
-<p>The safe-set construction uses successful executions only.</p>
-<p>In both examples of this notebook, the scalar integrator of Part V and the double integrator of
-Part VIII,</p>
-<div class="math display">
-\boxed{
-\mathcal O=\{0\}.
-}
-</div>
-</div>
-
-<div class="md">
-<h2 id="i-3-what-does-safe-mean-here">I.3 What does “safe” mean here?</h2>
-<p>A stored state is called safe because there exists a <strong>known admissible continuation to the
-target</strong>: replay the remainder of a previously successful trajectory.</p>
-<p>That is a model/task-specific notion.</p>
-<p>It is not a general real-world certificate against unmodeled disturbances, perception errors, or
-model mismatch.</p>
-</div>
-
-<div class="md">
-<p><a id="part-2"></a></p>
-<h2 id="part-ii-sampled-safe-sets">Part II — Sampled safe sets</h2>
-<h2 id="ii-1-sampled-safe-set">II.1 Sampled safe set</h2>
-<p>After successful iterations <span class="math inline">i=0,\ldots,j</span>, define the <strong>sampled safe set</strong></p>
-<div class="math display">
-\boxed{
-SS^j
-=
-\left(
-\bigcup_{i=0}^{j}
-\bigcup_{t=0}^{T_i}
-\{x^i[t]\}
-\right)
-\cup
-\mathcal O.
-}
-</div>
-<p>It is a collection of previously visited successful states.</p>
-<p>It is finite for finitely many finite trajectories and grows as new successful executions are
-added.</p>
-</div>
-
-<div class="md">
-<h2 id="ii-2-why-the-sampled-safe-set-is-control-invariant">II.2 Why the sampled safe set is control invariant</h2>
-<p>Take a stored nonterminal point</p>
-<div class="math display">
-x=x^i[t]\in SS^j.
-</div>
-<p>The corresponding stored input <span class="math inline">u^i[t]</span> is admissible and produces</p>
-<div class="math display">
-f(x^i[t],u^i[t])=x^i[t+1]\in SS^j.
-</div>
-<p>Therefore</p>
-<div class="math display">
-\boxed{
-x\in SS^j
-\Longrightarrow
-\exists u\in\mathcal U:
-f(x,u)\in SS^j.
-}
-</div>
-<p>At the target set <span class="math inline">\mathcal O</span>, one assumes an admissible target controller that keeps the state in
-<span class="math inline">\mathcal O</span>.</p>
-<p>The stored trajectory itself provides the continuation.</p>
-</div>
-
-<div class="md">
-<h2 id="ii-3-the-important-quantifier">II.3 The important quantifier</h2>
-<p>The statement is</p>
-<div class="math display">
-\forall x\in SS^j,\quad
-\exists u\in\mathcal U.
-</div>
-<p>It does <strong>not</strong> say that one single input works for every state.</p>
-<p>Each sampled state may use a different stored continuation input.</p>
-</div>
-
-<div class="md">
-<p><a id="part-3"></a></p>
-<h2 id="part-iii-convex-safe-sets">Part III — Convex safe sets</h2>
-<h2 id="iii-1-why-convexify">III.1 Why convexify?</h2>
-<p>A terminal constraint</p>
-<div class="math display">
-x_N\in SS^j
-</div>
-<p>would force the prediction to end exactly on one stored sample.</p>
-<p>For the linear/convex setting, we therefore introduce the <strong>convex safe set</strong></p>
-<div class="math display">
-\boxed{
-CS^j=\operatorname{conv}(SS^j).
-}
-</div>
-<p>This fills in the space between stored safe states while retaining a convex optimization
-structure.</p>
-</div>
-
-<div class="md">
-<h2 id="iii-2-barycentric-coordinates">III.2 Barycentric coordinates</h2>
-<p>Let the stored safe states be <span class="math inline">s_1,\ldots,s_M</span>.</p>
-<p>A point <span class="math inline">x\in CS^j</span> can be represented as</p>
-<div class="math display">
-\boxed{
-x=\sum_{r=1}^{M}\lambda_rs_r
-}
-</div>
-<p>with</p>
-<div class="math display">
-\lambda_r\ge0,
-\qquad
-\sum_{r=1}^{M}\lambda_r=1.
-</div>
-<p>If we stack the stored safe states as the <strong>rows</strong> of a matrix <span class="math inline">S\in\mathbb R^{M\times n}</span>, where
-<span class="math inline">n</span> is the state dimension,</p>
-<div class="math display">
-S=
-\begin{bmatrix}
-s_1^\top\\
-\vdots\\
-s_M^\top
-\end{bmatrix},
-</div>
-<p>then</p>
-<div class="math display">
-\boxed{
-x=S^\top\lambda,
-\qquad
-\lambda\ge0,
-\qquad
-\mathbf1^\top\lambda=1.
-}
-</div>
-<p><strong>Convention.</strong> The stored safe states are the <em>rows</em> of <span class="math inline">S</span>, both in the formulas and in the code
-(<code>convex_safe_value</code> and <code>LMPCController.safe_data()</code> use one stored state per row). This is why
-the transpose appears in <span class="math inline">x=S^\top\lambda</span>, and why the LMPC terminal constraint of Part VII reads
-<span class="math inline">x_N=S^\top\lambda</span>, <span class="math inline">\lambda\ge0</span>, <span class="math inline">\mathbf1^\top\lambda=1</span>.</p>
-</div>
-
-<div class="md">
-<h2 id="iii-3-why-the-convex-safe-set-is-control-invariant">III.3 Why the convex safe set is control invariant</h2>
-<p>Assume:</p>
-<ul>
-<li><span class="math inline">x^+=Ax+Bu</span>;</li>
-<li><span class="math inline">\mathcal X</span> and <span class="math inline">\mathcal U</span> are convex;</li>
-<li>every safe point <span class="math inline">s_r</span> has a known admissible continuation input <span class="math inline">u_r^{\mathrm{safe}}</span> and safe
-successor <span class="math inline">s_r^+</span>.</li>
-</ul>
-<p>For</p>
-<div class="math display">
-x=\sum_r\lambda_rs_r,
-</div>
-<p>choose</p>
-<div class="math display">
-u=\sum_r\lambda_ru_r^{\mathrm{safe}}.
-</div>
-<p>Then, by linearity,</p>
-<div class="math display">
-x^+
-=
-\sum_r\lambda_r
-\left(
-As_r+Bu_r^{\mathrm{safe}}
-\right)
-=
-\sum_r\lambda_rs_r^+.
-</div>
-<p>Because the input set is convex, <span class="math inline">u\in\mathcal U</span>.
-Because the safe successors remain in the safe set,</p>
-<div class="math display">
-x^+\in CS^j.
-</div>
-<p>Hence</p>
-<div class="math display">
-\boxed{
-CS^j
-\text{ is control invariant}
-}
-</div>
-<p>under these assumptions.</p>
-</div>
-
-<div class="md">
-<h3 id="what-breaks-outside-these-assumptions">What breaks outside these assumptions?</h3>
-<p>For nonlinear dynamics,</p>
-<div class="math display">
-f\!\left(
-\sum_r\lambda_rs_r,
-\sum_r\lambda_ru_r
-\right)
-</div>
-<p>is generally not equal to</p>
-<div class="math display">
-\sum_r\lambda_rf(s_r,u_r).
-</div>
-<p>Likewise, convex combinations can violate nonconvex constraints.</p>
-<p>So convexifying stored trajectories for a nonlinear task requires separate justification.</p>
-</div>
-
-<div class="md">
-<p><a id="part-4"></a></p>
-<h2 id="part-iv-learning-a-terminal-value-function">Part IV — Learning a terminal value function</h2>
-<h2 id="iv-1-roll-out-cost-to-go">IV.1 Roll-out cost-to-go</h2>
-<p>For a successful iteration <span class="math inline">i</span>,</p>
-<div class="math display">
-\boxed{
-J_t^i
-=
-\sum_{k=t}^{T_i-1}
-h\!\left(x^i[k],u^i[k]\right).
-}
-</div>
-<p>At the target,</p>
-<div class="math display">
-J_{T_i}^i=0.
-</div>
-<p>This is the realized remaining cost if the stored continuation is replayed.</p>
-</div>
-
-<div class="md">
-<h2 id="iv-2-sampled-value-function">IV.2 Sampled value function</h2>
-<p>If the same state appears multiple times, we keep the best stored cost-to-go:</p>
-<div class="math display">
-\boxed{
-V^j(x)
-=
-\min_{\substack{
-i,t\\
-x^i[t]=x
-}}
-J_t^i.
-}
-</div>
-<p>On the target,</p>
-<div class="math display">
-V^j(x)=0,
-\qquad
-x\in\mathcal O.
-</div>
-<p>The difficulty is that this function is defined only at sampled states.</p>
-</div>
-
-<div class="md">
-<h2 id="iv-3-convex-terminal-value">IV.3 Convex terminal value</h2>
-<p>We extend the sampled data to the convex safe set using</p>
-<div class="math display">
-\boxed{
-V_c^j(x)
-=
-\min_{\lambda}
-\sum_{r=1}^{M}\lambda_rV_r
-}
-</div>
-<p>subject to</p>
-<div class="math display">
-S^\top\lambda=x,
-\qquad
-\mathbf1^\top\lambda=1,
-\qquad
-\lambda\ge0.
-</div>
-<p>Here <span class="math inline">V_r</span> is the cost-to-go stored with the safe state <span class="math inline">s_r</span> (row <span class="math inline">r</span> of <span class="math inline">S</span>).</p>
-<p>For fixed stored data, this is a <strong>linear program in <span class="math inline">\lambda</span></strong>.</p>
-<p>Geometrically, it constructs the lower convex envelope of the stored state/value samples.</p>
-</div>
-
-<div class="md">
-<p><a id="part-5"></a></p>
-<h2 id="part-v-a-one-dimensional-example">Part V — A one-dimensional example</h2>
-<h2 id="v-1-constrained-integrator">V.1 Constrained integrator</h2>
-<p>Consider the scalar integrator</p>
-<div class="math display">
-x[t+1]=x[t]+u[t],
-</div>
-<p>with</p>
-<div class="math display">
-x\in[-5,5],
-\qquad
-u\in[-1,1],
-</div>
-<p>target <span class="math inline">\mathcal O=\{0\}</span>, and</p>
-<div class="math display">
-h(x,u)=x^2+0.1u^2.
-</div>
-<p>Two successful iterations are</p>
-<div class="math display">
-4\rightarrow3\rightarrow2\rightarrow1\rightarrow0
-</div>
-<p>and</p>
-<div class="math display">
--3\rightarrow-2\rightarrow-1\rightarrow0.
-</div>
-<p>Therefore</p>
-<div class="math display">
-SS^1=\{-3,-2,-1,0,1,2,3,4\},
-</div>
-<p>and</p>
-<div class="math display">
-\boxed{
-CS^1=[-3,4].
-}
-</div>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def scalar_cost_to_go(states, inputs):
-    states = np.asarray(states, float)
-    inputs = np.asarray(inputs, float)
-
-    J = np.zeros(len(states))
-    for k in range(len(inputs) - 1, -1, -1):
-        J[k] = states[k]**2 + 0.1*inputs[k]**2 + J[k+1]
-    return J
-
-
-x_pos = np.array([4., 3., 2., 1., 0.])
-u_pos = -np.ones(4)
-
-x_neg = np.array([-3., -2., -1., 0.])
-u_neg = np.ones(3)
-
-J_pos = scalar_cost_to_go(x_pos, u_pos)
-J_neg = scalar_cost_to_go(x_neg, u_neg)
-
-sample_x = np.r_[x_neg[:-1], x_pos]
-sample_V = np.r_[J_neg[:-1], J_pos]
-
-order = np.argsort(sample_x)
-sample_x = sample_x[order]
-sample_V = sample_V[order]
-
-print(&quot;sampled state/value pairs:&quot;)
-for x, v in zip(sample_x, sample_V):
-    print(f&quot;x={x:4.1f}   V={v:6.2f}&quot;)
-</code></pre>
-<pre class="output">sampled state/value pairs:
-x=-3.0   V= 14.30
-x=-2.0   V=  5.20
-x=-1.0   V=  1.10
-x= 0.0   V=  0.00
-x= 1.0   V=  1.10
-x= 2.0   V=  5.20
-x= 3.0   V= 14.30
-x= 4.0   V= 30.40</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">grid_1d = np.linspace(-3.0, 4.0, 141)
-
-Vc = []
-for xq in grid_1d:
-    value, lam, success = convex_safe_value(
-        np.array([xq]),
-        sample_x[:, None],
-        sample_V,
-    )
-    if not success:
-        raise RuntimeError(&quot;Unexpected LP infeasibility inside the convex safe set.&quot;)
-    Vc.append(value)
-
-Vc = np.asarray(Vc)
-
-plt.figure()
-plt.scatter(sample_x, sample_V, s=65, label=&quot;stored sampled values&quot;)
-plt.plot(grid_1d, Vc, linewidth=2.5, label=r&quot;convex extension $V_c^1(x)$&quot;)
-plt.xlabel(r&quot;$x$&quot;)
-plt.ylabel(&quot;cost-to-go&quot;)
-plt.title(&quot;Sampled cost-to-go and its convex extension&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/05-1.png" alt="Figure: Sampled cost-to-go and its convex extension" width="686" height="470" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="v-2-how-to-read-this-figure">V.2 How to read this figure</h2>
-<p>The dots are values known directly from previous executions.</p>
-<p>The continuous curve is <strong>not new measured data</strong>.</p>
-<p>For each intermediate <span class="math inline">x</span>, it solves the barycentric LP:</p>
-<blockquote>
-<p>What is the cheapest convex combination of stored state/value pairs that represents this state?</p>
-</blockquote>
-<p>In one dimension this produces a convex, piecewise-affine lower envelope.</p>
-<p>A stored point above that lower envelope would be dominated and would not necessarily be reproduced
-exactly by <span class="math inline">V_c^j</span>.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">x_query = np.array([2.5])
-
-value_25, lambda_25, ok_25 = convex_safe_value(
-    x_query,
-    sample_x[:, None],
-    sample_V,
-)
-
-active = np.where(lambda_25 &gt; 1e-8)[0]
-
-print(&quot;query state:&quot;, x_query.item())
-print(&quot;convex terminal value:&quot;, value_25)
-print(&quot;sum(lambda):&quot;, lambda_25.sum())
-print(&quot;reconstructed state:&quot;, (sample_x[:, None].T @ lambda_25).item())
-print(&quot;\nactive barycentric weights:&quot;)
-
-for idx in active:
-    print(
-        f&quot;  x={sample_x[idx]:4.1f}, &quot;
-        f&quot;V={sample_V[idx]:6.2f}, &quot;
-        f&quot;lambda={lambda_25[idx]:.4f}&quot;
-    )
-</code></pre>
-<pre class="output">query state: 2.5
-convex terminal value: 9.75
-sum(lambda): 1.0
-reconstructed state: 2.5
-
-active barycentric weights:
-  x= 2.0, V=  5.20, lambda=0.5000
-  x= 3.0, V= 14.30, lambda=0.5000</pre>
-</div>
-
-<div class="md">
-<p><a id="part-6"></a></p>
-<h2 id="part-vi-why-the-learned-value-can-act-like-a-terminal-lyapunov-function">Part VI — Why the learned value can act like a terminal Lyapunov function</h2>
-<h2 id="vi-1-data-recursion">VI.1 Data recursion</h2>
-<p>For a stored safe state <span class="math inline">s_r</span>,</p>
-<div class="math display">
-J_r
-=
-h(s_r,u_r)
-+
-J_r^+.
-</div>
-<p>For</p>
-<div class="math display">
-x=\sum_r\lambda_rs_r,
-</div>
-<p>use</p>
-<div class="math display">
-u=\sum_r\lambda_ru_r.
-</div>
-<p>Then</p>
-<div class="math display">
-x^+=\sum_r\lambda_rs_r^+.
-</div>
-</div>
-
-<div class="md">
-<h2 id="vi-2-learned-value-decrease">VI.2 Learned-value decrease</h2>
-<p>Convexity of <span class="math inline">h</span> gives</p>
-<div class="math display">
-h(x,u)
-\le
-\sum_r\lambda_rh(s_r,u_r).
-</div>
-<p>By definition of the convex terminal value,</p>
-<div class="math display">
-V_c^j(x^+)
-\le
-\sum_r\lambda_rJ_r^+.
-</div>
-<p>Therefore</p>
-<div class="math display">
-h(x,u)+V_c^j(x^+)
-\le
-\sum_r\lambda_r
-\left[
-h(s_r,u_r)+J_r^+
-\right].
-</div>
-<p>Using</p>
-<div class="math display">
-h(s_r,u_r)+J_r^+=J_r,
-</div>
-<p>we obtain</p>
-<div class="math display">
-\boxed{
-V_c^j(x^+)-V_c^j(x)
-\le
--h(x,u).
-}
-</div>
-<p>This has the same structural role as the terminal-cost decrease condition in stabilizing MPC.</p>
-<p>Here the terminal value is built from data rather than a Riccati equation.</p>
-</div>
-
-<div class="md">
-<p><a id="part-7"></a></p>
-<h2 id="part-vii-the-lmpc-online-optimization">Part VII — The LMPC online optimization</h2>
-<h2 id="vii-1-finite-horizon-problem">VII.1 Finite-horizon problem</h2>
-<p>At the current state, solve</p>
-<div class="math display">
-\begin{aligned}
-\min_{\{u_k\},\lambda}\quad&amp;
-\sum_{k=0}^{N-1}h(x_k,u_k)
-+
-\sum_{r=1}^{M}\lambda_rV_r
-\\
-\text{s.t.}\quad&amp;
-x_{k+1}=Ax_k+Bu_k,
-\\
-&amp;
-x_k\in\mathcal X,
-\quad
-u_k\in\mathcal U,
-\\
-&amp;
-x_N=S^\top\lambda,
-\\
-&amp;
-\lambda\ge0,
-\quad
-\mathbf1^\top\lambda=1.
-\end{aligned}
-</div>
-<p>The last two constraints and the learned terminal cost are the data-driven terminal ingredients.</p>
-</div>
-
-<div class="md">
-<h2 id="vii-2-geometric-meaning">VII.2 Geometric meaning</h2>
-<p>The equality</p>
-<div class="math display">
-x_N=S^\top\lambda
-</div>
-<p>means the optimizer may reconnect to <strong>any point in the convex hull of successful experience</strong>.</p>
-<p>The cost</p>
-<div class="math display">
-\lambda^\top V
-</div>
-<p>then tells it how expensive the stored continuation from that terminal representation is.</p>
-<p>So LMPC learns both terminal <strong>geometry</strong> and terminal <strong>value</strong>.</p>
-</div>
-
-<div class="md">
-<h2 id="vii-3-recursive-feasibility-shifted-sequence-argument">VII.3 Recursive feasibility: shifted-sequence argument</h2>
-<p>Suppose</p>
-<div class="math display">
-x_N^\star
-=
-\sum_r\lambda_r^\star s_r.
-</div>
-<p>At the next time, shift the optimized controls and append</p>
-<div class="math display">
-\boxed{
-u_N^{\mathrm{safe}}
-=
-\sum_r
-\lambda_r^\star
-u_r^{\mathrm{safe}}.
-}
-</div>
-<p>Then</p>
-<div class="math display">
-\begin{aligned}
-x_{N+1}
-&amp;=
-A\sum_r\lambda_r^\star s_r
-+
-B\sum_r\lambda_r^\star u_r^{\mathrm{safe}}
-\\
-&amp;=
-\sum_r\lambda_r^\star s_r^+.
-\end{aligned}
-</div>
-<p>The new terminal state remains in the convex safe set.</p>
-<p>This is the LMPC counterpart of the terminal-set shifted-sequence proof.</p>
-</div>
-
-<div class="md">
-<p><a id="part-8"></a></p>
-<h2 id="part-viii-the-double-integrator-task">Part VIII — The double-integrator task</h2>
-<h2 id="viii-1-numerical-model">VIII.1 Numerical model</h2>
-<p>We now apply LMPC to the discrete-time double integrator with state <span class="math inline">x=[x_1,x_2]^\top</span>
-(position and velocity) and</p>
-<div class="math display">
-A=
-\begin{bmatrix}
-1&amp;1\\
-0&amp;1
-\end{bmatrix},
-\qquad
-B=
-\begin{bmatrix}
-0\\
-1
-\end{bmatrix}.
-</div>
-<p>The initial condition is</p>
-<div class="math display">
-x_S=
-\begin{bmatrix}
--15\\0
-\end{bmatrix}.
-</div>
-<p>The box constraints are</p>
-<div class="math display">
-|x_i|\le15,
-\qquad
-|u|\le5.
-</div>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">A = np.array([
-    [1.0, 1.0],
-    [0.0, 1.0],
-])
-
-B = np.array([
-    [0.0],
-    [1.0],
-])
-
-x_start = np.array([-15.0, 0.0])
-
-x_lower = np.array([-15.0, -15.0])
-x_upper = np.array([ 15.0,  15.0])
-
-u_lower = np.array([-5.0])
-u_upper = np.array([ 5.0])
-
-print(&quot;A =&quot;)
-print(A)
-print(&quot;\nB =&quot;)
-print(B)
-</code></pre>
-<pre class="output">A =
-[[1. 1.]
- [0. 1.]]
-
-B =
-[[0.]
- [1.]]</pre>
-</div>
-
-<div class="md">
-<h2 id="viii-2-stage-cost">VIII.2 Stage cost</h2>
-<p>We use the weights</p>
-<div class="math display">
-Q=I,
-\qquad
-Q_1=0.01I,
-\qquad
-R=1.
-</div>
-<p>The stage cost is</p>
-<div class="math display">
-\boxed{
-h(x,u)
-=
-x^\top Qx
-+
-u^\top Ru
-+
-\|Q_1x\|_1.
-}
-</div>
-<p>The small <span class="math inline">\ell_1</span> term makes <span class="math inline">h</span> convex but not purely quadratic. The value-decrease argument of
-Part VI needs only convexity of <span class="math inline">h</span>, and VIII.3 shows that the online problem remains a QP.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">Q = np.eye(2)
-Q1 = 0.01 * Q
-R = np.array([[1.0]])
-
-print(&quot;stage cost at x=[-15,0], u=0:&quot;)
-print(stage_cost(x_start, np.array([0.0]), Q, R, Q1))
-</code></pre>
-<pre class="output">stage cost at x=[-15,0], u=0:
-225.15</pre>
-</div>
-
-<div class="md">
-<h2 id="viii-3-epigraph-formulation-of-the-ell-1-term">VIII.3 Epigraph formulation of the <span class="math inline">\ell_1</span> term</h2>
-<p>Let</p>
-<div class="math display">
-z_k=Q_1x_k.
-</div>
-<p>Introduce</p>
-<div class="math display">
-e_{i,k}\ge0
-</div>
-<p>with</p>
-<div class="math display">
-z_{i,k}\le e_{i,k},
-\qquad
--z_{i,k}\le e_{i,k}.
-</div>
-<p>Minimizing <span class="math inline">\sum_i e_{i,k}</span> forces</p>
-<div class="math display">
-e_{i,k}=|z_{i,k}|.
-</div>
-<p>Thus the <span class="math inline">\ell_1</span> term can be represented using linear inequalities and a linear contribution to
-the objective.</p>
-<p>The overall optimization therefore remains a convex QP.</p>
-</div>
-
-<div class="md">
-<h2 id="viii-4-choice-of-the-short-horizon">VIII.4 Choice of the short horizon</h2>
-<p>The seed controller of Part X uses the deliberately short horizon</p>
-<div class="math display">
-\boxed{
-N_{\mathrm{MPC}}=3.
-}
-</div>
-<p>LMPC uses the same value, <span class="math inline">N_{\mathrm{LMPC}}=3</span> (Part XIII). The two controllers share the stage
-cost and the constraints and differ only in their terminal ingredients: the seed MPC has no
-terminal cost or terminal constraint, while LMPC adds the learned terminal set and value.</p>
-<p>The short horizon is what leaves room for learning. With a substantially longer horizon, plain MPC
-already comes very close to the long-horizon reference on this task, and there would be little left
-to improve; Exercise 7 explores the effect of the horizon.</p>
-</div>
-
-<div class="md">
-<p><a id="part-9"></a></p>
-<h2 id="part-ix-long-horizon-reference">Part IX — Long-horizon reference</h2>
-<h2 id="ix-1-reference-computation">IX.1 Reference computation</h2>
-<p>A common benchmark is a single open-loop problem with a very long finite horizon, for example</p>
-<div class="math display">
-N=1000,
-</div>
-<p>used as a numerical proxy for an infinite-time optimum.</p>
-<p>Here we keep the computation lightweight and solver-independent: we check horizon convergence and
-use a shorter horizon once the numerical result has stabilized.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">reference_horizons = [10, 15, 20]
-reference_solutions = {}
-
-for N_ref in reference_horizons:
-    sol_ref = solve_ftocp_l1(
-        A, B, Q, R, Q1,
-        N=N_ref,
-        x0=x_start,
-        x_lower=x_lower,
-        x_upper=x_upper,
-        u_lower=u_lower,
-        u_upper=u_upper,
-    )
-
-    if not sol_ref.success:
-        raise RuntimeError(sol_ref.message)
-
-    reference_solutions[N_ref] = sol_ref
-
-    print(
-        f&quot;N={N_ref:2d}: &quot;
-        f&quot;cost={sol_ref.objective:.9f}, &quot;
-        f&quot;terminal norm={np.linalg.norm(sol_ref.X[-1]):.3e}&quot;
-    )
-</code></pre>
-<pre class="output">N=10: cost=673.675953310, terminal norm=3.027e-02
-N=15: cost=673.676653450, terminal norm=7.474e-13
-N=20: cost=673.676653450, terminal norm=2.420e-09</pre>
-</div>
-
-<div class="md">
-<p>The numerical value has essentially converged in this example, so we use</p>
-<div class="math display">
-N_{\mathrm{ref}}=20
-</div>
-<p>as the <strong>long-horizon reference</strong> for the rest of the notebook.</p>
-<p>This is a numerical reference, not a proof that a finite horizon equals the exact infinite-horizon
-optimum.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">reference = reference_solutions[20]
-reference_cost = reference.objective
-
-plt.figure()
-plt.plot(reference.X[:, 0], reference.X[:, 1], &quot;-o&quot;, label=&quot;long-horizon reference&quot;)
-plt.xlabel(r&quot;$x_1$&quot;)
-plt.ylabel(r&quot;$x_2$&quot;)
-plt.title(&quot;Long-horizon reference trajectory&quot;)
-plt.legend()
-plt.show()
-
-print(&quot;reference cost:&quot;, reference_cost)
-</code></pre>
-<figure class="output-figure"><img src="img/05-2.png" alt="Figure: Long-horizon reference trajectory" width="678" height="471" loading="lazy"></figure>
-<pre class="output">reference cost: 673.6766534499407</pre>
-</div>
-
-<div class="md">
-<p><a id="part-10"></a></p>
-<h2 id="part-x-generate-the-initial-feasible-trajectory-with-short-horizon-mpc">Part X — Generate the initial feasible trajectory with short-horizon MPC</h2>
-<h2 id="x-1-a-feasible-but-suboptimal-seed">X.1 A feasible but suboptimal seed</h2>
-<p>LMPC needs at least one successful trajectory.</p>
-<p>We generate it with ordinary receding-horizon MPC, without terminal cost or terminal constraint
-(VIII.4), and</p>
-<div class="math display">
-N_{\mathrm{MPC}}=3.
-</div>
-<p>The trajectory is feasible but suboptimal.
-It initializes the safe set and the stored cost-to-go.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def close_double_integrator_exactly(X_list, U_list, tol=1e-5):
-    # Numerical completion used only to make the stored trajectory end
-    # exactly at O={0}.
-    #
-    # For A=[[1,1],[0,1]], B=[[0],[1]], from x=[p,v]:
-    #
-    #   u0 = -p - 2 v
-    #   u1 =  p + v
-    #
-    # gives x_{k+2}=0.
-    x = np.asarray(X_list[-1], float).copy()
-
-    if np.linalg.norm(x) &gt; tol:
-        raise ValueError(&quot;terminal bridge requested too far from the target&quot;)
-
-    p, v = x
-    bridge = [
-        np.array([-p - 2.0*v]),
-        np.array([ p + v]),
-    ]
-
-    for u in bridge:
-        if np.any(u &lt; u_lower - 1e-9) or np.any(u &gt; u_upper + 1e-9):
-            raise ValueError(&quot;terminal bridge violates the input bounds&quot;)
-
-        x = A @ x + B @ u
-
-        if np.any(x &lt; x_lower - 1e-9) or np.any(x &gt; x_upper + 1e-9):
-            raise ValueError(&quot;terminal bridge violates the state bounds&quot;)
-
-        U_list.append(u.copy())
-        X_list.append(x.copy())
-
-    X_list[-1] = np.zeros(2)
-
-    return X_list, U_list
-
-
-def run_short_horizon_mpc_seed(
-    x0,
-    *,
-    N=3,
-    stop_tol=1e-6,
-    max_steps=100,
-):
-    x = np.asarray(x0, float).copy()
-
-    X = [x.copy()]
-    U = []
-
-    for _ in range(max_steps):
-        if np.linalg.norm(x) &lt;= stop_tol:
-            break
-
-        sol = solve_ftocp_l1(
-            A, B, Q, R, Q1,
-            N=N,
-            x0=x,
-            x_lower=x_lower,
-            x_upper=x_upper,
-            u_lower=u_lower,
-            u_upper=u_upper,
-        )
-
-        if not sol.success:
-            raise RuntimeError(sol.message)
-
-        u = sol.U[0].copy()
-        x = A @ x + B @ u
-
-        U.append(u)
-        X.append(x.copy())
-    else:
-        raise RuntimeError(&quot;short-horizon MPC did not approach the target&quot;)
-
-    X, U = close_double_integrator_exactly(X, U, tol=1e-5)
-
-    return np.asarray(X), np.asarray(U)
-
-
-X_seed, U_seed = run_short_horizon_mpc_seed(x_start)
-
-J_seed = trajectory_cost_to_go(
-    X_seed,
-    U_seed,
-    Q,
-    R,
-    Q1,
-)
-
-print(&quot;seed trajectory length:&quot;, len(U_seed), &quot;steps&quot;)
-print(&quot;seed terminal state:&quot;, X_seed[-1])
-print(&quot;seed closed-loop cost:&quot;, J_seed[0])
-print(&quot;long-horizon reference cost:&quot;, reference_cost)
-print(&quot;seed performance gap:&quot;, J_seed[0] - reference_cost)
-</code></pre>
-<pre class="output">seed trajectory length: 26 steps
-seed terminal state: [0. 0.]
-seed closed-loop cost: 693.9923723414192
-long-horizon reference cost: 673.6766534499407
-seed performance gap: 20.315718891478582</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">plt.figure()
-plt.plot(X_seed[:, 0], X_seed[:, 1], &quot;-o&quot;, label=&quot;short-horizon MPC seed&quot;)
-plt.plot(reference.X[:, 0], reference.X[:, 1], &quot;--&quot;, linewidth=2,
-         label=&quot;long-horizon reference&quot;)
-plt.xlabel(r&quot;$x_1$&quot;)
-plt.ylabel(r&quot;$x_2$&quot;)
-plt.title(&quot;A feasible seed can be noticeably suboptimal&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/05-3.png" alt="Figure: A feasible seed can be noticeably suboptimal" width="678" height="471" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="x-2-compare-complete-task-costs">X.2 Compare complete task costs</h2>
-<p>The open-loop objective of one <span class="math inline">N=3</span> solve contains only three future stages.</p>
-<p>The <strong>seed closed-loop task cost</strong> accumulates the complete repeated MPC execution until the target
-is reached.</p>
-<p>Those are different quantities.</p>
-<p>Learning curves should compare complete iteration costs.</p>
-</div>
-
-<div class="md">
-<p><a id="part-11"></a></p>
-<h2 id="part-xi-initialize-the-lmpc-database">Part XI — Initialize the LMPC database</h2>
-<h2 id="xi-1-store-the-seed">XI.1 Store the seed</h2>
-<p>The controller stores:</p>
-<ul>
-<li>successful states;</li>
-<li>applied inputs;</li>
-<li>backward cost-to-go values.</li>
-</ul>
-<p>The target <span class="math inline">x=0</span> is represented explicitly with zero terminal cost.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">N_LMPC = 3
-
-lmpc = LMPCController(
-    A, B, Q, R,
-    N=N_LMPC,
-    Q1=Q1,
-    x_lower=x_lower,
-    x_upper=x_upper,
-    u_lower=u_lower,
-    u_upper=u_upper,
-    target=np.zeros(2),
-)
-
-lmpc.add_trajectory(X_seed, U_seed)
-
-S_seed, V_seed, Usafe_seed, next_seed = lmpc.safe_data()
-
-print(&quot;stored successful trajectories:&quot;, len(lmpc.trajectories))
-print(&quot;safe-state samples:&quot;, len(S_seed))
-print(&quot;stored seed cost:&quot;, lmpc.iteration_costs[0])
-</code></pre>
-<pre class="output">stored successful trajectories: 1
-safe-state samples: 27
-stored seed cost: 693.9923723414192</pre>
-</div>
-
-<div class="md">
-<h2 id="xi-2-inspect-one-stored-continuation">XI.2 Inspect one stored continuation</h2>
-<p>Every nonterminal safe point has a continuation input, successor safe point, and cost-to-go.</p>
-<p>That makes the invariance statement constructive.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">r = 5
-
-print(&quot;safe state =&quot;, S_seed[r])
-print(&quot;stored safe input =&quot;, Usafe_seed[r])
-
-r_next = next_seed[r]
-
-print(&quot;stored successor =&quot;, S_seed[r_next])
-print(
-    &quot;dynamics residual =&quot;,
-    A @ S_seed[r] + B @ Usafe_seed[r] - S_seed[r_next]
-)
-print(&quot;cost-to-go =&quot;, V_seed[r])
-</code></pre>
-<pre class="output">safe state = [-3.369286  1.836434]
-stored safe input = [-0.874495]
-stored successor = [-1.532852  0.96194 ]
-dynamics residual = [0. 0.]
-cost-to-go = 19.799092676358153</pre>
-</div>
-
-<div class="md">
-<p><a id="part-12"></a></p>
-<h2 id="part-xii-numerical-check-of-convex-safe-set-invariance">Part XII — Numerical check of convex-safe-set invariance</h2>
-<h2 id="xii-1-construct-a-convex-combination">XII.1 Construct a convex combination</h2>
-<p>Choose several stored safe points and convex weights.</p>
-<p>Then compare the successor computed from the convex-combination state/input with the convex
-combination of stored successors.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">chosen = np.array([2, 5, 8, 12])
-lam_demo = np.array([0.10, 0.25, 0.30, 0.35])
-
-x_demo = lam_demo @ S_seed[chosen]
-u_demo = lam_demo @ Usafe_seed[chosen]
-
-successor_indices = next_seed[chosen]
-
-x_plus_from_data = lam_demo @ S_seed[successor_indices]
-x_plus_from_dynamics = A @ x_demo + B @ u_demo
-
-print(&quot;lambda sum:&quot;, lam_demo.sum())
-print(&quot;convex-combination state:&quot;, x_demo)
-print(&quot;convex-combination input:&quot;, u_demo)
-print(&quot;successor from dynamics:&quot;, x_plus_from_dynamics)
-print(&quot;successor from stored successors:&quot;, x_plus_from_data)
-print(&quot;difference:&quot;, x_plus_from_dynamics - x_plus_from_data)
-</code></pre>
-<pre class="output">lambda sum: 0.9999999999999999
-convex-combination state: [-2.36938  0.93034]
-convex-combination input: [-0.254442]
-successor from dynamics: [-1.43904   0.675898]
-successor from stored successors: [-1.43904   0.675898]
-difference: [0. 0.]</pre>
-</div>
-
-<div class="md">
-<p>The difference is numerical round-off.</p>
-<p>This is the concrete identity behind the linear-system convex-safe-set proof.</p>
-</div>
-
-<div class="md">
-<p><a id="part-13"></a></p>
-<h2 id="part-xiii-first-lmpc-optimization">Part XIII — First LMPC optimization</h2>
-<h2 id="xiii-1-solve-from-the-repeated-initial-state">XIII.1 Solve from the repeated initial state</h2>
-<p>The explicit prediction horizon remains only</p>
-<div class="math display">
-N_{\mathrm{LMPC}}=3.
-</div>
-<p>The learned terminal set and value now communicate information beyond those three steps.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">first_lmpc_solution = lmpc.solve(
-    x_start,
-    last_n_trajectories=None,
-)
-
-if not first_lmpc_solution.success:
-    raise RuntimeError(first_lmpc_solution.message)
-
-print(&quot;solve success:&quot;, first_lmpc_solution.success)
-print(&quot;first input:&quot;, first_lmpc_solution.U[0])
-print(&quot;predicted terminal state:&quot;, first_lmpc_solution.X[-1])
-print(&quot;terminal barycentric reconstruction:&quot;, first_lmpc_solution.terminal_state)
-print(&quot;sum(lambda):&quot;, first_lmpc_solution.lambdas.sum())
-print(&quot;minimum lambda:&quot;, first_lmpc_solution.lambdas.min())
-</code></pre>
-<pre class="output">solve success: True
-first input: [5.]
-predicted terminal state: [-4.993926  2.486288]
-terminal barycentric reconstruction: [-4.993926  2.486288]
-sum(lambda): 1.0000000004227534
-minimum lambda: 0.0</pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">active_lambda = np.where(first_lmpc_solution.lambdas &gt; 1e-6)[0]
-
-print(&quot;active terminal safe points:&quot;, len(active_lambda))
-
-for idx in active_lambda:
-    print(
-        f&quot;index={idx:3d}  &quot;
-        f&quot;lambda={first_lmpc_solution.lambdas[idx]:.6f}  &quot;
-        f&quot;state={first_lmpc_solution.safe_states[idx]}  &quot;
-        f&quot;value={first_lmpc_solution.safe_values[idx]:.6f}&quot;
-    )
-</code></pre>
-<pre class="output">active terminal safe points: 2
-index=  4  lambda=0.530804  state=[-6.430002  3.060716]  value=72.105772
-index=  5  lambda=0.469196  state=[-3.369286  1.836434]  value=19.799093</pre>
-</div>
-
-<div class="md">
-<h2 id="xiii-2-why-a-sparse-barycentric-representation-exists">XIII.2 Why a sparse barycentric representation exists</h2>
-<p>The terminal state is two-dimensional.</p>
-<p>Carathéodory's theorem says that any point in a convex hull in <span class="math inline">\mathbb R^2</span> can be represented
-using at most three points.</p>
-<p>Numerical degeneracy can produce additional tiny coefficients, but a sparse representation exists.</p>
-</div>
-
-<div class="md">
-<p><a id="part-14"></a></p>
-<h2 id="part-xiv-repeated-lmpc-iterations">Part XIV — Repeated LMPC iterations</h2>
-<h2 id="xiv-1-iteration-algorithm">XIV.1 Iteration algorithm</h2>
-<p>Each iteration:</p>
-<ol>
-<li>resets to the same initial state;</li>
-<li>solves the short LMPC problem repeatedly;</li>
-<li>reaches the target;</li>
-<li>appends the new successful trajectory;</li>
-<li>updates the cost-to-go database.</li>
-</ol>
-</div>
-
-<div class="md">
-<h2 id="xiv-2-limited-active-data-for-numerical-scalability">XIV.2 Limited active data for numerical scalability</h2>
-<p>The number of stored samples grows with every successful iteration, and each sample used online
-adds a barycentric variable to the QP (Part XXI). Using every stored trajectory in every online QP
-gives the optimizer the most terminal candidates, but the problem keeps growing.</p>
-<p>We keep the <strong>full history for analysis</strong> but use only the most recent four successful trajectories
-in the online QP once enough data exist.</p>
-<p>The previous iteration is therefore always retained (the cost-improvement argument of XV.2 relies
-on it), while the barycentric optimization remains compact and numerically well conditioned.
-Exercise 9 compares this choice with using all stored data.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def run_one_lmpc_iteration(
-    controller,
-    x0,
-    *,
-    active_trajectory_window=4,
-    stop_tol=1e-6,
-    max_steps=100,
-):
-    x = np.asarray(x0, float).copy()
-
-    X = [x.copy()]
-    U = []
-    warm = None
-    solve_times = []
-
-    for _ in range(max_steps):
-        if np.linalg.norm(x) &lt;= stop_tol:
-            break
-
-        tic = time.perf_counter()
-
-        sol = controller.solve(
-            x,
-            last_n_trajectories=active_trajectory_window,
-            warm=warm,
-        )
-
-        solve_times.append(time.perf_counter() - tic)
-
-        if not sol.success:
-            raise RuntimeError(
-                f&quot;LMPC QP failed: {sol.message}; &quot;
-                f&quot;max violation={sol.max_violation:.3e}&quot;
-            )
-
-        u = sol.U[0].copy()
-        x_next = A @ x + B @ u
-
-        U.append(u)
-        X.append(x_next.copy())
-
-        warm = controller.shifted_warm_start(x_next, sol)
-        x = x_next
-    else:
-        raise RuntimeError(&quot;LMPC iteration did not approach the target&quot;)
-
-    X, U = close_double_integrator_exactly(X, U, tol=1e-5)
-
-    X = np.asarray(X)
-    U = np.asarray(U)
-
-    J = trajectory_cost_to_go(X, U, Q, R, Q1)
-
-    controller.add_trajectory(X, U)
-
-    return {
-        &quot;X&quot;: X,
-        &quot;U&quot;: U,
-        &quot;cost&quot;: float(J[0]),
-        &quot;mean_solve_time&quot;: float(np.mean(solve_times)),
-        &quot;max_solve_time&quot;: float(np.max(solve_times)),
-    }
-</code></pre>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">iterations = []
-n_learning_iterations = 9
-
-for j in range(n_learning_iterations):
-    record = run_one_lmpc_iteration(
-        lmpc,
-        x_start,
-        active_trajectory_window=4,
-    )
-
-    iterations.append(record)
-
-    print(
-        f&quot;iteration {j+1:2d}: &quot;
-        f&quot;steps={len(record[&#x27;U&#x27;]):2d}, &quot;
-        f&quot;cost={record[&#x27;cost&#x27;]:.9f}, &quot;
-        f&quot;mean solve={1e3*record[&#x27;mean_solve_time&#x27;]:.1f} ms&quot;
-    )
-</code></pre>
-<pre class="output">iteration  1: steps=22, cost=673.931584182, mean solve=5.7 ms
-iteration  2: steps=22, cost=673.699646784, mean solve=5.2 ms
-iteration  3: steps=22, cost=673.682513569, mean solve=10.1 ms
-iteration  4: steps=22, cost=673.678696282, mean solve=25.6 ms
-iteration  5: steps=21, cost=673.677471791, mean solve=21.9 ms
-iteration  6: steps=20, cost=673.677011397, mean solve=18.8 ms
-iteration  7: steps=19, cost=673.676818458, mean solve=17.6 ms
-iteration  8: steps=19, cost=673.676732389, mean solve=13.4 ms
-iteration  9: steps=19, cost=673.676705720, mean solve=12.1 ms</pre>
-</div>
-
-<div class="md">
-<p><a id="part-15"></a></p>
-<h2 id="part-xv-learning-curves">Part XV — Learning curves</h2>
-<h2 id="xv-1-closed-loop-cost-versus-iteration">XV.1 Closed-loop cost versus iteration</h2>
-<p>The seed is iteration 0.</p>
-<p>Each following point is the complete cost of one new LMPC execution.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">all_iteration_costs = np.array(
-    [J_seed[0]]
-    + [record[&quot;cost&quot;] for record in iterations]
-)
-
-plt.figure()
-plt.plot(
-    np.arange(len(all_iteration_costs)),
-    all_iteration_costs,
-    &quot;-o&quot;,
-    label=&quot;closed-loop iteration cost&quot;,
-)
-plt.axhline(
-    reference_cost,
-    linestyle=&quot;--&quot;,
-    label=&quot;long-horizon reference&quot;,
-)
-plt.xlabel(&quot;iteration&quot;)
-plt.ylabel(&quot;complete task cost&quot;)
-plt.title(&quot;LMPC performance improvement over repeated executions&quot;)
-plt.legend()
-plt.show()
-
-print(&quot;seed cost:&quot;, all_iteration_costs[0])
-print(&quot;last LMPC cost:&quot;, all_iteration_costs[-1])
-print(&quot;long-horizon reference:&quot;, reference_cost)
-print(&quot;final gap:&quot;, all_iteration_costs[-1] - reference_cost)
-</code></pre>
-<figure class="output-figure"><img src="img/05-4.png" alt="Figure: LMPC performance improvement over repeated executions" width="708" height="470" loading="lazy"></figure>
-<pre class="output">seed cost: 693.9923723414192
-last LMPC cost: 673.676705720395
-long-horizon reference: 673.6766534499407
-final gap: 5.2270454375502595e-05</pre>
-</div>
-
-<div class="md">
-<h2 id="xv-2-what-is-guaranteed-and-what-is-observed">XV.2 What is guaranteed and what is observed?</h2>
-<p>Under the standard deterministic repetitive-task LMPC assumptions, the previous successful
-trajectory remains a feasible candidate for the next iteration, which supports a non-increasing
-iteration-cost result.</p>
-<p>In this example that behavior is visible numerically:</p>
-<div class="math display">
-J^{j+1}(x_S)\le J^j(x_S).
-</div>
-<p>This is different from claiming that every LMPC formulation must converge to the unique global
-infinite-horizon optimum.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">cost_differences = np.diff(all_iteration_costs)
-
-print(&quot;iteration-to-iteration cost changes:&quot;)
-print(cost_differences)
-
-print(&quot;largest increase:&quot;, np.max(cost_differences))
-</code></pre>
-<pre class="output">iteration-to-iteration cost changes:
-[-20.060788  -0.231937  -0.017133  -0.003817  -0.001224  -0.00046
-  -0.000193  -0.000086  -0.000027]
-largest increase: -2.6669017415770213e-05</pre>
-</div>
-
-<div class="md">
-<p><a id="part-16"></a></p>
-<h2 id="part-xvi-how-the-trajectories-change">Part XVI — How the trajectories change</h2>
-<h2 id="xvi-1-phase-plane-evolution">XVI.1 Phase-plane evolution</h2>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">plt.figure(figsize=(8, 6))
-
-plt.plot(
-    X_seed[:, 0],
-    X_seed[:, 1],
-    &quot;-o&quot;,
-    alpha=0.7,
-    label=&quot;seed MPC&quot;,
-)
-
-for idx in [0, 2, 5, 8]:
-    record = iterations[idx]
-    plt.plot(
-        record[&quot;X&quot;][:, 0],
-        record[&quot;X&quot;][:, 1],
-        &quot;-o&quot;,
-        label=f&quot;LMPC iteration {idx+1}&quot;,
-    )
-
-plt.plot(
-    reference.X[:, 0],
-    reference.X[:, 1],
-    &quot;--&quot;,
-    linewidth=2.5,
-    label=&quot;long-horizon reference&quot;,
-)
-
-plt.xlabel(r&quot;$x_1$&quot;)
-plt.ylabel(r&quot;$x_2$&quot;)
-plt.title(&quot;Evolution of the repeated-task trajectory&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/05-5.png" alt="Figure: Evolution of the repeated-task trajectory" width="678" height="548" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="xvi-2-control-evolution">XVI.2 Control evolution</h2>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">plt.figure()
-
-plt.step(
-    np.arange(len(U_seed)),
-    U_seed[:, 0],
-    where=&quot;post&quot;,
-    label=&quot;seed MPC&quot;,
-)
-
-plt.step(
-    np.arange(len(iterations[-1][&quot;U&quot;])),
-    iterations[-1][&quot;U&quot;][:, 0],
-    where=&quot;post&quot;,
-    label=&quot;last LMPC iteration&quot;,
-)
-
-plt.step(
-    np.arange(len(reference.U)),
-    reference.U[:, 0],
-    where=&quot;post&quot;,
-    linestyle=&quot;--&quot;,
-    label=&quot;long-horizon reference&quot;,
-)
-
-plt.axhline(5.0, linestyle=&quot;:&quot;)
-plt.axhline(-5.0, linestyle=&quot;:&quot;)
-
-plt.xlabel(&quot;time step&quot;)
-plt.ylabel(r&quot;$u$&quot;)
-plt.title(&quot;Control sequence evolution&quot;)
-plt.legend()
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/05-6.png" alt="Figure: Control sequence evolution" width="689" height="470" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<p><a id="part-17"></a></p>
-<h2 id="part-xvii-safe-set-growth-in-the-state-plane">Part XVII — Safe-set growth in the state plane</h2>
-<h2 id="xvii-1-convex-hull-of-accumulated-successful-data">XVII.1 Convex hull of accumulated successful data</h2>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">def safe_hull_points(trajectory_list):
-    points = [np.zeros(2)]
-
-    for X in trajectory_list:
-        points.extend(X[:-1])
-
-    points = np.asarray(points, float)
-    points = np.unique(np.round(points, 10), axis=0)
-    return points
-
-
-def draw_hull(ax, points, label, linewidth=2):
-    if len(points) &lt; 3:
-        return
-
-    hull = ConvexHull(points)
-    cycle = np.r_[hull.vertices, hull.vertices[0]]
-
-    ax.plot(
-        points[cycle, 0],
-        points[cycle, 1],
-        linewidth=linewidth,
-        label=label,
-    )
-
-
-seed_points = safe_hull_points([X_seed])
-
-mid_points = safe_hull_points(
-    [X_seed]
-    + [iterations[k][&quot;X&quot;] for k in range(3)]
-)
-
-final_points = safe_hull_points(
-    [X_seed]
-    + [record[&quot;X&quot;] for record in iterations]
-)
-
-plt.figure(figsize=(8, 6))
-ax = plt.gca()
-
-draw_hull(ax, seed_points, &quot;after seed&quot;)
-draw_hull(ax, mid_points, &quot;after 3 LMPC iterations&quot;)
-draw_hull(ax, final_points, &quot;after 9 LMPC iterations&quot;)
-
-ax.scatter(
-    final_points[:, 0],
-    final_points[:, 1],
-    s=12,
-    alpha=0.45,
-    label=&quot;stored successful states&quot;,
-)
-
-ax.set_xlabel(r&quot;$x_1$&quot;)
-ax.set_ylabel(r&quot;$x_2$&quot;)
-ax.set_title(&quot;Accumulated successful data and convex safe-set geometry&quot;)
-ax.legend()
-plt.show()
-</code></pre>
-<figure class="output-figure"><img src="img/05-7.png" alt="Figure: Accumulated successful data and convex safe-set geometry" width="678" height="548" loading="lazy"></figure>
-</div>
-
-<div class="md">
-<h2 id="xvii-2-safe-set-geometry-is-only-half-of-the-learning">XVII.2 Safe-set geometry is only half of the learning</h2>
-<p>New trajectories can enlarge or reshape the safe-state hull.</p>
-<p>But LMPC also learns better <strong>cost-to-go values</strong>.</p>
-<p>Even when the hull changes very little near convergence, improved terminal values can still alter
-the short-horizon decision.</p>
-</div>
-
-<div class="md">
-<p><a id="part-18"></a></p>
-<h2 id="part-xviii-stored-cost-to-go-values">Part XVIII — Stored cost-to-go values</h2>
-<h2 id="xviii-1-backward-recursion">XVIII.1 Backward recursion</h2>
-<p>The cost-to-go of each successful trajectory is computed backward:</p>
-<div class="math display">
-J_T=0,
-</div>
-<div class="math display">
-\boxed{
-J_t=h(x_t,u_t)+J_{t+1}.
-}
-</div>
-<p>In the code, <code>trajectory_cost_to_go</code> implements this recursion, and <code>lmpc.safe_data()</code> returns
-the resulting values, aligned with the rows of <span class="math inline">S</span>, as the vector <span class="math inline">V</span> in the terminal cost
-<span class="math inline">\lambda^\top V</span>.</p>
-<p>This resembles dynamic programming, but the values come from realized stored trajectories rather
-than solving the Bellman optimality equation over the full state space.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">J_last = trajectory_cost_to_go(
-    iterations[-1][&quot;X&quot;],
-    iterations[-1][&quot;U&quot;],
-    Q,
-    R,
-    Q1,
-)
-
-residuals = []
-
-for k in range(len(iterations[-1][&quot;U&quot;])):
-    residuals.append(
-        J_last[k]
-        - stage_cost(
-            iterations[-1][&quot;X&quot;][k],
-            iterations[-1][&quot;U&quot;][k],
-            Q,
-            R,
-            Q1,
-        )
-        - J_last[k+1]
-    )
-
-print(
-    &quot;maximum backward recursion residual:&quot;,
-    np.max(np.abs(residuals))
-)
-</code></pre>
-<pre class="output">maximum backward recursion residual: 2.842170943040401e-14</pre>
-</div>
-
-<div class="md">
-<p><a id="part-19"></a></p>
-<h2 id="part-xix-what-exactly-is-learned">Part XIX — What exactly is learned?</h2>
-<h2 id="xix-1-the-plant-model-is-not-learned-here">XIX.1 The plant model is not learned here</h2>
-<p>The matrices <span class="math inline">A</span> and <span class="math inline">B</span> remain known and are used explicitly in every online optimization.</p>
-<p>The learned information is:</p>
-<ol>
-<li>safe terminal geometry;</li>
-<li>successful continuation inputs;</li>
-<li>terminal cost-to-go information.</li>
-</ol>
-<p>This is data-driven but not model-free.</p>
-</div>
-
-<div class="md">
-<h2 id="xix-2-lmpc-is-not-dqn">XIX.2 LMPC is not DQN</h2>
-<p>A DQN learns an action-value approximation, commonly with a neural network and temporal-difference
-updates.</p>
-<p>This LMPC instead:</p>
-<ul>
-<li>keeps an explicit dynamics model;</li>
-<li>keeps explicit constraints;</li>
-<li>solves an optimization online;</li>
-<li>uses data to build terminal ingredients.</li>
-</ul>
-<p>The methods are conceptually related through value information, but they are not the same
-algorithmic framework.</p>
-</div>
-
-<div class="md">
-<h2 id="xix-3-lmpc-versus-iterative-learning-control">XIX.3 LMPC versus iterative learning control</h2>
-<p>Both exploit repetition.</p>
-<p>Classical ILC often updates a trial-indexed feedforward/input signal from one execution to the next.</p>
-<p>LMPC instead inserts learned trajectory information into a constrained receding-horizon optimal
-control problem.</p>
-<p>Its distinctive object is the learned terminal set/value pair.</p>
-</div>
-
-<div class="md">
-<p><a id="part-20"></a></p>
-<h2 id="part-xx-do-different-initializations-converge-to-the-same-solution">Part XX — Do different initializations converge to the same solution?</h2>
-<h2 id="xx-1-a-natural-question">XX.1 A natural question</h2>
-<p>LMPC only needs an initial <strong>feasible successful trajectory</strong>.</p>
-<p>That trajectory may come from MPC, LQR, a human demonstration, or another controller.</p>
-<p>Does every feasible initialization necessarily converge to the same final trajectory?</p>
-<p>In general,</p>
-<div class="math display">
-\boxed{
-\text{no universal global-optimum guarantee follows merely from feasibility.}
-}
-</div>
-<p>The answer depends on task structure, convexity, stored data, controller formulation, and the
-assumptions of the particular LMPC result.</p>
-<p>This simple convex example may empirically produce very similar limiting behavior from different
-reasonable seeds, but that observation is not a general theorem.</p>
-</div>
-
-<div class="md">
-<p><a id="part-21"></a></p>
-<h2 id="part-xxi-time-varying-safe-sets-and-data-growth">Part XXI — Time-varying safe sets and data growth</h2>
-<h2 id="xxi-1-why-stored-data-management-matters">XXI.1 Why stored-data management matters</h2>
-<p>If every state from every successful iteration is retained, the number of barycentric variables
-grows with the total number of samples.</p>
-<p>One remedy is to use time-varying subsets of the stored data, for example</p>
-<div class="math display">
-TS_t^{l,j}
-=
-\left(
-\bigcup_{i=l}^{j}
-\bigcup_{s=t}^{T_i}
-\{x^i[s]\}
-\right)
-\cup
-\mathcal O.
-</div>
-<p>This subset keeps only iterations <span class="math inline">l,\ldots,j</span> and, from each of them, only the states visited at
-time <span class="math inline">t</span> or later. The controller in this notebook uses only the iteration window, with the most
-recent four trajectories (XIV.2), and keeps all time indices.</p>
-<p>Any such subset creates a practical trade-off between richer data and smaller online optimization
-problems.</p>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">full_safe_sizes = []
-
-for j in range(len(lmpc.trajectories)):
-    size = 1
-    for X in lmpc.trajectories[:j+1]:
-        size += len(X) - 1
-    full_safe_sizes.append(size)
-
-plt.figure()
-plt.plot(np.arange(len(full_safe_sizes)), full_safe_sizes, &quot;-o&quot;)
-plt.xlabel(&quot;stored trajectory index&quot;)
-plt.ylabel(&quot;safe-state samples&quot;)
-plt.title(&quot;Growth of the full barycentric database&quot;)
-plt.show()
-
-print(&quot;full database size after all iterations:&quot;, full_safe_sizes[-1])
-print(&quot;online active window: most recent 4 trajectories + target&quot;)
-</code></pre>
-<figure class="output-figure"><img src="img/05-8.png" alt="Figure: Growth of the full barycentric database" width="695" height="470" loading="lazy"></figure>
-<pre class="output">full database size after all iterations: 213
-online active window: most recent 4 trajectories + target</pre>
-</div>
-
-<div class="md">
-<p><a id="part-22"></a></p>
-<h2 id="part-xxii-what-the-experiment-establishes">Part XXII — What the experiment establishes</h2>
-<h2 id="xxii-1-supported-conclusions">XXII.1 Supported conclusions</h2>
-<p>The numerical example shows that:</p>
-<ul>
-<li>the short-horizon seed is feasible but more expensive;</li>
-<li>successful data provide terminal safe geometry and cost-to-go information;</li>
-<li>the LMPC terminal state satisfies a barycentric safe-set constraint;</li>
-<li>repeated executions reduce the complete task cost;</li>
-<li>the learned trajectories approach the long-horizon reference;</li>
-<li>the modeled constraints remain satisfied.</li>
-</ul>
-</div>
-
-<div class="md">
-<h2 id="xxii-2-unsupported-conclusions">XXII.2 Unsupported conclusions</h2>
-<p>This notebook alone does not establish:</p>
-<ul>
-<li>robustness to disturbances;</li>
-<li>robustness to model mismatch;</li>
-<li>safety of arbitrary nonlinear convexification;</li>
-<li>global-optimality convergence for every LMPC problem;</li>
-<li>model-free learning;</li>
-<li>transfer to unrelated initial conditions without additional analysis.</li>
-</ul>
-</div>
-
-<div class="md">
-<p><a id="part-23"></a></p>
-<h2 id="part-xxiii-common-pitfalls">Part XXIII — Common pitfalls</h2>
-<h2 id="xxiii-1-pitfall-every-stored-state-is-optimal">XXIII.1 Pitfall: every stored state is optimal</h2>
-<p>No. Stored states are safe because they belong to successful trajectories. A successful trajectory
-may be very suboptimal.</p>
-<hr />
-<h2 id="xxiii-2-pitfall-the-convex-hull-is-always-safe">XXIII.2 Pitfall: the convex hull is always safe</h2>
-<p>No. The invariance proof of III.3 relies on linear dynamics and convex constraints.</p>
-<hr />
-<h2 id="xxiii-3-pitfall-the-terminal-value-is-a-neural-network">XXIII.3 Pitfall: the terminal value is a neural network</h2>
-<p>Not here. It is built from stored roll-out costs and barycentric interpolation.</p>
-<hr />
-<h2 id="xxiii-4-pitfall-safe-set-growth-alone-explains-learning">XXIII.4 Pitfall: safe-set growth alone explains learning</h2>
-<p>No. The learned value/cost-to-go is equally important.</p>
-<hr />
-<h2 id="xxiii-5-pitfall-the-long-horizon-reference-proves-the-exact-infinite-horizon-optimum">XXIII.5 Pitfall: the long-horizon reference proves the exact infinite-horizon optimum</h2>
-<p>No. It is a numerical finite-horizon proxy whose convergence is checked.</p>
-<hr />
-<h2 id="xxiii-6-pitfall-a-three-step-horizon-only-sees-three-steps-ahead">XXIII.6 Pitfall: a three-step horizon only sees three steps ahead</h2>
-<p>Only the explicit prediction is three steps long. The seed MPC and LMPC both use
-<span class="math inline">N_{\mathrm{MPC}}=N_{\mathrm{LMPC}}=3</span>, but LMPC adds the terminal constraint <span class="math inline">x_N=S^\top\lambda</span>,
-which links the prediction to stored continuations that reach the target, and the terminal cost
-<span class="math inline">\lambda^\top V</span>, which prices the remainder of the task. That is why LMPC improves on the seed with
-the same horizon (VIII.4).</p>
-<hr />
-<h2 id="xxiii-7-pitfall-lmpc-is-reinforcement-learning-simply-because-it-learns-from-data">XXIII.7 Pitfall: LMPC is reinforcement learning simply because it learns from data</h2>
-<p>In this notebook, LMPC is model-based predictive control with terminal ingredients learned from
-successful closed-loop data (Part XIX).</p>
-</div>
-
-<div class="md">
-<p><a id="part-24"></a></p>
-<h2 id="part-xxiv-check-your-understanding">Part XXIV — Check your understanding</h2>
-<p>Try to answer each question before opening its answer.</p>
-<p><strong>1. What is the sampled safe set?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>The union of states visited by successful previous iterations, together with the target set.</p>
-</details>
-<p><strong>2. Why is a sampled state safe?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>Because replaying its stored continuation input takes the system to the next state of a successful
-trajectory and, step by step, to the target.</p>
-</details>
-<p><strong>3. What is the convex safe set?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>The convex hull of the sampled safe set:</p>
-<div class="math display">
-CS^j=\operatorname{conv}(SS^j).
-</div>
-</details>
-<p><strong>4. Why is it control invariant in this example?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>Linearity maps convex combinations of safe state/input pairs to convex combinations of safe
-successors, and the state/input constraints are convex.</p>
-</details>
-<p><strong>5. What is stored besides the state?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>A continuation input/successor and a realized cost-to-go.</p>
-</details>
-<p><strong>6. What does <span class="math inline">x_N=S^\top\lambda</span> mean?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>Together with <span class="math inline">\lambda\ge0</span> and <span class="math inline">\mathbf1^\top\lambda=1</span>, it places the terminal prediction inside
-the convex hull of the successful stored states, which are the rows of <span class="math inline">S</span>.</p>
-</details>
-<p><strong>7. What does <span class="math inline">\lambda^\top V</span> mean?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>The learned terminal value obtained by barycentric interpolation of stored costs-to-go.</p>
-</details>
-<p><strong>8. What is actually learned?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>Terminal safe geometry, continuation information, and terminal cost-to-go; not the system matrices,
-which are known in this example.</p>
-</details>
-<p><strong>9. Why is one feasible trajectory enough to start?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>It provides at least one complete admissible continuation from the repeated initial condition to
-the target, together with safe states and costs-to-go.</p>
-</details>
-<p><strong>10. Why can a horizon-three LMPC outperform the horizon-three seed MPC?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>The learned terminal set and value communicate information about safe and costly behavior beyond
-the explicit three-step prediction window.</p>
-</details>
-<p><strong>11. Why is the <span class="math inline">\ell_1</span> term represented with epigraph variables?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>Absolute values can be represented by linear inequalities <span class="math inline">-e_i\le z_i\le e_i</span>, <span class="math inline">e_i\ge0</span>, while
-minimizing <span class="math inline">\sum e_i</span>, so the online problem stays a QP.</p>
-</details>
-<p><strong>12. Does monotonic iteration cost imply global optimality?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>No. Performance improvement and convergence to a global optimum are different statements.</p>
-</details>
-<p><strong>13. Why does the QP grow with experience?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>Each active safe-state sample contributes a barycentric variable.</p>
-</details>
-<p><strong>14. Why use a limited trajectory window?</strong></p>
-<details>
-<summary>Answer</summary>
-<p>It bounds the size of the online QP while retaining recent successful continuations, including the
-previous iteration, which the cost-improvement argument of XV.2 needs.</p>
-</details>
-</div>
-
-<div class="md">
-<p><a id="part-25"></a></p>
-<h2 id="part-xxv-exercises">Part XXV — Exercises</h2>
-<h3 id="exercise-1-sampled-safe-set-invariance">Exercise 1 — sampled safe-set invariance</h3>
-<p>Prove</p>
-<div class="math display">
-x\in SS^j
-\Longrightarrow
-\exists u\in\mathcal U:
-f(x,u)\in SS^j.
-</div>
-<p>State the required target-set assumption.</p>
-<hr />
-<h3 id="exercise-2-convex-invariance">Exercise 2 — convex invariance</h3>
-<p>For <span class="math inline">x^+=Ax+Bu</span>, prove control invariance of <span class="math inline">CS^j</span> under convex constraints.</p>
-<p>Identify where linearity and convexity enter.</p>
-<hr />
-<h3 id="exercise-3-barycentric-lp">Exercise 3 — barycentric LP</h3>
-<p>Compute <span class="math inline">V_c^1(2.5)</span> by hand in the one-dimensional example.</p>
-<hr />
-<h3 id="exercise-4-dominated-data">Exercise 4 — dominated data</h3>
-<p>Add a worse trajectory through an already sampled state and explain how the sampled minimum and
-convex envelope treat it.</p>
-<hr />
-<h3 id="exercise-5-stage-cost-by-hand">Exercise 5 — stage cost by hand</h3>
-<p>For</p>
-<div class="math display">
-x=[-2,1]^\top,
-\qquad
-u=0.5,
-</div>
-<p>compute the stage cost <span class="math inline">h(x,u)</span> of VIII.2 by hand.</p>
-<hr />
-<h3 id="exercise-6-epigraph">Exercise 6 — epigraph</h3>
-<p>Prove the epigraph representation of <span class="math inline">\|z\|_1</span>.</p>
-<hr />
-<h3 id="exercise-7-horizon">Exercise 7 — horizon</h3>
-<p>Repeat the seed MPC experiment with <span class="math inline">N=2,3,5</span> and compare complete closed-loop task costs.</p>
-<hr />
-<h3 id="exercise-8-different-feasible-seed">Exercise 8 — different feasible seed</h3>
-<p>Generate another successful seed and compare the LMPC learning curve.</p>
-<p>Does the experiment prove initialization independence?</p>
-<hr />
-<h3 id="exercise-9-database-size">Exercise 9 — database size</h3>
-<p>Compare all-data versus recent-trajectory safe sets and record solve time and iteration cost.</p>
-<hr />
-<h3 id="exercise-10-model-mismatch">Exercise 10 — model mismatch</h3>
-<p>If the real system is</p>
-<div class="math display">
-x^+=(A+\Delta A)x+Bu,
-</div>
-<p>which line in the convex-invariance proof fails?</p>
-<hr />
-<h3 id="exercise-11-nonlinear-counterexample">Exercise 11 — nonlinear counterexample</h3>
-<p>Give a nonlinear <span class="math inline">f(x,u)</span> for which convex combinations do not propagate linearly.</p>
-<hr />
-<h3 id="exercise-12-classical-mpc-versus-lmpc-terminal-ingredients">Exercise 12 — classical MPC versus LMPC terminal ingredients</h3>
-<p>Compare the classical pair</p>
-<div class="math display">
-(\mathcal X_f,p)
-</div>
-<p>with the learned pair</p>
-<div class="math display">
-(CS^j,V_c^j).
-</div>
-<p>Which roles are analogous, and where does the information come from?</p>
-</div>
-
-<div class="md">
-<p><a id="part-26"></a></p>
-<h2 id="part-xxvi-references">Part XXVI — References</h2>
-<ul>
-<li>U. Rosolia and F. Borrelli, “Learning Model Predictive Control for Iterative Tasks. A Data-Driven
-Control Framework,” <em>IEEE Transactions on Automatic Control</em>, 63(7), 1883–1896, 2018,
-DOI 10.1109/TAC.2017.2753460.</li>
-<li>F. Borrelli, A. Bemporad, and M. Morari,
-<em>Predictive Control for Linear and Hybrid Systems</em>, Cambridge University Press, 2017.</li>
-<li>J. B. Rawlings, D. Q. Mayne, and M. M. Diehl,
-<em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed., 2022.</li>
-</ul>
-<p>Implementation note: the long-horizon reference of Part IX uses <span class="math inline">N=20</span> after a horizon-convergence
-check instead of a very long horizon such as <span class="math inline">N=1000</span>, so that the notebook remains lightweight and
-solver-independent.</p>
-</div>
-</main>
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Phase plane: the seed run, the learning iterations and the long-horizon reference; below, the learning curve</p>
+        <canvas id="phaseC" aria-label="Position against velocity for the seed MPC trajectory, each LMPC iteration in progressively darker blue, and the dashed long-horizon reference" aria-describedby="heroStatus"></canvas>
+        <canvas id="curveC" aria-label="The gap between each iteration's complete task cost and the long-horizon reference, on a logarithmic scale, against the iteration index" aria-describedby="heroStatus"></canvas>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Seed MPC horizon <span class="m">N_{\mathrm{MPC}}</span>: <b id="hSV"></b></span>
+        <span class="row"><input type="range" id="hS" min="2" max="6" step="1" value="3"></span>
+      </label>
+      <label class="field"><span>LMPC horizon <span class="m">N_{\mathrm{LMPC}}</span>: <b id="hNV"></b></span>
+        <span class="row"><input type="range" id="hN" min="2" max="6" step="1" value="3"></span>
+      </label>
+      <label class="field"><span>Trajectories in the online safe set: <b id="hWV"></b></span>
+        <span class="row"><input type="range" id="hW" min="0" max="9" step="1" value="4"></span>
+      </label>
+      <label class="field"><span>Learning iterations: <b id="hIV"></b></span>
+        <span class="row"><input type="range" id="hI" min="1" max="12" step="1" value="9"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>seed run</span><span class="v" id="rSeed">–</span>
+        <span>last iteration</span><span class="v" id="rLast">–</span>
+        <span>reference cost</span><span class="v" id="rRef">–</span>
+        <span>final gap</span><span class="v" id="rGap">–</span>
+      </div>
+      <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the notebook's setting</button></div>
+      <p class="hint">Double integrator <span class="m">x^+ = Ax + Bu</span> from <span class="m">x_S = (-15, 0)</span> to the origin, <span class="m">|x_i| \le 15</span>, <span class="m">|u| \le 5</span>, stage cost <span class="m">x^\top x + u^2 + 0.01\|x\|_1</span>. Window 0 means every stored trajectory. Each iteration is a full closed-loop run of quadratic programs, solved here in your browser.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#tasks"><span class="n">1</span><span class="t">Repeated tasks and sampled safe sets</span><span class="d">Two indices, a target, and what "safe" means</span></a>
+    <a href="#convex"><span class="n">2</span><span class="t">Convex safe sets</span><span class="d">Barycentric coordinates and the invariance proof</span></a>
+    <a href="#value"><span class="n">3</span><span class="t">Learning a terminal value</span><span class="d">Cost-to-go, its convex extension, a scalar example</span></a>
+    <a href="#lyapunov"><span class="n">4</span><span class="t">The learned value decreases</span><span class="d">A terminal cost from data</span></a>
+    <a href="#problem"><span class="n">5</span><span class="t">The LMPC problem</span><span class="d">One QP, and its recursive feasibility</span></a>
+    <a href="#task"><span class="n">6</span><span class="t">The double-integrator task</span><span class="d">Model, cost, epigraph trick, reference</span></a>
+    <a href="#seed"><span class="n">7</span><span class="t">Seed, database, invariance check</span><span class="d">The first successful run and what is stored</span></a>
+    <a href="#learning"><span class="n">8</span><span class="t">Learning iterations</span><span class="d">The first solve, the curve, what is guaranteed</span></a>
+    <a href="#anatomy"><span class="n">9</span><span class="t">Anatomy of the learning</span><span class="d">Trajectories, hull growth, stored values</span></a>
+    <a href="#meaning"><span class="n">10</span><span class="t">What is learned, data growth, pitfalls</span><span class="d">Not the model, not RL, not a theorem about optimality</span></a>
+    <a href="#check"><span class="n">11</span><span class="t">Check your understanding</span><span class="d">Fourteen questions with answers</span></a>
+    <a href="#exercises"><span class="n">12</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">13</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="tasks">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Repeated tasks and sampled safe sets</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Two indices.</b> LMPC keeps an iteration index <span class="m">j</span> for the repetition of the task and a time index <span class="m">t</span> inside one repetition. A trajectory of iteration <span class="m">j</span> is <span class="m">x^j[0], u^j[0], x^j[1], \ldots, x^j[T_j]</span>, generated by the plant <span class="m">x^j[t+1] = f(x^j[t], u^j[t])</span>, here <span class="m">f(x, u) = Ax + Bu</span>, and every iteration starts from the same state <span class="m">x^j[0] = x_S</span>. The repetition is what makes experience from one run relevant to the next.</p>
+    <p><b>Target and success.</b> Let <span class="m">\mathcal O</span> be the target set. An iteration is <strong>successful</strong> if it respects every state and input constraint and ends in the target, <span class="m">x^j[T_j] \in \mathcal O</span>. In both examples of this chapter, <span class="m">\mathcal O = \{0\}</span>. Only successful iterations feed the construction.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is the sampled safe set?</p>
+      <p><b>In plain words:</b> every state that some earlier successful run passed through, plus the target. Each such state is "safe" because a known admissible way to the target exists from it: replay the rest of that run.</p>
+      <p><b>More precisely:</b> after successful iterations <span class="m">0, \ldots, j</span>,</p>
+      <div class="math-block" data-narrow="\boxed{SS^j = \Big( \bigcup_{i=0}^{j} \bigcup_{t=0}^{T_i} \{x^i[t]\} \Big) \cup \mathcal O.}">\boxed{SS^j = \Big( \bigcup_{i=0}^{j} \bigcup_{t=0}^{T_i} \{x^i[t]\} \Big) \cup \mathcal O.}</div>
+      <p>It is finite for finitely many finite runs and grows as runs are added.</p>
+      <dl>
+        <dt>Control invariance</dt><dd>From every point of the set, some admissible input keeps the next state in the set.</dd>
+        <dt>Continuation</dt><dd>The stored input <span class="m">u^i[t]</span> and successor <span class="m">x^i[t+1]</span> kept with each stored state.</dd>
+        <dt>"Safe"</dt><dd>A model- and task-specific notion. It is not a certificate against disturbances, perception errors or model mismatch.</dd>
+      </dl>
+    </div>
+    <p><b>Why the sampled safe set is control invariant.</b> Take a stored nonterminal state <span class="m">x = x^i[t] \in SS^j</span>. Its stored input <span class="m">u^i[t]</span> was admissible and produced <span class="m">f(x^i[t], u^i[t]) = x^i[t+1] \in SS^j</span>. Hence</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;x \in SS^j \;\Longrightarrow \\ &amp;\quad \exists\, u \in \mathcal U : f(x, u) \in SS^j, \end{aligned}">\boxed{x \in SS^j \;\Longrightarrow\; \exists\, u \in \mathcal U : f(x, u) \in SS^j,}</div>
+    <p>with the convention that an admissible controller keeps the state inside <span class="m">\mathcal O</span> once it arrives. The stored trajectory itself is the continuation. Note the quantifiers: for every state there exists an input. It does not say that one input works for all states; each sample may use a different continuation.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="convex">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Convex safe sets and barycentric coordinates</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Why convexify.</b> A terminal constraint <span class="m">x_N \in SS^j</span> would force the prediction to end exactly on one of finitely many stored points, a combinatorial constraint. In the linear, convex setting one uses instead the <strong>convex safe set</strong></p>
+    <div class="math-block">\boxed{CS^j = \operatorname{conv}(SS^j),}</div>
+    <p>which fills the space between stored states and keeps the online problem convex.</p>
+    <p><b>Barycentric coordinates.</b> Let the stored safe states be <span class="m">s_1, \ldots, s_M</span>. A point <span class="m">x \in CS^j</span> can be written <span class="m">x = \sum_{r=1}^{M} \lambda_r s_r</span> with <span class="m">\lambda_r \ge 0</span> and <span class="m">\sum_r \lambda_r = 1</span>. Stacking the stored states as the <em>rows</em> of <span class="m">S \in \mathbb R^{M \times n}</span>,</p>
+    <div class="math-block">\boxed{x = S^\top \lambda, \qquad \lambda \ge 0, \qquad \mathbf 1^\top \lambda = 1.}</div>
+    <p>The row convention is shared by the formulas and the code, which is why the transpose appears, both here and in the LMPC terminal constraint of Part 5.</p>
+    <div class="big-idea">
+      <p class="define-title">Why the convex safe set is control invariant</p>
+      <p>Assume <span class="m">x^+ = Ax + Bu</span>, convex <span class="m">\mathcal X</span> and <span class="m">\mathcal U</span>, and that every stored state <span class="m">s_r</span> comes with an admissible continuation input <span class="m">u_r^{\mathrm{safe}}</span> and safe successor <span class="m">s_r^+</span>. For <span class="m">x = \sum_r \lambda_r s_r</span> choose <span class="m">u = \sum_r \lambda_r u_r^{\mathrm{safe}}</span>. By linearity,</p>
+      <div class="math-block" data-narrow="\begin{aligned} x^+ &amp;= \sum_r \lambda_r (A s_r + B u_r^{\mathrm{safe}}) \\ &amp;= \sum_r \lambda_r s_r^+ . \end{aligned}">x^+ = \sum_r \lambda_r \big( A s_r + B u_r^{\mathrm{safe}} \big) = \sum_r \lambda_r s_r^+ .</div>
+      <p>The input is admissible because <span class="m">\mathcal U</span> is convex; the successor lies in <span class="m">CS^j</span> because every <span class="m">s_r^+</span> does and the hull is convex. Hence <span class="m">CS^j</span> is control invariant. Linearity is used exactly once, to pull the convex combination through <span class="m">f</span>; convexity is used twice, for the input and for the hull. Part 7 checks this identity numerically on the stored seed to round-off.</p>
+    </div>
+    <p><b>What breaks outside these assumptions.</b> For nonlinear <span class="m">f</span>, <span class="m">f(\sum_r \lambda_r s_r, \sum_r \lambda_r u_r)</span> is in general not <span class="m">\sum_r \lambda_r f(s_r, u_r)</span>, and convex combinations can violate nonconvex constraints (chapter 04's disjunction is the standing example). Convexifying stored trajectories for a nonlinear task needs a separate justification.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="value">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Learning a terminal value function</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Roll-out cost-to-go.</b> For a successful iteration <span class="m">i</span> with stage cost <span class="m">h</span>,</p>
+    <div class="math-block" data-narrow="\begin{aligned} J_t^i &amp;= \textstyle\sum_{k=t}^{T_i - 1} h\big(x^i[k], u^i[k]\big), \\ J_{T_i}^i &amp;= 0 : \end{aligned}">\boxed{J_t^i = \sum_{k=t}^{T_i - 1} h\big(x^i[k], u^i[k]\big)}, \qquad J_{T_i}^i = 0 :</div>
+    <p>the remaining cost actually incurred if the stored continuation is replayed from time <span class="m">t</span>. In the code it is computed by the backward recursion <span class="m">J_t = h(x_t, u_t) + J_{t+1}</span>, which resembles dynamic programming but over realised trajectories, not over the whole state space.</p>
+    <p><b>Sampled value function.</b> If a state appears in several runs, keep the best stored cost-to-go, <span class="m">V^j(x) = \min\{ J_t^i : x^i[t] = x \}</span>, with <span class="m">V^j = 0</span> on <span class="m">\mathcal O</span>. The difficulty is that this function is defined only at sampled states.</p>
+    <div class="define">
+      <p class="define-title">What is the convex terminal value?</p>
+      <p><b>In plain words:</b> the cheapest way to write <span class="m">x</span> as a mixture of stored states, charging each stored state its stored cost. It is the lower convex envelope of the stored (state, value) pairs, and it costs one linear program.</p>
+      <p><b>More precisely:</b></p>
+      <div class="math-block" data-narrow="\begin{aligned} V_c^j(x) = \min_{\lambda}\; &amp;\sum_{r=1}^{M} \lambda_r V_r \\ \text{s.t.}\quad &amp;S^\top \lambda = x, \\ &amp;\mathbf 1^\top \lambda = 1, \quad \lambda \ge 0, \end{aligned}">\boxed{V_c^j(x) = \min_{\lambda} \sum_{r=1}^{M} \lambda_r V_r} \quad \text{s.t.} \quad S^\top \lambda = x, \quad \mathbf 1^\top \lambda = 1, \quad \lambda \ge 0,</div>
+      <p>where <span class="m">V_r</span> is the cost-to-go stored with row <span class="m">r</span> of <span class="m">S</span>. For fixed data this is a linear program in <span class="m">\lambda</span>.</p>
+      <dl>
+        <dt>Dominated sample</dt><dd>A stored pair lying above the envelope. The LP never selects it and <span class="m">V_c^j</span> need not reproduce its value.</dd>
+        <dt>Carathéodory</dt><dd>In <span class="m">\mathbb R^n</span> at most <span class="m">n + 1</span> stored points are needed to represent any hull point, so a sparse <span class="m">\lambda</span> always exists.</dd>
+      </dl>
+    </div>
+    <p><b>A one-dimensional example.</b> The scalar integrator <span class="m">x^+ = x + u</span> with <span class="m">x \in [-5, 5]</span>, <span class="m">u \in [-1, 1]</span>, target <span class="m">\{0\}</span> and <span class="m">h(x, u) = x^2 + 0.1u^2</span>. Two successful runs, <span class="m">4 \to 3 \to 2 \to 1 \to 0</span> and <span class="m">-3 \to -2 \to -1 \to 0</span>, give <span class="m">SS^1 = \{-3, \ldots, 4\}</span>, <span class="m">CS^1 = [-3, 4]</span>, and stored costs-to-go such as <span class="m">J(4) = 16.1 + 9.1 + 4.1 + 1.1 = 30.4</span> and <span class="m">J(2) = 4.1 + 1.1 = 5.2</span>.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="scalarW">
+      <canvas id="scalarC" aria-label="Stored cost-to-go samples of the scalar integrator as dots and their lower convex envelope as a curve, with a movable probe showing the barycentric value at one state" aria-describedby="scalarCap" style="cursor:crosshair"></canvas>
+      <div class="btn-row"><button class="btn" type="button" id="scExtra" aria-pressed="false">add a worse third run through 2, 1.6, 1.0, 0.4</button></div>
+      <p class="caption" id="scalarCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p><b>How to read the figure.</b> The dots are values known from previous executions. The curve is not new measured data: for each intermediate <span class="m">x</span> it answers "what is the cheapest convex combination of stored pairs that represents this state?" In one dimension that is a convex, piecewise-affine lower envelope. The notebook's query is <span class="m">x = 2.5</span>: <span class="m">\lambda = 0.5</span> on <span class="m">x = 2</span> and <span class="m">0.5</span> on <span class="m">x = 3</span>, so <span class="m">V_c^1(2.5) = 0.5 \cdot 5.2 + 0.5 \cdot 14.3 = 9.75</span>, and the reconstructed state is exactly 2.5.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="lyapunov">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Why the learned value can act like a terminal Lyapunov function</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Data recursion.</b> For a stored state <span class="m">s_r</span> with input <span class="m">u_r</span> and successor <span class="m">s_r^+</span>, the stored costs satisfy <span class="m">J_r = h(s_r, u_r) + J_r^+</span>. For <span class="m">x = \sum_r \lambda_r s_r</span> use <span class="m">u = \sum_r \lambda_r u_r</span>, so that <span class="m">x^+ = \sum_r \lambda_r s_r^+</span> by Part 2.</p>
+    <p><b>Learned-value decrease.</b> Convexity of <span class="m">h</span> gives <span class="m">h(x, u) \le \sum_r \lambda_r h(s_r, u_r)</span>. The definition of <span class="m">V_c^j</span> as a minimum gives <span class="m">V_c^j(x^+) \le \sum_r \lambda_r J_r^+</span>, since the weights <span class="m">\lambda</span> on the successors are one feasible choice. Adding,</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;h(x, u) + V_c^j(x^+) \\ &amp;\quad \le \textstyle\sum_r \lambda_r \big[ h(s_r, u_r) + J_r^+ \big] \\ &amp;\quad = \textstyle\sum_r \lambda_r J_r . \end{aligned}">h(x, u) + V_c^j(x^+) \le \sum_r \lambda_r \big[ h(s_r, u_r) + J_r^+ \big] = \sum_r \lambda_r J_r .</div>
+    <p>If <span class="m">\lambda</span> is the minimiser defining <span class="m">V_c^j(x)</span>, the right side is <span class="m">V_c^j(x)</span>, and</p>
+    <div class="math-block">\boxed{V_c^j(x^+) - V_c^j(x) \le -h(x, u).}</div>
+    <p>This is the same structural condition as the terminal-cost decrease <span class="m">p(Ax + B\kappa_f(x)) - p(x) \le -\ell(x, \kappa_f(x))</span> of chapter 03, with the terminal value built from data instead of a Riccati equation. The convex hull plays the role of <span class="m">\mathcal X_f</span>, the convex combination of stored inputs plays the role of the terminal controller <span class="m">\kappa_f</span>.</p>
+    <div class="callout">
+      <p><b>Worked instance.</b> In the scalar example take <span class="m">x = 2.5</span>, <span class="m">\lambda = (0.5, 0.5)</span> on <span class="m">s = 2, 3</span>, stored inputs <span class="m">-1, -1</span>, so <span class="m">u = -1</span> and <span class="m">x^+ = 1.5</span>. Then <span class="m">V_c(1.5) = 0.5 \cdot 1.1 + 0.5 \cdot 5.2 = 3.15</span>, <span class="m">h(2.5, -1) = 6.25 + 0.1 = 6.35</span>, and <span class="m">V_c(1.5) - V_c(2.5) = 3.15 - 9.75 = -6.6 \le -6.35</span>. The slack of <span class="m">0.25</span> is the convexity gap of <span class="m">x^2</span> between <span class="m">2.5^2</span> and the average of <span class="m">2^2</span> and <span class="m">3^2</span>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="problem">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The LMPC online optimisation</h2>
+  </div>
+  <div class="col prose">
+    <p>At the current state, with stored data <span class="m">(S, V)</span>, solve</p>
+    <div class="math-block" data-narrow="\begin{aligned} \min_{\{u_k\}, \lambda}\; &amp;\sum_{k=0}^{N-1} h(x_k, u_k) + \sum_{r=1}^{M} \lambda_r V_r \\ \text{s.t.}\; &amp;x_{k+1} = A x_k + B u_k, \\ &amp;x_k \in \mathcal X, \; u_k \in \mathcal U, \\ &amp;x_N = S^\top \lambda, \\ &amp;\lambda \ge 0, \; \mathbf 1^\top \lambda = 1. \end{aligned}">\begin{aligned} \min_{\{u_k\}, \lambda}\quad &amp; \sum_{k=0}^{N-1} h(x_k, u_k) + \sum_{r=1}^{M} \lambda_r V_r \\ \text{s.t.}\quad &amp; x_{k+1} = A x_k + B u_k, \qquad x_k \in \mathcal X, \quad u_k \in \mathcal U, \\ &amp; x_N = S^\top \lambda, \qquad \lambda \ge 0, \qquad \mathbf 1^\top \lambda = 1. \end{aligned}</div>
+    <p><b>Geometric meaning.</b> The equality <span class="m">x_N = S^\top \lambda</span> lets the optimiser reconnect to any point in the convex hull of successful experience; the cost <span class="m">\lambda^\top V</span> tells it how expensive the stored continuation from that point is. LMPC therefore learns terminal <strong>geometry</strong> and terminal <strong>value</strong> at once. The last two constraints and the learned cost are the data-driven terminal ingredients; everything else is chapter 01's CFTOC.</p>
+    <p><b>Recursive feasibility by the shifted sequence.</b> Suppose the solution ends at <span class="m">x_N^\star = \sum_r \lambda_r^\star s_r</span>. At the next time, shift the optimised inputs and append</p>
+    <div class="math-block">\boxed{u_N^{\mathrm{safe}} = \sum_r \lambda_r^\star u_r^{\mathrm{safe}}.}</div>
+    <p>Then <span class="m">x_{N+1} = A \sum_r \lambda_r^\star s_r + B \sum_r \lambda_r^\star u_r^{\mathrm{safe}} = \sum_r \lambda_r^\star s_r^+ \in CS^j</span>: the shifted sequence is feasible for the new problem, exactly as in chapter 03's terminal-set proof, with the stored continuation inputs in place of the terminal controller. The code's warm start is this shifted sequence.</p>
+    <div class="table-wrap" style="margin-top:1rem"><table id="pairT">
+      <thead><tr><th>Role</th><th>Classical MPC (chapter 03)</th><th>LMPC (this chapter)</th></tr></thead>
+      <tbody>
+        <tr><td>Terminal set</td><td><span class="m">\mathcal X_f</span>, an invariant polytope computed from the model</td><td><span class="m">CS^j</span>, the hull of states visited by successful runs</td></tr>
+        <tr><td>Terminal cost</td><td><span class="m">p(x) = x^\top P x</span> from the Riccati equation</td><td><span class="m">V_c^j(x) = \lambda^\top V</span>, barycentric in stored costs-to-go</td></tr>
+        <tr><td>Terminal controller</td><td><span class="m">\kappa_f(x) = -Kx</span></td><td><span class="m">\sum_r \lambda_r u_r^{\mathrm{safe}}</span>, a mixture of stored inputs</td></tr>
+        <tr><td>Decrease condition</td><td><span class="m">p(x^+) - p(x) \le -\ell</span>, by design</td><td><span class="m">V_c^j(x^+) - V_c^j(x) \le -h</span>, by convexity and the data recursion</td></tr>
+        <tr><td>Source of information</td><td>The model and the designer</td><td>The model and successful closed-loop data</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="task">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The double-integrator task</h2>
+  </div>
+  <div class="col table-wrap">
+    <table id="dataT">
+      <thead><tr><th>Symbol</th><th>Value</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">A, B</span></td><td><span class="m">\begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \end{pmatrix}, \begin{pmatrix} 0 \\ 1 \end{pmatrix}</span></td><td>position and velocity, unit sample time</td></tr>
+        <tr><td><span class="m">x_S</span></td><td><span class="m">(-15, 0)</span></td><td>the repeated initial state, at rest on the state box</td></tr>
+        <tr><td><span class="m">\mathcal X, \mathcal U</span></td><td><span class="m">|x_i| \le 15</span>, <span class="m">|u| \le 5</span></td><td>box constraints</td></tr>
+        <tr><td><span class="m">Q, Q_1, R</span></td><td><span class="m">I</span>, <span class="m">0.01 I</span>, <span class="m">1</span></td><td>quadratic, <span class="m">\ell_1</span> and input weights</td></tr>
+        <tr><td><span class="m">N_{\mathrm{MPC}} = N_{\mathrm{LMPC}}</span></td><td>3</td><td>the deliberately short horizon of both controllers</td></tr>
+        <tr><td><span class="m">N_{\mathrm{ref}}</span></td><td>20</td><td>the long-horizon reference, after a convergence check</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p><b>Stage cost.</b></p>
+    <div class="math-block">\boxed{h(x, u) = x^\top Q x + u^\top R u + \|Q_1 x\|_1,}</div>
+    <p>convex but not purely quadratic. At the start, <span class="m">h(x_S, 0) = 225 + 0 + 0.01 \cdot 15 = 225.15</span>. The small <span class="m">\ell_1</span> term is there to show that the value-decrease argument of Part 4 needs only convexity of <span class="m">h</span>, and that the online problem can still be a QP.</p>
+    <p><b>Epigraph formulation of the <span class="m">\ell_1</span> term.</b> Let <span class="m">z_k = Q_1 x_k</span>. Introduce <span class="m">e_{i,k} \ge 0</span> with <span class="m">z_{i,k} \le e_{i,k}</span> and <span class="m">-z_{i,k} \le e_{i,k}</span>, and add <span class="m">\sum_i e_{i,k}</span> to the objective. At the optimum <span class="m">e_{i,k} = |z_{i,k}|</span>, because any larger value could be lowered at no cost, so the <span class="m">\ell_1</span> term becomes linear inequalities plus a linear objective term. The code places epigraph variables on <span class="m">x_1, \ldots, x_{N-1}</span>; <span class="m">x_0</span> is a constant and <span class="m">x_N</span> is priced by the terminal value.</p>
+    <p><b>Why such a short horizon.</b> The seed controller and LMPC both use <span class="m">N = 3</span>, the same stage cost and the same constraints; they differ only in their terminal ingredients, none for the seed, learned for LMPC. The short horizon is what leaves room for learning: with a substantially longer horizon, plain MPC already comes very close to the reference on this task (exercise 7: <span class="m">N = 5</span> alone gets within <span class="m">7 \times 10^{-4}</span>).</p>
+    <p><b>Long-horizon reference.</b> A common benchmark is one open-loop solve with a very long horizon, say <span class="m">N = 1000</span>, as a proxy for the infinite-horizon optimum. Here the computation is kept light and solver-independent by checking horizon convergence instead:</p>
+    <div class="table-wrap" style="margin-top:0.6rem"><table class="num">
+      <thead><tr><th><span class="m">N_{\mathrm{ref}}</span></th><th>open-loop cost</th><th>terminal norm</th></tr></thead>
+      <tbody>
+        <tr><td>10</td><td>673.675953310</td><td><span class="m">3.0 \times 10^{-2}</span></td></tr>
+        <tr><td>15</td><td>673.676653450</td><td><span class="m">7 \times 10^{-13}</span></td></tr>
+        <tr><td>20</td><td>673.676653450</td><td><span class="m">2 \times 10^{-9}</span></td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:0.6rem">The value has converged to nine decimals, so <span class="m">N_{\mathrm{ref}} = 20</span> is the reference for the rest of the chapter: <span class="m">J_{\mathrm{ref}} = 673.6766534</span>. It is a numerical reference, not a proof that a finite horizon equals the exact infinite-horizon optimum. (With <span class="m">N = 10</span> the trajectory cannot quite reach the origin, which is why its cost is slightly <em>lower</em>: the unweighted terminal state <span class="m">x_N</span> absorbs what the shorter horizon leaves undone.)</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="seed">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The seed run, the database and an invariance check</h2>
+  </div>
+  <div class="col prose">
+    <p><b>A feasible but suboptimal seed.</b> LMPC needs one successful trajectory. The notebook generates it with ordinary receding-horizon MPC, horizon 3, no terminal cost or constraint, run until <span class="m">\|x\| \le 10^{-6}</span>, then closes the run exactly onto the origin with a two-step bridge: from <span class="m">x = (p, v)</span> the inputs <span class="m">u_0 = -p - 2v</span> and <span class="m">u_1 = p + v</span> give <span class="m">x_{k+2} = 0</span> for this <span class="m">A, B</span> (exercise: check it). The bridge only exists so that the stored trajectory ends exactly in <span class="m">\mathcal O</span>; its inputs are of order <span class="m">10^{-6}</span>.</p>
+    <div class="table-wrap" style="margin-top:0.6rem"><table class="num">
+      <thead><tr><th>quantity</th><th>seed, <span class="m">N = 3</span></th><th>reference</th></tr></thead>
+      <tbody>
+        <tr><td>first input</td><td>4.285</td><td>5 (saturated)</td></tr>
+        <tr><td>complete task cost</td><td>693.9923723</td><td>673.6766534</td></tr>
+        <tr><td>gap</td><td>20.3157</td><td>–</td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:0.6rem">The first seed input is easy to check by hand: with <span class="m">x_1 = (-15, u_0)</span> and <span class="m">x_2 = (-15 + u_0, u_0 + u_1)</span>, the quadratic part of the three-step cost is stationary at <span class="m">8u_0 + 2u_1 = 30</span> and <span class="m">2u_0 + 4u_1 = 0</span>, so <span class="m">u_0 = 30/7 = 4.2857</span>, the notebook's 4.285 once the tiny <span class="m">\ell_1</span> term is included. A three-step horizon with no terminal cost sees no reason to use the full input: it is the horizon-one pathology of chapter 03 in milder form. The seed trajectory is feasible, slow and <span class="m">20.3</span> more expensive than the reference.</p>
+    <div class="callout">
+      <p><b>About the step counts.</b> The notebook reports a 26-step seed and iterations of 22 to 19 steps. Those counts measure the solver's tolerance, not the controllers: near the origin the states are of order <span class="m">10^{-5}</span>, the remaining cost is below <span class="m">10^{-6}</span>, and SciPy's SLSQP (tolerance <span class="m">10^{-8}</span> on a cost near 674) wanders for several steps before the stop test <span class="m">\|x\| \le 10^{-6}</span> fires. With the tighter interior-point solver used on this page, every LMPC iteration reaches the origin in 12 steps plus the 2-step bridge, and the seed MPC approaches it geometrically (about a factor 2 per step) so its count depends on the stopping tolerance alone. The complete task costs agree with the notebook to <span class="m">7 \times 10^{-5}</span>, which is exactly the size of the solver's tolerance. Compare costs, not step counts.</p>
+    </div>
+    <p><b>Complete task cost against open-loop objective.</b> One <span class="m">N = 3</span> solve prices three stages. The seed's closed-loop cost accumulates the whole repeated execution until the target. Learning curves compare complete iteration costs, never open-loop objectives.</p>
+    <p><b>The database.</b> The controller stores, for every successful run, the states, the applied inputs and the backward costs-to-go, with the target <span class="m">x = 0</span> represented once explicitly with value zero. After the seed: 1 trajectory, 27 safe samples (the target plus 26 states), stored cost 693.992. Every nonterminal sample has a continuation input, a successor sample and a cost-to-go, which makes the invariance statement constructive. Sample 5, for instance, is <span class="m">s_5 = (-3.369, 1.836)</span> with input <span class="m">-0.874</span>, successor <span class="m">(-1.533, 0.962)</span>, dynamics residual exactly zero and cost-to-go 19.799.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="invW">
+      <label class="field"><span>Shift weight onto the first chosen point: <b id="ivTV"></b></span><span class="row"><input type="range" id="ivT" min="0" max="1" step="0.05" value="0"></span></label>
+      <canvas id="invC" aria-label="The stored seed trajectory with four chosen states, their convex combination, its one-step successor under the combined input, and the convex combination of the stored successors, which coincide" aria-describedby="invCap"></canvas>
+      <p class="caption" id="invCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="learning">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The first LMPC solve and the learning iterations</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The first solve from the start.</b> The explicit horizon is still 3, but the terminal set and value now carry information beyond those three steps. From <span class="m">x_S</span> the first LMPC input is <span class="m">u_0 = 5</span>, saturated, where the seed chose 4.285. The predicted terminal state <span class="m">x_3 = (-4.994, 2.486)</span> equals its barycentric reconstruction <span class="m">S^\top \lambda</span>, <span class="m">\sum \lambda = 1</span>, and only two of the 27 weights are active: <span class="m">\lambda_4 = 0.5308</span> on <span class="m">s_4 = (-6.430, 3.061)</span> with value 72.106 and <span class="m">\lambda_5 = 0.4692</span> on <span class="m">s_5 = (-3.369, 1.836)</span> with value 19.799. The terminal state is two-dimensional, so Carathéodory's theorem promises a representation with at most three points; the optimum here uses two, a point on an edge of the hull.</p>
+    <p><b>Why saturating is suddenly worth it.</b> The seed judged <span class="m">u_0 = 5</span> too expensive because its three-step objective charged the input but credited nothing for arriving earlier. LMPC charges the same three stages and adds <span class="m">\lambda^\top V</span>, the stored cost of finishing the task from <span class="m">x_3</span>: landing further along the seed path, between its samples 4 and 5, buys a much cheaper continuation. The information came entirely from one slow run.</p>
+    <p><b>The iteration algorithm.</b> Each iteration resets to <span class="m">x_S</span>, solves the LMPC problem at every step with the shifted warm start, reaches the target, closes with the exact bridge, appends the new successful trajectory and updates the costs-to-go. The online QP uses the target plus the most recent four trajectories; the full history is kept for analysis. The notebook runs nine iterations:</p>
+    <div class="table-wrap" style="margin-top:0.6rem"><table class="num">
+      <thead><tr><th>iteration</th><th>complete task cost</th><th>change</th><th>gap to reference</th></tr></thead>
+      <tbody>
+        <tr><td>0 (seed)</td><td>693.992372341</td><td>–</td><td>20.3157</td></tr>
+        <tr><td>1</td><td>673.931584182</td><td>−20.060788</td><td>0.2549</td></tr>
+        <tr><td>2</td><td>673.699646784</td><td>−0.231937</td><td>0.0230</td></tr>
+        <tr><td>3</td><td>673.682513569</td><td>−0.017133</td><td><span class="m">5.9 \times 10^{-3}</span></td></tr>
+        <tr><td>4</td><td>673.678696282</td><td>−0.003817</td><td><span class="m">2.0 \times 10^{-3}</span></td></tr>
+        <tr><td>5</td><td>673.677471791</td><td>−0.001224</td><td><span class="m">8.2 \times 10^{-4}</span></td></tr>
+        <tr><td>6</td><td>673.677011397</td><td>−0.000460</td><td><span class="m">3.6 \times 10^{-4}</span></td></tr>
+        <tr><td>7</td><td>673.676818458</td><td>−0.000193</td><td><span class="m">1.6 \times 10^{-4}</span></td></tr>
+        <tr><td>8</td><td>673.676732389</td><td>−0.000086</td><td><span class="m">7.9 \times 10^{-5}</span></td></tr>
+        <tr><td>9</td><td>673.676705720</td><td>−0.000027</td><td><span class="m">5.2 \times 10^{-5}</span></td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:0.6rem">The seed is iteration 0; every later point is the complete cost of one new LMPC execution. The first iteration removes 99 percent of the gap, because the stored seed already contains the whole safe path and its costs-to-go. Later iterations refine the stored values, and each change is a few times smaller than the last. The largest iteration-to-iteration change is <span class="m">-2.7 \times 10^{-5}</span>: never an increase. On this page the same experiment runs live in the demo above, and you can change both horizons, the window and the number of iterations.</p>
+    <div class="big-idea">
+      <p class="define-title">What is guaranteed and what is observed</p>
+      <p>Under the deterministic repetitive-task assumptions, the previous successful trajectory remains a feasible candidate for the next iteration: its terminal state is in the hull, its continuation is stored, and the LMPC objective at <span class="m">x_S</span> is at most the stored cost. That supports the non-increasing iteration-cost result <span class="m">J^{j+1}(x_S) \le J^j(x_S)</span>, visible in the table. It is a different statement from "every LMPC converges to the unique global infinite-horizon optimum", which this chapter does not claim. What is observed in addition is that the learned trajectories approach the long-horizon reference to within <span class="m">5 \times 10^{-5}</span>. Exercise 8 shows that other seeds give curves that are flat at the same level with wiggles of <span class="m">10^{-5}</span>, the solver's tolerance, not violations of the theory.</p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="anatomy">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Anatomy of the learning: trajectories, hull growth, stored values</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Phase plane and controls.</b> The seed curls slowly towards the origin at low speed; the first LMPC iteration already lies close to the reference, accelerating hard at the start, coasting, then braking hard. The later iterations are visually indistinguishable from the reference and from each other, which is consistent with costs differing in the fourth decimal. The input sequences tell the same story: the seed never saturates, LMPC saturates at <span class="m">+5</span> for the first steps and at <span class="m">-5</span> when braking, like the reference.</p>
+    <p><b>Safe-set growth.</b> Every successful run adds its states to the database and can enlarge or reshape the convex hull. After the seed the hull is the region between one slow curve and its chord back to the origin; the first LMPC runs push it out to the fast, saturated trajectories, and then it stops changing (in the browser's run the areas are 45.1 after the seed, 55.1 after three iterations and 55.1 after nine). Yet the costs keep improving. The hull is only half of the learning: LMPC also learns better cost-to-go values, and even when the geometry near convergence is fixed, improved terminal values still alter the short-horizon decision.</p>
+    <p><b>Stored costs-to-go.</b> The cost-to-go along each stored trajectory is computed backward, <span class="m">J_T = 0</span>, <span class="m">J_t = h(x_t, u_t) + J_{t+1}</span>. The notebook checks the recursion on the last iteration: the maximum residual is <span class="m">2.8 \times 10^{-14}</span>, round-off. The curve <span class="m">t \mapsto J_t</span> is the learned value function sampled along one run; <span class="m">J_0</span> is the iteration cost that the learning curve plots.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="detW">
+      <div class="seg" role="group" aria-label="View">
+        <button class="btn" type="button" data-view="hull" aria-pressed="true">safe-set hulls</button>
+        <button class="btn" type="button" data-view="ctrl" aria-pressed="false">input sequences</button>
+        <button class="btn" type="button" data-view="ctg" aria-pressed="false">stored costs-to-go</button>
+      </div>
+      <canvas id="detC" aria-label="Depending on the chosen view: the convex hulls of the stored states after the seed, after three and after all learning iterations; or the input sequences of the seed, the last iteration and the reference; or the stored cost-to-go along the seed and the last iteration" aria-describedby="detCap"></canvas>
+      <p class="caption" id="detCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="meaning">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>What is learned, data growth, and common pitfalls</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The plant model is not learned.</b> <span class="m">A</span> and <span class="m">B</span> are known and used explicitly in every online QP. What is learned: safe terminal geometry, successful continuation inputs, and terminal cost-to-go information. Data-driven, not model-free.</p>
+    <p><b>LMPC is not DQN.</b> A deep Q-network learns an action-value approximation, usually with a neural network and temporal-difference updates. This LMPC keeps an explicit model and explicit constraints, solves an optimisation online, and uses data only to build terminal ingredients. The two are related through value information, not through the algorithm.</p>
+    <p><b>LMPC against iterative learning control.</b> Both exploit repetition. Classical ILC updates a trial-indexed input signal from one execution to the next; LMPC inserts learned trajectory information into a constrained receding-horizon problem. Its distinctive object is the learned terminal set and value pair.</p>
+    <p><b>Do different initialisations converge to the same solution?</b> LMPC only needs an initial feasible successful trajectory, from MPC, LQR, a demonstration or anything else. Feasibility alone gives no universal global-optimum guarantee; the answer depends on the task, convexity, stored data and the formulation. This convex example does produce the same limiting cost from different reasonable seeds (exercise 8), but that observation is not a theorem.</p>
+    <p><b>Time-varying safe sets and data growth.</b> If every state of every run is kept, the number of barycentric variables grows with the total sample count. One remedy is a time-varying subset,</p>
+    <div class="math-block" data-narrow="TS_t^{l,j} = \Big( \bigcup_{i=l}^{j} \bigcup_{s=t}^{T_i} \{x^i[s]\} \Big) \cup \mathcal O,">TS_t^{l,j} = \Big( \bigcup_{i=l}^{j} \bigcup_{s=t}^{T_i} \{x^i[s]\} \Big) \cup \mathcal O,</div>
+    <p>which keeps only iterations <span class="m">l, \ldots, j</span> and, from each, only the states visited at time <span class="m">t</span> or later. The notebook's controller uses the iteration window alone, the most recent four trajectories, and keeps all time indices. The previous iteration is always retained, which the cost-improvement argument needs. Any such subset trades richer data against a smaller online QP.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="growW">
+      <canvas id="growC" aria-label="The number of stored safe states after each trajectory, all data as a dashed line and the online window as a solid line" aria-describedby="growCap"></canvas>
+      <p class="caption" id="growCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p><b>What the experiment establishes.</b> The short-horizon seed is feasible but more expensive; successful data provide terminal geometry and cost-to-go; the LMPC terminal state satisfies a barycentric safe-set constraint; repeated executions reduce the complete task cost; the learned trajectories approach the long-horizon reference; the modelled constraints are satisfied throughout. <b>What it does not establish:</b> robustness to disturbances or model mismatch, safety of arbitrary nonlinear convexification, global-optimality convergence for every LMPC problem, model-free learning, or transfer to other initial conditions without further analysis.</p>
+    <div class="callout">
+      <p><b>Common pitfalls.</b> <em>Every stored state is optimal:</em> no, stored states are safe because they belong to successful runs, and a successful run may be very suboptimal (the seed is). <em>The convex hull is always safe:</em> no, the proof relies on linear dynamics and convex constraints. <em>The terminal value is a neural network:</em> not here; it is barycentric interpolation of stored roll-out costs. <em>Hull growth alone explains the learning:</em> no, the learned value is equally important, and after a few iterations the hull hardly changes while the cost still falls. <em>The long-horizon reference proves the exact infinite-horizon optimum:</em> no, it is a finite-horizon proxy whose convergence was checked. <em>A three-step horizon only sees three steps ahead:</em> only the explicit prediction is three steps long; the terminal constraint links it to stored continuations that reach the target and the terminal cost prices the remainder, which is why LMPC beats the seed with the same horizon. <em>LMPC is reinforcement learning because it learns from data:</em> here it is model-based predictive control with terminal ingredients learned from successful closed-loop data.</p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <p>Try to answer each question before opening it.</p>
+    <details class="sol"><summary>1. What is the sampled safe set?</summary><p>The union of the states visited by successful previous iterations, together with the target set.</p></details>
+    <details class="sol"><summary>2. Why is a sampled state safe?</summary><p>Because replaying its stored continuation input takes the system to the next state of a successful trajectory and, step by step, to the target.</p></details>
+    <details class="sol"><summary>3. What is the convex safe set?</summary><p>The convex hull of the sampled safe set, <span class="m">CS^j = \operatorname{conv}(SS^j)</span>.</p></details>
+    <details class="sol"><summary>4. Why is it control invariant in this example?</summary><p>Linearity maps convex combinations of safe state and input pairs to the same convex combinations of safe successors, and the state and input constraints are convex.</p></details>
+    <details class="sol"><summary>5. What is stored besides the state?</summary><p>A continuation input with its successor, and a realised cost-to-go.</p></details>
+    <details class="sol"><summary>6. What does <span class="m">x_N = S^\top \lambda</span> mean?</summary><p>Together with <span class="m">\lambda \ge 0</span> and <span class="m">\mathbf 1^\top \lambda = 1</span>, it places the terminal prediction inside the convex hull of the stored successful states, which are the rows of <span class="m">S</span>.</p></details>
+    <details class="sol"><summary>7. What does <span class="m">\lambda^\top V</span> mean?</summary><p>The learned terminal value: barycentric interpolation of the stored costs-to-go.</p></details>
+    <details class="sol"><summary>8. What is actually learned?</summary><p>Terminal safe geometry, continuation information and terminal cost-to-go. Not the system matrices, which are known here.</p></details>
+    <details class="sol"><summary>9. Why is one feasible trajectory enough to start?</summary><p>It provides a complete admissible continuation from the repeated initial condition to the target, together with safe states and their costs-to-go.</p></details>
+    <details class="sol"><summary>10. Why can a horizon-three LMPC outperform the horizon-three seed MPC?</summary><p>The learned terminal set and value communicate information about safe and costly behaviour beyond the explicit three-step window. From <span class="m">x_S</span>, the seed applies 4.285 and LMPC applies 5 for exactly that reason.</p></details>
+    <details class="sol"><summary>11. Why is the <span class="m">\ell_1</span> term represented with epigraph variables?</summary><p>Absolute values become linear inequalities <span class="m">-e_i \le z_i \le e_i</span>, <span class="m">e_i \ge 0</span>, with <span class="m">\sum e_i</span> minimised, so the online problem stays a QP.</p></details>
+    <details class="sol"><summary>12. Does monotone iteration cost imply global optimality?</summary><p>No. Performance improvement and convergence to a global optimum are different statements.</p></details>
+    <details class="sol"><summary>13. Why does the QP grow with experience?</summary><p>Each active safe-state sample contributes one barycentric variable <span class="m">\lambda_r</span>.</p></details>
+    <details class="sol"><summary>14. Why use a limited trajectory window?</summary><p>It bounds the size of the online QP while retaining recent successful continuations, including the previous iteration, which the cost-improvement argument needs.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Sampled safe-set invariance.</b> Prove <span class="m">x \in SS^j \Rightarrow \exists u \in \mathcal U : f(x, u) \in SS^j</span>, and state the required target-set assumption.
+        <details class="sol"><summary>Hint</summary><p>Two cases: a stored nonterminal state, and a point of the target.</p></details>
+        <details class="sol"><summary>Solution</summary><p>If <span class="m">x = x^i[t]</span> with <span class="m">t &lt; T_i</span>, the stored input <span class="m">u^i[t] \in \mathcal U</span> was applied in a successful, hence admissible, run and produced <span class="m">x^i[t+1]</span>, which is in <span class="m">SS^j</span> by definition. If <span class="m">x \in \mathcal O</span> (this includes every terminal state <span class="m">x^i[T_i]</span>), one must assume that <span class="m">\mathcal O</span> is itself control invariant under an admissible controller: there is <span class="m">u \in \mathcal U</span> with <span class="m">f(x, u) \in \mathcal O \subseteq SS^j</span>. For <span class="m">\mathcal O = \{0\}</span> and the double integrator, <span class="m">u = 0</span> does it.</p></details>
+      </div></li>
+      <li><div><b>Convex invariance.</b> For <span class="m">x^+ = Ax + Bu</span>, prove control invariance of <span class="m">CS^j</span> under convex constraints and identify where linearity and convexity enter.
+        <details class="sol"><summary>Hint</summary><p>Use the mixture of stored inputs with the same weights.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Let <span class="m">x = \sum_r \lambda_r s_r</span>, <span class="m">\lambda</span> in the simplex, and <span class="m">u = \sum_r \lambda_r u_r^{\mathrm{safe}}</span>. <em>Convexity of <span class="m">\mathcal U</span></em>: <span class="m">u</span> is a convex combination of admissible inputs, so <span class="m">u \in \mathcal U</span>. <em>Linearity</em>: <span class="m">Ax + Bu = \sum_r \lambda_r (A s_r + B u_r^{\mathrm{safe}}) = \sum_r \lambda_r s_r^+</span>. <em>Convexity of the hull</em>: each <span class="m">s_r^+ \in SS^j \subseteq CS^j</span>, so their convex combination is in <span class="m">CS^j</span>. <em>Convexity of <span class="m">\mathcal X</span></em> is needed too: the hull of admissible states must consist of admissible states, which holds since <span class="m">SS^j \subseteq \mathcal X</span> and <span class="m">\mathcal X</span> is convex.</p></details>
+      </div></li>
+      <li><div><b>Barycentric LP.</b> Compute <span class="m">V_c^1(2.5)</span> by hand in the one-dimensional example.
+        <details class="sol"><summary>Hint</summary><p>In one dimension the cheapest representation of a point between two consecutive samples uses those two samples, provided the stored values are convex in <span class="m">x</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The stored pairs are <span class="m">(2, 5.2)</span> and <span class="m">(3, 14.3)</span>, and the sequence of values <span class="m">0, 1.1, 5.2, 14.3, 30.4</span> has increasing increments, so it is convex and no farther pair can do better. <span class="m">2.5 = 0.5 \cdot 2 + 0.5 \cdot 3</span> gives <span class="m">V_c^1(2.5) = 0.5 \cdot 5.2 + 0.5 \cdot 14.3 = 9.75</span>, the notebook's output with <span class="m">\lambda = (0.5, 0.5)</span>.</p></details>
+      </div></li>
+      <li><div><b>Dominated data.</b> Add a worse trajectory through an already sampled state and explain how the sampled minimum and the convex envelope treat it.
+        <details class="sol"><summary>Hint</summary><p>Try the widget of Part 3: its button adds a run <span class="m">2 \to 1.6 \to 1.0 \to 0.4 \to 0</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The slow run stores <span class="m">J(2) = 4.016 + 2.596 + 1.036 + 0.176 = 7.824</span> (stage costs <span class="m">x^2 + 0.1u^2</span> with inputs <span class="m">-0.4, -0.6, -0.6, -0.4</span>), worse than the existing 5.2 at <span class="m">x = 2</span>. The sampled value function keeps the minimum, 5.2. The convex extension ignores the dominated pairs: <span class="m">(1.6, 3.808)</span> lies above the chord from <span class="m">(1, 1.1)</span> to <span class="m">(2, 5.2)</span>, which has value 3.56 there, and <span class="m">(1.0, 1.212)</span> is above the existing 1.1. But the run's last pair <span class="m">(0.4, 0.176)</span> lies <em>below</em> the chord from <span class="m">(0, 0)</span> to <span class="m">(1, 1.1)</span>, whose value there is 0.44, so the envelope drops near <span class="m">x = 0.4</span>. A worse run overall can still contain a better partial continuation, and the envelope keeps exactly the parts that help: worse data never raise the terminal value, and the LP picks out whatever is cheaper.</p></details>
+      </div></li>
+      <li><div><b>Stage cost by hand.</b> For <span class="m">x = (-2, 1)</span> and <span class="m">u = 0.5</span>, compute the stage cost of Part 6.
+        <details class="sol"><summary>Hint</summary><p>Three terms: quadratic in <span class="m">x</span>, quadratic in <span class="m">u</span>, and <span class="m">\ell_1</span> in <span class="m">x</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">x^\top Q x = 4 + 1 = 5</span>, <span class="m">u^\top R u = 0.25</span>, <span class="m">\|Q_1 x\|_1 = 0.01(2 + 1) = 0.03</span>. Total <span class="m">h = 5.28</span>, which the code's stage cost confirms.</p></details>
+      </div></li>
+      <li><div><b>Epigraph.</b> Prove the epigraph representation of <span class="m">\|z\|_1</span>.
+        <details class="sol"><summary>Hint</summary><p>Show that the feasible set in <span class="m">e</span> is <span class="m">e_i \ge |z_i|</span> and that minimising makes it tight.</p></details>
+        <details class="sol"><summary>Solution</summary><p>For fixed <span class="m">z</span>, the constraints <span class="m">z_i \le e_i</span> and <span class="m">-z_i \le e_i</span> are equivalent to <span class="m">e_i \ge |z_i|</span>, which also implies <span class="m">e_i \ge 0</span>. Hence <span class="m">\min_e \{ \sum_i e_i : e_i \ge |z_i| \} = \sum_i |z_i| = \|z\|_1</span>, attained at <span class="m">e_i = |z_i|</span>. Inside a larger minimisation over <span class="m">(z, e)</span> the same holds for whatever <span class="m">z</span> is chosen, so replacing <span class="m">\|z\|_1</span> by <span class="m">\sum_i e_i</span> with these linear constraints does not change the optimal value or the optimal <span class="m">z</span>, and the problem stays a QP.</p></details>
+      </div></li>
+      <li><div><b>Horizon.</b> Repeat the seed MPC experiment with <span class="m">N = 2, 3, 5</span> and compare complete closed-loop task costs.
+        <details class="sol"><summary>Hint</summary><p>Set the seed horizon in the demo. With <span class="m">N = 2</span> look at what the two-step objective can see.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">N = 2</span>: the controller never reaches the target. Its objective contains the stage costs at <span class="m">x_0</span> (a constant) and <span class="m">x_1 = (-15, u_0)</span>, whose position does not depend on <span class="m">u_0</span>, so the cheapest input is <span class="m">u_0 = 0</span> and the cart stays at <span class="m">(-15, 0)</span> for ever: there is no seed at all, and LMPC cannot start. <span class="m">N = 3</span>: cost 693.992, gap 20.316. <span class="m">N = 5</span>: cost 673.677379, gap <span class="m">7 \times 10^{-4}</span>, already within a hair of the reference. The short horizon is deliberately chosen so that there is something for LMPC to learn; with <span class="m">N = 5</span> plain MPC is essentially optimal on this task.</p></details>
+      </div></li>
+      <li><div><b>Different feasible seed.</b> Generate another successful seed and compare the LMPC learning curve. Does the experiment prove initialisation independence?
+        <details class="sol"><summary>Hint</summary><p>A saturated LQR, <span class="m">u = \operatorname{sat}(-Kx)</span>, is another feasible seed on this task; so is the <span class="m">N = 5</span> MPC.</p></details>
+        <details class="sol"><summary>Solution</summary><p>From the <span class="m">N = 5</span> seed (cost 673.677379) nine LMPC iterations give 673.676796, 673.676745, 673.676702, 673.676684, 673.676719, 673.676690, 673.676682, 673.676671, 673.676692. From a saturated-LQR seed, <span class="m">u = \operatorname{sat}(-Kx)</span> with the LQR gain of chapter 00 (21 steps, cost 673.676906), the nine costs stay between 673.67667 and 673.67679, in an order that changes from run to run. Both curves are flat at the reference level within <span class="m">5 \times 10^{-5}</span>, and both contain increases of order <span class="m">10^{-5}</span>: those are the QP solver's tolerance, not violations of the non-increase result, which is a statement about exact solutions. All three seeds end at the same cost to five decimals. That is evidence of initialisation independence for this convex task and this formulation, not a proof: the theory guarantees non-increase from each seed, and nothing in it says that different seeds must meet.</p></details>
+      </div></li>
+      <li><div><b>Database size.</b> Compare all-data against recent-trajectory safe sets; record solve time and iteration cost.
+        <details class="sol"><summary>Hint</summary><p>Set the window slider to 0 in the demo and watch the solve time in the status text.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With every stored trajectory active, the nine iteration costs agree with the window-4 run to within <span class="m">3 	imes 10^{-5}</span> (the first four are identical, because until then the window holds every trajectory). The mean solve time per QP in the notebook grows from 5.5 ms to 85 ms with all data, against 5.5 ms to about 10 ms with the window, because the number of barycentric variables grows from 27 to 213 instead of staying below 90. Same cost, eight times the computation by iteration 9: the window costs nothing here and bounds the online problem.</p></details>
+      </div></li>
+      <li><div><b>Model mismatch.</b> If the real system is <span class="m">x^+ = (A + \Delta A)x + Bu</span>, which line of the convex-invariance proof fails?
+        <details class="sol"><summary>Hint</summary><p>The stored successors were produced by the real plant, but the proof multiplies by the nominal <span class="m">A</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The line <span class="m">x^+ = \sum_r \lambda_r (A s_r + B u_r) = \sum_r \lambda_r s_r^+</span>. Replaying the mixture of stored inputs on the true plant gives <span class="m">\sum_r \lambda_r ((A + \Delta A) s_r + B u_r)</span>; if the stored successors came from the true plant this still equals <span class="m">\sum_r \lambda_r s_r^+</span>, but the online QP predicts <span class="m">x_N</span> with the nominal <span class="m">A</span>, so the state that actually arrives at time <span class="m">N</span> is not the <span class="m">S^\top \lambda</span> the optimiser planned, and the continuation argument breaks. If instead the successors were simulated with the nominal model, the equality fails already at the first replay. Either way the certificate rests on the identity between model and plant.</p></details>
+      </div></li>
+      <li><div><b>Nonlinear counter-example.</b> Give a nonlinear <span class="m">f(x, u)</span> for which convex combinations do not propagate linearly.
+        <details class="sol"><summary>Hint</summary><p>Anything with a square.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Take <span class="m">f(x, u) = x^2 + u</span> in one dimension, safe states <span class="m">s_1 = 0</span>, <span class="m">s_2 = 2</span> with inputs <span class="m">u_1 = u_2 = 0</span>, so <span class="m">s_1^+ = 0</span>, <span class="m">s_2^+ = 4</span>. The midpoint <span class="m">x = 1</span> with the mixed input <span class="m">u = 0</span> goes to <span class="m">f(1, 0) = 1</span>, whereas the mixture of successors is <span class="m">2</span>. Convex combinations of safe states need not have safe successors under mixed inputs, so the hull of stored states is not control invariant without further argument.</p></details>
+      </div></li>
+      <li><div><b>Classical against learned terminal ingredients.</b> Compare <span class="m">(\mathcal X_f, p)</span> with <span class="m">(CS^j, V_c^j)</span>: which roles are analogous, and where does the information come from?
+        <details class="sol"><summary>Hint</summary><p>Part 5's table.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">\mathcal X_f</span> and <span class="m">CS^j</span> are both control-invariant terminal sets that make the shifted sequence feasible; <span class="m">p</span> and <span class="m">V_c^j</span> are both terminal costs satisfying a one-step decrease, <span class="m">p(x^+) - p(x) \le -\ell</span> from the Riccati construction and <span class="m">V_c^j(x^+) - V_c^j(x) \le -h</span> from convexity and the stored data recursion; <span class="m">\kappa_f = -Kx</span> and <span class="m">\sum_r \lambda_r u_r^{\mathrm{safe}}</span> are the terminal controllers that realise the decrease. The classical pair is computed from the model offline by the designer; the learned pair is computed from the model and from successful closed-loop data, and it improves as data accumulate. Both need the model: LMPC in this form is not model-free.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Repetition</b>: the same task from <span class="m">x_S</span> every time; successful runs end in <span class="m">\mathcal O = \{0\}</span> and respect the constraints.</div></li>
+      <li><div><b>Sampled safe set</b>: all visited states of successful runs plus the target; control invariant by replaying the stored input.</div></li>
+      <li><div><b>Convex safe set</b>: its hull, <span class="m">x = S^\top \lambda</span> on the simplex; invariant for linear dynamics and convex constraints by mixing the stored inputs.</div></li>
+      <li><div><b>Learned value</b>: stored costs-to-go, extended by the barycentric LP to the lower convex envelope; <span class="m">V_c^1(2.5) = 9.75</span> in the scalar example.</div></li>
+      <li><div><b>Decrease</b>: <span class="m">V_c^j(x^+) - V_c^j(x) \le -h(x, u)</span>, the terminal-cost condition of chapter 03 obtained from data.</div></li>
+      <li><div><b>LMPC problem</b>: chapter 01's CFTOC plus <span class="m">x_N = S^\top \lambda</span>, the simplex, and <span class="m">\lambda^\top V</span> in the cost; one QP, recursively feasible by the shifted sequence.</div></li>
+      <li><div><b>Task</b>: double integrator from <span class="m">(-15, 0)</span>, boxes 15 and 5, cost <span class="m">x^\top x + u^2 + 0.01\|x\|_1</span> via the epigraph trick; reference 673.6766534 at <span class="m">N = 20</span>.</div></li>
+      <li><div><b>Seed</b>: three-step MPC, first input 4.285, cost 693.992, gap 20.3; 27 stored samples.</div></li>
+      <li><div><b>Learning</b>: first LMPC input 5, two active weights; nine iterations 673.9316 → 673.6767, never increasing, final gap <span class="m">5 \times 10^{-5}</span>.</div></li>
+      <li><div><b>Anatomy</b>: hull growth stalls after a few runs while values keep improving; the recursion residual is round-off.</div></li>
+      <li><div><b>Meaning</b>: the model is known, not learned; not DQN, not ILC; non-increase is guaranteed, global optimality is not; a window of four trajectories bounds the QP at equal cost.</div></li>
+    </ol>
+  </div>
+  <div class="col table-wrap" style="margin-top:1.2rem">
+    <table id="vocT">
+      <thead><tr><th>Term</th><th>Meaning here</th></tr></thead>
+      <tbody>
+        <tr><td>Iteration <span class="m">j</span>, time <span class="m">t</span></td><td>Which repetition of the task; where inside it.</td></tr>
+        <tr><td>Successful iteration</td><td>Constraints respected and the final state in <span class="m">\mathcal O</span>.</td></tr>
+        <tr><td>Sampled safe set <span class="m">SS^j</span></td><td>Visited states of successful runs plus the target.</td></tr>
+        <tr><td>Convex safe set <span class="m">CS^j</span></td><td>Its convex hull.</td></tr>
+        <tr><td>Barycentric coordinates <span class="m">\lambda</span></td><td>Nonnegative weights summing to one; <span class="m">x = S^\top \lambda</span>.</td></tr>
+        <tr><td>Cost-to-go <span class="m">J_t</span></td><td>Realised remaining cost of a stored run from time <span class="m">t</span>.</td></tr>
+        <tr><td>Convex terminal value <span class="m">V_c^j</span></td><td>Cheapest barycentric mixture of stored costs; a linear program.</td></tr>
+        <tr><td>Continuation input</td><td>The stored <span class="m">u_r^{\mathrm{safe}}</span> that moved <span class="m">s_r</span> to <span class="m">s_r^+</span>.</td></tr>
+        <tr><td>Epigraph variable</td><td><span class="m">e \ge |z|</span>, turning an <span class="m">\ell_1</span> term into linear constraints.</td></tr>
+        <tr><td>Seed</td><td>The first successful trajectory, here from three-step MPC.</td></tr>
+        <tr><td>Trajectory window</td><td>Only the most recent runs enter the online QP.</td></tr>
+        <tr><td>Long-horizon reference</td><td>A converged finite-horizon open-loop solve standing in for the infinite-horizon optimum.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1.2rem">
+    <p><b>Scope.</b> A deterministic repeated task with known linear dynamics, convex box constraints and a convex stage cost, which is the setting in which the convex constructions are justified. Only the terminal ingredients are learned. The experiment is reproduced in your browser with an interior-point QP solver; the notebook uses SciPy's SLSQP, whose <span class="m">10^{-8}</span> tolerance explains the differences in the fifth decimal of the costs and the different step counts near the target.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>U. Rosolia and F. Borrelli. "Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework". <em>IEEE Transactions on Automatic Control</em> 63(7), 1883–1896, 2018. <a href="https://doi.org/10.1109/TAC.2017.2753460">doi:10.1109/TAC.2017.2753460</a>. The LMPC framework: sampled and convex safe sets, the learned terminal value, non-increasing iteration cost.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Terminal sets, terminal costs and invariance in classical MPC.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Stability theory that the learned ingredients plug into.</div></li>
+    </ul>
+    <p>Rosolia and Borrelli <a href="#ref-1">[1]</a> introduced the construction followed here; Borrelli, Bemporad and Morari <a href="#ref-2">[2]</a> and Rawlings, Mayne and Diehl <a href="#ref-3">[3]</a> supply the classical theory it mirrors. The reference of Part 6 uses <span class="m">N = 20</span> after a convergence check rather than a very long horizon, so that the notebook stays light and solver-independent. Chapter 06 takes the same learning idea to a nonlinear vehicle on a track.</p>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="04-collision-avoidance-cftoc.html"><span class="lbl">Previous · 04</span><span class="t">Vehicle–Bike Collision Avoidance</span></a>
-  <a class="next" rel="next" href="06-frenet-minimum-time-racing.html"><span class="lbl">Next · 06</span><span class="t">Frenet Coordinates and Minimum-Time Racing</span></a>
+  <a class="prev" rel="prev" href="04-collision-avoidance-cftoc.html"><span class="lbl">Previous · 04</span><span class="t">Collision avoidance CFTOC</span></a>
+  <a class="next" rel="next" href="06-frenet-minimum-time-racing.html"><span class="lbl">Next · 06</span><span class="t">Frenet minimum-time racing</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 05 of the Advanced MPC and Learning MPC by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+  <p>Chapter 05 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos rebuild the notebook's LMPC experiment in your browser: the seed MPC, the safe-set database and every learning iteration are solved live as quadratic programs. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch05.js"></script>
 </body>
 </html>
