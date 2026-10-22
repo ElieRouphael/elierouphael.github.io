@@ -63,7 +63,7 @@ NOTE = "To run a chapter you also need the <code>advanced_mpc_lmpc</code> packag
 COURSE = Course(
     name="Advanced MPC and Learning MPC", folder="mpc-lmpc-lab", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"00_roadmap_and_math_primer", "01_convex_optimization_and_cftoc", "02_polytopes_reachability_invariance", "03_mpc_stability_and_terminal_sets", "04_collision_avoidance_cftoc", "05_learning_mpc_double_integrator"},
+    interactive={"00_roadmap_and_math_primer", "01_convex_optimization_and_cftoc", "02_polytopes_reachability_invariance", "03_mpc_stability_and_terminal_sets", "04_collision_avoidance_cftoc", "05_learning_mpc_double_integrator", "06_frenet_minimum_time_racing"},
     license="MIT licensed.",
 )
 
