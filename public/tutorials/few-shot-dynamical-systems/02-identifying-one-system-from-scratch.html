@@ -3,13 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>02 · Identifying One System From Scratch — Learning to Identify New Dynamical Systems</title>
-<meta name="description" content="Output-error least squares fit to one experiment, and what 30 repeated fits reveal about identifiability as the experiment grows from 4 to 40 seconds.">
+<title>02 · Identifying One System From Scratch · Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Output-error least squares on one nonlinear oscillator, run live: a bounded Levenberg–Marquardt fit with exact sensitivities on experiments of any length, the notebook's 30 + 30 repeated fits at 4 and 40 seconds, the flat cost valley that leaves the hardening coefficient unidentified, Gauss–Newton standard errors and why they mislead under a coloured disturbance, and the starting-guess and sensor-noise exercises worked honestly. Every number is checked in Python.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .hero2 { display: grid; grid-template-columns: 1.8fr 1fr; gap: 0.6rem; align-items: end; }
+  .hero2 canvas, .widget canvas { display: block; width: 100%; }
+  @media (max-width: 600px) { .hero2 { grid-template-columns: 1fr; } }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; }
+  @media (max-width: 520px) { .grid4 { grid-template-columns: repeat(2, 1fr); } }
+  .grid4 canvas { display: block; width: 100%; }
+  #guessT td.words { white-space: normal; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .seg + .seg { margin-top: 0.4rem; }
+</style>
 </head>
 <body>
 
@@ -17,191 +29,380 @@
 
 <header class="hero col">
   <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 02 of 09</span>
-  <h1>Identifying One System From Scratch</h1>
-  <div class="intro prose">
-<p>Chapter 01 built the simulator and set the rules: the learner chooses an input, reads a noisy
-position sensor, and fits a model that is missing two of the true system's effects. This chapter
-asks the most direct question first: <strong>treating every system on its own, with no help from any
-other system, how well can we identify it?</strong></p>
-<p>This &quot;from-scratch&quot; baseline is what every later chapter, which <em>does</em> use other systems, has to
-beat.</p>
-<hr />
-<h2 id="1-output-error-identification">1. Output-error identification</h2>
-<p>Given one experiment <span class="math inline">(u_{0:T-1}, y_{0:T})</span>, <strong>output-error identification</strong> chooses the
-coefficients whose simulated position best matches the measurements:</p>
-<div class="math display">
-\hat\eta = \arg\min_{\eta}\ \sum_{t=0}^{T} \big(y_t - \hat q_t(\eta; u)\big)^2 .
-</div>
-<p>We simulate the model <em>freely</em> from the known initial state rather than fitting one-step-ahead
-differences. This avoids differentiating the noisy position to recover velocity: an equation-error
-(regression) formulation would need the velocity and acceleration, i.e. first and second differences
-of <span class="math inline">y</span>, whose noise variances scale as <span class="math inline">\sigma_y^2/\Delta t^2</span> and <span class="math inline">\sigma_y^2/\Delta t^4</span>. Output
-error is the maximum-likelihood estimator under white measurement noise and a correct model; it is
-not maximum likelihood in the presence of process noise, for which a state estimator such as an
-extended Kalman filter would be appropriate. We keep the simpler estimator for transparency, and its
-bias is part of what the experiments below measure.</p>
-<p>The optimisation is started from a generic guess with physically sensible bounds, deliberately
-<strong>not</strong> taken from the family structure of chapter 01, so from-scratch identification uses no
-information about it.</p>
-
-  </div>
+  <h1>Identifying one system from scratch</h1>
+  <p class="lede">Chapter 01 built the simulator and set the rules: the learner chooses an input, reads a noisy position sensor, and fits a model that is missing two of the true system's effects. This chapter asks the most direct question first. Treating every system on its own, with no help from any other system, how well can we identify it? The answer is the baseline every later chapter has to beat, and it comes with a lesson that will not go away: three of the four coefficients are easy, and the fourth is not identified at all. Below, the fit runs in your browser on experiments of any length.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 01, least squares and a little calculus · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/02_identifying_one_system_from_scratch.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/02_identifying_one_system_from_scratch.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-output-error-identification">1. Output-error identification</a></li>
-    <li><a href="#2-short-experiments-versus-long-ones">2. Short experiments versus long ones</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
-import matplotlib.pyplot as plt
-from scipy.optimize import least_squares
-
-import dynutils
-from dynutils import sample_system, simulate, multisine, actuator, DT, X0
-
-dynutils.set_style()
-rng = np.random.default_rng(dynutils.SEED)
-COLOR, NAMES = dynutils.COLOR, dynutils.NAMES</code></pre>
+<!-- ============ LIVE DEMO: one experiment, one fit ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">One experiment on the test system, fitted from scratch by output-error least squares</p>
+        <div class="hero2">
+          <canvas id="heroC" aria-label="Measured positions as dots with the disturbance-free truth dashed and the fitted model's response in orange, against time" aria-describedby="heroStatus"></canvas>
+          <canvas id="heroB" aria-label="Four bars, one per coefficient, showing the estimate divided by the true value, with Gauss-Newton standard-error whiskers" aria-describedby="heroStatus"></canvas>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Experiment length: <b id="hTV"></b></span>
+        <span class="row"><input type="range" id="hT" min="10" max="400" step="10" value="40"></span>
+      </label>
+      <div class="seg" role="group" aria-label="Data" id="heroSrc">
+        <button class="btn" type="button" data-src="fresh" aria-pressed="false">fresh experiment</button>
+        <button class="btn" type="button" data-src="nb40" aria-pressed="true">notebook's 4 s</button>
+        <button class="btn" type="button" data-src="nb400" aria-pressed="false">notebook's 40 s</button>
+      </div>
+      <div class="btn-row"><button class="btn ghost" type="button" id="hNew">New random experiment</button></div>
+      <div class="readouts" aria-live="off">
+        <span>estimate <span class="m">\hat\eta</span></span><span class="v" id="rEst">–</span>
+        <span>truth <span class="m">\eta</span></span><span class="v" id="rTrue">–</span>
+        <span>Gauss–Newton SE</span><span class="v" id="rSE">–</span>
+        <span>residual RMS</span><span class="v" id="rRes">–</span>
+        <span>validation RMSE</span><span class="v" id="rVal">–</span>
+      </div>
+      <p class="hint">The test system is the notebook's, drawn at <span class="m">c = (-0.64, 0.28)</span>. A fresh experiment uses a new three-sine input and new noise from the page's own generator; the notebook's two experiments are its recorded data, on which the browser's solver and SciPy agree to five decimals. Validation: RMSE of the fitted model against the disturbance-free response to a fixed 30 s input it has not seen.</p>
+    </div>
+  </div>
 </div>
 
-<div class="cell">
-<pre class="source"><code class="language-python">LOW = np.array([0.05, 0.01, 0.05, 0.0])
-HIGH = np.array([5.0, 2.0, 3.0, 5.0])
-GENERIC_GUESS = np.array([1.0, 0.5, 1.0, 0.5])
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scope"><span class="n">0</span><span class="t">The question</span><span class="d">A baseline with no help from other systems</span></a>
+    <a href="#oe"><span class="n">1</span><span class="t">Output-error identification</span><span class="d">Why simulate freely instead of differencing</span></a>
+    <a href="#solve"><span class="n">2</span><span class="t">Solving the least-squares problem</span><span class="d">Sensitivities, Gauss–Newton, Levenberg–Marquardt, bounds</span></a>
+    <a href="#study"><span class="n">3</span><span class="t">Short experiments versus long ones</span><span class="d">The notebook's 30 + 30 fits</span></a>
+    <a href="#alpha"><span class="n">4</span><span class="t">Why the hardening term will not identify</span><span class="d">A flat valley, tilted by the disturbance</span></a>
+    <a href="#uncertainty"><span class="n">5</span><span class="t">Error bars that lie</span><span class="d">Gauss–Newton covariance under a coloured residual</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
 
+<!-- =================================================================== -->
+<section id="scope">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The question</h2>
+  </div>
+  <div class="col prose">
+    <p>One system, one experiment, four unknown coefficients <span class="m">\eta = (k, d, b, \alpha)</span>. The learner has the input it chose, <span class="m">u_0, \dots, u_{T-1}</span>, and <span class="m">T + 1</span> noisy positions <span class="m">y_0, \dots, y_T</span>. The "from-scratch" estimate uses nothing else: no other system, no prior, and a starting guess that is deliberately generic. Whatever a pretrained family buys in chapters 03 to 08 has to be measured against this.</p>
+    <div class="callout"><p><b>The test system.</b> The notebook draws one member, <span class="m">\eta = (0.852, 0.311, 0.777, 0.922)</span> at design variables <span class="m">c = (-0.64, 0.28)</span>, a softish, moderately damped oscillator with natural period <span class="m">2\pi / \sqrt{k} = 6.8</span> s, and repeats the same experiment 30 times at two lengths: 4 s (40 samples) and 40 s (400 samples). The hero demo lets you fit any length between 1 and 40 s.</p></div>
+  </div>
+</section>
 
-def predict(eta, u):
-    # Learner&#x27;s model: simulate positions. Vectorised: eta (..., 4) and u (..., T) broadcast.
-    eta, u = np.asarray(eta, float), np.asarray(u, float)
-    shape = np.broadcast_shapes(eta.shape[:-1], u.shape[:-1])
-    k, d, b, a = (np.broadcast_to(eta[..., i], shape) for i in range(4))
-    force = actuator(np.concatenate([np.zeros(u.shape[:-1] + (1,)), u[..., :-1]], axis=-1))
-    q, v = np.full(shape, X0[0]), np.full(shape, X0[1])
-    out = np.empty(shape + (u.shape[-1] + 1,)); out[..., 0] = q
-    for t in range(u.shape[-1]):
-        v = v + DT * (-k * q - d * v + b * force[..., t] - a * q**3)
-        q = q + DT * v
-        out[..., t + 1] = q
-    return out
+<!-- =================================================================== -->
+<section id="oe">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Output-error identification</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The estimator.</b> Given one experiment, output-error identification chooses the coefficients whose <em>freely simulated</em> position best matches the measurements <a href="#ref-1">[1]</a>:</p>
+    <div class="math-block" data-narrow="\hat\eta = \arg\min_{\eta}\ \sum_{t=0}^{T} \big(y_t - \hat q_t(\eta; u)\big)^2,">\hat\eta = \arg\min_{\eta}\ \sum_{t=0}^{T} \big(y_t - \hat q_t(\eta; u)\big)^2 ,</div>
+    <p>where <span class="m">\hat q_t(\eta; u)</span> is the learner's model of chapter 01 run from the known initial state <span class="m">(0.2, 0)</span>. The model is simulated over the whole record; the data enter only through the residuals.</p>
+    <p><b>Why not regress on the equation?</b> The alternative, <strong>equation error</strong>, rearranges the model into a regression on the measured signals: <span class="m">\ddot q = -kq - d\dot q + b\varphi(u) - \alpha q^3</span> is linear in <span class="m">\eta</span>, so one could estimate it by ordinary least squares if <span class="m">\dot q</span> and <span class="m">\ddot q</span> were available. They are not; they would have to be obtained by differencing a noisy position. A first difference <span class="m">(y_{t+1} - y_t) / \Delta t</span> has noise variance <span class="m">2\sigma_y^2 / \Delta t^2</span>, a second difference <span class="m">6\sigma_y^2 / \Delta t^4</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \text{velocity noise sd} &amp;= \frac{\sqrt 2\,\sigma_y}{\Delta t} = 0.141, \\ \text{acceleration noise sd} &amp;= \frac{\sqrt 6\,\sigma_y}{\Delta t^2} = 2.45, \end{aligned}">\text{sd of velocity noise} = \frac{\sqrt 2\,\sigma_y}{\Delta t} = 0.141, \qquad \text{sd of acceleration noise} = \frac{\sqrt 6\,\sigma_y}{\Delta t^2} = 2.45,</div>
+    <p>against accelerations of order <span class="m">k q \approx 0.3</span> in these experiments. With <span class="m">\sigma_y = 0.01</span> and <span class="m">\Delta t = 0.1</span> s, the regression would be fitting noise eight times larger than its signal (the page computes these as <span id="eqV1"></span> and <span id="eqV2"></span>). Output error never differentiates the data; the price is a nonlinear least-squares problem instead of a linear one.</p>
+    <p><b>What it estimates, statistically.</b> Under white measurement noise and a correct model, output error is the maximum-likelihood estimator. Neither condition holds here: the true system has a quintic term, a force bias and a coloured disturbance that the model lacks. Under process noise the likelihood would call for a state estimator such as an extended Kalman filter; the course keeps the simpler estimator for transparency, and its bias is part of what the experiments measure <a href="#ref-7">[7]</a>.</p>
+    <p><b>Bounds and the starting guess.</b> The optimisation runs inside physically sensible bounds, <span class="m">k \in [0.05, 5]</span>, <span class="m">d \in [0.01, 2]</span>, <span class="m">b \in [0.05, 3]</span>, <span class="m">\alpha \in [0, 5]</span>, and starts from the generic guess <span class="m">(1, 0.5, 1, 0.5)</span>, deliberately not taken from the family structure, so that from-scratch identification uses no information about it. The bounds will matter: when a coefficient is not identified, the solver parks it on a bound.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is output-error identification?</p>
+      <p><b>In plain words:</b> guess the coefficients, simulate the model from the start with the recorded input, compare the simulated output with the recorded one, and adjust the coefficients until the two agree as well as they can.</p>
+      <p><b>More precisely:</b> the nonlinear least-squares problem above, in which the residual vector <span class="m">r(\eta) = \hat q(\eta; u) - y</span> is a smooth function of <span class="m">\eta</span> through the recursion of the model. Its minimiser is the maximum-likelihood estimate under white Gaussian output noise; its local geometry, through the Jacobian <span class="m">J = \partial r / \partial \eta</span>, tells how well each coefficient is determined.</p>
+      <dl>
+        <dt>Residual <span class="m">r_t</span></dt><dd>Simulated minus measured position at sample <span class="m">t</span>.</dd>
+        <dt>Jacobian <span class="m">J</span></dt><dd>The <span class="m">(T + 1) \times 4</span> matrix of sensitivities <span class="m">\partial \hat q_t / \partial \eta_j</span>.</dd>
+        <dt>Equation error</dt><dd>The other formulation: regress the differenced data on the model equation.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
 
+<!-- =================================================================== -->
+<section id="solve">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Solving the least-squares problem</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Sensitivities.</b> The Jacobian needs <span class="m">\partial \hat q_t / \partial \eta</span>. Differentiating the model recursion gives a second recursion, run alongside the first, for the sensitivities <span class="m">s_t = \partial \hat q_t / \partial \eta</span> and <span class="m">\rho_t = \partial \hat v_t / \partial \eta</span> (row vectors of length 4, starting at zero because the initial state does not depend on <span class="m">\eta</span>):</p>
+    <div class="math-block" data-narrow="\begin{aligned} \rho_{t+1} &amp;= \rho_t + \Delta t\,\big[(-k - 3\alpha \hat q_t^2)\, s_t - d\,\rho_t \\ &amp;\qquad + (-\hat q_t,\ -\hat v_t,\ \varphi(u_{t-1}),\ -\hat q_t^3)\big], \\ s_{t+1} &amp;= s_t + \Delta t\,\rho_{t+1}. \end{aligned}">\rho_{t+1} = \rho_t + \Delta t\,\big[(-k - 3\alpha \hat q_t^2)\, s_t - d\,\rho_t + (-\hat q_t,\ -\hat v_t,\ \varphi(u_{t-1}),\ -\hat q_t^3)\big], \qquad s_{t+1} = s_t + \Delta t\,\rho_{t+1}.</div>
+    <p>The bracket's last term is the direct dependence of the acceleration on each coefficient; the rest propagates earlier changes through the dynamics. The page uses this exact Jacobian; it agrees with central finite differences to <span class="m">7 \times 10^{-11}</span>. SciPy's <code>least_squares</code>, which the notebook calls, builds its Jacobian by finite differences instead.</p>
+    <p><b>Gauss–Newton and Levenberg–Marquardt.</b> Near a minimum the cost <span class="m">f(\eta) = \tfrac12 \lVert r(\eta) \rVert^2</span> has gradient <span class="m">J^\top r</span> and Hessian <span class="m">J^\top J + \sum_t r_t \nabla^2 r_t</span>; Gauss–Newton drops the second-order term, which is small when residuals are small or nearly linear, and steps by <span class="m">\delta = -(J^\top J)^{-1} J^\top r</span>. Levenberg–Marquardt damps the step <a href="#ref-3">[3]</a><a href="#ref-4">[4]</a>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} (J^\top J + \lambda D)\,\delta &amp;= -J^\top r, \\ D &amp;= \mathrm{diag}(J^\top J), \\ \lambda &amp;\downarrow \text{ on success}, \\ \lambda &amp;\uparrow \text{ on failure}, \end{aligned}">\big(J^\top J + \lambda\,\mathrm{diag}(J^\top J)\big)\,\delta = -J^\top r, \qquad \lambda \downarrow \text{ after a successful step},\ \lambda \uparrow \text{ after a failed one},</div>
+    <p>interpolating between Gauss–Newton (<span class="m">\lambda \to 0</span>) and scaled gradient descent (<span class="m">\lambda</span> large). Marquardt's diagonal scaling makes the method invariant to rescaling the coefficients, which is what SciPy's <code>x_scale="jac"</code> option provides for its trust-region-reflective solver <a href="#ref-5">[5]</a>. The page's solver projects each step onto the box and freezes a coordinate that sits on a bound with the gradient pushing outwards; on the notebook's recorded experiments it reaches the same minimum as SciPy to five decimals in 6 to 14 iterations.</p>
+    <p><b>The covariance of the estimate.</b> Linearising at the minimum and assuming white noise of variance <span class="m">\sigma^2</span>, the Gauss–Newton covariance is</p>
+    <div class="math-block" data-narrow="\begin{aligned} \operatorname{Cov}(\hat\eta) &amp;\approx \hat\sigma^2 \,(J^\top J)^{-1}, \\ \hat\sigma^2 &amp;= \frac{1}{T + 1}\sum_t r_t^2, \end{aligned}">\operatorname{Cov}(\hat\eta) \approx \hat\sigma^2 \,(J^\top J)^{-1}, \qquad \hat\sigma^2 = \frac{1}{T + 1}\sum_t r_t^2,</div>
+    <p>which the notebook's <code>fit_from_scratch(..., return_cov=True)</code> returns and chapter 03 will use to whiten the coefficients. Its square-rooted diagonal gives the standard errors drawn as whiskers in the hero demo. Part 5 shows why they should be read with suspicion here.</p>
+  </div>
+</section>
 
-def fit_from_scratch(y, u, return_cov=False):
+<!-- =================================================================== -->
+<section id="study">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Short experiments versus long ones</h2>
+  </div>
+  <div class="col prose">
+    <p>The notebook repeats the whole procedure 30 times at each length, with a fresh random three-sine input and fresh noise every time, and histograms the estimates. The 60 estimates below are SciPy's; the median relative errors are recomputed from them on the page.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="histW">
+      <div class="seg" role="group" aria-label="Experiment length" id="histSeg">
+        <button class="btn" type="button" data-t="40" aria-pressed="false">4 s of data</button>
+        <button class="btn" type="button" data-t="400" aria-pressed="true">40 s of data</button>
+      </div>
+      <div class="grid4">
+        <canvas id="histC0" aria-label="Histogram of the 30 estimates of k with the true value marked" aria-describedby="histCap"></canvas>
+        <canvas id="histC1" aria-label="Histogram of the 30 estimates of d with the true value marked" aria-describedby="histCap"></canvas>
+        <canvas id="histC2" aria-label="Histogram of the 30 estimates of b with the true value marked" aria-describedby="histCap"></canvas>
+        <canvas id="histC3" aria-label="Histogram of the 30 estimates of alpha over its admissible range zero to five, with the true value marked" aria-describedby="histCap"></canvas>
+      </div>
+      <p class="caption" id="histCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Two lessons carry through the rest of the course.</p>
+    <ol class="steps">
+      <li><div><b>Short experiments leave the coefficients poorly determined.</b> Four seconds is shorter than one oscillation period of this member (6.8 s), so many coefficient combinations explain the data equally well and the estimates scatter: median errors of 11% in <span class="m">k</span>, 22% in <span class="m">d</span>, 9% in <span class="m">b</span>.</div></li>
+      <li><div><b>Some coefficients are hard to identify even with plenty of data.</b> With 40 s, <span class="m">k</span>, <span class="m">d</span> and <span class="m">b</span> are within 6 to 9%, but <span class="m">\alpha</span>'s median error is 100% in the notebook's run, and between 44% and 99% over five other seeds. The hardening term only matters at large deflections, and it competes with the unmodelled quintic term and the disturbance. Identifiability depends on the <em>experiment</em> as much as on its length.</div></li>
+    </ol>
+    <p>What this means for prediction, the yardstick of chapter 01: on a fresh 30 s validation input, the 4 s fits predict the disturbance-free response with a median RMSE of 0.027 (best 0.008, worst 0.25), the 40 s fits with 0.012, the true coefficients with 0.004, and the generic guess, which is just an average oscillator, with 0.044. A new system gives us little data. The obvious question, and the subject of the rest of the course: can other systems help?</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="alpha">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Why the hardening term will not identify</h2>
+  </div>
+  <div class="col prose">
+    <p>A coefficient is identified when changing it changes the predicted output by more than the noise can hide <a href="#ref-6">[6]</a>. The cleanest way to see how much the data constrain <span class="m">\alpha</span> is the <strong>profile</strong> of the cost: fix <span class="m">\alpha</span>, re-optimise <span class="m">k, d, b</span>, and plot the best achievable residual sum of squares against <span class="m">\alpha</span>. Computed live for the notebook's recorded experiments:</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="profW">
+      <div class="seg" role="group" aria-label="Experiment" id="profSeg">
+        <button class="btn" type="button" data-w="nb40" aria-pressed="false">notebook's 4 s experiment</button>
+        <button class="btn" type="button" data-w="nb400" aria-pressed="true">notebook's 40 s experiment</button>
+      </div>
+      <canvas id="profC" aria-label="Residual sum of squares against the hardening coefficient alpha, with the other coefficients re-optimised at each value; the true alpha and the sensor-noise floor are marked" aria-describedby="profCap"></canvas>
+      <p class="caption" id="profCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>In the 40 s record the deflection reaches 0.56, where the cubic term is <span class="m">\alpha q^2 / k \approx 0.34</span> of the linear restoring force; averaged over the record it is a few percent, and the quintic term and the bias, which the model cannot represent, are of the same order. The disturbance adds a residual of RMS 0.019, twice the sensor noise, and it is coloured, so it does not average out: it tilts the flat valley one way or the other, and the estimate slides to a bound. Equation-level flatness plus a structured residual is the recipe for an unidentified coefficient. Two of the notebook's exercises probe this, and both of their printed solutions need correcting.</p>
+    <p><b>Exercise 1: does the starting guess matter?</b> If the valley were so flat that the solver stopped wherever it started, different guesses would give different estimates. The page refits the notebook's exercise experiment from the generic guess, from near the truth and from the far corner of the box:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="guessT">
+      <thead><tr><th>Starting guess</th><th>Estimate <span class="m">(k, d, b, \alpha)</span></th><th>Residual sum of squares</th><th>Iterations</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:0.6rem">
+    <p class="caption" id="guessCap"></p>
+    <p style="margin-top:1rem"><b>Exercise 2: a cleaner sensor?</b> The notebook asks whether cutting the sensor noise to a tenth makes <span class="m">\alpha</span> identifiable, and its helper builds the quiet measurement by adding small noise to a <em>noise-free</em> simulation, which also removes the coloured disturbance. The widget separates the two.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="ex2W">
+      <div class="seg" role="group" aria-label="Sensor noise" id="ex2S">
+        <button class="btn" type="button" data-s="0.01" aria-pressed="false">sensor σ = 0.01</button>
+        <button class="btn" type="button" data-s="0.001" aria-pressed="true">sensor σ = 0.001</button>
+      </div>
+      <div class="seg" role="group" aria-label="Disturbance" id="ex2D">
+        <button class="btn" type="button" data-d="on" aria-pressed="false">disturbance on</button>
+        <button class="btn" type="button" data-d="off" aria-pressed="true">disturbance off</button>
+      </div>
+      <canvas id="ex2C" aria-label="Median relative error of each coefficient over thirty 4 second fits: grey bars for the notebook's noise setting, coloured bars for the chosen setting" aria-describedby="ex2Cap"></canvas>
+      <p class="caption" id="ex2Cap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="uncertainty">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Error bars that lie</h2>
+  </div>
+  <div class="col prose">
+    <p>The Gauss–Newton covariance assumes white residuals. Here the residual is dominated by a coloured disturbance, and the formula answers the wrong question: it reports how precisely the coefficients would be known if the residual were fresh noise at every sample, which it is not. The notebook's 40 s fits make the point in numbers:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num">
+      <thead><tr><th>Coefficient</th><th>Median Gauss–Newton SE</th><th>Actual sd over 30 fits</th><th>Ratio</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">k</span></td><td>0.011</td><td>0.077</td><td>7.0</td></tr>
+        <tr><td><span class="m">d</span></td><td>0.0056</td><td>0.052</td><td>9.4</td></tr>
+        <tr><td><span class="m">b</span></td><td>0.0095</td><td>0.077</td><td>8.1</td></tr>
+        <tr><td><span class="m">\alpha</span></td><td>0.16</td><td>1.29</td><td>8.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The claimed precision is about eight times too optimistic for every coefficient. Two things are going on. The residual's effective number of independent samples is far below <span class="m">T + 1</span> because the disturbance has a correlation time of 0.45 s and the oscillator stretches it further; and the disturbance biases each fit differently, so the estimates scatter for a reason the within-fit covariance cannot see. For 4 s fits the standard errors are enormous (a median of 6.3 on <span class="m">\alpha</span>, seven times its value), which at least says the right thing: nothing is known about <span class="m">\alpha</span>.</p>
+    <div class="big-idea"><p>With plenty of data, three coefficients are determined to a few percent and the fourth not at all; with little data, none is. The within-fit error bars understate the scatter by an order of magnitude whenever the model is wrong in a correlated way. Both facts motivate chapter 03: learn from many systems which combinations of coefficients actually occur, and use that instead of the data alone.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What does "output error" mean, as opposed to "equation error"?</summary><p>Output error compares the measured output with the output of the model simulated freely from the initial state; equation error compares the two sides of the model equation evaluated on the measured signals. The first needs a nonlinear solver but never differentiates the data; the second is linear in the coefficients but needs velocity and acceleration, whose noise is 14 and 245 times the position noise at this sampling rate.</p></details>
+    <details class="sol"><summary>2. Why is the estimator run inside bounds and from a generic guess?</summary><p>Bounds keep the coefficients physical (stiffness and damping positive, no negative hardening) and stop an unidentified coefficient from running off; the generic guess <span class="m">(1, 0.5, 1, 0.5)</span> makes sure the baseline uses no knowledge of the family. When a coefficient is not identified, it lands on a bound, which is exactly what <span class="m">\alpha</span> does in a third of the fits.</p></details>
+    <details class="sol"><summary>3. What are the sensitivity equations and why run them instead of finite differences?</summary><p>They are the model recursion differentiated with respect to each coefficient, run alongside the state. They give the Jacobian exactly, in one pass, at the cost of four extra state pairs; finite differences need five simulations and carry truncation and round-off error. SciPy uses finite differences here because the notebook passes no Jacobian, and the two solvers still meet at the same minimum.</p></details>
+    <details class="sol"><summary>4. What does the Levenberg–Marquardt damping <span class="m">\lambda</span> do?</summary><p>It blends the Gauss–Newton step, fast near a minimum, with a scaled gradient step, safe far from it. After a step that lowers the cost, <span class="m">\lambda</span> shrinks; after one that fails, it grows and the step shortens. Marquardt's diagonal scaling keeps the method indifferent to the units of each coefficient.</p></details>
+    <details class="sol"><summary>5. Why does <span class="m">\alpha</span> stay unidentified with 40 s of data?</summary><p>Because its effect on the output is a few percent of the restoring force at these deflections, the same size as the unmodelled quintic term, the bias and the disturbance. The profile of the cost along <span class="m">\alpha</span> changes by about a quarter over the whole range <span class="m">[0, 5]</span>, and a coloured residual tilts it towards one bound or the other. Longer records of the same kind do not help; a different experiment, with larger deflections and less disturbance, would.</p></details>
+    <details class="sol"><summary>6. Do different starting guesses give different estimates on a 4 s experiment?</summary><p>No. The generic guess, a guess near the truth and the far corner of the box all converge to the same estimate with the same residual, on the notebook's exercise experiment and on all 30 of its 4 s experiments. The scatter across experiments comes from the data, as the notebook says, but through the minimum moving with the noise, not through the solver stopping in different places.</p></details>
+    <details class="sol"><summary>7. Does a ten-times quieter sensor make <span class="m">\alpha</span> identifiable in 4 s?</summary><p>Not by itself: with the disturbance kept, the median error of <span class="m">\alpha</span> stays around 100%. Switching the disturbance off alone does not help either. Both together, which is what the notebook's helper silently does, cut every coefficient's error several-fold and bring <span class="m">\alpha</span> to roughly 40 to 55%; over 40 s without either, it is known to a few percent.</p></details>
+    <details class="sol"><summary>8. Why are the Gauss–Newton standard errors eight times too small at 40 s?</summary><p>They assume white residuals. The disturbance is coloured, so the residual has far fewer independent samples than <span class="m">T + 1</span>, and each realisation biases the fit in its own direction. The formula measures precision given the model is right; the scatter measures what happens when it is not.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>How much does the guess matter?</b> Refit the 4 s experiments from three different starting guesses: the generic one, one close to the true system, and one at the opposite corner of the bounds. Does the scatter of the resulting estimates change?
+        <details class="sol"><summary>Hint</summary><p>Compare not only the estimates but the residual sums of squares. If they agree to all digits, the solver found the same minimum.</p></details>
+        <details class="sol"><summary>Solution</summary><p>It does not change at all. On the notebook's exercise experiment all three guesses return <span class="m">(0.9307, 0.2660, 0.7186, 0)</span> with the same residual, and across the 30 four-second experiments the median relative errors are identical for the three guesses (11.1%, 22.1%, 8.6%, 103.4%). The cost surface is flat along <span class="m">\alpha</span>, but each data set has one minimum and the solver finds it. The notebook's printed solution says different starting points "can converge to different, equally-fitting solutions"; on this problem they do not.</p>
+          <pre><code class="language-python">def fit_from(y, u, guess):
     residual = lambda eta: predict(eta, u) - y
-    sol = least_squares(residual, GENERIC_GUESS, bounds=(LOW, HIGH), x_scale=&quot;jac&quot;)
-    if not return_cov:
-        return sol.x
-    # Gauss-Newton covariance of the estimate: sigma^2 (J^T J)^-1
-    return sol.x, np.mean(sol.fun**2) * np.linalg.pinv(sol.jac.T @ sol.jac)
-
-
-def rmse(a, b):
-    return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))</code></pre>
-</div>
-
-<div class="md">
-<hr />
-<h2 id="2-short-experiments-versus-long-ones">2. Short experiments versus long ones</h2>
-</div>
-
-<div class="cell">
-<pre class="source"><code class="language-python">test = sample_system(rng)
-estimates = {}
-for T in (40, 400):                                      # 4 s versus 40 s of data
-    estimates[T] = np.array([fit_from_scratch(simulate(test, u, rng)[1], u)
-                             for u in (multisine(T, rng) for _ in range(30))])
-
-fig, axes = plt.subplots(1, 4, figsize=(12, 3))
-for j, ax in enumerate(axes):
-    for T, col in ((40, COLOR[&quot;scratch&quot;]), (400, COLOR[&quot;context&quot;])):
-        ax.hist(estimates[T][:, j], bins=15, alpha=0.55, color=col, label=f&quot;{T*DT:.0f} s of data&quot;)
-    ax.axvline(test[&quot;eta&quot;][j], color=COLOR[&quot;truth&quot;], lw=2, label=&quot;true value&quot;)
-    ax.set(title=NAMES[j], yticks=[])
-axes[0].legend(fontsize=8)
-fig.suptitle(&quot;From-scratch estimates over 30 repeated experiments on the same system&quot;, y=1.03)
-plt.tight_layout(); plt.show()
-
-for T in (40, 400):
-    rel = np.median(np.abs(estimates[T] - test[&quot;eta&quot;]) / test[&quot;eta&quot;], axis=0)
-    print(f&quot;{T*DT:&gt;4.0f} s  median relative error:&quot;, &quot;  &quot;.join(f&quot;{n}={100*r:5.1f}%&quot; for n, r in zip(NAMES, rel)))</code></pre>
-<figure class="output-figure"><img src="img/02-1.png" alt="Figure: From-scratch estimates over 30 repeated experiments on the same system" width="1309" height="345" loading="lazy"></figure>
-<pre class="output">   4 s  median relative error: k= 11.1%  d= 22.1%  b=  8.6%  α=103.4%
-  40 s  median relative error: k=  6.2%  d=  8.7%  b=  6.1%  α=100.0%</pre>
-</div>
-
-<div class="md">
-<p>Two lessons carry through the rest of the course:</p>
-<ol>
-<li><strong>Short experiments leave the coefficients poorly determined.</strong> Four seconds is shorter than one
-oscillation period, so many coefficient combinations explain the data equally well. The estimates
-scatter widely.</li>
-<li><strong>Some coefficients are hard to identify even with plenty of data.</strong> The hardening term <span class="math inline">\alpha</span>
-only matters at large deflections, and it competes with the unmodelled quintic term and the
-disturbance. With 40 s, <span class="math inline">k</span>, <span class="math inline">d</span> and <span class="math inline">b</span> are within a few percent, but <span class="math inline">\alpha</span> is still uncertain
-by tens of percent. Identifiability depends on the <em>experiment</em> as much as on its length.</li>
-</ol>
-<p>A new system gives us little data. The obvious question, and the subject of the rest of this
-course: can other systems help?</p>
-<hr />
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-how-much-does-the-guess-matter">Exercise 1: How much does the guess matter?</h3>
-<p>Refit the 4-second experiments from three different starting guesses: the generic one used above,
-one close to the true system, and one at the opposite corner of the bounds. Does the scatter of the
-resulting estimates change?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">def fit_from(y, u, guess):
-    residual = lambda eta: predict(eta, u) - y
-    return least_squares(residual, guess, bounds=(LOW, HIGH), x_scale=&quot;jac&quot;).x
+    return least_squares(residual, guess, bounds=(LOW, HIGH), x_scale="jac").x
 
 u4 = multisine(40, rng); _, y4 = simulate(test, u4, rng)
-guesses = {&quot;generic&quot;: GENERIC_GUESS, &quot;near truth&quot;: test[&quot;eta&quot;] * 1.05, &quot;far corner&quot;: HIGH * 0.9}
-{name: fit_from(y4, u4, g) for name, g in guesses.items()}
-</code></pre>
-<p>With so little data the cost surface is genuinely flat along several directions, so different
-starting points can converge to different, equally-fitting solutions — the scatter in the figure
-above is a property of the <em>data</em>, not an artefact of one starting guess.</p>
-</details>
-<h3 id="exercise-2-a-cleaner-sensor">Exercise 2: A cleaner sensor</h3>
-<p>Repeat the 4-second study with the sensor noise cut to a tenth (<span class="math inline">\sigma_y=0.001</span>) by scaling the
-measurement noise term manually (<code>simulate</code> doesn't expose it, so add <code>0.1 * rng.normal(size=q.size)</code>
-to a noise-free run instead of the built-in noisy one). Does better identifiability of <span class="math inline">\alpha</span>
-follow?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">def simulate_low_noise(system, u, rng):
+guesses = {"generic": GENERIC_GUESS, "near truth": test["eta"] * 1.05, "far corner": HIGH * 0.9}
+{name: fit_from(y4, u4, g) for name, g in guesses.items()}</code></pre></details>
+      </div></li>
+      <li><div><b>A cleaner sensor.</b> Repeat the 4 s study with the sensor noise cut to a tenth (<span class="m">\sigma_y = 0.001</span>). Does better identifiability of <span class="m">\alpha</span> follow?
+        <details class="sol"><summary>Hint</summary><p>Look at what <code>simulate(..., noise=False)</code> switches off before you add the small noise back.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With the notebook's helper, the median errors drop from (11.1, 22.1, 8.6, 103) percent to (3.5, 5.3, 1.9, 38): every coefficient improves several-fold, <span class="m">\alpha</span> included, which is more than the "a little" in the notebook's solution. But the helper simulates with <code>noise=False</code>, which removes the coloured disturbance as well as the sensor noise, so this is a quiet sensor <em>and</em> a quiet plant. The page's widget shows that either change alone leaves <span class="m">\alpha</span> at about 100% error in 4 s. It is the whole residual, disturbance included, that hides a term worth a few percent of the force. Over 40 s with neither noise source, <span class="m">\alpha</span> is within 5%.</p>
+          <pre><code class="language-python">def simulate_low_noise(system, u, rng):
     q, _ = simulate(system, u, rng, noise=False)
     return q, q + 0.001 * rng.normal(size=q.size)
 
 low_noise = np.array([fit_from_scratch(simulate_low_noise(test, u, rng)[1], u)
                       for u in (multisine(40, rng) for _ in range(30))])
-np.median(np.abs(low_noise - test[&quot;eta&quot;]) / test[&quot;eta&quot;], axis=0)
-</code></pre>
-<p><span class="math inline">\alpha</span> improves a little but stays the worst-identified coefficient by far: its uncertainty is
-dominated by <em>how little the hardening term is excited</em> at these amplitudes, not by sensor noise,
-which is why quieter data alone does not fix it.</p>
-</details></div>
-</main>
+np.median(np.abs(low_noise - test["eta"]) / test["eta"], axis=0)</code></pre></details>
+      </div></li>
+      <li><div><b>Derive the sensitivity equations.</b> Differentiate the model recursion of chapter 01 with respect to <span class="m">k</span> and check your result against a finite difference on one experiment.
+        <details class="sol"><summary>Hint</summary><p>Both <span class="m">\hat q_t</span> and <span class="m">\hat v_t</span> depend on <span class="m">k</span>; apply the chain rule to <span class="m">-k\hat q_t</span> and to <span class="m">-\alpha \hat q_t^3</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With <span class="m">s_t = \partial \hat q_t / \partial k</span> and <span class="m">\rho_t = \partial \hat v_t / \partial k</span>: <span class="m">\rho_{t+1} = \rho_t + \Delta t\,(-\hat q_t - k s_t - d \rho_t - 3\alpha \hat q_t^2 s_t)</span>, <span class="m">s_{t+1} = s_t + \Delta t\,\rho_{t+1}</span>, from <span class="m">s_0 = \rho_0 = 0</span>. The <span class="m">-\hat q_t</span> is the direct effect, the rest the propagated one. For <span class="m">d</span>, <span class="m">b</span>, <span class="m">\alpha</span> the direct terms are <span class="m">-\hat v_t</span>, <span class="m">\varphi(u_{t-1})</span>, <span class="m">-\hat q_t^3</span>. On the notebook's 40 s experiment the recursion agrees with a central difference of step <span class="m">10^{-6}</span> to <span class="m">7 \times 10^{-11}</span>.</p>
+          <pre><code class="language-python">def predict_jac(eta, u):
+    k, d, b, a = eta; q, v = X0; s = np.zeros(4); r = np.zeros(4)
+    out, J = [q], [s.copy()]
+    for t in range(len(u)):
+        f = actuator(u[t - 1]) if t else 0.0
+        r = r + DT * ((-k - 3 * a * q**2) * s - d * r + np.array([-q, -v, f, -q**3]))
+        v = v + DT * (-k * q - d * v + b * f - a * q**3); q = q + DT * v
+        s = s + DT * r; out.append(q); J.append(s.copy())
+    return np.array(out), np.array(J)</code></pre></details>
+      </div></li>
+      <li><div><b>Error bars against scatter.</b> For the 40 s fits, compare the median Gauss–Newton standard error of each coefficient with the standard deviation of the 30 estimates. What ratio do you find, and why?
+        <details class="sol"><summary>Hint</summary><p><code>fit_from_scratch(y, u, return_cov=True)</code> returns the covariance; take the square root of its diagonal.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Median standard errors (0.011, 0.0056, 0.0095, 0.16) against actual standard deviations (0.077, 0.052, 0.077, 1.29): ratios of 7 to 9 for every coefficient. The covariance formula assumes independent residuals of variance <span class="m">\hat\sigma^2</span>; the actual residual is a coloured disturbance with a correlation time of several samples, amplified by the oscillator, and it biases each fit differently. Treat these error bars as a lower bound on the uncertainty whenever the model is misspecified.</p></details>
+      </div></li>
+      <li><div><b>Prediction, not coefficients.</b> Score each of the 60 fits on the disturbance-free response of the test system to a fresh 30 s input, as chapter 01 prescribes. How do 4 s and 40 s compare, and where do the true coefficients and the generic guess sit?
+        <details class="sol"><summary>Hint</summary><p>Simulate the true system with <code>noise=False</code> on a new <code>multisine(300, ...)</code> and use <code>rmse(predict(eta_hat, u_val), q_val)</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Median validation RMSE 0.027 for the 4 s fits (range 0.008 to 0.25) and 0.012 for the 40 s fits (0.004 to 0.083); the true coefficients give 0.004 and the generic guess 0.044. Even the 40 s fits are three times worse than the truth on average, and the worst 4 s fit is worse than not fitting at all. Chapter 04 will reach 0.014 from 2 s of data by using other systems.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Output error</b>: fit the freely simulated output to the measurements; never difference noisy data, whose velocity and acceleration noise would be 0.14 and 2.45 against accelerations of 0.3.</div></li>
+      <li><div><b>The solver</b>: Levenberg–Marquardt on an exact Jacobian from the sensitivity equations, inside physical bounds, from a generic guess; it meets SciPy's answer to five decimals.</div></li>
+      <li><div><b>4 s of data</b>: median errors 11%, 22%, 9% in <span class="m">k, d, b</span>; <span class="m">\alpha</span> anywhere in <span class="m">[0, 5]</span>.</div></li>
+      <li><div><b>40 s of data</b>: 6%, 9%, 6%; <span class="m">\alpha</span> still at 100% median error, with a third of the estimates on a bound.</div></li>
+      <li><div><b>Why</b>: the cubic term is worth a few percent of the force, the size of the unmodelled effects; the cost profile along <span class="m">\alpha</span> is flat and a coloured residual tilts it.</div></li>
+      <li><div><b>Corrections</b>: starting guesses do not change the estimates; a quieter sensor helps <span class="m">\alpha</span> only together with a quieter plant.</div></li>
+      <li><div><b>Error bars</b>: Gauss–Newton standard errors are eight times too small under the coloured disturbance.</div></li>
+      <li><div><b>Prediction</b>: 4 s fits reach a validation RMSE of 0.027, 40 s fits 0.012, the truth 0.004; the question for the rest of the course is how far other systems can close that gap from little data.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Output error, equation error</td><td>Fit the simulated output; or regress the differenced data on the equation.</td></tr>
+        <tr><td>Residual, Jacobian</td><td>Model minus data at each sample; its derivative with respect to the coefficients.</td></tr>
+        <tr><td>Sensitivity equations</td><td>The model recursion differentiated, run alongside it to give the Jacobian.</td></tr>
+        <tr><td>Gauss–Newton, Levenberg–Marquardt</td><td>Least-squares steps from <span class="m">J^\top J</span>; the same with adaptive damping.</td></tr>
+        <tr><td>Box constraints, projection</td><td>Coefficient bounds; clipping a step back into them.</td></tr>
+        <tr><td>Identifiability</td><td>Whether the data distinguish one coefficient value from another.</td></tr>
+        <tr><td>Profile of the cost</td><td>Best cost with one coefficient fixed, as a function of that coefficient.</td></tr>
+        <tr><td>Gauss–Newton covariance</td><td><span class="m">\hat\sigma^2 (J^\top J)^{-1}</span>; valid for white residuals only.</td></tr>
+        <tr><td>Median relative error</td><td>Median of <span class="m">|\hat\eta_j - \eta_j| / \eta_j</span> over repeated experiments.</td></tr>
+        <tr><td>Validation RMSE</td><td>Error of the fitted model on the disturbance-free response to a new input.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers output-error identification of one system from one experiment: the estimator, its solution by damped Gauss–Newton with bounds, the Gauss–Newton covariance, and an honest look at identifiability through repeated experiments and cost profiles. It does not use any other system; that begins in chapter 03, which identifies twenty systems this way and asks what their coefficients have in common. State estimators that would handle process noise properly are out of scope throughout the course.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>L. Ljung. <em>System Identification: Theory for the User</em>, 2nd ed. Prentice Hall, 1999. Output-error and equation-error model structures, prediction-error methods and their asymptotic covariance.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>J. Nocedal and S. J. Wright. <em>Numerical Optimization</em>, 2nd ed. Springer, 2006. <a href="https://doi.org/10.1007/978-0-387-40065-5">doi:10.1007/978-0-387-40065-5</a>. Nonlinear least squares, Gauss–Newton and Levenberg–Marquardt, bound-constrained optimisation.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>K. Levenberg. A method for the solution of certain non-linear problems in least squares. <em>Quarterly of Applied Mathematics</em>, 2(2):164–168, 1944. <a href="https://doi.org/10.1090/qam/10666">doi:10.1090/qam/10666</a>. The damped Gauss–Newton step.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>D. W. Marquardt. An algorithm for least-squares estimation of nonlinear parameters. <em>Journal of the Society for Industrial and Applied Mathematics</em>, 11(2):431–441, 1963. <a href="https://doi.org/10.1137/0111030">doi:10.1137/0111030</a>. The diagonal scaling and the adaptive damping used on this page.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>M. A. Branch, T. F. Coleman and Y. Li. A subspace, interior, and conjugate gradient method for large-scale bound-constrained minimization problems. <em>SIAM Journal on Scientific Computing</em>, 21(1):1–23, 1999. <a href="https://doi.org/10.1137/S1064827595289108">doi:10.1137/S1064827595289108</a>. The trust-region-reflective method behind SciPy's <code>least_squares</code> with bounds, which the notebook calls.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>R. Bellman and K. J. Åström. On structural identifiability. <em>Mathematical Biosciences</em>, 7(3–4):329–339, 1970. <a href="https://doi.org/10.1016/0025-5564(70)90132-X">doi:10.1016/0025-5564(70)90132-X</a>. The classical statement of when coefficients can be determined from input–output data at all.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>J. Schoukens and L. Ljung. Nonlinear system identification: a user-oriented road map. <em>IEEE Control Systems Magazine</em>, 39(6):28–99, 2019. <a href="https://doi.org/10.1109/MCS.2019.2938121">doi:10.1109/MCS.2019.2938121</a>. Output error under process noise, model errors and the practical choices this chapter makes.</div></li>
+    </ul>
+    <p>Next, chapter 03 runs this estimator on twenty systems with long records, keeps the covariances it returns, and finds the two-dimensional structure that the from-scratch fits of one system cannot see <a href="#ref-2">[2]</a>.</p>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="01-the-system-and-what-we-can-measure.html"><span class="lbl">Previous · 01</span><span class="t">The System, and What We Can Measure</span></a>
-  <a class="next" rel="next" href="03-what-many-systems-have-in-common.html"><span class="lbl">Next · 03</span><span class="t">What Many Systems Have in Common</span></a>
+  <a class="prev" rel="prev" href="01-the-system-and-what-we-can-measure.html"><span class="lbl">Previous · 01</span><span class="t">The system, and what we can measure</span></a>
+  <a class="next" rel="next" href="03-what-many-systems-have-in-common.html"><span class="lbl">Next · 03</span><span class="t">What many systems have in common</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 02 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+  <p>Chapter 02 of "Learning to Identify New Dynamical Systems from a Few Experiments" by Elie Rouphael. The least-squares fits run in your browser; the notebook's 60 estimates and its recorded experiments come from its own seeded run. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch02-data.js"></script>
+<script src="interactive/ch02.js"></script>
 </body>
 </html>
