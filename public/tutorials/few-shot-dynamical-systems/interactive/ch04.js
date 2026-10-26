@@ -92,7 +92,7 @@ function adapt(fam, u, y, t = 1) {
   const sens = zz => { const raw = fam.mean.map((m, j) => m + fam.U[j][0] * zz[0] + fam.U[j][1] * zz[1]), live = raw.map((v, j) => v > LOW[j] && v < HIGH[j] ? 1 : 0); const { q, J } = predictJac(decode(fam, zz), u); const S = J.map(row => [0, 1].map(k => row.reduce((s, v, j) => s + live[j] * v * fam.U[j][k], 0))); return { q, S }; };
   const cost = zz => { const q = predictJac(decode(fam, zz), u).q; let s = 0; for (let i = 0; i < y.length; i++) s += (q[i] - y[i]) ** 2; return s / s2 + t * t * (zz[0] ** 2 + zz[1] ** 2); };
   let f = cost(z), lam = 1e-3, iters = 0;
-  for (; iters < 200; iters++) {
+  for (; iters < 2000; iters++) {
     const { q, S } = sens(z);
     const H = [[t * t, 0], [0, t * t]], g = [t * t * z[0], t * t * z[1]];
     for (let i = 0; i < y.length; i++) { const r = (q[i] - y[i]) / s2; g[0] += S[i][0] * r; g[1] += S[i][1] * r; H[0][0] += S[i][0] * S[i][0] / s2; H[0][1] += S[i][0] * S[i][1] / s2; H[1][1] += S[i][1] * S[i][1] / s2; }
@@ -103,8 +103,8 @@ function adapt(fam, u, y, t = 1) {
       const A = [[H[0][0] * (1 + lam), H[0][1]], [H[1][0], H[1][1] * (1 + lam)]];
       const step = solve(A, [-g[0], -g[1]]); if (!step) { lam *= 10; continue; }
       const zn = [z[0] + step[0], z[1] + step[1]], fn = cost(zn);
-      if (fn < f) { const rel = (f - fn) / Math.max(f, 1e-300); z = zn; f = fn; lam = Math.max(lam / 3, 1e-15); accepted = true; if (rel < 1e-14 || Math.hypot(step[0], step[1]) < 1e-10) { iters++; break; } }
-      else lam *= 4;
+      if (fn < f) { const rel = (f - fn) / Math.max(f, 1e-300); z = zn; f = fn; lam = Math.max(lam / 10, 1e-15); accepted = true; if (rel < 1e-14 || Math.hypot(step[0], step[1]) < 1e-10) { iters++; break; } }
+      else lam *= 10;
     }
     if (!accepted) break;
     if (lam > 1e8) break;

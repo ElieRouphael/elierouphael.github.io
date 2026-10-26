@@ -67,7 +67,7 @@ NOTE = "To run a chapter you also need <code>dynutils.py</code>: the full course
 COURSE = Course(
     name="Learning to Identify New Dynamical Systems", folder="few-shot-dynamical-systems", chapters=CHAPTERS,
     notes={ch["stem"]: NOTE for ch in CHAPTERS},
-    interactive={"01_the_system_and_what_we_can_measure", "02_identifying_one_system_from_scratch", "03_what_many_systems_have_in_common", "04_few_shot_identification_of_a_new_system", "05_when_is_pretraining_worth_it"},
+    interactive={"01_the_system_and_what_we_can_measure", "02_identifying_one_system_from_scratch", "03_what_many_systems_have_in_common", "04_few_shot_identification_of_a_new_system", "05_when_is_pretraining_worth_it", "06_choosing_the_best_experiment"},
     license=('Built from the author\'s own research tutorial repository on few-shot dynamical-system '
              'identification, MIT licensed; the companion technical report is included in the course download.'),
 )
