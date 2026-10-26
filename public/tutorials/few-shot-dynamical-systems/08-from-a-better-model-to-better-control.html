@@ -3,13 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>08 · From a Better Model to Better Control — Learning to Identify New Dynamical Systems</title>
-<meta name="description" content="A model-based feedforward controller computed from each candidate model and applied to the true system, so tracking error becomes a direct test of model quality.">
+<title>08 · From a Better Model to Better Control · Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Model-based feedforward control as a test of model quality, run live: a regularised least-squares input computed from each candidate model of a new oscillator and applied to the true system, for the average-system model, the pretrained context adapted from a designed six-second experiment, a from-scratch fit and the true coefficients. The notebook's fifteen systems, the disturbance floor, the smoothness penalty and a paired rerun of the random-against-designed exercise. Every number is checked in Python.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .demo canvas, .widget canvas { display: block; width: 100%; }
+  canvas + canvas { margin-top: 0.4rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .seg + .seg { margin-top: 0.4rem; }
+</style>
 </head>
 <body>
 
@@ -17,153 +26,309 @@
 
 <header class="hero col">
   <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 08 of 09</span>
-  <h1>From a Better Model to Better Control</h1>
-  <div class="intro prose">
-<p>The last five chapters compared models purely by prediction error. But models are rarely the end
-goal; we want to <em>act</em>. This chapter asks the question a control engineer actually cares about: does
-a better-identified model translate into a better-controlled system?</p>
-<hr />
-<h2 id="1-feedforward-control-from-a-model">1. Feedforward control from a model</h2>
-<p>As a simple model-based controller, we compute a <strong>feedforward input</strong> that should move the cart
-along a reference trajectory <span class="math inline">r_t</span>, by solving</p>
-<div class="math display">
-u^\star = \arg\min_{u}\ \sum_t \big(\hat q_t(\hat\eta; u) - r_t\big)^2 + \lambda\sum_t (u_{t+1}-u_t)^2
-</div>
-<p>with each candidate model, and then apply <span class="math inline">u^\star</span> to the <strong>true</strong> system. Feedforward cannot
-correct errors while running, so it is a direct test of model quality. The context models use a
-designed 6-second experiment (chapter 06).</p>
-
-  </div>
+  <h1>From a better model to better control</h1>
+  <p class="lede">The last five chapters compared models purely by prediction error. But models are rarely the end goal; we want to act. This chapter asks the question a control engineer actually cares about: does a better-identified model translate into a better-controlled system? The test is deliberately unforgiving: a feedforward input computed from the model and applied open loop, so that nothing corrects the model's mistakes while the system runs. Below, the input is computed in your browser for four models of a new system and applied to the true one.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 04 and 06, least squares and a little dynamics · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/08_from_a_better_model_to_better_control.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/08_from_a_better_model_to_better_control.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-feedforward-control-from-a-model">1. Feedforward control from a model</a></li>
-    <li><a href="#2-tracking-a-new-system">2. Tracking a new system</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
-import matplotlib.pyplot as plt
-
-import dynutils
-from dynutils import sample_system, simulate, multisine, predict, adapt, design_score, rmse
-
-dynutils.set_style()
-rng = np.random.default_rng(dynutils.SEED)
-COLOR = dynutils.COLOR
-family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Feedforward from four models, applied to the same new system</p>
+        <canvas id="heroQ" aria-label="Position against time: the reference trajectory and the true system's response to the feedforward input computed from each model" aria-describedby="heroStatus"></canvas>
+        <canvas id="heroU" aria-label="The feedforward input computed from each model against time" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--ink)"></i>reference</span><span><i style="background:var(--muted)"></i>average system</span><span><i style="background:var(--post)"></i>adapted (6 s, designed)</span><span><i style="background:var(--warm)"></i>from scratch (same 6 s)</span><span><i style="background:var(--ink);opacity:.5"></i>true coefficients (dashed)</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>System: <b id="hSysV"></b></span>
+        <span class="row"><input type="range" id="hSys" min="0" max="15" step="1" value="0"></span>
+      </label>
+      <div class="btn-row"><button class="btn ghost" type="button" id="hNew">New fresh system</button></div>
+      <div class="seg" role="group" aria-label="Models" id="heroM">
+        <button class="btn" type="button" data-m="none" aria-pressed="true">average system</button>
+        <button class="btn" type="button" data-m="context" aria-pressed="true">adapted context</button>
+        <button class="btn" type="button" data-m="scratch" aria-pressed="false">from scratch</button>
+        <button class="btn" type="button" data-m="reference" aria-pressed="true">true coefficients</button>
+      </div>
+      <label class="field"><span>Smoothness penalty <span class="m">\lambda</span>: <b id="hLamV"></b></span>
+        <span class="row"><input type="range" id="hLam" min="-2.3" max="0.7" step="0.1" value="-1.3"></span>
+      </label>
+      <div class="seg" role="group" aria-label="Disturbance"><button class="btn" type="button" id="hNoise" aria-pressed="false">disturbance off</button></div>
+      <div class="readouts" aria-live="off">
+        <span>average system: achieved / promised</span><span class="v" id="r_none">–</span>
+        <span>adapted context: achieved / promised</span><span class="v" id="r_context">–</span>
+        <span>from scratch: achieved / promised</span><span class="v" id="r_scratch">–</span>
+        <span>true coefficients: achieved / promised</span><span class="v" id="r_reference">–</span>
+      </div>
+      <p class="hint">"Achieved" is the tracking RMSE on the true system without disturbance; "promised" is the RMSE the model itself predicts for its own input. The gap is the model error. Inputs are bounded by ±2 and never reach the bound here.</p>
+    </div>
+  </div>
 </div>
 
-<div class="cell">
-<pre class="source"><code class="language-python">T_ctrl = 120
-tc = dynutils.DT * np.arange(T_ctrl + 1)
-ref = 0.2 - 0.35 * (1 / (1 + np.exp(-(tc - 3) * 3))) + 0.25 * (1 / (1 + np.exp(-(tc - 8) * 3)))
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scope"><span class="n">0</span><span class="t">The question</span><span class="d">Prediction is not the goal</span></a>
+    <a href="#ff"><span class="n">1</span><span class="t">Feedforward control from a model</span><span class="d">The problem and its solution</span></a>
+    <a href="#test"><span class="n">2</span><span class="t">Why feedforward is the honest test</span><span class="d">No correction, no credit for luck</span></a>
+    <a href="#fifteen"><span class="n">3</span><span class="t">Fifteen new systems</span><span class="d">With and without the disturbance</span></a>
+    <a href="#random"><span class="n">4</span><span class="t">Random against designed</span><span class="d">What fifteen systems can and cannot show</span></a>
+    <a href="#smooth"><span class="n">5</span><span class="t">The smoothness penalty</span><span class="d">Tracking against gentleness</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
 
+<!-- =================================================================== -->
+<section id="scope">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The question</h2>
+  </div>
+  <div class="col prose">
+    <p>A model is a means. In this course the end is a controlled cart: make it follow a reference trajectory <span class="m">r_t</span>, here a rest position of 0.2 followed by two smooth steps, down at 3 s and partly back up at 8 s. The question is whether the gains in prediction error of chapters 04 to 06 survive the trip from model to action. The candidate models are the ones the course has built: the average system, the pretrained context adapted from a designed 6 s experiment, a from-scratch fit on the same experiment (added by the page), and the true coefficients as the ceiling.</p>
+  </div>
+</section>
 
-def feedforward(eta, lam=0.05, eps=1e-5):
-    return dynutils.feedforward(eta, ref, lam=lam, eps=eps)</code></pre>
-</div>
+<!-- =================================================================== -->
+<section id="ff">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Feedforward control from a model</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The problem.</b> A feedforward input is an input sequence chosen in advance so that the model's predicted position follows the reference, with a penalty on rough inputs <a href="#ref-1">[1]</a>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} u^\star = \arg\min_{|u_t| \le 2}\ &amp;\sum_{t=0}^{T} \big(\hat q_t(\hat\eta; u) - r_t\big)^2 \\ &amp;+ \lambda \sum_{t=0}^{T-2} (u_{t+1} - u_t)^2, \end{aligned}">u^\star = \arg\min_{|u_t| \le 2}\ \sum_{t=0}^{T} \big(\hat q_t(\hat\eta; u) - r_t\big)^2 + \lambda \sum_{t=0}^{T-2} (u_{t+1} - u_t)^2, \qquad T = 120,\ \lambda = 0.05.</div>
+    <p>It is nonlinear least squares in 120 unknowns, the inputs, with the model's coefficients fixed: the mirror image of chapter 02, where the inputs were fixed and the coefficients unknown. The smoothness term is a ridge on the differences of <span class="m">u</span>; without it the problem is ill-posed, because the actuator delay makes the last input irrelevant and the saturation flattens the cost for large commands.</p>
+    <p><b>The Jacobian.</b> The derivative of the predicted position with respect to each input follows from linearising the model along its own trajectory. Input <span class="m">u_s</span> first acts at step <span class="m">s + 1</span> through the actuator slope, and its effect then propagates through the linearised dynamics:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \delta v_{s+2} &amp;= \Delta t\, b\, \varphi'(u_s), \\ \delta q_{s+2} &amp;= \Delta t\, \delta v_{s+2}, \\ \delta v_{t+1} &amp;= \delta v_t + \Delta t\big(-(k + 3\alpha \hat q_t^2)\,\delta q_t \\ &amp;\qquad\qquad - d\,\delta v_t\big), \\ \delta q_{t+1} &amp;= \delta q_t + \Delta t\, \delta v_{t+1}, \\ \frac{\partial \hat q_t}{\partial u_s} &amp;= \delta q_t . \end{aligned}">\delta v_{s+2} = \Delta t\, b\, \varphi'(u_s), \quad \delta q_{s+2} = \Delta t\, \delta v_{s+2}, \qquad \delta v_{t+1} = \delta v_t + \Delta t\big(-(k + 3\alpha \hat q_t^2)\,\delta q_t - d\,\delta v_t\big), \quad \delta q_{t+1} = \delta q_t + \Delta t\, \delta v_{t+1}, \qquad \frac{\partial \hat q_t}{\partial u_s} = \delta q_t .</div>
+    <p>Each column of the <span class="m">121 \times 120</span> Jacobian is the model's impulse response to a kick at one sample, scaled by the actuator slope there; the page builds it exactly, the notebook by forward differences with step <span class="m">10^{-5}</span>. Levenberg–Marquardt with the smoothness term folded into the normal equations converges in a dozen iterations; SciPy's bounded trust-region solver and the page's agree on the inputs to a few parts in ten thousand, and the bound of ±2 is never active for this reference.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is feedforward, and what is it not?</p>
+      <p><b>In plain words:</b> work out in advance, from the model, the whole input that should produce the desired motion, then play it back without looking at what the system actually does.</p>
+      <p><b>More precisely:</b> an open-loop input <span class="m">u^\star</span> that inverts the model along the reference, here by regularised least squares. It is not feedback: no measurement of the running system changes the input, so model error and disturbance pass straight into the tracking error. That is what makes it a clean test of the model and a poor controller on its own; in practice feedforward from a model is combined with feedback that corrects the rest <a href="#ref-2">[2]</a><a href="#ref-3">[3]</a>.</p>
+      <dl>
+        <dt>Reference <span class="m">r_t</span></dt><dd>The trajectory the cart should follow.</dd>
+        <dt>Promised error</dt><dd>The RMSE the model predicts for its own input: what the optimiser believes.</dd>
+        <dt>Achieved error</dt><dd>The RMSE on the true system; the gap to the promise is the model error.</dd>
+        <dt>Smoothness penalty <span class="m">\lambda</span></dt><dd>How much input roughness costs relative to tracking error.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
 
-<div class="md">
-<hr />
-<h2 id="2-tracking-a-new-system">2. Tracking a new system</h2>
-</div>
+<!-- =================================================================== -->
+<section id="test">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Why feedforward is the honest test</h2>
+  </div>
+  <div class="col prose">
+    <p>Every model believes its own input: the promised tracking error is 0.005 to 0.007 for all four models, because the optimiser can always bend 120 inputs to make its model follow the reference. What differs is what happens on the true system. For the notebook's 15 systems without disturbance, the achieved error is 0.0565 for the average-system model, 0.0183 for the from-scratch fit, 0.0108 for the adapted context and 0.0087 for the true coefficients. The ordering is the prediction ordering of chapter 05 at 6 s, and the gaps between promise and achievement are the model errors, laid bare because nothing corrects them.</p>
+    <p><b>The disturbance floor.</b> With the disturbance switched on the errors rise to 0.0577, 0.0191 and 0.0140 for average, adapted and true coefficients: the disturbance adds about 0.011 in quadrature to every model's error, and it adds the same amount whatever the model, because feedforward cannot see it. Only feedback can reject it. A feedback controller would reduce all the errors, but the ordering, and the reason for it, would remain.</p>
+    <div class="callout"><p><b>Two numbers the notebook's text gets wrong.</b> The adapted model does not "match what the true coefficients achieve": its mean tracking error is 1.36 times theirs, and it is better on 3 of 15 systems with the disturbance and on none without it. The sentence "it can even be marginally better, because it partly absorbs the unmodelled terms" describes the luck of three disturbance realisations, not a property of the adapter. The true statement is strong enough: six seconds of designed data, through the pretrained family, remove two thirds of the average model's tracking error and come within 40% of the ceiling.</p></div>
+  </div>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">pool = np.array([multisine(60, rng) for _ in range(200)])
-u_design = pool[np.argmax(design_score(family, pool))]
-ctrl_err = {m: [] for m in (&quot;none&quot;, &quot;context&quot;, &quot;reference&quot;)}
-ctrl_example = {}
-for n in range(15):
-    s = sample_system(rng)
-    z_, _, _ = adapt(family, simulate(s, u_design, rng)[1], u_design)
-    for m, eta in ((&quot;none&quot;, family.mean), (&quot;context&quot;, family.decode(z_)), (&quot;reference&quot;, s[&quot;eta&quot;])):
-        q_ctrl, _ = simulate(s, feedforward(eta), rng)
-        ctrl_err[m].append(rmse(q_ctrl, ref))
-        if n == 0:
-            ctrl_example[m] = q_ctrl
+<!-- =================================================================== -->
+<section id="fifteen">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Fifteen new systems</h2>
+  </div>
+  <div class="col">
+    <div class="widget" id="fifW">
+      <canvas id="fifC" aria-label="Dot strips of the tracking error of each model over the fifteen notebook systems, without disturbance as filled dots and with the notebook's disturbance as hollow dots, with means marked" aria-describedby="fifCap"></canvas>
+      <div class="btn-row"><button class="btn ghost" type="button" id="fifRun">Rerun on 15 fresh systems</button><span class="hint" id="fifStatus"></span></div>
+      <p class="caption" id="fifCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>The from-scratch fit on the same 6 s designed experiment, which the notebook does not run, lands between the average system and the adapted context at 0.0183 without disturbance: with 60 samples four free coefficients are still worse than two constrained ones, as chapter 05 found for prediction, and the designed experiment of chapter 06 does not change that ordering. Two numbers, chosen inside the family, beat four numbers chosen freely, for control as for prediction.</p>
+  </div>
+</section>
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8), gridspec_kw=dict(width_ratios=[2, 1]))
-ax1.plot(tc, ref, color=COLOR[&quot;truth&quot;], lw=2.5, label=&quot;reference&quot;)
-lab = dict(none=&quot;average-system model&quot;, context=&quot;adapted model (6 s)&quot;, reference=&quot;true coefficients&quot;)
-for m, q_ctrl in ctrl_example.items():
-    ax1.plot(tc, q_ctrl, &quot;--&quot; if m == &quot;reference&quot; else &quot;-&quot;, color=COLOR[m], lw=1.6, label=lab[m])
-ax1.set(xlabel=&quot;time [s]&quot;, ylabel=&quot;position&quot;, title=&quot;Feedforward applied to a new system&quot;); ax1.legend(fontsize=8)
-ax2.boxplot([ctrl_err[m] for m in ctrl_err], tick_labels=[&quot;average&quot;, &quot;adapted&quot;, &quot;true η&quot;], widths=0.5)
-ax2.set(ylabel=&quot;tracking RMSE&quot;, title=&quot;15 new systems&quot;)
-plt.tight_layout(); plt.show()
-for m in ctrl_err:
-    print(f&quot;{lab[m]:&gt;22s}: mean tracking RMSE = {np.mean(ctrl_err[m]):.4f}&quot;)</code></pre>
-<figure class="output-figure"><img src="img/08-1.png" alt="Figure 1 produced by the code above" width="1308" height="407" loading="lazy"></figure>
-<pre class="output">  average-system model: mean tracking RMSE = 0.0577
-   adapted model (6 s): mean tracking RMSE = 0.0191
-     true coefficients: mean tracking RMSE = 0.0140</pre>
-</div>
+<!-- =================================================================== -->
+<section id="random">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Random against designed</h2>
+  </div>
+  <div class="col prose">
+    <p>The notebook's exercise 1 adapts from a random 6 s experiment instead of the designed one and tracks 15 further systems. Chapter 06 found a 55% reduction of prediction error from design at this budget. Here the random experiments' mean tracking error is 0.0171, below the designed experiments' 0.0191; the notebook's solution says the opposite. Nothing is wrong with design; the experiment is simply unable to show it. The two groups are different systems, there are 15 of each, and the disturbance adds a floor of 0.011 in quadrature that compresses a 55% difference in model quality into a few percent of tracking error. The page can run the comparison the way it should be run: paired, on the same systems, without disturbance.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="ex1W">
+      <canvas id="ex1C" aria-label="Dot strips of tracking error with the context adapted from the designed experiment and from a random experiment, the notebook's fifteen systems each, with means marked and the page's paired rerun as hollow circles" aria-describedby="ex1Cap"></canvas>
+      <div class="btn-row"><button class="btn ghost" type="button" id="ex1Run">Paired rerun on 15 fresh systems</button><span class="hint" id="ex1Status"></span></div>
+      <p class="caption" id="ex1Cap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-<div class="md">
-<p>Six seconds of well-chosen data, interpreted through the pretrained family, cut the tracking error
-by more than half compared with the average-system model, and match what the true coefficients
-achieve. The adapted model can even be marginally better, because it is fitted to the real
-behaviour and partly absorbs the unmodelled terms. The remaining error comes from the disturbance,
-which only feedback can reject. A feedback controller would reduce all errors, but the ordering,
-and the reason for it, would remain.</p>
-<hr />
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-a-random-experiment-instead-of-a-designed-one">Exercise 1: A random experiment instead of a designed one</h3>
-<p>Repeat the control comparison, but adapt the context from a random 6-second experiment
-(<code>multisine(60, rng)</code>) instead of the D-optimal <code>u_design</code>. Does the &quot;context&quot; tracking error move
-noticeably closer to &quot;average&quot; or stay close to &quot;true η&quot;?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">ctrl_err_random = []
+<!-- =================================================================== -->
+<section id="smooth">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The smoothness penalty</h2>
+  </div>
+  <div class="col prose">
+    <p>The penalty <span class="m">\lambda</span> trades tracking against gentleness, and the trade is a property of the optimisation, not of the model. The notebook's exercise 2 raises it tenfold on the true-coefficient model; the page sweeps it.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="ex2W">
+      <label class="field"><span>Smoothness penalty <span class="m">\lambda</span>: <b id="e2LamV"></b></span><span class="row"><input type="range" id="e2Lam" min="-2.3" max="0.7" step="0.1" value="-0.3"></span></label>
+      <canvas id="ex2U" aria-label="The feedforward input for the chosen smoothness penalty against the notebook's default" aria-describedby="ex2Cap"></canvas>
+      <canvas id="ex2Q" aria-label="The reference and the true system's response for the chosen penalty against the notebook's default" aria-describedby="ex2Cap"></canvas>
+      <p class="caption" id="ex2Cap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. In what sense is feedforward design the mirror image of identification?</summary><p>Identification fixes the inputs and fits the coefficients to the measured output; feedforward fixes the coefficients and fits the inputs to the desired output. Both are nonlinear least squares on the same model, and the page solves both with the same Levenberg–Marquardt machinery, with the Jacobian taken with respect to the coefficients in one case and the inputs in the other.</p></details>
+    <details class="sol"><summary>2. Why does every model promise the same small tracking error?</summary><p>Because 120 free inputs are enough to make any of these models follow a smooth reference closely; the optimiser does not know the model is wrong. The promised errors are 0.005 to 0.007 for all four models; the achieved errors differ by a factor of six.</p></details>
+    <details class="sol"><summary>3. What does the gap between promised and achieved error measure?</summary><p>The model error, propagated through the input the model chose. Feedforward applies the input open loop, so no part of that gap is corrected during the run. With the disturbance on, the gap also contains the disturbance's effect, which is the same for every model.</p></details>
+    <details class="sol"><summary>4. Does the adapted model match the true coefficients?</summary><p>No. Its mean tracking error is 0.0191 against 0.0140 with the disturbance, 0.0108 against 0.0087 without; it is better on 3 of 15 systems with the disturbance's luck and on none without. It removes two thirds of the average-system error and comes within 40% of the ceiling, which is the claim the data support.</p></details>
+    <details class="sol"><summary>5. Why can the disturbance's contribution be described as a floor added in quadrature?</summary><p>The disturbance is independent of the model error and roughly independent of the input, so the two add in mean square: for the true coefficients 0.0087 without disturbance becomes 0.0140 with it, and <span class="m">\sqrt{0.0140^2 - 0.0087^2} = 0.011</span>. Feedforward cannot touch that part; feedback can.</p></details>
+    <details class="sol"><summary>6. Why does the random-experiment comparison fail to show the design advantage?</summary><p>Fifteen systems per group, different systems in the two groups, and a disturbance floor of 0.011 that compresses a 55% difference in model quality into a few percent of tracking error. The random group's mean even comes out lower. A paired comparison on the same systems without disturbance is the experiment that could show it.</p></details>
+    <details class="sol"><summary>7. What does the smoothness penalty do, and why is it needed at all?</summary><p>It charges for changes of the input from sample to sample. Without it the problem is ill-posed: the last input has no effect because of the actuator delay, and the saturation makes large commands nearly equivalent. Raising <span class="m">\lambda</span> tenfold roughly halves the input's total variation and doubles the tracking error of the true-coefficient model, from 0.0067 to 0.0128 without disturbance.</p></details>
+    <details class="sol"><summary>8. What would feedback change, and what would it not?</summary><p>Feedback would reject much of the disturbance and part of the model error, lowering every model's tracking error. It would not change the ordering: a controller designed on a worse model demands more of the feedback loop, and the margin it has to spend is finite. The reason for the ordering, model error, stays.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>A random experiment instead of a designed one.</b> Repeat the control comparison, but adapt the context from a random 6 s experiment instead of the designed one. Does the "context" tracking error move noticeably closer to "average" or stay close to "true η"?
+        <details class="sol"><summary>Hint</summary><p>Compare the two means with the disturbance floor in mind, and ask what a paired comparison would need.</p></details>
+        <details class="sol"><summary>Solution</summary><p>On 15 further systems with random experiments the mean tracking error is 0.0171, against 0.0191 for the designed experiments on the 15 systems above, 0.0577 for the average model and 0.0140 for the true coefficients. The notebook's solution says the random experiment's error "sits above the designed experiment's, closer to the midpoint"; it is in fact slightly lower. The design advantage that chapter 06 measured on prediction, about 55% at 6 s, is invisible here because the two groups are different systems, there are only 15 per group, and the disturbance adds a 0.011 floor in quadrature to every tracking error. The page's paired rerun, both experiments on the same systems and no disturbance, is the comparison that can show it.</p>
+          <pre><code class="language-python">ctrl_err_random = []
 for n in range(15):
     s = sample_system(rng)
     u_random = multisine(60, rng)
     z_, _, _ = adapt(family, simulate(s, u_random, rng)[1], u_random)
     q_ctrl, _ = simulate(s, feedforward(family.decode(z_)), rng)
     ctrl_err_random.append(rmse(q_ctrl, ref))
-np.mean(ctrl_err_random), np.mean(ctrl_err[&quot;context&quot;])
-</code></pre>
-<p>Consistent with chapter 06, the random experiment still gives a usable adapted model (context
-adaptation degrades gracefully), but its mean tracking error sits above the designed experiment's,
-closer to the midpoint between &quot;average&quot; and &quot;true η&quot; rather than matching &quot;true η&quot; outright.</p>
-</details>
-<h3 id="exercise-2-a-heavier-smoothness-penalty">Exercise 2: A heavier smoothness penalty</h3>
-<p>Recompute the feedforward input for the true-coefficient model with <code>lam=0.5</code> instead of <code>0.05</code> (ten
-times more smoothing). How does the resulting input and the tracking error change?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">s = sample_system(rng)
-u_smooth = feedforward(s[&quot;eta&quot;], lam=0.5)
+np.mean(ctrl_err_random), np.mean(ctrl_err["context"])</code></pre></details>
+      </div></li>
+      <li><div><b>A heavier smoothness penalty.</b> Recompute the feedforward input for the true-coefficient model with <span class="m">\lambda = 0.5</span> instead of 0.05. How do the input and the tracking error change?
+        <details class="sol"><summary>Hint</summary><p>Measure the input's total variation, <span class="m">\sum_t |u_{t+1} - u_t|</span>, and track without disturbance to see the effect cleanly.</p></details>
+        <details class="sol"><summary>Solution</summary><p>On the notebook's exercise system the total variation of the input falls from 3.16 to 2.01 and the largest step between samples from 0.068 to 0.049; the tracking error without disturbance rises from 0.0067 to 0.0128 (with the notebook's disturbance realisation it reads 0.0312). Across <span class="m">\lambda = 0.005, 0.05, 0.5, 5</span> the error goes 0.0049, 0.0067, 0.0128, 0.0257 while the total variation goes 4.18, 3.16, 2.01, 0.96. A heavier penalty produces a gentler input that follows the sharp parts of the reference less closely, exactly as <span class="m">\lambda</span> dictates and independently of which model supplied the coefficients.</p>
+          <pre><code class="language-python">s = sample_system(rng)
+u_smooth = feedforward(s["eta"], lam=0.5)
 q_smooth, _ = simulate(s, u_smooth, rng)
-rmse(q_smooth, ref)
-</code></pre>
-<p>A heavier smoothness penalty produces a gentler input that changes less from sample to sample, at
-the cost of tracking the sharp step in the reference less closely: the feedforward optimisation
-trades tracking accuracy for input smoothness exactly as <code>lam</code> dictates, independently of which
-model supplied <code>eta</code>.</p>
-</details></div>
-</main>
+rmse(q_smooth, ref)</code></pre></details>
+      </div></li>
+      <li><div><b>Promised against achieved.</b> For each model and system, compute the RMSE the model predicts for its own input and the RMSE achieved on the true system without disturbance. Plot one against the other.
+        <details class="sol"><summary>Hint</summary><p><code>rmse(predict(eta, u_ff), ref)</code> for the promise, <code>simulate(s, u_ff, rng, noise=False)</code> for the achievement.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The promises are 0.0052, 0.0069 and 0.0072 on average for the average-system, adapted and true-coefficient models; the achievements 0.0565, 0.0108 and 0.0087. The average-system model promises the most and delivers the least, because a wrong model can be bent to the reference as easily as a right one. The ratio of achieved to promised error is the cleanest single measure of how much a model can be trusted for open-loop control: 11 for the average system, 1.6 for the adapted context, 1.2 for the truth.</p></details>
+      </div></li>
+      <li><div><b>From scratch, for control.</b> Add a fourth model, the from-scratch fit on the same designed 6 s experiment, and track the 15 systems without disturbance. Where does it land?
+        <details class="sol"><summary>Hint</summary><p><code>fit_from_scratch(simulate(s, u_design, rng)[1], u_design)</code>, then the same feedforward.</p></details>
+        <details class="sol"><summary>Solution</summary><p>At 0.0183 on average, between the average system's 0.0565 and the adapted context's 0.0108, with a median of 0.0184. Four free coefficients from 60 samples are worse for control than two constrained ones, by the same margin as for prediction in chapter 05, and the designed experiment does not change that: it is designed for the context's information, not for identifying four coefficients.</p></details>
+      </div></li>
+      <li><div><b>Close the loop.</b> Add a proportional feedback term, <span class="m">u_t = u^\star_t + K (r_t - y_t)</span>, to the feedforward input of each model with a modest gain, and track the 15 systems with the disturbance on. What happens to the errors, and to their ordering?
+        <details class="sol"><summary>Hint</summary><p>Simulate step by step, since the input now depends on the measurement; keep <span class="m">K</span> small enough that the loop stays well damped.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Every error falls, the average-system model's the most in absolute terms, because feedback corrects both the disturbance and part of the model error. The ordering stays: the controller built on the better model needs less correction, and a proportional loop on a lightly damped oscillator cannot be made arbitrarily tight without exciting the resonance of chapter 01. Model-based feedforward plus feedback for the remainder is the standard architecture, and the model quality decides how much is left for the loop to do <a href="#ref-2">[2]</a>.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Feedforward</b>: a regularised least-squares input that makes the model follow the reference; applied open loop, so model error passes straight through.</div></li>
+      <li><div><b>The solver</b>: Levenberg–Marquardt on 120 inputs with the exact input Jacobian from the linearised dynamics; the bound of ±2 never binds.</div></li>
+      <li><div><b>Without disturbance</b>: tracking RMSE 0.0565 (average system), 0.0183 (from scratch, same 6 s), 0.0108 (adapted context), 0.0087 (true coefficients); every model promised about 0.006.</div></li>
+      <li><div><b>With the disturbance</b>: 0.0577, 0.0191, 0.0140; a floor of 0.011 in quadrature that only feedback can remove.</div></li>
+      <li><div><b>The honest claim</b>: the adapted model removes two thirds of the average-system error and comes within 40% of the ceiling; it does not match it, and is never better once the disturbance's luck is removed.</div></li>
+      <li><div><b>Random against designed</b>: 0.0171 against 0.0191 on 15 systems each; the design advantage is real on prediction and invisible here. Pair the experiments and drop the disturbance to see it.</div></li>
+      <li><div><b>Smoothness</b>: tenfold <span class="m">\lambda</span> halves the input's variation and doubles the tracking error; a property of the optimisation, not of the model.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Feedforward, open loop</td><td>An input computed in advance and applied without correction.</td></tr>
+        <tr><td>Feedback, closed loop</td><td>An input that depends on the measured output while running.</td></tr>
+        <tr><td>Reference trajectory</td><td>The desired position against time.</td></tr>
+        <tr><td>Tracking RMSE</td><td>Root-mean-square distance between the achieved and the desired position.</td></tr>
+        <tr><td>Model inversion</td><td>Finding the input that makes the model produce a desired output.</td></tr>
+        <tr><td>Input Jacobian</td><td>Sensitivity of the predicted output to each input; the model's impulse responses.</td></tr>
+        <tr><td>Smoothness penalty</td><td>A ridge on the input's differences; it trades tracking for gentleness.</td></tr>
+        <tr><td>Promised against achieved</td><td>The model's own predicted tracking error against the true system's.</td></tr>
+        <tr><td>Disturbance floor</td><td>The tracking error no feedforward can remove; equal for every model.</td></tr>
+        <tr><td>Identification for control</td><td>Judging a model by the controller it yields.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter uses one controller, regularised feedforward by model inversion, as a test of model quality on one reference, with the models of chapters 04 to 06. It does not design feedback, does not treat robustness to model error formally, and does not optimise the identification experiment for the control goal, which is the subject of identification for control <a href="#ref-4">[4]</a><a href="#ref-5">[5]</a>.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>S. Devasia. Should model-based inverse inputs be used as feedforward under plant uncertainty? <em>IEEE Transactions on Automatic Control</em>, 47(11):1865–1871, 2002. <a href="https://doi.org/10.1109/TAC.2002.804478">doi:10.1109/TAC.2002.804478</a>. Model-inversion feedforward and exactly when a wrong model makes it worse than nothing.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>K. J. Åström and R. M. Murray. <em>Feedback Systems: An Introduction for Scientists and Engineers</em>, 2nd ed. Princeton University Press, 2021. Feedforward and feedback, their division of labour, and why the loop's margin is finite.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>S. Skogestad and I. Postlethwaite. <em>Multivariable Feedback Control: Analysis and Design</em>, 2nd ed. Wiley, 2005. Model uncertainty and what feedback can and cannot do about it.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>M. Gevers. Identification for control: from the early achievements to the revival of experiment design. <em>European Journal of Control</em>, 11(4–5):335–352, 2005. <a href="https://doi.org/10.3166/ejc.11.335-352">doi:10.3166/ejc.11.335-352</a>. Judging models by the controllers they produce, and designing experiments for that goal.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>H. Hjalmarsson. From experiment design to closed-loop control. <em>Automatica</em>, 41(3):393–438, 2005. <a href="https://doi.org/10.1016/j.automatica.2004.11.021">doi:10.1016/j.automatica.2004.11.021</a>. The full chain from experiment design through identification to control performance.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>J. Nocedal and S. J. Wright. <em>Numerical Optimization</em>, 2nd ed. Springer, 2006. <a href="https://doi.org/10.1007/978-0-387-40065-5">doi:10.1007/978-0-387-40065-5</a>. Bound-constrained nonlinear least squares, the form the feedforward problem takes.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>M. Forgione, F. Pura and D. Piga. From system models to class models: an in-context learning paradigm. <em>IEEE Control Systems Letters</em>, 7:3513–3518, 2023. <a href="https://doi.org/10.1109/LCSYS.2023.3335036">doi:10.1109/LCSYS.2023.3335036</a>. Class models adapted from short records, the setting whose control value this chapter measures.</div></li>
+    </ul>
+    <p>The solver is the bounded least-squares machinery of the earlier chapters <a href="#ref-6">[6]</a> turned on the inputs, and the models are the class-model adapters of the course <a href="#ref-7">[7]</a>. Next, chapter 09 closes the course: every piece built here mapped onto its counterpart in a real foundation model for dynamical systems, and the open questions.</p>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="07-when-the-shared-knowledge-does-not-apply.html"><span class="lbl">Previous · 07</span><span class="t">When the Shared Knowledge Does Not Apply</span></a>
-  <a class="next" rel="next" href="09-summary-and-the-road-to-a-foundation-model.html"><span class="lbl">Next · 09</span><span class="t">Summary and the Road to a Foundation Model</span></a>
+  <a class="prev" rel="prev" href="07-when-the-shared-knowledge-does-not-apply.html"><span class="lbl">Previous · 07</span><span class="t">When the shared knowledge does not apply</span></a>
+  <a class="next" rel="next" href="09-summary-and-the-road-to-a-foundation-model.html"><span class="lbl">Next · 09</span><span class="t">Summary and the road to a foundation model</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 08 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+  <p>Chapter 08 of "Learning to Identify New Dynamical Systems from a Few Experiments" by Elie Rouphael. Feedforward inputs, adaptations and reruns are computed in your browser; the notebook's systems and SciPy's results come from its own seeded run. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch08-data.js"></script>
+<script src="interactive/ch08.js"></script>
 </body>
 </html>
