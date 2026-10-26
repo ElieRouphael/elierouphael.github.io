@@ -3,13 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>07 · When the Shared Knowledge Does Not Apply — Learning to Identify New Dynamical Systems</title>
-<meta name="description" content="Pushing a new system&#x27;s coefficients away from the learned family along a direction the 2-number context cannot represent, and checking whether the adapter&#x27;s own output misfit can flag it.">
+<title>07 · When the Shared Knowledge Does Not Apply · Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="Out-of-family detection for few-shot system identification, run live: new oscillators pushed away from the pretrained family along a direction the two-number context cannot express, the pretrained adapter against the from-scratch fit as the shift grows, and the output-misfit test with its threshold calibrated on in-family systems. Why detection lags degradation, what the whitened residual shows, and the false-alarm against detection trade-off under your control. Every number is checked in Python.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .hero2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; align-items: end; }
+  .hero2 canvas, .widget canvas { display: block; width: 100%; }
+  @media (max-width: 600px) { .hero2 { grid-template-columns: 1fr; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .seg + .seg { margin-top: 0.4rem; }
+  #misT { font-size: 0.86rem; }
+</style>
 </head>
 <body>
 
@@ -17,178 +26,319 @@
 
 <header class="hero col">
   <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 07 of 09</span>
-  <h1>When the Shared Knowledge Does Not Apply</h1>
-  <div class="intro prose">
-<p>Every chapter so far drew new systems from the same family the pretrained model was built on. Real
-deployments are not always this polite: a worn bearing, a manufacturing defect, or simply a
-different product line can push a new system outside what pretraining ever saw. This chapter asks
-what happens then, and whether we can notice it.</p>
-<hr />
-<h2 id="1-moving-outside-the-learned-family">1. Moving outside the learned family</h2>
-<p>The pretrained model is only as good as the family it has seen. What happens when a new system
-varies in a way <strong>never seen during pretraining</strong>, e.g. a worn bearing changing damping and gain in
-an unusual combination? We move the true coefficients a distance <span class="math inline">\delta</span> away from the learned
-family, along a direction orthogonal to <span class="math inline">U</span>, and adapt with 12 s of data. A two-number context
-cannot represent the change.</p>
-<p>The adaptation itself offers a warning signal: the <strong>output misfit</strong>, already returned by <code>adapt</code> in
-chapter 04. If the best context still cannot explain the data, the residual is larger than it is for
-normal members of the family. We calibrate a threshold as the 95th percentile of the misfit on
-in-family systems.</p>
-
-  </div>
+  <h1>When the shared knowledge does not apply</h1>
+  <p class="lede">Every chapter so far drew new systems from the same family the pretrained model was built on. Real deployments are not always this polite: a worn bearing, a manufacturing defect, or simply a different product line can push a new system outside what pretraining ever saw. This chapter asks what happens then, and whether we can notice it. The answer has two halves: the pretrained adapter degrades gracefully but surely, and the one warning light it carries, the misfit of its own fit, comes on late. Both halves run in your browser.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 03 and 04, orthogonal projections and a percentile · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/07_when_the_shared_knowledge_does_not_apply.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/07_when_the_shared_knowledge_does_not_apply.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-moving-outside-the-learned-family">1. Moving outside the learned family</a></li>
-    <li><a href="#2-does-the-pretrained-model-degrade-and-can-we-detect-it">2. Does the pretrained model degrade, and can we detect it?</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
-import matplotlib.pyplot as plt
-
-import dynutils
-from dynutils import sample_system, simulate, multisine, predict, fit_from_scratch, adapt, rmse
-
-dynutils.set_style()
-rng = np.random.default_rng(dynutils.SEED)
-COLOR = dynutils.COLOR
-family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Shared knowledge helps only inside the family, and the misfit test notices late</p>
+        <div class="hero2">
+          <canvas id="heroE" aria-label="Median prediction error against the distance of the new system from the learned family, for the from-scratch fit and the pretrained context" aria-describedby="heroStatus"></canvas>
+          <canvas id="heroF" aria-label="Percentage of systems flagged by the misfit test against the distance from the family, with the five percent false-alarm level dotted" aria-describedby="heroStatus"></canvas>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Predictors" id="heroM">
+        <button class="btn" type="button" data-m="scratch" aria-pressed="true">from scratch</button>
+        <button class="btn" type="button" data-m="context" aria-pressed="true">pretrained + context</button>
+        <button class="btn" type="button" data-m="best" aria-pressed="false">best in family</button>
+        <button class="btn" type="button" data-m="none" aria-pressed="false">no adaptation</button>
+      </div>
+      <label class="field"><span>Systems per shift for the page's rerun: <b id="hNV"></b></span>
+        <span class="row"><input type="range" id="hN" min="10" max="30" step="5" value="30"></span>
+      </label>
+      <div class="btn-row"><button class="btn" type="button" id="hRun">Rerun the study with new draws</button><span class="hint" id="hStatus"></span></div>
+      <div class="readouts" aria-live="off">
+        <span>threshold (95th percentile, 60 in-family systems)</span><span class="v" id="rThr">–</span>
+        <span>flagged, by shift</span><span class="v" id="rFlag">–</span>
+        <span>context beats scratch, by shift</span><span class="v" id="rWins">–</span>
+      </div>
+      <p class="hint">Shifts δ = 0, 0.1, …, 0.6 along a unit direction orthogonal to the family's plane, 12 s experiments, validation on a fresh 30 s input. A rerun recalibrates the threshold on 60 fresh in-family systems before shifting.</p>
+    </div>
+  </div>
 </div>
 
-<div class="md">
-<hr />
-<h2 id="2-does-the-pretrained-model-degrade-and-can-we-detect-it">2. Does the pretrained model degrade, and can we detect it?</h2>
-</div>
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scope"><span class="n">0</span><span class="t">The question</span><span class="d">Outside the family</span></a>
+    <a href="#outside"><span class="n">1</span><span class="t">Moving outside the learned family</span><span class="d">Directions the context cannot express</span></a>
+    <a href="#misfit"><span class="n">2</span><span class="t">The warning light</span><span class="d">The output misfit and its threshold</span></a>
+    <a href="#study"><span class="n">3</span><span class="t">Degradation and detection</span><span class="d">What the study shows</span></a>
+    <a href="#inside"><span class="n">4</span><span class="t">A shift the family can follow</span><span class="d">Inside against outside</span></a>
+    <a href="#check"><span class="n">5</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">6</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">8</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
 
-<div class="cell">
-<pre class="source"><code class="language-python">T = 120
-basis_out = np.linalg.svd(family.U, full_matrices=True)[0][:, 2:]   # directions the context cannot express
-direction = basis_out[:, np.argmax(np.abs(basis_out[1]))]          # the one that moves damping most
-direction *= np.sign(direction[1]) / np.linalg.norm(direction)
+<!-- =================================================================== -->
+<section id="scope">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The question</h2>
+  </div>
+  <div class="col prose">
+    <p>The pretrained model is only as good as the family it has seen. Chapter 05 showed that a two-number context beats four free coefficients when data are scarce, because the family tells the adapter where systems of this kind live. The same knowledge becomes a liability when a new system lives somewhere else. This chapter moves new systems away from the family in a controlled way, measures how the adapter degrades against the from-scratch fit, and asks whether the adapter can tell, from its own data, that something is wrong.</p>
+  </div>
+</section>
 
-in_family = []
-for _ in range(60):
-    s = sample_system(rng); u = multisine(T, rng)
-    in_family.append(adapt(family, simulate(s, u, rng)[1], u)[2])
-threshold = np.quantile(in_family, 0.95)
+<!-- =================================================================== -->
+<section id="outside">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Moving outside the learned family</h2>
+  </div>
+  <div class="col prose">
+    <p><b>What the context can and cannot express.</b> The decoder reaches the coefficients <span class="m">\bar\eta + Uz</span>: a two-dimensional plane in the four-dimensional coefficient space. Any change of coefficients splits into a component in that plane, which some <span class="m">z</span> can follow, and a component in its orthogonal complement, which no <span class="m">z</span> can. The notebook takes a unit vector of the complement and pushes new systems along it:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \eta_{\text{new}} &amp;= \operatorname{clip}\big(\eta + \delta\, v\big), \\ U^\top v &amp;= 0, \quad \lVert v \rVert = 1, \\ v &amp;\approx (0.33,\ 0.88,\ -0.24,\ -0.24). \end{aligned}">\eta_{\text{new}} = \operatorname{clip}\big(\eta + \delta\, v\big), \qquad U^\top v = 0, \quad \lVert v \rVert = 1, \qquad v \approx (0.33,\ 0.88,\ -0.24,\ -0.24),</div>
+    <p>mostly an increase of damping with a little more stiffness and a little less gain and hardening: a worn bearing, say. The shift <span class="m">\delta</span> runs from 0 to 0.6, and the identification budget is 12 s, long enough that from scratch is already competitive inside the family.</p>
+    <p><b>Two caveats about the direction.</b> The orthogonal complement is two-dimensional, so "a direction orthogonal to <span class="m">U</span> that moves damping most" is not unique: the notebook takes the vector of an SVD basis with the largest damping component, while the basis-free choice, the damping axis projected onto the complement, is <span class="m">(0.12, 0.97, 0.12, -0.18)</span>, 25° away. And orthogonality is measured in physical units, whereas the family was learned in whitened units: divided by the estimation standard deviations of chapter 03, the notebook's direction is <span class="m">(31, 182, -31, -0.8)</span>, almost pure damping. Neither caveat changes the conclusions, since both directions leave the family; the explorer lets you compare them.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="dirW">
+      <div class="seg" role="group" aria-label="Direction" id="dxSeg">
+        <button class="btn" type="button" data-d="nb" aria-pressed="true">notebook's direction</button>
+        <button class="btn" type="button" data-d="proj" aria-pressed="false">damping axis, projected</button>
+        <button class="btn" type="button" data-d="inside" aria-pressed="false">inside the family</button>
+      </div>
+      <label class="field"><span>Shift <span class="m">\delta</span>: <b id="dxDV"></b></span><span class="row"><input type="range" id="dxD" min="0" max="0.6" step="0.05" value="0.3"></span></label>
+      <div class="hero2">
+        <canvas id="dirB" aria-label="Bars of the four coefficients for the mean system, the shifted system and its closest member of the family" aria-describedby="dirCap"></canvas>
+        <canvas id="dirF" aria-label="Small-signal frequency responses of the mean system, the shifted system and its closest member of the family" aria-describedby="dirCap"></canvas>
+      </div>
+      <p class="caption" id="dirCap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p><b>The unrepresentable component, in numbers.</b> Projecting a shifted system's true coefficients onto the plane and measuring what is left in whitened units gives the distance from the family: a median of 1.8 units for unshifted systems (their own individual deviations and the plane's imperfection), 14 at <span class="m">\delta = 0.3</span>, 30 at <span class="m">\delta = 0.6</span>. The best context the family can offer, the projection itself, predicts the shifted systems with a median error that grows from 0.0036 to 0.0217 across the shifts; switch it on in the hero demo. That floor, not the adapter, is what fails first.</p>
+  </div>
+</section>
 
-shifts = np.linspace(0, 0.6, 7)
-shift_err = {m: np.zeros((len(shifts), 30)) for m in (&quot;scratch&quot;, &quot;context&quot;)}
-flagged = np.zeros((len(shifts), 30), bool)
-for i, delta in enumerate(shifts):
-    for n in range(30):
-        s = sample_system(rng)
-        s[&quot;eta&quot;] = np.clip(s[&quot;eta&quot;] + delta * direction, dynutils.LOW + 0.02, dynutils.HIGH)
-        u = multisine(T, rng); _, y = simulate(s, u, rng)
-        u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
-        z_, _, misfit = adapt(family, y, u)
-        shift_err[&quot;context&quot;][i, n] = rmse(predict(family.decode(z_), u_val), q_val)
-        shift_err[&quot;scratch&quot;][i, n] = rmse(predict(fit_from_scratch(y, u), u_val), q_val)
-        flagged[i, n] = misfit &gt; threshold
+<!-- =================================================================== -->
+<section id="misfit">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The warning light</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The statistic.</b> The adaptation of chapter 04 already returns a third number, the <strong>output misfit</strong>: the residual RMS of the adapted model on the record it was fitted to,</p>
+    <div class="math-block" data-narrow="\begin{aligned} m &amp;= \sqrt{\tfrac{1}{T+1}\textstyle\sum_{t} r_t^2}, \\ r_t &amp;= y_t - \hat q_t(\bar\eta + U\hat z;\,u), \\ \text{flag} &amp;\iff m &gt; \tau_{95}. \end{aligned}">m = \sqrt{\frac{1}{T+1}\sum_{t=0}^{T}\big(y_t - \hat q_t(\bar\eta + U\hat z;\,u)\big)^2}, \qquad \text{flag} \iff m &gt; \tau_{95}.</div>
+    <p>If the best context still cannot explain the data, the residual is larger than it is for normal members of the family. <b>The threshold</b> <span class="m">\tau_{95}</span> is calibrated as the 95th percentile of the misfit over 60 in-family systems identified the same way: by construction the test then raises a false alarm on about 5% of systems that do belong to the family. The notebook's 60 calibration misfits run from 0.010 to 0.023 with a median of 0.013, and <span class="m">\tau_{95} = 0.0175</span>.</p>
+    <p><b>Why the misfit is a weak signal.</b> Decompose the residual of a correct-in-family model: sensor noise (0.01), the coloured disturbance's effect on the position (0.0165 in chapter 01), minus what two free numbers absorb over 12 s. The misfit of an in-family system is therefore about 0.013 whatever the system, and a shift adds to it only the part of the mismatch that a re-optimised <span class="m">z</span> cannot hide. At <span class="m">\delta = 0.3</span> the median misfit is 0.0134 against 0.0133 unshifted, a difference far smaller than the spread of either cloud. The statistic is sound and cheap, and it is dominated by something that has nothing to do with the family.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="misW">
+      <label class="field"><span>Threshold percentile of the calibration misfits: <b id="thPV"></b></span><span class="row"><input type="range" id="thP" min="0.80" max="0.995" step="0.005" value="0.95"></span></label>
+      <canvas id="misC" aria-label="Dot strip of the output misfits: the sixty calibration systems and the thirty systems at each shift, with the threshold as a dashed line and flagged systems in orange" aria-describedby="misCap"></canvas>
+      <div class="table-wrap"><table class="num" id="misT"><thead><tr><th>Percentile</th><th>Threshold</th><th>False alarms (calibration set)</th><th>δ = 0</th><th>0.1</th><th>0.2</th><th>0.3</th><th>0.4</th><th>0.5</th><th>0.6</th></tr></thead><tbody></tbody></table></div>
+      <p class="caption" id="misCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8))
-for m, lab in ((&quot;scratch&quot;, &quot;from scratch&quot;), (&quot;context&quot;, &quot;pretrained + context&quot;)):
-    ax1.plot(shifts, np.median(shift_err[m], axis=1), marker=&quot;o&quot;, color=COLOR[m], label=lab)
-ax1.set(xlabel=&quot;distance δ from the learned family&quot;, ylabel=&quot;median prediction RMSE&quot;,
-        title=&quot;Shared knowledge helps only inside the family&quot;); ax1.legend()
-ax2.plot(shifts, 100 * flagged.mean(axis=1), marker=&quot;o&quot;, color=COLOR[&quot;reference&quot;])
-ax2.axhline(5, ls=&quot;:&quot;, color=COLOR[&quot;none&quot;]); ax2.text(0.0, 8, &quot;false-alarm level (5 %)&quot;, fontsize=8)
-ax2.set(xlabel=&quot;distance δ from the learned family&quot;, ylabel=&quot;systems flagged [%]&quot;, ylim=(-3, 103),
-        title=&quot;Misfit test: &#x27;this system is unlike the others&#x27;&quot;)
-plt.tight_layout(); plt.show()
-print(&quot;direction of change in [k, d, b, α]:&quot;, np.round(direction, 2))
-for i, delta in enumerate(shifts):
-    print(f&quot;delta={delta:.1f}: scratch median RMSE={np.median(shift_err[&#x27;scratch&#x27;][i]):.4f}  &quot;
-          f&quot;context median RMSE={np.median(shift_err[&#x27;context&#x27;][i]):.4f}  flagged={100*flagged[i].mean():.0f}%&quot;)
-</code></pre>
-<figure class="output-figure"><img src="img/07-1.png" alt="Figure 1 produced by the code above" width="1308" height="407" loading="lazy"></figure>
-<pre class="output">direction of change in [k, d, b, α]: [ 0.33  0.88 -0.24 -0.24]
-delta=0.0: scratch median RMSE=0.0132  context median RMSE=0.0096  flagged=10%
-delta=0.1: scratch median RMSE=0.0150  context median RMSE=0.0096  flagged=23%
-delta=0.2: scratch median RMSE=0.0092  context median RMSE=0.0103  flagged=10%
-delta=0.3: scratch median RMSE=0.0072  context median RMSE=0.0111  flagged=17%
-delta=0.4: scratch median RMSE=0.0071  context median RMSE=0.0129  flagged=13%
-delta=0.5: scratch median RMSE=0.0079  context median RMSE=0.0129  flagged=43%
-delta=0.6: scratch median RMSE=0.0048  context median RMSE=0.0133  flagged=37%</pre>
-</div>
+<!-- =================================================================== -->
+<section id="study">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Degradation and detection</h2>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.2rem">
+    <table class="num">
+      <thead><tr><th>δ</th><th>From scratch</th><th>Context</th><th>Best in family</th><th>Context wins</th><th>Flagged</th><th>Median misfit</th></tr></thead>
+      <tbody>
+        <tr><td>0.0</td><td>0.0132</td><td>0.0096</td><td>0.0036</td><td>23/30</td><td>10%</td><td>0.0133</td></tr>
+        <tr><td>0.1</td><td>0.0150</td><td>0.0096</td><td>0.0069</td><td>25/30</td><td>23%</td><td>0.0144</td></tr>
+        <tr><td>0.2</td><td>0.0092</td><td>0.0103</td><td>0.0118</td><td>14/30</td><td>10%</td><td>0.0132</td></tr>
+        <tr><td>0.3</td><td>0.0072</td><td>0.0111</td><td>0.0130</td><td>5/30</td><td>17%</td><td>0.0134</td></tr>
+        <tr><td>0.4</td><td>0.0071</td><td>0.0129</td><td>0.0190</td><td>4/30</td><td>13%</td><td>0.0140</td></tr>
+        <tr><td>0.5</td><td>0.0079</td><td>0.0129</td><td>0.0212</td><td>7/30</td><td>43%</td><td>0.0166</td></tr>
+        <tr><td>0.6</td><td>0.0048</td><td>0.0133</td><td>0.0217</td><td>1/30</td><td>37%</td><td>0.0161</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Medians over the notebook's 30 systems per shift, validation RMSE on a fresh 30 s input, 12 s of identification data.</p>
+    <ol class="steps">
+      <li><div><b>The adapter degrades steadily.</b> From 0.0096 inside the family to 0.0133 at <span class="m">\delta = 0.6</span>; its floor, the best-in-family projection, degrades faster, from 0.0036 to 0.0217, and from <span class="m">\delta = 0.2</span> on the adapter actually beats its own oracle, because a <span class="m">z</span> fitted to data can compensate a little for the missing direction while the geometric projection cannot.</div></li>
+      <li><div><b>From scratch is unaffected, and improves.</b> It assumes nothing about the family. Its error falls from 0.0132 to 0.0048 because the shifted systems are more heavily damped (mean damping 0.34 to 0.85) and move less (validation RMS 0.144 to 0.087), so there is less to mispredict. With 12 s of data from scratch is already competitive inside the family, and the pretrained model loses its advantage after a small shift: the context wins 23 of 30 pairs at <span class="m">\delta = 0</span>, 14 of 30 at 0.2, 5 of 30 at 0.3.</div></li>
+      <li><div><b>Detection lags degradation.</b> The test flags 10% of the unshifted systems (3 of 30, consistent with the 5% target at this sample size) and rises to about 40% at the largest shifts; the notebook's text says "roughly three quarters", which its own printout does not support. At <span class="m">\delta = 0.3</span> the adapter already loses to from scratch on 25 systems of 30 while 17% are flagged.</div></li>
+    </ol>
+    <div class="big-idea"><p>Use the small adapter while it explains the data, and fall back to, or enlarge towards, full identification when it does not. The rule is simple; making it both sensitive and trustworthy is not, because the statistic that drives it is dominated by disturbance, not by the family. Guarantees for such rules on learned models are an open question.</p></div>
+  </div>
+</section>
 
-<div class="md">
-<p>As the new system leaves the family, the pretrained model gets steadily worse, while the
-from-scratch estimate is unaffected: it assumes nothing about the family. (Its error even
-decreases, since more strongly damped systems move less and are easier to predict.) With 12 s of
-data, from scratch is already competitive inside the family, so the pretrained model loses its
-advantage after a small shift.</p>
-<p>The misfit test responds as it should. It flags about 5% of normal systems, as designed, and its
-detection rate rises with the shift to roughly three quarters of the systems. But <strong>detection
-lags degradation</strong>: at moderate shifts the adapter is already worse than from scratch, while most
-systems still pass the test, because the misfit is dominated by the disturbance.</p>
-<p>This yields a simple decision rule: <em>use the small adapter while it explains the data, and fall back
-to (or enlarge towards) full identification when it does not.</em> Making such a rule both sensitive
-and trustworthy, with guarantees, is an open question for learned models.</p>
-<hr />
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-a-direction-that-stays-inside-the-family">Exercise 1: A direction that stays inside the family</h3>
-<p>Repeat the shift study, but move along a direction <em>inside</em> <code>family.U</code> (e.g. <code>family.U[:, 0] / np.linalg.norm(family.U[:, 0])</code>) instead of <code>direction</code>. Does the pretrained model degrade, and does
-the misfit test flag anything?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">inside = family.U[:, 0] / np.linalg.norm(family.U[:, 0])
+<!-- =================================================================== -->
+<section id="inside">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>A shift the family can follow</h2>
+  </div>
+  <div class="col prose">
+    <p>The notebook's exercise 1 moves systems the same distance along a direction <em>inside</em> the plane, the family's first direction. The page runs both shifts side by side on fresh systems.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="ex1W">
+      <label class="field"><span>Shift <span class="m">\delta</span>: <b id="e1DV"></b></span><span class="row"><input type="range" id="e1D" min="0.1" max="0.6" step="0.1" value="0.4"></span></label>
+      <canvas id="ex1C" aria-label="Dot strips of the adapted context's validation error for thirty systems shifted inside the family and thirty shifted outside it, flagged systems in black" aria-describedby="ex1Cap"></canvas>
+      <div class="btn-row"><button class="btn ghost" type="button" id="e1New">Another sixty systems</button></div>
+      <p class="caption" id="ex1Cap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What does "outside the family" mean geometrically?</summary><p>A coefficient vector with a component orthogonal to the plane <span class="m">\bar\eta + Uz</span>. The in-plane component is representable by some context; the orthogonal component is not, whatever <span class="m">z</span> is chosen, and it is measured here in whitened units as the distance from the plane.</p></details>
+    <details class="sol"><summary>2. Why is the shift direction not unique, and does it matter?</summary><p>The complement of a plane in four dimensions is itself two-dimensional, so "the orthogonal direction that moves damping most" depends on the basis chosen for it; the notebook's SVD vector and the projected damping axis differ by 25°. It does not matter for the conclusions: any direction with a sizeable component outside the plane produces the same degradation pattern.</p></details>
+    <details class="sol"><summary>3. Why does the from-scratch error decrease as the shift grows?</summary><p>The shift mostly increases damping, from 0.34 on average to 0.85 at <span class="m">\delta = 0.6</span>; heavily damped systems move less (validation RMS 0.087 against 0.144), so the same coefficient errors produce smaller prediction errors. From scratch assumes nothing about the family, so nothing else changes for it.</p></details>
+    <details class="sol"><summary>4. How is the misfit threshold set, and what does it guarantee?</summary><p>As the 95th percentile of the misfit over 60 in-family systems identified from 12 s. It guarantees a false-alarm rate of about 5% on systems like the calibration ones, nothing about detection; the 10% observed at <span class="m">\delta = 0</span> is 3 systems of 30, within sampling noise.</p></details>
+    <details class="sol"><summary>5. Why does detection lag degradation?</summary><p>Because the misfit is dominated by the sensor noise and the coloured disturbance, about 0.013 for any in-family system, and a shift adds only the part of the mismatch that a re-fitted <span class="m">z</span> cannot absorb. At <span class="m">\delta = 0.3</span> the median misfit has risen by 0.0001 while the adapter's error has risen by 15% and it loses to from scratch on 25 of 30 systems.</p></details>
+    <details class="sol"><summary>6. What does raising the percentile to 99 do?</summary><p>It cuts the false-alarm rate to about 1% by construction and detects fewer shifted systems at every <span class="m">\delta</span>: 3% at 0.3 and 17% at 0.6 in the notebook's study, against 17% and 37% at the 95th. The same trade-off governs every anomaly threshold.</p></details>
+    <details class="sol"><summary>7. Why does the best-in-family oracle do worse than the adapter at large shifts?</summary><p>The oracle is a geometric projection of the true coefficients, chosen without looking at data. The adapter chooses <span class="m">z</span> to fit the record, and a context that is wrong in coefficient space can still predict the output better by compensating the missing direction's effect on the response. Prediction and coefficient accuracy are different targets.</p></details>
+    <details class="sol"><summary>8. What is the decision rule, and why is it unsatisfying?</summary><p>Trust the adapter while its misfit is below the threshold; switch to full identification when it is not. It is unsatisfying because the switch comes after the adapter has already lost its advantage, and because the threshold trades false alarms for detection without any guarantee about either on systems the calibration set did not resemble.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>A direction that stays inside the family.</b> Repeat the shift study along a direction inside <span class="m">U</span>, the normalised first column, at <span class="m">\delta = 0.4</span>. Does the pretrained model degrade, and does the misfit test flag anything?
+        <details class="sol"><summary>Hint</summary><p>Compare with the in-family baseline (0.0096, 10% flagged) and with the orthogonal shift at the same distance (0.0129, 13%).</p></details>
+        <details class="sol"><summary>Solution</summary><p>Median error 0.0104 and 2 of 30 flagged (7%), against 0.0096 and 10% in the family and 0.0129 and 13% for the orthogonal shift. Moving along a direction the context can represent leaves both the error and the flag rate near the baseline, because the adapter simply finds a <span class="m">z</span> that reaches that part of coefficient space (the shifted systems' whitened distance from the plane stays at the in-family value). It is specifically the unrepresentable component of a shift that hurts.</p>
+          <pre><code class="language-python">inside = family.U[:, 0] / np.linalg.norm(family.U[:, 0])
 errs_inside, flags_inside = [], []
 for n in range(30):
     s = sample_system(rng)
-    s[&quot;eta&quot;] = np.clip(s[&quot;eta&quot;] + 0.4 * inside, dynutils.LOW + 0.02, dynutils.HIGH)
+    s["eta"] = np.clip(s["eta"] + 0.4 * inside, dynutils.LOW + 0.02, dynutils.HIGH)
     u = multisine(T, rng); _, y = simulate(s, u, rng)
     u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
     z_, _, misfit = adapt(family, y, u)
-    errs_inside.append(rmse(predict(family.decode(z_), u_val), q_val)); flags_inside.append(misfit &gt; threshold)
-np.median(errs_inside), np.mean(flags_inside)
-</code></pre>
-<p>Moving along a direction the context <em>can</em> represent leaves both the error and the flag rate close
-to the in-family baseline, since <code>adapt</code> can simply find a <code>z</code> that reaches that part of coefficient
-space — confirming that it is specifically the <em>unrepresentable</em> component of a shift that hurts.</p>
-</details>
-<h3 id="exercise-2-a-stricter-threshold">Exercise 2: A stricter threshold</h3>
-<p>Recompute <code>threshold</code> at the 99th percentile instead of the 95th. How does the false-alarm rate on
-in-family systems and the detection rate at <span class="math inline">\delta=0.3</span> change?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">threshold_99 = np.quantile(in_family, 0.99)
+    errs_inside.append(rmse(predict(family.decode(z_), u_val), q_val)); flags_inside.append(misfit > threshold)
+np.median(errs_inside), np.mean(flags_inside)</code></pre></details>
+      </div></li>
+      <li><div><b>A stricter threshold.</b> Recompute the threshold at the 99th percentile. How do the false-alarm rate on in-family systems and the detection rate at <span class="m">\delta = 0.3</span> change?
+        <details class="sol"><summary>Hint</summary><p>The widget in Part 2 does this for any percentile on the notebook's own misfits.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">\tau_{99} = 0.0202</span>. On the 60 calibration systems the false-alarm rate falls from 5% to 1.7% (one system; by construction about 1%). On 30 fresh systems at <span class="m">\delta = 0.3</span> detection falls from 10% to 7%; on the main study's systems at the same shift from 17% to 3%, and at <span class="m">\delta = 0.6</span> from 37% to 17%. Fewer false alarms, longer detection lag: the trade-off of every anomaly threshold.</p>
+          <pre><code class="language-python">threshold_99 = np.quantile(in_family, 0.99)
 delta = 0.3
 misfits = []
 for n in range(30):
     s = sample_system(rng)
-    s[&quot;eta&quot;] = np.clip(s[&quot;eta&quot;] + delta * direction, dynutils.LOW + 0.02, dynutils.HIGH)
+    s["eta"] = np.clip(s["eta"] + delta * direction, dynutils.LOW + 0.02, dynutils.HIGH)
     u = multisine(T, rng); _, y = simulate(s, u, rng)
     misfits.append(adapt(family, y, u)[2])
-np.mean(in_family &gt; threshold_99), np.mean(np.array(misfits) &gt; threshold_99)
-</code></pre>
-<p>Raising the threshold from the 95th to the 99th percentile roughly quarters the expected false-alarm
-rate on in-family systems (5% to about 1% by construction) but also detects fewer of the shifted
-systems at any given δ, since the same trade-off between false alarms and detection lag applies here
-as to any anomaly threshold.</p>
-</details></div>
-</main>
+np.mean(in_family > threshold_99), np.mean(np.array(misfits) > threshold_99)</code></pre></details>
+      </div></li>
+      <li><div><b>The distance from the plane.</b> For each shifted system compute the whitened residual of its true coefficients after projection onto the family, and plot the adapter's error and the misfit against it. Which of the two tracks the distance?
+        <details class="sol"><summary>Hint</summary><p><code>(s["eta"] - family.decode(family.project(s["eta"]))) / family.scale</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The median distance is 1.8, 4.6, 9.4, 14, 20, 25 and 30 whitened units at the seven shifts: it grows linearly with <span class="m">\delta</span>, as it must for a shift orthogonal to the plane. The adapter's error tracks it monotonically; the misfit barely moves until the distance exceeds about 20 units. The distance is the quantity one would like to detect, and it is exactly what a learner without the true coefficients cannot compute; the misfit is its blurred shadow in the data.</p></details>
+      </div></li>
+      <li><div><b>A better statistic?</b> The misfit ignores the structure of the residual. Propose a statistic that would separate an unrepresentable shift from the disturbance, and say what it would need.
+        <details class="sol"><summary>Hint</summary><p>The disturbance is a stationary coloured noise; a model mismatch produces a residual correlated with the input and the predicted output.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Regress the residual on the output sensitivities with respect to the coefficients the context cannot move, <span class="m">J_\eta v</span> for <span class="m">v</span> in the complement, and test whether the coefficient is zero against the residual's own variance; or compare the residual's correlation with the input to what the disturbance alone would give. Either needs the sensitivity machinery of chapter 02 and a model of the disturbance's colour, and both would flag at smaller shifts, because they look for the <em>shape</em> of the mismatch rather than its size. A full treatment is model-validation theory <a href="#ref-1">[1]</a>.</p></details>
+      </div></li>
+      <li><div><b>Fallback in practice.</b> Implement the decision rule: use the adapter when the misfit is below <span class="m">\tau_{95}</span>, otherwise the from-scratch fit. Score it across the seven shifts and compare with always using one or the other.
+        <details class="sol"><summary>Hint</summary><p>Everything needed is already in <code>shift_err</code> and <code>flagged</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With the notebook's arrays the rule takes the from-scratch error on the flagged systems and the context error otherwise. Median errors of rule, adapter and from scratch: 0.0092, 0.0096, 0.0132 at <span class="m">\delta = 0</span> (the 3 false alarms cost little); 0.0102, 0.0111, 0.0072 at 0.3 (5 flagged, of which only 2 were better served by from scratch); 0.0127, 0.0133, 0.0048 at 0.6 (11 flagged, 10 of them rightly). The rule recovers a few percent of the gap, never more, because the detector fires on a third of the systems at most. With 12 s of data on this family, always fitting from scratch would be the safer default; the adapter earns its place at short budgets, where chapter 05 showed its advantage and where the misfit is even less informative.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Outside the family</b>: a coefficient shift with a component orthogonal to the plane <span class="m">\bar\eta + Uz</span>; the notebook's direction is mostly added damping, 182 whitened units per unit of <span class="m">\delta</span>.</div></li>
+      <li><div><b>Degradation</b>: the adapter's median error rises from 0.0096 to 0.0133 across <span class="m">\delta = 0</span> to 0.6; its floor, the best-in-family projection, from 0.0036 to 0.0217; from scratch, unaffected, improves from 0.0132 to 0.0048.</div></li>
+      <li><div><b>The crossover</b>: with 12 s of data the context wins 23 of 30 pairs in the family and 5 of 30 at <span class="m">\delta = 0.3</span>.</div></li>
+      <li><div><b>The warning light</b>: the adapted model's output misfit against the 95th percentile of in-family misfits, <span class="m">\tau_{95} = 0.0175</span>; 10% false alarms at <span class="m">\delta = 0</span>, about 40% detection at the largest shifts.</div></li>
+      <li><div><b>Detection lags degradation</b>, because the misfit is dominated by sensor noise and disturbance; a stricter threshold trades false alarms for longer lag.</div></li>
+      <li><div><b>Inside the family</b> a shift of the same size costs nothing: 0.0104 and 7% flagged. Only the unrepresentable component hurts.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Distribution shift, out of family</td><td>A new system unlike those pretraining saw.</td></tr>
+        <tr><td>Orthogonal complement</td><td>The directions in coefficient space the context cannot move along.</td></tr>
+        <tr><td>Unrepresentable component</td><td>The part of a shift outside the family's plane, measured in whitened units.</td></tr>
+        <tr><td>Output misfit</td><td>Residual RMS of the adapted model on its own record.</td></tr>
+        <tr><td>Calibration set</td><td>In-family systems used to set the threshold.</td></tr>
+        <tr><td>False alarm, detection</td><td>Flagging an in-family system; flagging a shifted one.</td></tr>
+        <tr><td>Threshold percentile</td><td>The quantile of calibration misfits that sets the false-alarm rate.</td></tr>
+        <tr><td>Detection lag</td><td>The shift at which flags appear, against the shift at which the adapter already loses.</td></tr>
+        <tr><td>Fallback rule</td><td>Use the adapter while it explains the data; otherwise identify from scratch.</td></tr>
+        <tr><td>Model validation</td><td>Testing a fitted model's residual for structure it should not have.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter studies one kind of shift, a coefficient change along a fixed direction outside the family, at one budget, with one detector, the output misfit against a calibrated percentile. It does not treat shifts of the disturbance or the sensor, structural changes of the equation, sequential or online detection, or detectors that use the residual's structure, which the exercises point to. The classical theory of residual tests and change detection is the background <a href="#ref-1">[1]</a><a href="#ref-2">[2]</a>.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>L. Ljung. <em>System Identification: Theory for the User</em>, 2nd ed. Prentice Hall, 1999. Model validation: residual analysis, whiteness and independence tests, the statistics a misfit test could be upgraded to.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>F. Gustafsson. <em>Adaptive Filtering and Change Detection</em>. Wiley, 2000. <a href="https://doi.org/10.1002/0470841613">doi:10.1002/0470841613</a>. Detecting that a model no longer fits, thresholds, false alarms and detection delay.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>T. Fawcett. An introduction to ROC analysis. <em>Pattern Recognition Letters</em>, 27(8):861–874, 2006. <a href="https://doi.org/10.1016/j.patrec.2005.10.010">doi:10.1016/j.patrec.2005.10.010</a>. The false-alarm against detection trade-off that the threshold percentile moves along.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>S. Rabanser, S. Günnemann and Z. C. Lipton. Failing loudly: an empirical study of methods for detecting dataset shift. <em>Advances in Neural Information Processing Systems</em> 32, 2019. Shift detection for learned models, and why detectors that fail quietly are the dangerous ones.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>J. Schoukens and L. Ljung. Nonlinear system identification: a user-oriented road map. <em>IEEE Control Systems Magazine</em>, 39(6):28–99, 2019. <a href="https://doi.org/10.1109/MCS.2019.2938121">doi:10.1109/MCS.2019.2938121</a>. Model errors, disturbances and what a residual can and cannot reveal about them.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>M. Forgione, F. Pura and D. Piga. From system models to class models: an in-context learning paradigm. <em>IEEE Control Systems Letters</em>, 7:3513–3518, 2023. <a href="https://doi.org/10.1109/LCSYS.2023.3335036">doi:10.1109/LCSYS.2023.3335036</a>. Class models and the question of what happens to a new system outside the class.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>T. Hospedales, A. Antoniou, P. Micaelli and A. Storkey. Meta-learning in neural networks: a survey. <em>IEEE Transactions on Pattern Analysis and Machine Intelligence</em>, 44(9):5149–5169, 2022. <a href="https://doi.org/10.1109/TPAMI.2021.3079209">doi:10.1109/TPAMI.2021.3079209</a>. Task distribution shift as the standing limitation of meta-learned adapters.</div></li>
+    </ul>
+    <p>The threshold trade-off is the receiver-operating-characteristic view of any detector <a href="#ref-3">[3]</a>; the lesson that a learned model should fail loudly rather than quietly is the one this chapter's misfit test only half delivers <a href="#ref-4">[4]</a>, and the same limitation is known in general for meta-learned adapters <a href="#ref-7">[7]</a>, in the class-model setting in particular <a href="#ref-6">[6]</a>, and for residuals in general <a href="#ref-5">[5]</a>. Next, chapter 08 turns from prediction to control: does a better model give better tracking?</p>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="06-choosing-the-best-experiment.html"><span class="lbl">Previous · 06</span><span class="t">Choosing the Best Experiment</span></a>
-  <a class="next" rel="next" href="08-from-a-better-model-to-better-control.html"><span class="lbl">Next · 08</span><span class="t">From a Better Model to Better Control</span></a>
+  <a class="prev" rel="prev" href="06-choosing-the-best-experiment.html"><span class="lbl">Previous · 06</span><span class="t">Choosing the best experiment</span></a>
+  <a class="next" rel="next" href="08-from-a-better-model-to-better-control.html"><span class="lbl">Next · 08</span><span class="t">From a better model to better control</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 07 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+  <p>Chapter 07 of "Learning to Identify New Dynamical Systems from a Few Experiments" by Elie Rouphael. Adaptations, fits and reruns are computed in your browser; the notebook's study comes from its own seeded run. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch07-data.js"></script>
+<script src="interactive/ch07.js"></script>
 </body>
 </html>
