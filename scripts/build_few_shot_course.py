@@ -58,7 +58,7 @@ CHAPTERS = [
          result="As the shift grows from δ=0 to δ=0.6, the pretrained model's median error rises from 0.0096 to 0.0133 while the from-scratch estimate's error falls (0.0132 to 0.0048), and the misfit test's flag rate climbs from about 1 in 10 systems to well over a third."),
     dict(stem="08_from_a_better_model_to_better_control", short="From a Better Model to Better Control",
          build="A model-based feedforward controller computed from each candidate model and applied to the true system, so tracking error becomes a direct test of model quality.",
-         result="A 6-second designed experiment, adapted through the pretrained family, cuts feedforward tracking error from 0.058 (average-system model) to 0.019, close to the 0.014 achieved with the true coefficients."),
+         result="A 6-second designed experiment, adapted through the pretrained family, cuts feedforward tracking error from 0.058 (average-system model) to 0.019, within 40% of the 0.014 achieved with the true coefficients."),
     dict(stem="09_summary_and_the_road_to_a_foundation_model", short="Summary and the Road to a Foundation Model",
          build="Mapping every piece built in this course, the backbone, the context, the design criterion, the misfit test, onto its counterpart in a real, large-scale foundation model for dynamical systems, plus the open questions it raises.",
          result="The same two numbers that explained 96% of the hidden design variables in chapter 03 are what took chapter 08's feedforward tracking error from 0.058 down to 0.019, within 40% of what the true four coefficients achieve."),
