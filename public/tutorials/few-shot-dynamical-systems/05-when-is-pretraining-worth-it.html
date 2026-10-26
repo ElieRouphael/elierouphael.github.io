@@ -3,13 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>05 · When Is Pretraining Worth It? — Learning to Identify New Dynamical Systems</title>
-<meta name="description" content="A data-budget study over 40 fresh systems per budget, comparing no adaptation, from-scratch fitting, the pretrained context and the true coefficients as the experiment length grows from 1.5 to 25 seconds.">
+<title>05 · When Is Pretraining Worth It? · Learning to Identify New Dynamical Systems</title>
+<meta name="description" content="A data-budget study of few-shot system identification, run live: forty new oscillators per budget from 1.5 to 25 seconds, predicted with the average system, a from-scratch fit, a pretrained two-number context and the true coefficients, plus the best-in-family floor. The notebook's curves, the page's own reruns, medians against means, win rates, and what more data can and cannot fix. Every number is checked in Python.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .demo canvas, .widget canvas { display: block; width: 100%; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  #budT { font-size: 0.86rem; }
+  @media (max-width: 600px) { #budT { font-size: 0.78rem; } }
+  .seg + .seg { margin-top: 0.4rem; }
+</style>
 </head>
 <body>
 
@@ -17,127 +25,207 @@
 
 <header class="hero col">
   <span class="eyebrow">Learning to Identify New Dynamical Systems · Chapter 05 of 09</span>
-  <h1>When Is Pretraining Worth It?</h1>
-  <div class="intro prose">
-<p>Chapter 04 showed one example where a pretrained context beat from-scratch identification on two
-seconds of data. This chapter replaces the anecdote with a systematic study: for several experiment
-lengths, we draw many new systems, run one random experiment on each, and compare four ways of
-predicting a fresh 30-second input.</p>
-<hr />
-<h2 id="1-four-methods-five-data-budgets">1. Four methods, five data budgets</h2>
-<ul>
-<li><strong>no adaptation</strong>: always predict with the average system <span class="math inline">\bar\eta</span>;</li>
-<li><strong>from scratch</strong>: fit all four coefficients (chapter 02);</li>
-<li><strong>pretrained + context</strong>: adapt <span class="math inline">z</span> (chapter 04), using <em>the same</em> data;</li>
-<li><strong>reference</strong>: the true coefficients <span class="math inline">\eta</span> plugged into the learner's model. This is not zero
-error, because the model lacks the quintic term and the bias.</li>
-</ul>
-<p>Error is the RMSE of the predicted disturbance-free response to a fresh 30 s input, for 40 new
-systems per budget.</p>
-
-  </div>
+  <h1>When is pretraining worth it?</h1>
+  <p class="lede">Chapter 04 showed one example where a pretrained context beat from-scratch identification on two seconds of data, and one where the prior pulled the wrong way. This chapter replaces anecdotes with a study: for five experiment lengths, forty new systems each, one random experiment per system, four ways of predicting a fresh 30 s input. The answer has a shape, and the shape is the central message of few-shot learning: pretraining buys data efficiency, not a better final model. The study runs in your browser, next to the notebook's own numbers.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 02 to 04 and a reading of medians, quartiles and log scales · Every number is checked in Python</p>
   <div class="downloads">
-    <a class="btn" href="notebooks/05_when_is_pretraining_worth_it.ipynb" download>Download notebook (.ipynb)</a>
+    <a class="btn" href="notebooks/05_when_is_pretraining_worth_it.ipynb" download>Download the notebook (.ipynb)</a>
     <a class="btn ghost" href="few-shot-dynamical-systems-course.zip" download>Full course (.zip)</a>
   </div>
-  <p class="dl-note">To run a chapter you also need <code>dynutils.py</code>: the full course download has it.</p>
 </header>
 
-<nav class="col chapter-toc" aria-label="In this chapter">
-  <span class="eyebrow">In this chapter</span>
-  <ol>
-    <li><a href="#1-four-methods-five-data-budgets">1. Four methods, five data budgets</a></li>
-    <li><a href="#exercises">Exercises</a></li>
-  </ol>
-</nav>
-
-<main class="col notebook">
-<div class="cell">
-<pre class="source"><code class="language-python">import numpy as np
-import matplotlib.pyplot as plt
-
-import dynutils
-from dynutils import sample_system, simulate, multisine, predict, fit_from_scratch, adapt, rmse
-
-dynutils.set_style()
-rng = np.random.default_rng(dynutils.SEED)
-COLOR = dynutils.COLOR
-family, train_systems, train_data, train_fits = dynutils.build_family(rng)</code></pre>
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Pretraining matters most when data is scarce</p>
+        <canvas id="heroC" aria-label="Log-log chart of median prediction error against experiment length for each method, with interquartile bands; the notebook's run as solid lines and the page's own rerun as dotted lines" aria-describedby="heroStatus"></canvas>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Methods" id="heroM">
+        <button class="btn" type="button" data-m="none" aria-pressed="true">no adaptation</button>
+        <button class="btn" type="button" data-m="scratch" aria-pressed="true">from scratch</button>
+        <button class="btn" type="button" data-m="context" aria-pressed="true">pretrained + context</button>
+        <button class="btn" type="button" data-m="reference" aria-pressed="true">reference (true η)</button>
+        <button class="btn" type="button" data-m="best" aria-pressed="false">best in family</button>
+      </div>
+      <label class="field"><span>Systems per budget for the page's rerun: <b id="hNV"></b></span>
+        <span class="row"><input type="range" id="hN" min="10" max="40" step="5" value="40"></span>
+      </label>
+      <div class="btn-row"><button class="btn" type="button" id="hRun">Rerun the study with new draws</button></div>
+      <p class="hint" id="hStatus"></p>
+      <div class="readouts" aria-live="off">
+        <span>notebook: scratch ÷ context, by budget</span><span class="v" id="rRatio">–</span>
+        <span>page's rerun: scratch ÷ context</span><span class="v" id="rOwn">–</span>
+      </div>
+      <p class="hint">Budgets 1.5, 3, 6, 12 and 25 s. Error is the RMSE of the predicted disturbance-free response to a fresh 30 s six-sine input. "Best in family" is the oracle context obtained by projecting the true coefficients onto the family, the floor the context method could reach with unlimited data on the new system.</p>
+    </div>
+  </div>
 </div>
 
-<div class="cell">
-<pre class="source"><code class="language-python">budgets = [15, 30, 60, 120, 250]                        # samples; x 0.1 s
-methods = [&quot;none&quot;, &quot;scratch&quot;, &quot;context&quot;, &quot;reference&quot;]
-budget_err = {m: np.zeros((len(budgets), 40)) for m in methods}
-for i, T in enumerate(budgets):
-    for n in range(40):
-        s = sample_system(rng); u = multisine(T, rng); _, y = simulate(s, u, rng)
-        u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
-        etas = dict(none=family.mean, scratch=fit_from_scratch(y, u),
-                    context=family.decode(adapt(family, y, u)[0]), reference=s[&quot;eta&quot;])
-        for m in methods:
-            budget_err[m][i, n] = rmse(predict(etas[m], u_val), q_val)
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scope"><span class="n">0</span><span class="t">The design of the study</span><span class="d">Four methods, five budgets, forty systems</span></a>
+    <a href="#read"><span class="n">1</span><span class="t">Reading the curves</span><span class="d">Medians, quartiles and logarithms</span></a>
+    <a href="#numbers"><span class="n">2</span><span class="t">What the numbers say</span><span class="d">Three lessons and two floors</span></a>
+    <a href="#spread"><span class="n">3</span><span class="t">One budget at a time</span><span class="d">Every system's error</span></a>
+    <a href="#rank"><span class="n">4</span><span class="t">One number or two?</span><span class="d">The rank of the context</span></a>
+    <a href="#check"><span class="n">5</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">6</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">8</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
 
-labels = dict(none=&quot;no adaptation&quot;, scratch=&quot;from scratch&quot;, context=&quot;pretrained + context&quot;,
-              reference=&quot;reference (true η)&quot;)
-seconds = dynutils.DT * np.array(budgets)
-fig, ax = plt.subplots(figsize=(9.5, 4))
-for m in methods:
-    med = np.median(budget_err[m], axis=1)
-    lo, hi = np.percentile(budget_err[m], [25, 75], axis=1)
-    ls = &quot;--&quot; if m == &quot;reference&quot; else &quot;-&quot;
-    ax.plot(seconds, med, ls, marker=&quot;o&quot;, color=COLOR[m], label=labels[m])
-    ax.fill_between(seconds, lo, hi, color=COLOR[m], alpha=0.12)
-ax.set(xscale=&quot;log&quot;, yscale=&quot;log&quot;, xlabel=&quot;length of the experiment on the new system [s]&quot;,
-       ylabel=&quot;prediction RMSE (median, IQR)&quot;, xticks=seconds, xticklabels=[f&quot;{x:g}&quot; for x in seconds],
-       title=&quot;Pretraining matters most when data is scarce&quot;)
-ax.xaxis.set_minor_locator(plt.NullLocator())
-ax.legend(loc=&quot;upper left&quot;, bbox_to_anchor=(1.01, 1)); plt.tight_layout(); plt.show()
+<!-- =================================================================== -->
+<section id="scope">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The design of the study</h2>
+  </div>
+  <div class="col prose">
+    <p>For each budget <span class="m">T \in \{15, 30, 60, 120, 250\}</span> samples, that is 1.5 to 25 s, the notebook draws 40 new systems from the family. Each gets one random three-sine experiment of length <span class="m">T</span>, and each method must then predict the system's disturbance-free response to a fresh 30 s six-sine input:</p>
+    <ol class="steps">
+      <li><div><b>No adaptation</b>: always predict with the average system <span class="m">\bar\eta</span>. The cost of ignoring the new data.</div></li>
+      <li><div><b>From scratch</b>: fit all four coefficients to the experiment (chapter 02).</div></li>
+      <li><div><b>Pretrained + context</b>: adapt the two-number context to <em>the same</em> data (chapter 04).</div></li>
+      <li><div><b>Reference</b>: the true coefficients <span class="m">\eta</span> plugged into the learner's model. Not zero error, because the model lacks the quintic term and the bias.</div></li>
+    </ol>
+    <p>The page adds a fifth line, <b>best in family</b>: the context obtained by projecting the true coefficients onto the family, the best any amount of data on the new system could do with a two-number context and this backbone. It separates the part of the context's error that more data can remove from the part that only a better family could.</p>
+    <div class="callout"><p><b>Why a fresh validation input.</b> The score is never the fit to the experiment itself, which the from-scratch method wins by construction, but the disturbance-free response to an input none of the methods has seen. That is the yardstick of chapter 01, and it is what makes overfitting visible.</p></div>
+  </div>
+</section>
 
-for i, T in enumerate(budgets):
-    ratio = np.median(budget_err[&quot;scratch&quot;][i]) / np.median(budget_err[&quot;context&quot;][i])
-    print(f&quot;{T*dynutils.DT:5.1f} s: from-scratch error is {ratio:4.1f}x the pretrained error&quot;)</code></pre>
-<figure class="output-figure"><img src="img/05-1.png" alt="Figure 1 produced by the code above" width="1033" height="429" loading="lazy"></figure>
-<pre class="output">  1.5 s: from-scratch error is  5.9x the pretrained error
-  3.0 s: from-scratch error is  2.1x the pretrained error
-  6.0 s: from-scratch error is  1.6x the pretrained error
- 12.0 s: from-scratch error is  1.8x the pretrained error
- 25.0 s: from-scratch error is  1.1x the pretrained error</pre>
-</div>
+<!-- =================================================================== -->
+<section id="read">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Reading the curves</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Medians and quartiles.</b> Forty errors per budget and method are summarised by their median and the band from the first to the third quartile. Medians are used because the error distributions have long right tails: a few from-scratch fits at 1.5 s predict with errors of 0.3 or more, and a mean would be dominated by them. The mean from-scratch error at 1.5 s is 0.179 against a median of 0.138; for the context it is 0.033 against 0.024. The ratios the notebook prints are ratios of medians,</p>
+    <div class="math-block" data-narrow="\rho(T) = \frac{\operatorname{median}_n \text{RMSE}_{\text{scratch}}(T, n)}{\operatorname{median}_n \text{RMSE}_{\text{context}}(T, n)},">\rho(T) = \frac{\operatorname{median}_n \text{RMSE}_{\text{scratch}}(T, n)}{\operatorname{median}_n \text{RMSE}_{\text{context}}(T, n)}, \qquad n = 1, \dots, 40,</div>
+    <p>which are 5.9, 2.1, 1.6, 1.8 and 1.1 at the five budgets: a steady narrowing, not monotone, because forty systems and forty random inputs per budget leave sampling noise of a few tens of percent in each ratio. The hero demo's rerun shows how much they move with a different draw.</p>
+    <p><b>Logarithmic axes.</b> Both axes are logarithmic: the budgets span a factor of 17 and the errors a factor of 60, and on a log scale a constant ratio between two methods is a constant vertical gap. Equal vertical spacing of the "no adaptation" line means its error does not depend on the budget at all, as it should: it never looks at the data.</p>
+    <p><b>Paired comparisons.</b> Every method sees the same system, the same experiment and the same validation input, so the comparison is paired. Win counts (how often the context beats from scratch on the same system) are a sharper statistic than the ratio of medians, and they are in the table below.</p>
+  </div>
+</section>
 
-<div class="md">
-<p>The pattern is the central message of few-shot learning:</p>
-<ul>
-<li><strong>Scarce data (a few seconds):</strong> from scratch is worse than doing nothing, because it overfits.
-The pretrained model is already useful.</li>
-<li><strong>More data:</strong> from scratch improves steadily and the gap narrows. Pretraining buys data
-efficiency, not a better final model.</li>
-<li><strong>All learned models stay above the reference.</strong> The remaining error comes from the imperfect
-pretraining (e.g. the poorly identified <span class="math inline">\alpha</span>) and the rank-2 restriction. Neither can be
-fixed by collecting more data on the new system; only a better model class can.</li>
-</ul>
-<p>So far every experiment has been random. Can we do better by <em>choosing</em> the experiment?</p>
-<hr />
-<h2 id="exercises">Exercises</h2>
-<h3 id="exercise-1-where-exactly-does-from-scratch-catch-up">Exercise 1: Where exactly does from-scratch catch up?</h3>
-<p>Using the <code>budget_err</code> arrays above, find the smallest budget at which the median from-scratch error
-drops below the median pretrained-context error (if it does within the budgets tried).</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">med_scratch = np.median(budget_err[&quot;scratch&quot;], axis=1)
-med_context = np.median(budget_err[&quot;context&quot;], axis=1)
-crossing = [T for T, s, c in zip(budgets, med_scratch, med_context) if s &lt; c]
-crossing[:1] if crossing else &quot;no crossing within the tried budgets&quot;
-</code></pre>
-<p>Within the budgets tried (up to 25 s) from scratch does not fully close the gap on the median, even
-though its <em>rate of improvement</em> is faster; the two curves are converging but the crossing, if any,
-lies beyond 25 s.</p>
-</details>
-<h3 id="exercise-2-restricting-the-family-to-one-dimension">Exercise 2: Restricting the family to one dimension</h3>
-<p>Refit <code>family</code> with <code>rank=1</code> (reuse <code>train_fits</code>/<code>train_data</code> from chapter 03's recipe via
-<code>dynutils.build_family(rng, rank=1)</code> on a fresh <code>rng</code>) and repeat the comparison at the shortest
-budget only. How much worse does a one-number context do compared with the two-number one?</p>
-<details><summary>Solution</summary>
-<pre><code class="language-python">rank1_family, *_ = dynutils.build_family(np.random.default_rng(dynutils.SEED), rank=1)
+<!-- =================================================================== -->
+<section id="numbers">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>What the numbers say</h2>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.2rem">
+    <table class="num" id="budT">
+      <thead><tr><th>Budget</th><th>No adaptation</th><th>From scratch</th><th>Context</th><th>Best in family</th><th>Reference</th><th>Scratch ÷ context</th><th>Context wins</th><th>Scratch worse than nothing</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Medians over the notebook's 40 systems per budget; the last two columns are paired counts. Three lessons carry through the rest of the course.</p>
+    <ol class="steps">
+      <li><div><b>Scarce data: from scratch is worse than doing nothing.</b> At 1.5 s the from-scratch median is 0.138 against 0.062 for the average system, and from scratch loses to the average system on 35 of 40 systems. Four free coefficients overfit fifteen samples almost every time. The pretrained context is already useful: 0.024, better than the average system on 36 of 40.</div></li>
+      <li><div><b>More data: the gap narrows.</b> From scratch improves steadily, from 0.138 to 0.011; the context improves from 0.024 to 0.010. At 25 s the medians differ by 10%, and the context still wins 28 of 40 pairs. Pretraining buys data efficiency, not a better final model.</div></li>
+      <li><div><b>All learned models stay above the reference.</b> The reference sits at 0.002 to 0.003 at every budget; no learned model gets within a factor of three of it, on any system.</div></li>
+    </ol>
+    <p><b>Two floors, not one.</b> The notebook attributes the remaining error to the imperfect pretraining and the rank-2 restriction, and says that neither can be fixed by collecting more data on the new system. The best-in-family line makes that precise. The context's median at 25 s is 0.0097; the best context the family can offer for the same systems scores 0.0058; the reference 0.0025. The gap from 0.0097 down to 0.0058 is estimation error in <span class="m">z</span>, and more or better data on the new system can still close it. The gap from 0.0058 down to 0.0025 is the family itself, the imperfect <span class="m">\alpha</span> and the two-dimensional restriction, and no amount of data on the new system touches it. Only a better model class does.</p>
+    <div class="big-idea"><p>With little data, the question is not which method fits the experiment better but which one can be trusted outside it. Pretraining wins there by a factor of six at 1.5 s, by 10% at 25 s, and by nothing at all once the data alone determine four coefficients. What it cannot do is beat its own family.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="spread">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>One budget at a time</h2>
+  </div>
+  <div class="col prose">
+    <p>The curves hide the forty systems behind each point. The strip shows every one of them.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="stripW">
+      <div class="seg" role="group" aria-label="Budget" id="stripSeg">
+        <button class="btn" type="button" data-i="0" aria-pressed="true">1.5 s</button>
+        <button class="btn" type="button" data-i="1" aria-pressed="false">3 s</button>
+        <button class="btn" type="button" data-i="2" aria-pressed="false">6 s</button>
+        <button class="btn" type="button" data-i="3" aria-pressed="false">12 s</button>
+        <button class="btn" type="button" data-i="4" aria-pressed="false">25 s</button>
+      </div>
+      <canvas id="stripC" aria-label="Dot strip of the forty validation errors per method at the chosen budget, on a log scale, with medians marked" aria-describedby="stripCap"></canvas>
+      <p class="caption" id="stripCap" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="rank">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>One number or two?</h2>
+  </div>
+  <div class="col prose">
+    <p>The notebook's exercise 2 asks how much worse a one-number context does. A rank-one family keeps only the first direction of chapter 03, stiffness and hardening moving together, and cannot represent the damping–gain direction at all. The intuition is that systems whose true context lies along <span class="m">z_2</span> are systematically mispredicted. The data say when that matters.</p>
+  </div>
+  <div class="col">
+    <div class="widget" id="ex2W">
+      <div class="seg" role="group" aria-label="Budget" id="ex2Seg">
+        <button class="btn" type="button" data-t="15" aria-pressed="true">1.5 s</button>
+        <button class="btn" type="button" data-t="60" aria-pressed="false">6 s</button>
+        <button class="btn" type="button" data-t="250" aria-pressed="false">25 s</button>
+      </div>
+      <canvas id="ex2C" aria-label="Scatter of the one-number context's error against the two-number context's error for forty new systems, log axes, diagonal drawn" aria-describedby="ex2Cap"></canvas>
+      <div class="btn-row"><button class="btn ghost" type="button" id="ex2New">Another forty systems</button></div>
+      <p class="caption" id="ex2Cap" aria-live="polite"></p>
+    </div>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>In the notebook's own run at 1.5 s the one-number context scores a median of 0.0280 against 0.0242 for two numbers on the same forty systems, and two numbers win 25 of 40: a 16% difference, not the "noticeably worse" of its printed solution. The reason is chapter 04's posterior: at 1.5 s the data are worth a fraction of a unit of prior along the second direction, so the two-number context sets <span class="m">z_2</span> mostly from the prior anyway, and the one-number context loses little by not having it. At 6 s the medians are 0.0196 against 0.0130, at 25 s 0.0159 against 0.0086: the second number pays off once the data can determine it. The rank of the context is a bet on the budget as much as on the family.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why is the score a fresh validation input and not the fit to the experiment?</summary><p>Because the from-scratch fit wins the latter by construction, with four free coefficients. Only prediction on data the methods have not seen reveals overfitting, and only the disturbance-free response removes the luck of the noise.</p></details>
+    <details class="sol"><summary>2. Why medians rather than means?</summary><p>The error distributions have long right tails, especially from scratch at short budgets, where a few fits predict with errors above 0.3. The mean at 1.5 s is 0.179 against a median of 0.138. Medians describe the typical system; means describe the worst ones.</p></details>
+    <details class="sol"><summary>3. Why does "no adaptation" draw a flat line?</summary><p>It never uses the experiment, so its error cannot depend on the budget. Its median wanders between 0.044 and 0.063 only because each budget has its own forty systems; the band shows the spread of the family around its mean member.</p></details>
+    <details class="sol"><summary>4. The ratio of medians goes 5.9, 2.1, 1.6, 1.8, 1.1. Why is it not monotone?</summary><p>Sampling noise. Forty systems and forty random inputs per budget leave each median uncertain by tens of percent, and the two medians are estimated from the same forty systems but differently affected by them. The page's rerun with other draws gives a different sequence with the same shape.</p></details>
+    <details class="sol"><summary>5. What does "from scratch is worse than doing nothing" mean, in numbers?</summary><p>At 1.5 s the from-scratch error exceeds the average system's on 35 of 40 systems, with medians 0.138 against 0.062. By 6 s it is 7 of 40, by 25 s one.</p></details>
+    <details class="sol"><summary>6. Which part of the context's remaining error can more data remove?</summary><p>The part above the best-in-family floor: at 25 s, from 0.0097 down to 0.0058. The rest, from 0.0058 down to the reference's 0.0025, is the family's imperfect <span class="m">\alpha</span> and its two-dimensional restriction, and needs a better model class, not more data on the new system.</p></details>
+    <details class="sol"><summary>7. Does from scratch ever overtake the context within 25 s?</summary><p>Not on the median: the ratio ends at 1.1, and the context wins 28 of 40 pairs at 25 s. The curves converge; the crossing, if any, lies beyond the budgets tried.</p></details>
+    <details class="sol"><summary>8. When does the second context number start to matter?</summary><p>Once the experiment can determine it. At 1.5 s a one-number context is only 16% worse in median; at 6 s the medians are 0.0196 against 0.0130, at 25 s 0.0159 against 0.0086.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Where exactly does from scratch catch up?</b> Using the <code>budget_err</code> arrays, find the smallest budget at which the median from-scratch error drops below the median pretrained-context error, if it does within the budgets tried.
+        <details class="sol"><summary>Hint</summary><p>Compare the two medians budget by budget.</p></details>
+        <details class="sol"><summary>Solution</summary><p>It does not, within 25 s: the medians are 0.138/0.024, 0.047/0.022, 0.020/0.013, 0.016/0.009 and 0.011/0.010. From scratch improves faster, by a factor of 12 against 2.4 over the range, so the curves converge, but the crossing, if any, lies beyond 25 s.</p>
+          <pre><code class="language-python">med_scratch = np.median(budget_err["scratch"], axis=1)
+med_context = np.median(budget_err["context"], axis=1)
+crossing = [T for T, s, c in zip(budgets, med_scratch, med_context) if s < c]
+crossing[:1] if crossing else "no crossing within the tried budgets"</code></pre></details>
+      </div></li>
+      <li><div><b>Restricting the family to one dimension.</b> Refit the family with <code>rank=1</code> and repeat the comparison at the shortest budget. How much worse does a one-number context do compared with the two-number one?
+        <details class="sol"><summary>Hint</summary><p>Adapt both families to the same forty experiments so that the comparison is paired, and try a longer budget too.</p></details>
+        <details class="sol"><summary>Solution</summary><p>At 1.5 s the one-number context scores a median of 0.0280 against 0.0242 for two numbers on the same forty systems, two numbers better on 25 of 40: about 16% worse, not much. The notebook's solution calls it "noticeably worse"; the numbers do not support that at this budget, because 1.5 s do not determine the second direction and the two-number context fills it from the prior anyway. The gap grows with the budget: 0.0196 against 0.0130 at 6 s, 0.0159 against 0.0086 at 25 s, when the data start to determine <span class="m">z_2</span> and only the two-number context can use it.</p>
+          <pre><code class="language-python">rank1_family, *_ = dynutils.build_family(np.random.default_rng(dynutils.SEED), rank=1)
 T = budgets[0]
 errs = []
 for n in range(40):
@@ -145,26 +233,96 @@ for n in range(40):
     u_val = multisine(300, rng, n=6); q_val, _ = simulate(s, u_val, rng, noise=False)
     z1, _, _ = adapt(rank1_family, y, u)
     errs.append(rmse(predict(rank1_family.decode(z1), u_val), q_val))
-np.median(errs), np.median(budget_err[&quot;context&quot;][0])
-</code></pre>
-<p>A single number cannot represent the second family direction at all, so systems whose true context
-lies mostly along <span class="math inline">z_2</span> are systematically mispredicted; the one-dimensional context is
-noticeably worse on the shortest budget, even though it is <em>more</em> certain about the number it does
-estimate.</p>
-</details></div>
-</main>
+np.median(errs), np.median(budget_err["context"][0])</code></pre></details>
+      </div></li>
+      <li><div><b>Means against medians.</b> Recompute the study's summary with means instead of medians. Which conclusions change, and why?
+        <details class="sol"><summary>Hint</summary><p>Look at the largest from-scratch errors at 1.5 s.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The means are 0.179 against 0.033 at 1.5 s (ratio 5.4) and 0.026 against 0.016 at 25 s (ratio 1.6), so by the mean the gap at 25 s looks larger than by the median (1.1). The reason is the right tail: at every budget a few from-scratch fits land far off, and the mean weights them fully. Neither statistic is wrong; they answer different questions, the typical system against the average cost over all systems. Report both, and say which.</p></details>
+      </div></li>
+      <li><div><b>Two floors.</b> Add the best-in-family oracle, <code>family.decode(family.project(s["eta"]))</code>, to the study. How does the context's gap to the reference split into a part that data can close and a part that it cannot?
+        <details class="sol"><summary>Hint</summary><p>Neither the oracle nor the reference uses the experiment, so their medians should not trend with the budget.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The oracle's median is 0.0043 to 0.0063 across budgets, the reference's 0.0020 to 0.0029. At 25 s the context's 0.0097 is 1.7 times the oracle, a gap that longer or better-designed experiments can still close; the oracle is 2.3 times the reference, a gap fixed by the family (its <span class="m">\alpha</span> estimates and the rank-two restriction) that no data on the new system can touch. Chapter 06 attacks the first gap by choosing the experiment; chapter 07 asks what happens when the second gap is large because the system is not in the family.</p></details>
+      </div></li>
+      <li><div><b>Win rates.</b> For each budget, count the systems on which the context beats from scratch and on which from scratch beats doing nothing. What do these paired counts add to the medians?
+        <details class="sol"><summary>Hint</summary><p><code>(budget_err["context"] &lt; budget_err["scratch"]).sum(axis=1)</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Context beats from scratch on 39, 32, 34, 32 and 28 of 40 systems; from scratch beats doing nothing on 5, 23, 33, 36 and 39 of 40. The counts show that the 1.1 ratio at 25 s is still a 70% win rate, and that from scratch at 1.5 s is not merely worse on average but worse on almost every individual system. Paired counts use the pairing the study was designed with; medians throw it away.</p></details>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The study</b>: five budgets from 1.5 to 25 s, forty new systems each, four methods scored on a fresh 30 s input.</div></li>
+      <li><div><b>Scarce data</b>: from scratch 0.138 against 0.062 for the average system and 0.024 for the context at 1.5 s; overfitting on 35 of 40 systems.</div></li>
+      <li><div><b>The gap narrows</b>: scratch ÷ context goes 5.9, 2.1, 1.6, 1.8, 1.1; the context still wins 28 of 40 pairs at 25 s.</div></li>
+      <li><div><b>Floors</b>: the reference at 0.002 to 0.003, the best-in-family oracle at 0.004 to 0.006; the context's gap to the oracle is estimation error, the oracle's gap to the reference is the family.</div></li>
+      <li><div><b>Rank</b>: a one-number context is 16% worse at 1.5 s and twice as bad at 25 s; the second number pays once the data determine it.</div></li>
+      <li><div><b>Reading studies</b>: medians for the typical system, means for the tail, paired win counts for the design; forty systems leave tens of percent of noise in a ratio.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Data budget</td><td>The length of the experiment allowed on the new system.</td></tr>
+        <tr><td>Data efficiency</td><td>How little data a method needs to reach a given error.</td></tr>
+        <tr><td>Overfitting</td><td>Explaining the experiment with a model that predicts nothing else.</td></tr>
+        <tr><td>Median, interquartile band</td><td>The middle system; the middle half of systems.</td></tr>
+        <tr><td>Paired comparison</td><td>Two methods scored on the same system, experiment and validation input.</td></tr>
+        <tr><td>Win rate</td><td>The fraction of pairs one method wins.</td></tr>
+        <tr><td>Reference</td><td>The true coefficients in the learner's model: the model-class floor.</td></tr>
+        <tr><td>Best in family</td><td>The oracle context from the true coefficients: the context method's floor.</td></tr>
+        <tr><td>Rank of the context</td><td>How many directions of the family the new system may move along.</td></tr>
+        <tr><td>Sampling noise</td><td>The scatter a statistic shows when the forty systems are redrawn.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter is an empirical study with the methods of chapters 02 to 04 and random experiments. It does not choose the experiment (chapter 06), does not test whether a new system belongs to the family (chapter 07), and does not use the models for control (chapter 08). Its statistics are deliberately elementary: medians, quartiles and paired counts over forty systems; resampling methods would give confidence intervals for the ratios <a href="#ref-4">[4]</a>.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>T. Hospedales, A. Antoniou, P. Micaelli and A. Storkey. Meta-learning in neural networks: a survey. <em>IEEE Transactions on Pattern Analysis and Machine Intelligence</em>, 44(9):5149–5169, 2022. <a href="https://doi.org/10.1109/TPAMI.2021.3079209">doi:10.1109/TPAMI.2021.3079209</a>. The data-efficiency framing of few-shot learning, and the benchmarks that measure it against the number of examples.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>T. Hastie, R. Tibshirani and J. Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed. Springer, 2009. <a href="https://doi.org/10.1007/978-0-387-84858-7">doi:10.1007/978-0-387-84858-7</a>. The bias–variance trade-off behind "from scratch is worse than doing nothing" at small budgets.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>M. Forgione, F. Pura and D. Piga. From system models to class models: an in-context learning paradigm. <em>IEEE Control Systems Letters</em>, 7:3513–3518, 2023. <a href="https://doi.org/10.1109/LCSYS.2023.3335036">doi:10.1109/LCSYS.2023.3335036</a>. Error against the length of the context record for a pretrained class model.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>B. Efron. Bootstrap methods: another look at the jackknife. <em>The Annals of Statistics</em>, 7(1):1–26, 1979. <a href="https://doi.org/10.1214/aos/1176344552">doi:10.1214/aos/1176344552</a>. Resampling, the natural tool for putting an interval on a ratio of medians over forty systems; chapter 06 uses it.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>G. Pillonetto, F. Dinuzzo, T. Chen, G. De Nicolao and L. Ljung. Kernel methods in system identification, machine learning and function estimation: a survey. <em>Automatica</em>, 50(3):657–682, 2014. <a href="https://doi.org/10.1016/j.automatica.2014.01.001">doi:10.1016/j.automatica.2014.01.001</a>. Regularised identification against least squares as the data grow, the same trade seen here.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>J. Schoukens and L. Ljung. Nonlinear system identification: a user-oriented road map. <em>IEEE Control Systems Magazine</em>, 39(6):28–99, 2019. <a href="https://doi.org/10.1109/MCS.2019.2938121">doi:10.1109/MCS.2019.2938121</a>. Model-class error against estimation error, the two floors of Part 2.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>L. Ljung. <em>System Identification: Theory for the User</em>, 2nd ed. Prentice Hall, 1999. Validation on fresh data and the asymptotics of prediction-error estimates as the record grows.</div></li>
+    </ul>
+    <p>The data-efficiency reading of few-shot learning is the standard one <a href="#ref-1">[1]</a><a href="#ref-3">[3]</a>; the overfitting of four free coefficients at fifteen samples is the bias–variance trade-off in its plainest form <a href="#ref-2">[2]</a><a href="#ref-5">[5]</a>, and the two floors are the classical split between model-class error and estimation error <a href="#ref-6">[6]</a><a href="#ref-7">[7]</a>. So far every experiment has been random. Next, chapter 06 asks whether the experiment itself can be chosen.</p>
+  </div>
+</section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="04-few-shot-identification-of-a-new-system.html"><span class="lbl">Previous · 04</span><span class="t">Few-Shot Identification of a New System</span></a>
-  <a class="next" rel="next" href="06-choosing-the-best-experiment.html"><span class="lbl">Next · 06</span><span class="t">Choosing the Best Experiment</span></a>
+  <a class="prev" rel="prev" href="04-few-shot-identification-of-a-new-system.html"><span class="lbl">Previous · 04</span><span class="t">Few-shot identification of a new system</span></a>
+  <a class="next" rel="next" href="06-choosing-the-best-experiment.html"><span class="lbl">Next · 06</span><span class="t">Choosing the best experiment</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 05 of the Learning to Identify New Dynamical Systems by Elie Rouphael. Rendered from the executed Jupyter notebook; every figure and number above is the notebook's own output. Math rendered with KaTeX, code highlighted with highlight.js. Built from the author's own research tutorial repository on few-shot dynamical-system identification, MIT licensed; the companion technical report is included in the course download.</p>
+  <p>Chapter 05 of "Learning to Identify New Dynamical Systems from a Few Experiments" by Elie Rouphael. The notebook's study comes from its own seeded run; the page's reruns, fits and adaptations are computed in your browser. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
 </footer>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script defer src="course.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch05-data.js"></script>
+<script src="interactive/ch05.js"></script>
 </body>
 </html>

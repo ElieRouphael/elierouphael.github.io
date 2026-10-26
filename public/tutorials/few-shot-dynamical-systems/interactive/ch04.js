@@ -80,7 +80,7 @@ function fitLS(u, y, guess = GENERIC) {
   }
   return { eta: x, sse: f };
 }
-/* The decoder of chapter 03 and its Jacobian with respect to z (the clip is ignored in the Jacobian). */
+/* The decoder of chapter 03 (clipped to the admissible box). */
 const decode = (fam, z) => fam.mean.map((m, j) => clip(m + fam.U[j][0] * z[0] + fam.U[j][1] * z[1], LOW[j], HIGH[j]));
 /* dynutils.adapt with an adjustable prior weight: minimise ||(q(decode(z)) - y) / sigma||^2 + t^2 ||z||^2.
    Returns the MAP context, the Laplace covariance (S^T S / sigma^2 + t^2 I)^-1, the output misfit and the
@@ -88,7 +88,8 @@ const decode = (fam, z) => fam.mean.map((m, j) => clip(m + fam.U[j][0] * z[0] + 
 function adapt(fam, u, y, t = 1) {
   const sig = fam.sigma, s2 = sig * sig;
   let z = [0, 0];
-  const sens = zz => { const { q, J } = predictJac(decode(fam, zz), u); const S = J.map(row => [0, 1].map(k => row.reduce((s, v, j) => s + v * fam.U[j][k], 0))); return { q, S }; };
+  /* Chain rule through the decoder; a coefficient pinned by the clip has zero derivative with respect to z. */
+  const sens = zz => { const raw = fam.mean.map((m, j) => m + fam.U[j][0] * zz[0] + fam.U[j][1] * zz[1]), live = raw.map((v, j) => v > LOW[j] && v < HIGH[j] ? 1 : 0); const { q, J } = predictJac(decode(fam, zz), u); const S = J.map(row => [0, 1].map(k => row.reduce((s, v, j) => s + live[j] * v * fam.U[j][k], 0))); return { q, S }; };
   const cost = zz => { const q = predictJac(decode(fam, zz), u).q; let s = 0; for (let i = 0; i < y.length; i++) s += (q[i] - y[i]) ** 2; return s / s2 + t * t * (zz[0] ** 2 + zz[1] ** 2); };
   let f = cost(z), lam = 1e-3, iters = 0;
   for (; iters < 200; iters++) {
