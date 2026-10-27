@@ -140,4 +140,19 @@ export const tutorials: Tutorial[] = [
     },
     draft: false,
   },
+  {
+    title: 'Kalman Filters with JAX',
+    description:
+      "A three-chapter interactive tutorial built from the author's Kalman-Filter-with-JAX workshop: the linear, extended and unscented filters on a tracking problem, a neural network that learns the unmodelled dynamics from inside the filter by differentiating through it, and the same forecaster tested on a year of real air-quality data. Every demo runs in the browser, every number is checked against the JAX code, and the bugs found on the way, including a filter that returns NaN in 32-bit arithmetic, are explained and fixed.",
+    topics: ['Kalman Filtering', 'JAX', 'Learned Dynamics', 'Time Series', 'Numerics'],
+    prerequisites: 'Python, linear algebra and basic probability',
+    level: 'Intermediate',
+    added: '2026-10-27T12:00',
+    href: '/tutorials/kalman-jax/index.html',
+    cover: {
+      src: '/tutorials/kalman-jax/cover.png',
+      alt: 'A noisy position track as grey dots, the true position in black and the Kalman filter estimate in blue following it closely through the noise',
+    },
+    draft: false,
+  },
 ];

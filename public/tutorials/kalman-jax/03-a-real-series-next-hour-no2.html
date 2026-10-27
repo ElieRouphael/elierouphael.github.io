@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>03 · A Real Series: Next-Hour NO2 · Kalman Filters with JAX</title>
+<meta name="description" content="The repository's Kalman-MLP forecaster on a year of hourly air-quality readings: the UCI dataset and its pipeline, persistence and linear baselines, the learned filter re-run live with adjustable noise matrices, its error by hour of day and against the diagonal, why a filtered state is a lagged state, and what it would take to beat the simplest forecast. Every number is checked against the JAX code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  #colT td, #vocT td, #baseT td, #exT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #baseT, #colT, #exT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Chapter 03 of 03</span>
+  <h1>A real series: next-hour NO2</h1>
+  <p class="lede">Simulated plants are kind: the model is right, the noise is Gaussian, and ground truth is available. Real series are not. The repository's third experiment takes chapter 02's learned forecaster to a year of hourly nitrogen-dioxide readings from a polluted street and asks it to predict the next hour from the current sensor array and weather. This chapter rebuilds the pipeline and the baselines, re-runs the trained filter live with noise matrices you can change, and reaches the result the repository's script prints without comment: the learned filter loses to the forecast that says the next hour will look like this one. Why it loses, and what would have to change, is the point of the chapter.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 02 · Every number is checked against the JAX code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/Kalman-Filter-with-JAX">The repository on GitHub</a>
+    <a class="btn ghost" href="kalman-jax-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">One week of the test split: the measured next-hour NO2 and three forecasts of it</p>
+        <canvas id="heroC" aria-label="A week of hourly next-hour NO2 measurements with the persistence, linear and Kalman-MLP forecasts, and the Kalman forecast's 95 percent band" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--ink)"></i>measured</span><span><i style="background:var(--muted)"></i>persistence</span><span><i style="background:var(--c4)"></i>linear + current NO2</span><span><i style="background:var(--post)"></i>Kalman-MLP ±1.96σ</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Trained model" id="mSeg">
+        <button class="btn" type="button" data-m="repo default" aria-pressed="true">repository's model</button>
+        <button class="btn" type="button" data-m="tuned noise (Q=0.5, R=0.05)" aria-pressed="false">retuned noise</button>
+      </div>
+      <div class="seg" role="group" aria-label="Forecasts shown" id="showSeg">
+        <button class="btn" type="button" data-s="persist" aria-pressed="true">persistence</button>
+        <button class="btn" type="button" data-s="ar" aria-pressed="true">linear</button>
+        <button class="btn" type="button" data-s="kf" aria-pressed="true">Kalman-MLP</button>
+      </div>
+      <label class="field"><span>Week shown, starting: <b id="hWeekV"></b></span>
+        <span class="row"><input type="range" id="hWeek" min="0" max="5" step="1" value="0"></span>
+      </label>
+      <label class="field"><span>Filter process noise <span class="m">Q</span> (log scale): <b id="hQV"></b></span>
+        <span class="row"><input type="range" id="hQ" min="-3" max="1" step="0.05" value="-1.3"></span>
+      </label>
+      <label class="field"><span>Filter measurement noise <span class="m">R</span> (log scale): <b id="hRV"></b></span>
+        <span class="row"><input type="range" id="hR" min="-3" max="1" step="0.05" value="-0.6"></span>
+      </label>
+      <label class="field"><span>State decay <span class="m">A</span>: <b id="hAV"></b></span>
+        <span class="row"><input type="range" id="hA" min="0.5" max="1" step="0.01" value="0.9"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>test RMSE / MAE, Kalman-MLP</span><span class="v" id="rKF">–</span>
+        <span>test RMSE / MAE, persistence</span><span class="v" id="rPer">–</span>
+        <span>test RMSE / MAE, linear + current NO2</span><span class="v" id="rAR">–</span>
+        <span>test RMSE, linear from sensors only</span><span class="v" id="rLin">–</span>
+        <span>steady-state gain</span><span class="v" id="rK">–</span>
+        <span>band coverage (nominal 95%)</span><span class="v" id="rCov">–</span>
+      </div>
+      <p class="hint">The network's weights are JAX's; the filter around it is re-run on the page, so the sliders show how the same trained residual forecasts inside a differently tuned filter. Units are µg/m³ of NO2 as measured by the reference analyser.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#data"><span class="n">1</span><span class="t">The data and the pipeline</span><span class="d">A year of sensors, a time split, standardisation</span></a>
+    <a href="#baselines"><span class="n">2</span><span class="t">The baselines</span><span class="d">Persistence, climatology, two linear models</span></a>
+    <a href="#model"><span class="n">3</span><span class="t">The Kalman-MLP forecaster</span><span class="d">A scalar state, a learned residual, a lagged copy</span></a>
+    <a href="#diagnosis"><span class="n">4</span><span class="t">Where it loses</span><span class="d">By hour of day, against the diagonal, in training</span></a>
+    <a href="#better"><span class="n">5</span><span class="t">What would beat persistence</span><span class="d">Time of day, honest inputs, learned noise</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="data">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The data and the pipeline</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The dataset.</b> The UCI Air Quality dataset <a href="#ref-1">[1]</a> <a href="#ref-2">[2]</a> holds 9358 hourly rows from March 2004 to April 2005, recorded by a multi-sensor device at road level in a polluted Italian city: the responses of five metal-oxide sensors, temperature, relative and absolute humidity, and, as targets, the concentrations of CO, benzene, NOx and NO2 from a co-located reference analyser. Missing values are coded as −200. The repository's task is to forecast the reference NO2 one hour ahead from the current hour's eight sensor and weather readings.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="colT">
+      <thead><tr><th>Column</th><th>Meaning</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>PT08.S1(CO)</code> … <code>PT08.S5(O3)</code></td><td>Responses of five metal-oxide sensors nominally targeting CO, non-methane hydrocarbons, NOx, NO2 and O3; cross-sensitive, drifting, in arbitrary units</td><td>inputs 1 to 5</td></tr>
+        <tr><td><code>T</code>, <code>RH</code>, <code>AH</code></td><td>Temperature (°C), relative humidity (%), absolute humidity</td><td>inputs 6 to 8</td></tr>
+        <tr><td><code>NO2(GT)</code></td><td>Reference NO2 concentration, µg/m³</td><td>current value (state) and next-hour target</td></tr>
+        <tr><td><code>Date</code>, <code>Time</code></td><td>Hourly timestamp</td><td>ordering and the time split only; the hour of day is never an input</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p><b>The pipeline</b> (<code>kalman_jax/air_quality.py</code>). Rows with any missing input or target are dropped (7393 of 9358 remain, since the NO2 analyser has long gaps); the target is the next <em>row's</em> NO2; the rows are split in time, the first 70% for training, the next 15% for validation, the last 15% for test; and inputs and target are standardised with the training split's mean and standard deviation only. The result: 5173 training hours (March to December 2004), 1107 validation hours (December to February) and 1110 test hours (16 February to 4 April 2005). The training NO2 has mean 100.2 µg/m³ and standard deviation 41.3; the standardised target is the series the models actually see.</p>
+    <div class="callout"><p><b>Two things to know about the split.</b> The test split is seven weeks of late winter and early spring, following a training set of spring to autumn; the diurnal cycle and the weather are not the same, and some loss from training to test is to be expected for any fitted model. And the "next row" is the next hour only when no row was dropped in between: the test split has 25 places where consecutive rows are more than an hour apart (the hero chart marks them), where the target is really two or more hours ahead. Both affect all models equally and neither changes the conclusions, but the second is a small correction to propose for the repository's pipeline.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="baselines">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The baselines</h2>
+  </div>
+  <div class="col prose">
+    <p>Before any learned model, four forecasts that need no training or almost none, scored by RMSE and MAE in µg/m³ on the validation and test splits <a href="#ref-3">[3]</a>:</p>
+    <ol class="steps">
+      <li><div><b>Climatology</b>: always predict the training mean. Test RMSE 63.2, the scale of the series itself.</div></li>
+      <li><div><b>Linear from the eight sensors</b>, the repository's "linear regression baseline": least squares from the standardised inputs to the standardised target, with an intercept. Test RMSE 43.9. It is a poor baseline for a strange reason: the current NO2 is not among its inputs, so it must infer the pollutant's level from cross-sensitive sensors, including a sensor nominally for NO2 whose response is a weak proxy of the reference value.</div></li>
+      <li><div><b>Persistence</b>: predict that the next hour equals this one. Test RMSE 25.4. No parameters, and the bar every hourly forecaster must clear, since hourly NO2 is strongly autocorrelated.</div></li>
+      <li><div><b>Linear from the eight sensors plus the current NO2</b>, added for this course: the proper linear baseline, nine inputs and an intercept. Test RMSE 24.9, the best of the four and better than persistence by half a unit; the sensors add a little once the series' own level is in.</div></li>
+    </ol>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="baseT">
+      <thead><tr><th>Forecast</th><th>Val RMSE</th><th>Test RMSE</th><th>Test MAE</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <div class="define">
+      <p class="define-title">Persistence, and why it is hard to beat</p>
+      <p><b>In plain words:</b> tomorrow's weather is today's. For a series that moves slowly compared with how often it is sampled, the last value is an excellent forecast of the next.</p>
+      <p><b>More precisely:</b> the persistence error is the one-step change <span class="m">y_{t+1} - y_t</span>, whose RMS is <span class="m">\sigma \sqrt{2(1 - \rho_1)}</span> for a stationary series of standard deviation <span class="m">\sigma</span> and lag-one autocorrelation <span class="m">\rho_1</span>. Over the whole record the lag-one autocorrelation is 0.90; on the test split, a persistence RMSE of 25.4 against a standard deviation of about 41 corresponds to <span class="m">\rho_1 \approx 0.81</span>. Four fifths or more of the next hour is already in this hour. A model beats persistence only by predicting the <em>change</em>, and hourly NO2 changes for reasons, traffic and sunlight, that a sensor array sees only indirectly and the hour of day sees directly.</p>
+      <dl>
+        <dt>Climatology</dt><dd>Predict the long-run mean. The error is <span class="m">\sigma</span> itself; any forecaster worth running beats it.</dd>
+        <dt>Autoregressive baseline</dt><dd>A linear model that includes the series' own last value. If a learned model does not have access to the same information, the comparison is unfair in the learned model's favour or against it.</dd>
+        <dt>Time split</dt><dd>Train on the past, test on the future, never the reverse: random splits of an hourly series leak the neighbours of every test hour into training.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The Kalman-MLP forecaster</h2>
+  </div>
+  <div class="col prose">
+    <p>The repository's model (<code>Air Quality with JAX.py</code> with <code>kalman_jax/forecasters.py</code>) is chapter 02's forecaster with a scalar state, the standardised NO2 level <span class="m">x_t</span>, and the eight standardised readings as the input <span class="m">u_t</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \hat x_{t+1}^- &amp;= A \hat x_t + f_\theta(\hat x_t, u_t), \\ \hat y_{t+1} &amp;= \hat x_{t+1}^-, \\ P^-_{t+1} &amp;= A^2 P_t + Q, \\ K_{t+1} &amp;= \frac{P^-_{t+1}}{P^-_{t+1} + R}, \\ \hat x_{t+1} &amp;= \hat x_{t+1}^- + K_{t+1} (y_{t+1} - \hat x_{t+1}^-), \end{aligned}">\hat x_{t+1}^- = A \hat x_t + f_\theta(\hat x_t, u_t), \qquad \hat y_{t+1} = \hat x_{t+1}^-, \qquad P^-_{t+1} = A^2 P_t + Q, \qquad K_{t+1} = \frac{P^-_{t+1}}{P^-_{t+1} + R}, \qquad \hat x_{t+1} = \hat x_{t+1}^- + K_{t+1} (y_{t+1} - \hat x_{t+1}^-),</div>
+    <p>with <span class="m">A = 0.9</span>, <span class="m">Q = 0.05</span>, <span class="m">R = 0.25</span>, <span class="m">P_0 = 1</span>, the state initialised at the first current reading, and <span class="m">f_\theta</span> a network 9 → 32 → 32 → 1 with tanh units (1409 parameters). It is trained by Adam (learning rate <span class="m">10^{-3}</span>, 1500 steps) on the one-step forecast loss, the mean squared standardised error of <span class="m">\hat y_{t+1}</span> over the whole training split run as one 5173-step sequence; the repository, correctly, uses the forecast loss here and not chapter 02's leaky one. Standardised losses are read against persistence's training MSE of 0.236.</p>
+    <p><b>Read the recursion once more.</b> The state after the update at <span class="m">t+1</span> is a weighted average of the model's forecast and the actual reading <span class="m">y_{t+1}</span>, with weight <span class="m">K</span> on the reading. In steady state (chapter 01, Part 5, with <span class="m">A = 0.9</span>) <span class="m">K_\infty = 0.31</span>: the state moves less than a third of the way to each new reading. The next forecast is <span class="m">A \hat x_{t+1}</span> plus a residual computed from that state. So the one input that persistence uses, the current reading, enters the Kalman-MLP only through an exponential smoother with a time constant of about three hours, shrunk further by <span class="m">A</span>. The model is built to lag.</p>
+    <p>The numbers confirm it. On the test split the Kalman-MLP forecast has RMSE 33.7 against the next hour's reading, and 28.8 against the <em>current</em> hour's: it is closer to the past than to the future. The network has learned to compensate as best it can, pushing the state toward where the series is, but it is fed a blurred version of the only strong predictor there is. Persistence, with no parameters, scores 25.4; the linear model with the current reading, 24.9.</p>
+    <div class="callout"><p><b>Retuning the noise.</b> The lag is a property of the filter's noise matrices, not of the network, and it can be tested: with <span class="m">A = 1</span>, <span class="m">Q = 0.5</span>, <span class="m">R = 0.05</span> the steady-state gain is 0.92 and the state is nearly the current reading. Retrained with those settings for 3000 steps the model reaches a test RMSE of 29.4 (validation 28.6): better by four units, still four behind persistence. Move the sliders in the hero demo for the untrained version of the same experiment: with the repository's weights unchanged, a gain near one already brings the test RMSE from 33.7 down to about 29.5. What remains is a network that fits its training year (loss 0.159 against persistence's 0.236) and does not carry over to the test weeks, the gap Part 4 shows in the loss curve.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="diagnosis">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Where it loses</h2>
+  </div>
+  <div class="col widget" id="hourW">
+    <div class="two">
+      <canvas id="hourC" aria-label="Test RMSE by hour of day for persistence, the linear model and the Kalman-MLP" aria-describedby="hourCap"></canvas>
+      <canvas id="diurnC" aria-label="Mean NO2 by hour of day on the training split, rising in the morning and falling in the evening" aria-describedby="hourCap"></canvas>
+    </div>
+    <p class="status" id="hourCap"></p>
+  </div>
+  <div class="col widget" id="scatW">
+    <div class="two">
+      <canvas id="scatC" aria-label="Scatter of forecast against measured next-hour NO2 for persistence and the Kalman-MLP, with the diagonal" aria-describedby="scatCap"></canvas>
+      <canvas id="lossC" aria-label="Training loss against Adam step for the repository's run and the retuned run, with persistence's training error as a dashed line" aria-describedby="lossCap"></canvas>
+    </div>
+    <p class="status" id="scatCap"></p>
+    <p class="status" id="lossCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Three views, one story. By hour of day, every forecaster is worst in the morning rush, when NO2 climbs by 22 µg/m³ an hour on average, and the Kalman-MLP is worst by the widest margin exactly there, because a lagging state is most wrong when the series turns. Against the diagonal, its cloud is tilted toward the mean, slope 0.68 against persistence's 0.87: it under-predicts high hours and over-predicts low ones, as a smoother must. And in training, the repository's run ends barely below persistence's own training error (0.220 against 0.236 in standardised units) while the retuned run gets well below it (0.159); neither gain carries to the test weeks. The uncertainty band covers 87% of outcomes against a nominal 95%: the filter's <span class="m">Q + R</span> were set by hand, in standardised units, and not fitted to anything.</p>
+    <div class="big-idea"><p>A Kalman filter's state is a smoothed past. If the quantity you forecast is best predicted by its own last value, feeding that value through a filter with a gain of 0.3 throws away most of the information before the network sees it. Baselines first: persistence and a linear model with the right inputs tell you what the learned model has to explain, and whether it has the inputs to do so.</p></div>
+    <div class="callout"><p><b>Corrections to the repository.</b> (1) The air-quality test file fails on any pandas version: its ten-row fixture leaves seven usable rows, the 15% validation slice is then empty and <code>build_no2_forecasting_dataset</code> raises "Forecast horizon is too large"; a larger fixture or a larger validation fraction fixes the test. (2) The "linear regression baseline" omits the current NO2 and therefore understates what a linear model can do by a factor of 1.8 (43.9 against 24.9). (3) The script prints the three scores without noting that the learned model loses to persistence; the README should say so. (4) The next-row target crosses gaps in the record. Patches are proposed alongside this course.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="better">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>What would beat persistence</h2>
+  </div>
+  <div class="col prose">
+    <p>Each diagnosis suggests a change, and the cheap ones can be tested with least squares in a second. The results, computed for this course with the repository's pipeline:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="exT">
+      <thead><tr><th>Forecast</th><th>Horizon 1 h, val / test RMSE</th><th>Horizon 3 h, val / test RMSE</th></tr></thead>
+      <tbody>
+        <tr><td>Persistence</td><td>25.2 / 25.4</td><td>51.4 / 52.1</td></tr>
+        <tr><td>Linear, sensors + current NO2</td><td>25.3 / 24.9</td><td>46.8 / 46.4</td></tr>
+        <tr><td>Linear, current NO2 + hour of day (two harmonics)</td><td>22.8 / 22.2</td><td>39.8 / 38.3</td></tr>
+        <tr><td>Linear, sensors + current NO2 + hour of day</td><td>22.2 / 21.6</td><td>36.2 / 34.9</td></tr>
+        <tr><td>Kalman-MLP, repository's settings</td><td>32.9 / 33.7</td><td>–</td></tr>
+        <tr><td>Kalman-MLP, retuned noise (3000 steps)</td><td>28.6 / 29.4</td><td>–</td></tr>
+        <tr><td>Kalman-MLP, <span class="m">Q, R</span> learned with the network (1500 steps)</td><td>29.1 / 28.4</td><td>–</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p><b>Time of day is the missing input.</b> Four numbers, the sine and cosine of the hour at one and two cycles a day, cut the linear model's test RMSE from 24.9 to 21.6, a 13% gain over persistence, with the sensors contributing another half unit on top of the current reading and the clock. At a three-hour horizon, where persistence degrades to 52, the same model scores 35: the further ahead, the more the daily cycle matters and the less the last value does. No network was needed for any of this.</p>
+    <p><b>Learning the noise helps the filter, not the forecast.</b> Making <span class="m">\log Q</span> and <span class="m">\log R</span> trainable alongside the network (the gradient flows through the gains, chapter 02's reverse pass extended by two parameters) moves them from 0.05 and 0.25 toward 0.11 and 0.11 within 1500 steps and is still moving; the test RMSE improves to 28.4 but stays behind persistence. The filter learns to trust the readings more; it cannot learn an input it does not have.</p>
+    <p><b>What a fair learned model would look like.</b> Give the network the current reading directly and the hour of day; keep the Kalman state for what a state is for, the slowly varying bias of a drifting sensor array; validate by early stopping on the validation split rather than a fixed step count; and report every score next to persistence. That model might beat 21.6. The one in the repository was never given the chance, and the honest summary of its experiment is a negative result with a clear cause.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why must the split be in time rather than random?</summary><p>Hourly NO2 is strongly autocorrelated, so a random split puts the neighbours of every test hour into the training set and any flexible model can interpolate them. A time split tests what a forecaster is for: the future from the past. It also exposes the model to a different season, which is realistic.</p></details>
+    <details class="sol"><summary>2. Why is persistence so hard to beat here?</summary><p>Because the lag-one autocorrelation is high, 0.90 over the whole record and about 0.81 implied on the test split: four fifths or more of the next hour's value is the current one. The persistence RMSE <span class="m">\sigma\sqrt{2(1-\rho_1)}</span> is 25 against a series standard deviation of 41. A model has to predict the hourly <em>change</em>, which depends mostly on the time of day.</p></details>
+    <details class="sol"><summary>3. Why is the repository's linear baseline (43.9) so much worse than persistence?</summary><p>It does not include the current NO2 among its inputs, so it must reconstruct the level from cross-sensitive metal-oxide sensors. Adding the current reading as a ninth input gives 24.9. A baseline that lacks the strongest predictor understates what the model class can do.</p></details>
+    <details class="sol"><summary>4. In what sense is the Kalman-MLP's state "lagged"?</summary><p>The update moves the state only a fraction <span class="m">K \approx 0.31</span> of the way to each reading, so the state is an exponentially weighted average of past readings with a time constant of about three hours. Its forecast is closer to the current reading (RMSE 28.8) than to the next one (33.7).</p></details>
+    <details class="sol"><summary>5. Why does raising <span class="m">Q</span> or lowering <span class="m">R</span> improve the forecast without retraining?</summary><p>Either raises the gain toward one, so the state tracks the readings and the network's input is closer to the current value it was supposed to forecast from. With the repository's weights, a gain near one takes the test RMSE from 33.7 to about 29.5; retraining at that gain gives 29.4.</p></details>
+    <details class="sol"><summary>6. Why does the band cover 87% rather than 95%?</summary><p>The forecast variance <span class="m">P^- + R</span> comes from <span class="m">Q</span> and <span class="m">R</span> that were set by hand in standardised units, never fitted to the data, and the filter's state model ignores the diurnal cycle whose large morning errors fall outside the band. A calibrated band would need <span class="m">Q, R</span> estimated from the innovations.</p></details>
+    <details class="sol"><summary>7. The retuned model's training loss (0.159) is well below persistence's (0.236), yet it loses on the test split. What happened?</summary><p>Overfitting to one year, plus a season change: the training split is spring to autumn, the test split late winter to spring. A 1409-parameter network trained for a fixed 3000 steps with no validation-based stopping fits the training year's particulars. The validation score (28.6) was there to warn; the repository does not use it to stop.</p></details>
+    <details class="sol"><summary>8. What single input would help the most, and why does the Kalman-MLP not have it?</summary><p>The hour of day. It explains the morning rise and evening fall that dominate the hourly changes; two harmonics in a linear model improve on persistence by 13%. The repository's inputs are the sensor array and weather only, and the pipeline never passes the timestamp to the model.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Fix the failing test.</b> Run <code>pytest tests/test_air_quality.py</code>, read the error, and make the test pass without changing the pipeline's defaults.</div>
+        <details class="sol"><summary>Hint</summary><p>Count how many of the fixture's ten rows survive the missing-value filter, then how many land in a 15% validation slice.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Seven rows survive; <span class="m">\lfloor 7 \times 0.15 \rfloor = 1</span> row goes to validation and the horizon of 1 leaves it empty, so <code>build_no2_forecasting_dataset</code> raises "Forecast horizon is too large". Either give the fixture 20 to 30 rows or call the builder with <code>val_fraction=0.3</code> in the test. The pipeline itself is fine; the test's data are too small for its own split.</p></details>
+      </li>
+      <li><div><b>Add the clock.</b> Append <span class="m">\sin</span> and <span class="m">\cos</span> of <span class="m">2\pi h/24</span> and <span class="m">4\pi h/24</span>, with <span class="m">h</span> the hour of the current reading, to the linear model with the current NO2. Report validation and test RMSE at horizons 1 and 3.</div>
+        <details class="sol"><summary>Hint</summary><p>The timestamps are in each split's <code>timestamps</code> array; build the four columns and concatenate them to the standardised inputs before <code>fit_linear_regression</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Horizon 1: 22.2 / 21.6 against 25.3 / 24.9 without the clock and 25.2 / 25.4 for persistence. Horizon 3: 36.2 / 34.9 against 46.8 / 46.4 and 51.4 / 52.1. The clock alone with the current reading, no sensors, gives 22.8 / 22.2 at horizon 1.</p>
+          <pre><code class="language-python">import numpy as np
+from kalman_jax.air_quality import *
+
+def clock(split):
+    h = np.array([int(str(t)[11:13]) for t in split["timestamps"]], dtype=np.float32)
+    w = 2 * np.pi * h / 24
+    return np.c_[np.sin(w), np.cos(w), np.sin(2 * w), np.cos(2 * w)]
+
+frame = load_air_quality_frame("data/raw/AirQualityUCI.csv")
+for horizon in (1, 3):
+    ds = build_no2_forecasting_dataset(frame, input_columns=DEFAULT_INPUT_COLUMNS, horizon=horizon)
+    tr, te = ds["splits"]["train"], ds["splits"]["test"]; inv = ds["target_scaler"].inverse_transform
+    feats = lambda s: np.c_[s["controls"], s["current_target"], clock(s)]
+    w = fit_linear_regression(feats(tr), tr["future_target"])
+    print(horizon, rmse(inv(te["future_target"]), inv(predict_linear_regression(w, feats(te)))))</code></pre></details>
+      </li>
+      <li><div><b>Learn the noise.</b> Make <span class="m">\log Q</span> and <span class="m">\log R</span> trainable parameters of the forecasting loss and train for 1500 steps with the repository's other settings. Where do they go, and does the test RMSE beat persistence?</div>
+        <details class="sol"><summary>Hint</summary><p>Wrap <code>forecasting_loss_fn</code> in a function of the tuple <code>(params, log_q, log_r)</code> and pass <code>jnp.exp(log_q)[None, None]</code> as <span class="m">Q</span>; Adam handles the tuple.</p></details>
+        <details class="sol"><summary>Solution</summary><p>From 0.05 and 0.25 they drift to 0.11 and 0.11 by step 1500, still moving, and the gain rises from 0.31 toward 0.6. The test RMSE falls from 33.7 to 28.4 and the validation RMSE to 29.1; persistence (25.4) still wins. The filter learns to trust its readings more, which is the direction of Part 3's retuning, but the forecast is limited by the inputs, not by the noise matrices.</p></details>
+      </li>
+      <li><div><b>Forecast three hours ahead.</b> Rebuild the dataset with <code>horizon=3</code> and score persistence, climatology and the two linear models. Which forecast degrades the most, and why?</div>
+        <details class="sol"><summary>Hint</summary><p>Persistence's error at horizon <span class="m">k</span> is <span class="m">\sigma\sqrt{2(1-\rho_k)}</span>; the autocorrelation falls with the lag.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Persistence goes from 25.4 to 52.1, almost to climatology's 63; the linear model with the current reading to 46.4; the one with the clock to 34.9. The last value loses its predictive power fastest, while the daily cycle is as predictable three hours ahead as one. Any forecaster meant for longer horizons should carry the clock, and the Kalman-MLP as built would lose by more, not less.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The data</b>: 7393 complete hours of five metal-oxide sensors, weather and reference NO2 from an Italian street; a 70/15/15 time split (5173 / 1107 / 1110 hours), standardised on the training split; test weeks 16 February to 4 April 2005.</div></li>
+      <li><div><b>The baselines</b>: climatology 63.2, linear from the sensors 43.9, persistence 25.4, linear with the current NO2 24.9 (test RMSE, µg/m³).</div></li>
+      <li><div><b>The Kalman-MLP</b>: a scalar state with <span class="m">A = 0.9</span>, <span class="m">Q = 0.05</span>, <span class="m">R = 0.25</span>, gain 0.31, and a 1409-parameter residual; test RMSE 33.7, closer to the current reading (28.8) than to the next: a lagged state.</div></li>
+      <li><div><b>Retuning</b>: a gain near one gives 29.5 with the same weights and 29.4 retrained; learned <span class="m">Q, R</span> give 28.4; all behind persistence, because of overfitting to one year and a missing input.</div></li>
+      <li><div><b>The missing input</b>: the hour of day. Two harmonics in a linear model give 21.6 at one hour and 34.9 at three hours, where persistence gives 52.1.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Persistence</td><td>Next value equals the current one; RMSE <span class="m">\sigma\sqrt{2(1-\rho_1)}</span>.</td></tr>
+        <tr><td>Climatology</td><td>Predict the long-run mean; RMSE <span class="m">\sigma</span>.</td></tr>
+        <tr><td>Time split</td><td>Train on the past, validate and test on later periods, in order.</td></tr>
+        <tr><td>Standardisation</td><td>Subtract the training mean and divide by the training standard deviation, inputs and target alike.</td></tr>
+        <tr><td>Horizon</td><td>How far ahead the target is; here one row, nominally one hour.</td></tr>
+        <tr><td>Lagged state</td><td>A filtered state that is an exponentially weighted past; time constant about <span class="m">1/K</span> steps.</td></tr>
+        <tr><td>Forecast loss</td><td>Mean squared error of the prediction before the update; used correctly here.</td></tr>
+        <tr><td>Coverage</td><td>Fraction of outcomes inside the predicted band; 87% against a nominal 95%.</td></tr>
+        <tr><td>Diurnal cycle</td><td>The daily pattern of NO2: a morning rise of 22 µg/m³ an hour and an evening fall.</td></tr>
+        <tr><td>Early stopping</td><td>Stop training when the validation score stops improving; not used by the repository.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers the repository's air-quality pipeline and forecaster and the baselines needed to read its result. It does not build a competitive NO2 forecaster, treat the sensors' drift and cross-sensitivity, which the dataset was collected to study <a href="#ref-1">[1]</a>, or cover the structural time-series models in which a Kalman filter carries a daily cycle and a slowly varying level by design <a href="#ref-4">[4]</a> <a href="#ref-5">[5]</a>. Those are the natural next step for anyone who wants the filter to earn its place in this problem.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>S. De Vito, E. Massera, M. Piga, L. Martinotto and G. Di Francia. On field calibration of an electronic nose for benzene estimation in an urban pollution monitoring scenario. <em>Sensors and Actuators B: Chemical</em>, 129(2):750–757, 2008. <a href="https://doi.org/10.1016/j.snb.2007.09.060">doi:10.1016/j.snb.2007.09.060</a>. The paper behind the dataset: the multi-sensor device, its deployment at road level, and the drift and cross-sensitivity of metal-oxide sensors.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>S. De Vito. Air Quality [dataset]. UCI Machine Learning Repository, 2008. <a href="https://doi.org/10.24432/C59K5F">doi:10.24432/C59K5F</a>. The 9358 hourly rows used here, CC BY 4.0.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>R. J. Hyndman and G. Athanasopoulos. <em>Forecasting: Principles and Practice</em>, 3rd ed. OTexts, 2021. <a href="https://otexts.com/fpp3/">otexts.com/fpp3</a>. Benchmark forecasts (naive, mean, seasonal naive), time-series cross-validation and why every model is reported against them.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>A. C. Harvey. <em>Forecasting, Structural Time Series Models and the Kalman Filter</em>. Cambridge University Press, 1990. <a href="https://doi.org/10.1017/CBO9781107049994">doi:10.1017/CBO9781107049994</a>. Level, trend and seasonal components as states of a Kalman filter: the model this problem calls for.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>J. Durbin and S. J. Koopman. <em>Time Series Analysis by State Space Methods</em>, 2nd ed. Oxford University Press, 2012. <a href="https://doi.org/10.1093/acprof:oso/9780199641178.001.0001">doi:10.1093/acprof:oso/9780199641178.001.0001</a>. Estimating the noise variances of a state-space model by maximum likelihood from the innovations, the principled version of Part 5's learned <span class="m">Q, R</span>.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>D. Simon. <em>Optimal State Estimation</em>. Wiley, 2006. <a href="https://doi.org/10.1002/0470045345">doi:10.1002/0470045345</a>. The steady-state gain of the scalar filter and the lag it implies.</div></li>
+    </ul>
+    <p>This ends the course. Three experiments, three lessons: a textbook constant can be a bug in single precision; a model that fits its training trajectory has not learned the dynamics until a fresh one says so; and on real data, the first comparison is with the forecast that costs nothing.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="02-learning-what-the-model-leaves-out.html"><span class="lbl">Previous · 02</span><span class="t">Learning what the model leaves out</span></a>
+  <a class="next" rel="next" href="index.html"><span class="lbl">Course</span><span class="t">Back to the overview</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 03 of "Kalman Filters with JAX" by Elie Rouphael. The baselines and the trained filter are re-run in your browser on the repository's test split with the parameters JAX trained; the training runs and the exercise results were computed with the repository's code. Data: UCI Air Quality (De Vito et al.), CC BY 4.0. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch03-data.js"></script>
+<script src="interactive/ch03.js"></script>
+</body>
+</html>

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>02 · Learning What the Model Leaves Out · Kalman Filters with JAX</title>
+<meta name="description" content="A small neural network inside a Kalman filter learns the nonlinear part of a plant's dynamics, trained by differentiating through the whole filter recursion; the training runs live in the browser with a hand-derived backpropagation that matches JAX's automatic one. The repository's loss and a one-step forecast loss, what the network actually learned, why it fits the training trajectory and fails on a new one, and the three changes that make the learned residual transfer. Every number is checked against the JAX code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .hero3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
+  .hero3 canvas, .widget canvas { display: block; width: 100%; }
+  @media (max-width: 760px) { .hero3 { grid-template-columns: 1fr; } }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  #symT td, #vocT td, #studyT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #studyT { font-size: 0.8rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Chapter 02 of 03</span>
+  <h1>Learning what the model leaves out</h1>
+  <p class="lede">Chapter 01's filter knew its model exactly. Real plants have a part we can write down, the linear dynamics, and a part we cannot, friction, aerodynamics, a sensor's drift. The repository's second experiment keeps the known part and puts a small neural network inside the filter's prediction step to learn the rest, training it by differentiating straight through the Kalman recursion. This chapter rebuilds that training in the browser, with the gradient derived by hand and checked against JAX's, and then asks the question the repository does not: does the network learn the <em>dynamics</em>, or just the one trajectory it was shown? The answer is the second, and the three changes that fix it are the real lesson.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 01, calculus and some comfort with neural networks · Every number is checked against the JAX code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/Kalman-Filter-with-JAX">The repository on GitHub</a>
+    <a class="btn ghost" href="kalman-jax-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Training a network inside the filter, in your browser: the loss, the filtered state, and the error of the learned residual</p>
+        <div class="hero3">
+          <canvas id="heroL" aria-label="Training loss against Adam step on a log scale, the page's run over JAX's trace" aria-describedby="heroStatus"></canvas>
+          <canvas id="heroX" aria-label="The first state component of the training rollout: measurements as dots, the filtered estimate as a line with its 95 percent band" aria-describedby="heroStatus"></canvas>
+          <canvas id="heroE" aria-label="True residual minus learned residual along the training rollout, for both state components" aria-describedby="heroStatus"></canvas>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--muted)"></i>JAX's loss</span><span><i style="background:var(--post)"></i>this page</span><span><i style="background:var(--ink)"></i>measurements</span><span><i style="background:var(--warm)"></i>residual error, x₀</span><span><i style="background:var(--c5)"></i>residual error, x₁</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Loss" id="heroK">
+        <button class="btn" type="button" data-k="filtered" aria-pressed="true">repository's loss</button>
+        <button class="btn" type="button" data-k="forecast" aria-pressed="false">one-step forecast loss</button>
+      </div>
+      <div class="btn-row"><button class="btn" type="button" id="hTrain">Train (1000 Adam steps)</button><button class="btn ghost" type="button" id="hJax">load JAX's result</button><button class="btn ghost" type="button" id="hReset">reset</button></div>
+      <p class="hint" id="hStatus" aria-live="polite"></p>
+      <div class="readouts" aria-live="off">
+        <span>training loss</span><span class="v" id="rLoss">–</span>
+        <span>training rollout: filtered RMSE / residual RMS error</span><span class="v" id="rTrain">–</span>
+        <span>fresh rollout: filtered RMSE / residual RMS error</span><span class="v" id="rFresh">–</span>
+        <span>fresh rollout: forecast RMSE / with zero residual</span><span class="v" id="rZero">–</span>
+      </div>
+      <p class="hint">Same initial parameters (JAX key 42), same 50-step rollout, same Adam settings as the repository; the page's gradient is a hand-written reverse pass through the filter, which Part 2 derives. The "fresh rollout" is a new trajectory of the same plant with new random inputs.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#model"><span class="n">1</span><span class="t">A grey-box model inside a filter</span><span class="d">Known linear part, learned residual, two losses</span></a>
+    <a href="#grad"><span class="n">2</span><span class="t">Differentiating through the filter</span><span class="d">Reverse mode by hand, Adam, and the match with JAX</span></a>
+    <a href="#learned"><span class="n">3</span><span class="t">What the network learned</span><span class="d">A trajectory, not a function</span></a>
+    <a href="#transfer"><span class="n">4</span><span class="t">Making it transfer</span><span class="d">Bounded states, honest noise, more data</span></a>
+    <a href="#check"><span class="n">5</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">6</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">8</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>A grey-box model inside a filter</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The plant.</b> The repository's simulator (<code>kalman_jax/learned_dynamics.py</code>) is a two-state system driven by a scalar input <span class="m">u_t \sim \mathcal N(0, 1)</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} x_{t+1} &amp;= A x_t + B u_t + r(x_t) \mathbf 1, \\ A &amp;= \begin{pmatrix} 1 &amp; 0.1 \\ 0 &amp; 1 \end{pmatrix}, \quad B = \begin{pmatrix} 0 \\ 0.1 \end{pmatrix}, \\ r(x) &amp;= 3 \sin x_0 + 2 \cos x_1, \\ y_t &amp;= x_t + \nu_t, \quad \nu_t \sim \mathcal N(0, 0.05^2 I). \end{aligned}">x_{t+1} = A x_t + B u_t + r(x_t)\, \mathbf 1, \qquad A = \begin{pmatrix} 1 &amp; 0.1 \\ 0 &amp; 1 \end{pmatrix}, \quad B = \begin{pmatrix} 0 \\ 0.1 \end{pmatrix}, \qquad r(x) = 3 \sin x_0 + 2 \cos x_1, \qquad y_t = x_t + \nu_t, \quad \nu_t \sim \mathcal N(0, 0.05^2 I).</div>
+    <p>Two things about it matter later. The linear part is chapter 01's double integrator, <span class="m">A</span> has both eigenvalues at 1, so without the residual the state would random-walk; with it, the state wanders over tens of units in 50 steps. And the residual is a scalar added to <em>both</em> components (the generator computes <span class="m">3\sin x_0 + 2\cos x_1</span> and NumPy broadcasting adds it to each entry), with an RMS size of <span class="m">\sqrt{9/2 + 4/2} = 2.55</span> per component; it is the dominant term of the dynamics, not a small correction. There is no process noise in the simulator; the only noise is the sensor's, sd 0.05 on both components.</p>
+    <p><b>The learned model.</b> The filter is told <span class="m">A</span>, <span class="m">B</span> and <span class="m">C = I</span>, and learns the residual with a network <span class="m">f_\theta: \mathbb R^3 \to \mathbb R^2</span> of input <span class="m">(x_0, x_1, u)</span>, four hidden layers of 16 tanh units and a linear output (914 parameters). Its prediction step is</p>
+    <div class="math-block" data-narrow="\begin{aligned} \hat x_{t}^- &amp;= A \hat x_{t-1} + B u_t + f_\theta(\hat x_{t-1}, u_t), \\ P_t^- &amp;= A P_{t-1} A^\top + Q, \end{aligned}">\hat x_{t}^- = A \hat x_{t-1} + B u_t + f_\theta(\hat x_{t-1}, u_t), \qquad P_t^- = A P_{t-1} A^\top + Q,</div>
+    <p>followed by chapter 01's update with <span class="m">C = I</span>, filter noise <span class="m">Q = 0.1 I</span> and <span class="m">R = 0.5 I</span>, and <span class="m">P_0 = I</span>. Note what the covariance does not know: it is propagated with <span class="m">A</span> alone, as if the residual were a known function with no derivative. The gains therefore do not depend on <span class="m">\theta</span> at all, and the page precomputes the whole sequence <span class="m">K_1, \ldots, K_T</span> once. Note too the mismatch: the filter assumes process noise of sd 0.32 and sensor noise of sd 0.71 per component, while the simulator has none of the first and 0.05 of the second. The filter's steady-state gain is about 0.36 per component (chapter 01, exercise 4, gives the scalar formula), so it moves its state only a third of the way to each measurement, which it should trust almost completely.</p>
+    <p><b>Two losses.</b> The repository trains <span class="m">\theta</span> by Adam on</p>
+    <div class="math-block" data-narrow="\begin{aligned} L_{\text{filt}}(\theta) &amp;= \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t \rVert^2 \\ &amp;\quad \text{(the repository's \texttt{loss\_fn}),} \\ L_{\text{pred}}(\theta) &amp;= \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t^- \rVert^2 \\ &amp;\quad \text{(its \texttt{forecasters.py}),} \end{aligned}">L_{\text{filt}}(\theta) = \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t \rVert^2 \ \ \text{(the repository's \texttt{loss\_fn})}, \qquad L_{\text{pred}}(\theta) = \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t^- \rVert^2 \ \ \text{(its \texttt{forecasters.py})},</div>
+    <p>the first comparing the measurement with the state <em>after</em> it has been used, the second with the prediction <em>before</em>. The first is leaky: since <span class="m">y_t - C\hat x_t = (I - CK_t)(y_t - C\hat x_t^-)</span>, it is the forecast error shrunk by the factor <span class="m">I - K_t</span>, and a filter that trusted its sensor completely (<span class="m">K = I</span>) would score zero whatever <span class="m">\theta</span>. With the repository's gain of about 0.36 the loss still sees 64% of each forecast error, so training works, but the scores are not comparable: the repository's final loss 0.0120 against the forecast loss's 0.0947 does not mean the first model is eight times better. On the fresh-rollout tests below the two train to much the same thing.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a grey-box model?</p>
+      <p><b>In plain words:</b> a model with a part written from physics and a part learned from data, where the learned part is only asked to explain what the physics missed.</p>
+      <p><b>More precisely:</b> <span class="m">x_{t+1} = A x_t + B u_t + f_\theta(x_t, u_t)</span> with <span class="m">A, B</span> fixed and <span class="m">f_\theta</span> a flexible function approximator. Placing it inside a Kalman filter and training on the filter's output is "backprop KF" <a href="#ref-3">[3]</a>: the state estimator becomes a differentiable program and its parameters are fitted end to end. The division of labour is the point. The linear part carries the structure, the extrapolation and the covariance; the network carries only the residual, and is trusted exactly as far as the data it saw.</p>
+      <dl>
+        <dt>Residual</dt><dd>What remains of the dynamics after the known part: here <span class="m">r(x)\mathbf 1</span>, a function of the state only.</dd>
+        <dt>Filtered vs forecast loss</dt><dd>Score the state after the measurement update, or the prediction before it. The second is what a forecaster is for, and it cannot be gamed by trusting the sensor.</dd>
+        <dt>Dynamics error</dt><dd><span class="m">\lVert f_\theta(x, u) - r(x)\mathbf 1 \rVert</span> at the states a trajectory visits: a direct test of whether the function, not just the trajectory, was learned. The repository's <code>compute_dynamics_error</code> computes it, but only on the training rollout.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="grad">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Differentiating through the filter</h2>
+  </div>
+  <div class="col prose">
+    <p>In JAX the training step is one line, <code>value_and_grad(loss_fn)</code> around a <code>lax.scan</code> over the recursion. To see what that line computes, the page does it by hand. Write the recursion as two maps per step, prediction and update,</p>
+    <div class="math-block" data-narrow="\begin{aligned} \hat x_t^- &amp;= A \hat x_{t-1} + B u_t + f_\theta(\hat x_{t-1}, u_t), \\ \hat x_t &amp;= (I - K_t C)\, \hat x_t^- + K_t y_t, \end{aligned}">\hat x_t^- = A \hat x_{t-1} + B u_t + f_\theta(\hat x_{t-1}, u_t), \qquad \hat x_t = (I - K_t C)\, \hat x_t^- + K_t y_t,</div>
+    <p>with the gains known in advance. The loss depends on <span class="m">\theta</span> through every state, and each state through all earlier ones. Reverse-mode differentiation, backpropagation through time <a href="#ref-1">[1]</a>, runs the chain rule backwards with two adjoint vectors per step, <span class="m">\lambda_t = \partial L / \partial \hat x_t</span> and <span class="m">\mu_t = \partial L / \partial \hat x_t^-</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \lambda_t &amp;= g_t + \Big(A + \frac{\partial f_\theta}{\partial x}\Big|_{t+1}\Big)^{\!\top} \mu_{t+1}, \\ \mu_t &amp;= (I - K_t C)^\top \lambda_t + g_t^-, \\ \frac{\partial L}{\partial \theta} &amp;= \sum_{t=1}^{T} \Big(\frac{\partial f_\theta}{\partial \theta}\Big|_{t}\Big)^{\!\top} \mu_t, \end{aligned}">\lambda_t = g_t + \Big(A + \frac{\partial f_\theta}{\partial x}\Big|_{t+1}\Big)^{\!\top} \mu_{t+1}, \qquad \mu_t = (I - K_t C)^\top \lambda_t + g_t^-, \qquad \frac{\partial L}{\partial \theta} = \sum_{t=1}^{T} \Big(\frac{\partial f_\theta}{\partial \theta}\Big|_{t}\Big)^{\!\top} \mu_t,</div>
+    <p>where <span class="m">g_t = \frac{1}{T} C^\top (C\hat x_t - y_t)</span> is the direct derivative of <span class="m">L_{\text{filt}}</span> with respect to the filtered state (zero for the forecast loss), <span class="m">g_t^- = \frac{1}{T} C^\top (C\hat x_t^- - y_t)</span> the same for <span class="m">L_{\text{pred}}</span> (zero for the filtered loss), and <span class="m">\mu_{T+1} = 0</span>. The step from <span class="m">\mu_t</span> back to <span class="m">\lambda_{t-1}</span> is the network's own backward pass: the vector <span class="m">\mu_t</span> enters its output layer, the weight gradients accumulate layer by layer, and what comes out of the input layer, restricted to the two state inputs, is <span class="m">(\partial f_\theta/\partial x)^\top \mu_t</span>. The page's <code>filterGrad</code> is exactly these three lines plus a 914-parameter Adam update <a href="#ref-2">[2]</a> with the repository's settings (learning rate <span class="m">10^{-3}</span>, <span class="m">\beta_1 = 0.9</span>, <span class="m">\beta_2 = 0.999</span>, bias-corrected moments as in <code>optax.adam</code>).</p>
+    <div class="callout"><p><b>Checked three ways.</b> With JAX's trained parameters, the page's forward pass reproduces JAX's filtered states to <span class="m">2 \times 10^{-6}</span> and its posterior standard deviations to <span class="m">4 \times 10^{-8}</span>. The hand-written gradient agrees with central finite differences to a relative <span class="m">6 \times 10^{-7}</span>, for both losses. And the page's first twenty Adam steps reproduce JAX's loss trace to a relative <span class="m">5 \times 10^{-7}</span> from the same initial parameters: the repository's first loss is 0.887283 and so is the page's. After a few hundred steps the two runs drift apart, as any two chaotic optimisations in 32-bit and 64-bit arithmetic must, and end at 0.0113 (page) against 0.0120 (JAX), two equally good minima. Press "load JAX's result" in the demo to switch between them.</p></div>
+    <p>Why the gains need no gradient here deserves a sentence. Because the covariance is propagated with <span class="m">A</span> and not with the network's Jacobian, <span class="m">P_t</span> and <span class="m">K_t</span> are the same numbers for every <span class="m">\theta</span>; JAX differentiates through them anyway and finds zero. In an EKF-style version, where <span class="m">\partial f_\theta / \partial x</span> enters the covariance, the gains would carry gradient too and the reverse pass would be longer, but the three lines above would still be its skeleton.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="learned">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>What the network learned</h2>
+  </div>
+  <div class="col prose">
+    <p>On the training rollout the result looks like a success. The loss falls by a factor of 74, the filtered state follows the measurements inside its band, and the learned residual matches the true one along the trajectory to an RMS error of 0.5 against a residual of RMS 1.6 on those states. The repository's script stops here, with three figures of this rollout. The right question is what happens on a trajectory the network has not seen.</p>
+    <p>The hero demo answers it with a fresh rollout, the same plant driven by new random inputs (JAX key 7). The filtered estimate is fine, since the filter is still told the measurements; but the one-step forecast, the thing the network is for, misses the next measurement by an RMSE of 8 to 9, three times worse than a filter with <em>no</em> residual at all (2.93), and the residual error on the visited states is 4 to 5, worse than predicting zero. The network has made the forecasts worse than ignorance.</p>
+  </div>
+  <div class="col widget" id="mapW">
+    <div class="seg" role="group" aria-label="Network" id="mapSeg">
+      <button class="btn" type="button" data-w="trained" aria-pressed="true">JAX's trained network</button>
+      <button class="btn" type="button" data-w="page">the page's network</button>
+      <button class="btn" type="button" data-w="stable">trained on the bounded plant (Part 4)</button>
+    </div>
+    <canvas id="mapC" aria-label="Heat map of the absolute error of the learned residual over the state plane, with the training states as dots and a fresh trajectory as a dashed path leaving the explored region" aria-describedby="mapCap"></canvas>
+    <p class="status" id="mapCap"></p>
+  </div>
+  <div class="col prose">
+    <p>The map shows why. The 50 training states occupy a thin curve in the plane; the network is accurate on that curve and nowhere else. Two facts of the setup conspire. The plant's state is unbounded: with <span class="m">A</span> a double integrator and a residual of size 2.5 per step, a fresh rollout reaches <span class="m">x_0 \approx 30</span>, far outside anything the training rollout visited. And a tanh network cannot extrapolate a periodic function: outside its data its output saturates to a constant, while the true residual keeps oscillating between <span class="m">-5</span> and <span class="m">5</span>. The network learned a lookup table for one trajectory. Nothing in the training signal asked for more.</p>
+    <div class="big-idea"><p>A learned residual is only as good as the region of state space it was shown. Judge it by its dynamics error on trajectories it never saw, not by the fit of the trajectory it was trained on; the repository's script does the second and calls it a result.</p></div>
+    <div class="callout"><p><b>Corrections to the repository.</b> (1) The experiment's claim, that the learned filter "learns the nonlinear component" of the dynamics, holds only on the training rollout; on fresh rollouts the learned model forecasts worse than the linear model alone (8.5 against 2.9). (2) The filter's noise matrices (<span class="m">Q = 0.1I</span>, <span class="m">R = 0.5I</span>) are unrelated to the simulator's (no process noise, sensor sd 0.05), so the filter under-trusts a nearly perfect sensor. (3) The residual is added to both state components by broadcasting, which the README's "<span class="m">f(x,u)</span> includes sin and cos terms" does not say. Patches for the documentation and a fresh-rollout evaluation are proposed alongside this course.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="transfer">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Making it transfer</h2>
+  </div>
+  <div class="col prose">
+    <p>Each hypothesis from Part 3 can be tested by changing one thing and training again in JAX, scoring every model on fresh rollouts by its one-step forecast RMSE against the measurements and its dynamics error on the visited states, next to the zero-residual filter's forecast RMSE as the bar to clear. The table collects the runs, all made with the repository's own training functions: the first block varies the data and the optimisation with everything else as in the repository, the second varies the plant and the filter's noise matrices with 2000 Adam steps; every score is the mean over three fresh rollouts (keys 7, 11 and 13). A bold forecast RMSE beats the zero residual.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="studyT">
+      <thead><tr><th>Plant</th><th>Filter Q, R</th><th>T</th><th>Steps</th><th>Loss</th><th>Final loss</th><th>Forecast RMSE (fresh)</th><th>Zero residual</th><th>Dynamics error</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p><b>More data from the same plant does not help.</b> A 500-step training rollout, or five times the Adam steps, leaves the fresh-rollout forecast at 8 to 11, no better than 50 steps: the longer rollout wanders further, and the fresh one goes somewhere else again. Capacity is not the problem and neither is optimisation; the training loss reaches <span class="m">3 \times 10^{-3}</span>.</p>
+    <p><b>A bounded plant keeps the data where the test will be.</b> Replacing <span class="m">A</span> by <span class="m">\begin{pmatrix} 0.9 &amp; 0.1 \\ 0 &amp; 0.9 \end{pmatrix}</span>, eigenvalues 0.9 instead of 1, makes the state return toward the origin; every rollout then lives in the same bounded region of the plane, within about ten units of the origin. The learned residual's error on fresh rollouts drops from 4.3 to 1.85, and the dynamics error map (third button above) is now accurate across the visited region. But the forecast RMSE, 2.8, still loses to the zero-residual filter's 2.18.</p>
+    <p><b>Honest noise matrices turn a residual into a forecast.</b> The remaining loss comes from the filter, not the network. With <span class="m">Q = 0.1I</span>, <span class="m">R = 0.5I</span> the filter's state trails the measurements by a third of each innovation, and the network, fed a lagging state, learns a residual for the wrong input. Setting the filter's noise to the simulator's, <span class="m">Q = 0.01I</span> (a small floor, since the simulator has none) and <span class="m">R = 0.05^2 I</span>, with the bounded plant and a 500-step rollout, gives a fresh-rollout forecast RMSE of 1.80 against 2.18 for the zero residual, and a dynamics error of 1.74. The learned filter finally beats the one that ignores the nonlinearity. On the original, unbounded plant the same honest noise helps too (3.7 instead of 8.2) but still loses to 2.93: no amount of filter tuning fixes a network that is asked to extrapolate.</p>
+    <p>Three changes, one lesson each: keep the states where the training data were, tell the filter the truth about its noises, and score the learned model on data it did not see. The repository's experiment is sound as a demonstration of the mechanism, differentiating through a filter, and unsound as evidence that the mechanism learned the dynamics.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why do the Kalman gains not depend on the network's parameters?</summary><p>Because the covariance is propagated with the known matrix <span class="m">A</span> only; the network enters the mean prediction, not <span class="m">P</span>. The gain sequence is therefore fixed before training, and JAX's gradient through it is identically zero.</p></details>
+    <details class="sol"><summary>2. In what sense is the repository's loss "leaky"?</summary><p>It scores the state after the measurement has been folded in, so each error is the forecast error multiplied by <span class="m">I - K_t</span>. With <span class="m">K \to I</span> the loss vanishes regardless of the network. With the repository's gain of about 0.36 it still carries 64% of the signal, which is why training works; but its values (0.012) cannot be compared with a forecast loss (0.095).</p></details>
+    <details class="sol"><summary>3. What are <span class="m">\lambda_t</span> and <span class="m">\mu_t</span> in the reverse pass?</summary><p>The derivatives of the loss with respect to the filtered state and the predicted state at step <span class="m">t</span>, accumulated from all later steps. The update map sends <span class="m">\lambda_t</span> to <span class="m">\mu_t</span> through <span class="m">(I - K_t C)^\top</span>; the prediction map sends <span class="m">\mu_{t+1}</span> back to <span class="m">\lambda_t</span> through <span class="m">(A + \partial f_\theta/\partial x)^\top</span>, which is the network's backward pass.</p></details>
+    <details class="sol"><summary>4. The page's and JAX's loss traces agree to <span class="m">5 \times 10^{-7}</span> for twenty steps and then separate. Is one of them wrong?</summary><p>No. They are the same algorithm in 64-bit and 32-bit arithmetic; the rounding differences grow through a nonconvex optimisation until the two runs follow different paths to different, equally good minima (0.0113 and 0.0120). Agreement over the first steps, where rounding has not yet compounded, is the meaningful check.</p></details>
+    <details class="sol"><summary>5. Why is the filtered estimate still good on the fresh rollout when the forecast is terrible?</summary><p>Because the filter is still given the measurements, and with <span class="m">C = I</span> every state component is measured. The update pulls the state back toward the truth every step regardless of how bad the prediction was. The forecast, the prediction before the update, is where the learned model is actually tested.</p></details>
+    <details class="sol"><summary>6. Why can a tanh network not extrapolate <span class="m">3\sin x_0 + 2\cos x_1</span>?</summary><p>Every tanh unit is constant outside a bounded interval of its input, so far from the data the network's output is a constant, while the true residual keeps oscillating. The network can only represent the periodic function where it saw samples of it. A Fourier feature or a sinusoidal activation could extrapolate, but only by building the right assumption in.</p></details>
+    <details class="sol"><summary>7. Why does a longer training rollout not improve generalisation here?</summary><p>Because on an unbounded plant a longer rollout wanders further along its own path, not across the region a fresh rollout will visit. Coverage of state space, not length, is what the network needs; the bounded plant provides it with 50 steps.</p></details>
+    <details class="sol"><summary>8. Why did honest noise matrices help the learned forecast?</summary><p>With over-stated sensor noise the filter's state lags the measurements, so the network is trained to map a lagging state to the next measurement and learns a distorted residual. With the sensor trusted as it deserves, the state is nearly the true one and the network learns the function of the true state, which is what transfers.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Score on a fresh rollout.</b> Train the repository's model as its script does, then generate a rollout with a new key and compute the one-step forecast RMSE of the learned filter and of the zero-residual filter.</div>
+        <details class="sol"><summary>Hint</summary><p><code>forecast_with_kalman</code> in <code>kalman_jax/forecasters.py</code> returns the forecasts; the zero-residual forecast is <span class="m">A y_{t-1} + B u_t</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>On key 7 the learned filter's forecast RMSE is about 8.5 against 2.93 for the zero residual; keys 11 and 13 give the same picture.</p>
+          <pre><code class="language-python">import jax, jax.numpy as jnp, optax
+from jax import random
+from kalman_jax.learned_dynamics import generate_data, init_mlp_params, train_learned_kalman
+from kalman_jax.forecasters import forecast_with_kalman
+
+A, B, C = jnp.array([[1., .1], [0., 1.]]), jnp.array([[0.], [.1]]), jnp.eye(2)
+Q, R, x0, P0 = 0.1 * jnp.eye(2), 0.5 * jnp.eye(2), jnp.zeros(2), jnp.eye(2)
+xs, us, ys = generate_data(T=50)                                    # the script's rollout (key 0)
+params = init_mlp_params(random.PRNGKey(42), [3, 16, 16, 16, 16, 2])
+params, _, losses = train_learned_kalman(params, optax.adam(1e-3), A=A, B=B, C=C, Q=Q, R=R,
+                                         x0=x0, P0=P0, us=us, ys=ys, num_steps=1000)
+xs7, us7, ys7 = generate_data(T=50, key=random.PRNGKey(7))          # a rollout it never saw
+y_pred, *_ = forecast_with_kalman(params, A, B, C, Q, R, x0, P0, us7, ys7)
+zero = jnp.stack([A @ ys7[t - 1] + B @ us7[t] for t in range(1, 50)])
+print(jnp.sqrt(jnp.mean((y_pred - ys7) ** 2)), jnp.sqrt(jnp.mean((zero - ys7[1:]) ** 2)))   # ~8.5 vs 2.93</code></pre></details>
+      </li>
+      <li><div><b>Check the gradient yourself.</b> Perturb one weight of the initial parameters by <span class="m">\pm 10^{-4}</span>, evaluate the loss twice, and compare the central difference with the corresponding entry of <code>jax.grad(loss_fn)</code>.</div>
+        <details class="sol"><summary>Hint</summary><p>In float32 a step of <span class="m">10^{-4}</span> balances truncation and rounding; expect agreement to three or four digits. Enable 64-bit for more.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The two agree to about <span class="m">10^{-3}</span> relative in float32 and to <span class="m">10^{-7}</span> with <code>jax_enable_x64</code>; the page's hand-written gradient agrees with finite differences in double precision to <span class="m">6 \times 10^{-7}</span>. Disagreement at that level would point to a bug in the forward pass rather than in JAX.</p></details>
+      </li>
+      <li><div><b>Let the covariance see the network.</b> Replace the covariance prediction by <span class="m">P^- = (A + J_t) P (A + J_t)^\top + Q</span> with <span class="m">J_t = \partial f_\theta / \partial x</span> from <code>jax.jacfwd</code>. Do the gains now depend on <span class="m">\theta</span>? Does the fresh-rollout forecast improve?</div>
+        <details class="sol"><summary>Hint</summary><p>Add the Jacobian inside the scanned step; <code>jax.grad</code> handles the rest. Compare the gains at step 50 before and after training.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Yes, the gains now vary with <span class="m">\theta</span> and along the trajectory (the Jacobian of <span class="m">3\sin x_0</span> swings between <span class="m">\pm 3</span>, so the predicted covariance can grow sixteen-fold in one step). The forecast on fresh rollouts does not improve: a better covariance cannot rescue a mean prediction built on extrapolated tanh units. The fix is in the data and the plant, Part 4, not in the covariance.</p></details>
+      </li>
+      <li><div><b>Reproduce the table's last line.</b> Train on the bounded plant with <span class="m">Q = 0.01I</span>, <span class="m">R = 0.0025I</span> and a 500-step rollout, with either loss, and score on keys 7, 11 and 13.</div>
+        <details class="sol"><summary>Hint</summary><p><code>generate_data</code> accepts <code>A_true</code>; pass the same stable <span class="m">A</span> to the filter. The table used 2000 Adam steps; on 500 samples that takes a minute or two on a CPU.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Forecast RMSE 1.80 (filtered loss) or 2.01 (forecast loss) against 2.18 for the zero residual, dynamics error 1.74 and 1.85, averaged over keys 7, 11 and 13. With the repository's noise matrices instead, the same plant and data give 2.98 and 3.23: the noise matrices are worth more than the extra data.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The model</b>: known <span class="m">A, B</span>, a 914-parameter tanh network for the residual, inside a Kalman filter whose gains do not depend on the network.</div></li>
+      <li><div><b>Training</b>: Adam on a loss of the filter's output, gradient by reverse mode through the recursion, two adjoints per step; the page's hand-written version matches JAX to <span class="m">5 \times 10^{-7}</span> over the first twenty steps and finite differences to <span class="m">6 \times 10^{-7}</span>.</div></li>
+      <li><div><b>Two losses</b>: the repository's filtered loss is the forecast loss shrunk by <span class="m">I - K</span>; it trains, but its value (0.012 against 0.095) is not comparable.</div></li>
+      <li><div><b>The failure</b>: on fresh rollouts the learned filter forecasts with RMSE 8.5 against 2.9 for no residual; the states leave the training region and the tanh network saturates.</div></li>
+      <li><div><b>The fix</b>: a bounded plant (eigenvalues 0.9) and honest noise matrices (<span class="m">Q = 0.01I</span>, <span class="m">R = 0.05^2 I</span>) with 500 steps: forecast 1.80 against 2.18, dynamics error 1.74, down from 4.3 on the repository's plant.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Grey-box model</td><td>Known linear part plus a learned residual; the network explains only what physics missed.</td></tr>
+        <tr><td>Residual network <span class="m">f_\theta</span></td><td>3 → 16 → 16 → 16 → 16 → 2, tanh, 914 parameters; input state and control.</td></tr>
+        <tr><td>Backprop KF</td><td>Training the model inside a Kalman filter by differentiating through the recursion.</td></tr>
+        <tr><td>Backpropagation through time</td><td>Reverse-mode differentiation of a recurrence; adjoints <span class="m">\lambda_t, \mu_t</span> run backwards.</td></tr>
+        <tr><td>Adam</td><td>Gradient descent with bias-corrected first and second moment estimates; lr <span class="m">10^{-3}</span> here.</td></tr>
+        <tr><td>Filtered loss, forecast loss</td><td>Error of the state after the update; of the prediction before it. Only the second is a forecasting score.</td></tr>
+        <tr><td>Fresh rollout</td><td>A new trajectory of the same plant with new inputs; the only fair test of a learned dynamics model.</td></tr>
+        <tr><td>Dynamics error</td><td>RMS of <span class="m">f_\theta(x,u) - r(x)\mathbf 1</span> on visited states; a function-level score.</td></tr>
+        <tr><td>Extrapolation</td><td>Evaluating the network outside its training region, where tanh units saturate to constants.</td></tr>
+        <tr><td>Noise mismatch</td><td>Filter <span class="m">Q, R</span> that do not match the data's; here it made the state lag and the residual distorted.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers the repository's learned-dynamics module and forecaster: a residual network in the prediction step of a linear Kalman filter with fixed gains, trained end to end. It does not cover learned covariances, variational or sampling-based state-space models <a href="#ref-4">[4]</a>, or networks designed to extrapolate periodic structure. Chapter 03 takes the same forecaster to a real series, where the baseline to beat is simpler and harder.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>P. J. Werbos. Backpropagation through time: what it does and how to do it. <em>Proceedings of the IEEE</em>, 78(10):1550–1560, 1990. <a href="https://doi.org/10.1109/5.58337">doi:10.1109/5.58337</a>. The reverse-mode derivative of a recurrence, which Part 2 writes out for the filter.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>D. P. Kingma and J. Ba. Adam: a method for stochastic optimization. <em>International Conference on Learning Representations</em>, 2015. <a href="https://arxiv.org/abs/1412.6980">arXiv:1412.6980</a>. The optimiser, with the bias-corrected moment estimates the page reproduces from <code>optax.adam</code>.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>T. Haarnoja, A. Ajay, S. Levine and P. Abbeel. Backprop KF: learning discriminative deterministic state estimators. <em>Advances in Neural Information Processing Systems</em> 29, 2016. <a href="https://arxiv.org/abs/1605.07148">arXiv:1605.07148</a>. A Kalman filter as a differentiable layer trained end to end; the idea the repository's second experiment implements in miniature.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>R. G. Krishnan, U. Shalit and D. Sontag. Structured inference networks for nonlinear state space models. <em>Proceedings of the AAAI Conference on Artificial Intelligence</em>, 31(1), 2017. <a href="https://doi.org/10.1609/aaai.v31i1.10779">doi:10.1609/aaai.v31i1.10779</a>. Learned nonlinear state-space models with proper uncertainty, the direction a learned covariance would take.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>J. Schoukens and L. Ljung. Nonlinear system identification: a user-oriented road map. <em>IEEE Control Systems Magazine</em>, 39(6):28–99, 2019. <a href="https://doi.org/10.1109/MCS.2019.2938121">doi:10.1109/MCS.2019.2938121</a>. Grey-box modelling, the role of the input in covering the state space, and validation on fresh data.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>D. Simon. <em>Optimal State Estimation</em>. Wiley, 2006. <a href="https://doi.org/10.1002/0470045345">doi:10.1002/0470045345</a>. The effect of mismatched noise covariances on a Kalman filter's gain and lag.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>J. Bradbury et al. JAX: composable transformations of Python+NumPy programs, 2018. <a href="https://github.com/jax-ml/jax">github.com/jax-ml/jax</a>. <code>value_and_grad</code> and <code>lax.scan</code>, the two primitives that make the repository's training loop one line.</div></li>
+    </ul>
+    <p>Next, chapter 03 fits the same forecaster to a year of air-quality measurements and asks the question real data always ask first: does it beat predicting that the next hour will look like this one?</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="01-the-kalman-filter-and-its-nonlinear-cousins.html"><span class="lbl">Previous · 01</span><span class="t">The Kalman filter and its nonlinear cousins</span></a>
+  <a class="next" rel="next" href="03-a-real-series-next-hour-no2.html"><span class="lbl">Next · 03</span><span class="t">A real series: next-hour NO2</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 02 of "Kalman Filters with JAX" by Elie Rouphael. The training in the hero demo runs in your browser from the same equations as the repository's JAX code, with a hand-derived gradient checked against JAX's; the generalisation study was run with the repository's own training functions. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch02-data.js"></script>
+<script src="interactive/ch02.js"></script>
+</body>
+</html>

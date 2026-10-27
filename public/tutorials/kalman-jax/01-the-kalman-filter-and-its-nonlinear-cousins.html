@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>01 · The Kalman Filter and Its Nonlinear Cousins · Kalman Filters with JAX</title>
+<meta name="description" content="The linear Kalman filter, the extended filter and the unscented filter, written in JAX and run live in the browser on a constant-velocity tracking problem: the model and its discretised noise, the predict and update equations with a worked first step, the Joseph form, sigma points and their weights, why the textbook unscented filter turns to NaN in 32-bit arithmetic and how to fix it, and the steady-state gain. Every number is checked against the JAX code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .hero2 canvas, .widget canvas { display: block; width: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  #mapT td, #symT td, #vocT td, #wT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #mapT, #wT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  canvas + canvas { margin-top: 0.4rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Chapter 01 of 03</span>
+  <h1>The Kalman filter and its nonlinear cousins</h1>
+  <p class="lede">A sensor reports a position every tenth of a second, half a metre wrong on average. From that alone the Kalman filter recovers the position three times more accurately than the sensor and a velocity nobody measured, and it says how sure it is. This chapter builds the filter from its two equations, then its two nonlinear relatives, the extended and the unscented filter, in the form the companion repository implements them in JAX. Along the way it finds a real bug: the textbook unscented filter, run in JAX's default 32-bit arithmetic, destroys itself after 33 seconds of data. Below, all three filters run in your browser on the repository's own data.</p>
+  <p class="byline">Elie Rouphael · Needs Python, linear algebra and basic probability · Every number is checked against the JAX code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/Kalman-Filter-with-JAX">The repository on GitHub</a>
+    <a class="btn ghost" href="kalman-jax-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Three filters on the same noisy track: position, then the velocity nobody measured</p>
+        <div class="hero2">
+          <canvas id="heroP" aria-label="True position against time with noisy measurements as dots and the estimates of the linear, extended and unscented Kalman filters" aria-describedby="heroStatus"></canvas>
+          <canvas id="heroV" aria-label="True velocity against time with the three filters' velocity estimates, although velocity is never measured" aria-describedby="heroStatus"></canvas>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--ink)"></i>truth</span><span><i style="background:var(--muted)"></i>measurements</span><span><i style="background:var(--post)"></i>linear KF</span><span><i style="background:var(--c4)"></i>EKF</span><span><i style="background:var(--warm)"></i>UKF (α = 1)</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Filters shown" id="heroF">
+        <button class="btn" type="button" data-f="kf" aria-pressed="true">linear KF</button>
+        <button class="btn" type="button" data-f="ekf" aria-pressed="false">EKF</button>
+        <button class="btn" type="button" data-f="ukf" aria-pressed="true">UKF</button>
+      </div>
+      <label class="field"><span>Window: <b id="hWinV"></b></span>
+        <span class="row"><input type="range" id="hWin" min="0" max="800" step="50" value="0"></span>
+      </label>
+      <div class="seg" role="group" aria-label="Data source"><button class="btn" type="button" id="hRepo" aria-pressed="true">the repository's rollout (key 42)</button><button class="btn" type="button" id="hNew">new rollout</button></div>
+      <label class="field"><span>Process noise (acceleration sd): <b id="hProcV"></b></span>
+        <span class="row"><input type="range" id="hProc" min="0.02" max="1" step="0.02" value="0.1"></span>
+      </label>
+      <label class="field"><span>Measurement noise sd: <b id="hMeasV"></b></span>
+        <span class="row"><input type="range" id="hMeas" min="0.05" max="2" step="0.05" value="0.5"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>RMSE, measurements (position)</span><span class="v" id="rMeas">–</span>
+        <span>RMSE, linear KF (pos / vel)</span><span class="v" id="rKF">–</span>
+        <span>RMSE, EKF (pos / vel)</span><span class="v" id="rEKF">–</span>
+        <span>RMSE, UKF (pos / vel)</span><span class="v" id="rUKF">–</span>
+        <span>steady-state gain</span><span class="v" id="rGain">–</span>
+      </div>
+      <p class="hint">Moving a noise slider generates a fresh rollout with the page's own random numbers; the filter is always told the true noise levels. The repository's rollout and the JAX results come from its script run with random key 42.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scope"><span class="n">0</span><span class="t">The course in one table</span><span class="d">Three chapters, three experiments</span></a>
+    <a href="#model"><span class="n">1</span><span class="t">The model</span><span class="d">Constant velocity, discretised noise</span></a>
+    <a href="#filter"><span class="n">2</span><span class="t">The Kalman filter</span><span class="d">Predict, update, Joseph form, a worked step</span></a>
+    <a href="#ekf"><span class="n">3</span><span class="t">The extended filter</span><span class="d">Linearise where you are</span></a>
+    <a href="#ukf"><span class="n">4</span><span class="t">The unscented filter</span><span class="d">Sigma points, weights, and a 32-bit catastrophe</span></a>
+    <a href="#steady"><span class="n">5</span><span class="t">Gain and covariance over time</span><span class="d">The Riccati recursion and its fixed point</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="scope">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The course in one table</h2>
+  </div>
+  <div class="col prose">
+    <p>The companion repository, <a href="https://github.com/ElieRouphael/Kalman-Filter-with-JAX">Kalman-Filter-with-JAX</a>, is a small workshop: a package <code>kalman_jax</code> with the filters, a learned-dynamics module and an air-quality pipeline, three scripts that run one experiment each, and tests. This course follows the three experiments in order, reproduces every number they print, and reports where the code or its claims are wrong. Everything on these pages is computed live in your browser from the same equations, and checked against the JAX run <a href="#ref-9">[9]</a>.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="mapT">
+      <thead><tr><th>Chapter</th><th>Question</th><th>Script and tool</th></tr></thead>
+      <tbody>
+        <tr><td><b>01</b></td><td>How does a Kalman filter work, and what do its nonlinear cousins add?</td><td><code>Kalman Filter with JAX.py</code>: linear KF, EKF, UKF on a constant-velocity track</td></tr>
+        <tr><td><a href="02-learning-what-the-model-leaves-out.html">02</a></td><td>Can a network inside the filter learn the dynamics the model leaves out, and does what it learns transfer?</td><td><code>Kalman Filter with DL.py</code>: an MLP residual trained through the filter by automatic differentiation</td></tr>
+        <tr><td><a href="03-a-real-series-next-hour-no2.html">03</a></td><td>Does the learned filter beat simple baselines on a real series?</td><td><code>Air Quality with JAX.py</code>: next-hour NO2 from the UCI air-quality sensors</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The model</h2>
+  </div>
+  <div class="col prose">
+    <p><b>State and dynamics.</b> An object moves along a line at a velocity that drifts randomly. Its state is position and velocity, <span class="m">x_t = (p_t, v_t)^\top</span>, sampled every <span class="m">\Delta t = 0.1</span> s. Between samples the velocity is constant up to a random acceleration, so</p>
+    <div class="math-block" data-narrow="\begin{aligned} x_{t+1} &amp;= F x_t + w_t, \\ F &amp;= \begin{pmatrix} 1 &amp; \Delta t \\ 0 &amp; 1 \end{pmatrix}, \\ w_t &amp;\sim \mathcal N(0, Q). \end{aligned}">x_{t+1} = F x_t + w_t, \qquad F = \begin{pmatrix} 1 &amp; \Delta t \\ 0 &amp; 1 \end{pmatrix}, \qquad w_t \sim \mathcal N(0, Q).</div>
+    <p><b>Where <span class="m">Q</span> comes from.</b> The repository's process noise is not two independent noises on position and velocity. It is a white acceleration of intensity <span class="m">q = \sigma_a^2</span> integrated over one sample: a random acceleration acting for a time <span class="m">\tau</span> before the end of the interval moves the velocity by <span class="m">\tau</span> times itself and the position by <span class="m">\tau^2/2</span> times itself, so</p>
+    <div class="math-block" data-narrow="\begin{aligned} Q &amp;= q \int_0^{\Delta t} \begin{pmatrix} \tau^2 &amp; \tau \\ \tau &amp; 1 \end{pmatrix} d\tau \\ &amp;= q \begin{pmatrix} \frac{\Delta t^3}{3} &amp; \frac{\Delta t^2}{2} \\ \frac{\Delta t^2}{2} &amp; \Delta t \end{pmatrix}. \end{aligned}">Q = q \int_0^{\Delta t} \begin{pmatrix} \tau^2 &amp; \tau \\ \tau &amp; 1 \end{pmatrix} d\tau = q \begin{pmatrix} \dfrac{\Delta t^3}{3} &amp; \dfrac{\Delta t^2}{2} \\[0.6em] \dfrac{\Delta t^2}{2} &amp; \Delta t \end{pmatrix}.</div>
+    <p>With <span class="m">\sigma_a = 0.1</span> and <span class="m">\Delta t = 0.1</span> this is <span class="m">Q = 10^{-2} \begin{pmatrix} 3.33 \times 10^{-4} &amp; 5 \times 10^{-3} \\ 5 \times 10^{-3} &amp; 0.1 \end{pmatrix}</span>: the velocity wanders by <span class="m">\sqrt{10^{-3}} \approx 0.032</span> per step, the position by a mere <span class="m">1.8 \times 10^{-3}</span>, and the two are strongly correlated (correlation <span class="m">\sqrt 3 / 2 \approx 0.87</span>), because the same acceleration causes both. This is the standard discretisation of the white-noise-acceleration model <a href="#ref-4">[4]</a>.</p>
+    <p><b>Measurement.</b> Only the position is observed, with noise of standard deviation <span class="m">\sigma_z = 0.5</span>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} z_t &amp;= H x_t + \nu_t, \\ H &amp;= \begin{pmatrix} 1 &amp; 0 \end{pmatrix}, \\ \nu_t &amp;\sim \mathcal N(0, R), \quad R = \sigma_z^2 = 0.25. \end{aligned}">z_t = H x_t + \nu_t, \qquad H = \begin{pmatrix} 1 &amp; 0 \end{pmatrix}, \qquad \nu_t \sim \mathcal N(0, R), \quad R = \sigma_z^2 = 0.25.</div>
+    <p>The repository's generator starts the true state at <span class="m">(0, 1)</span> and the filter at <span class="m">(0, 0)</span> with <span class="m">P_0 = I</span>: the filter does not know the object is moving, and has to find out. Over 1000 steps the position drifts about 100 units while the velocity wanders by about one; the sensor error, 0.5, is five times the total motion per step.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="symT">
+      <thead><tr><th>Symbol</th><th>Meaning</th><th>Here</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">x_t, \hat x_t, P_t</span></td><td>True state; its estimate after the measurement at <span class="m">t</span>; the covariance of the estimation error</td><td>2-vectors and a 2×2 matrix</td></tr>
+        <tr><td><span class="m">\hat x_{t|t-1}, P_{t|t-1}</span></td><td>Prediction of the state at <span class="m">t</span> from the data up to <span class="m">t-1</span>, and its covariance</td><td>the "prior" at each step</td></tr>
+        <tr><td><span class="m">F, Q</span></td><td>State transition; process-noise covariance</td><td>constant velocity; integrated acceleration noise, <span class="m">\sigma_a = 0.1</span></td></tr>
+        <tr><td><span class="m">H, R</span></td><td>Measurement matrix; measurement-noise covariance</td><td>position only; <span class="m">\sigma_z^2 = 0.25</span></td></tr>
+        <tr><td><span class="m">e_t, S_t, K_t</span></td><td>Innovation (measurement minus its prediction); its covariance; the Kalman gain</td><td>scalar, scalar, 2-vector</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="filter">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The Kalman filter</h2>
+  </div>
+  <div class="col prose">
+    <p>The filter keeps a Gaussian belief about the state, mean <span class="m">\hat x</span> and covariance <span class="m">P</span>, and alternates two steps <a href="#ref-1">[1]</a>.</p>
+    <p><b>Predict.</b> Push the belief through the dynamics. The mean follows <span class="m">F</span>, the covariance grows by the process noise:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \hat x_{t|t-1} &amp;= F \hat x_{t-1}, \\ P_{t|t-1} &amp;= F P_{t-1} F^\top + Q. \end{aligned}">\hat x_{t|t-1} = F \hat x_{t-1}, \qquad P_{t|t-1} = F P_{t-1} F^\top + Q.</div>
+    <p><b>Update.</b> Compare the measurement with what the belief predicted for it. The difference is the innovation <span class="m">e_t</span>; its covariance <span class="m">S_t</span> adds the belief's uncertainty about the measured quantity to the sensor's own noise; the gain weighs the two:</p>
+    <div class="math-block" data-narrow="\begin{aligned} e_t &amp;= z_t - H \hat x_{t|t-1}, \\ S_t &amp;= H P_{t|t-1} H^\top + R, \\ K_t &amp;= P_{t|t-1} H^\top S_t^{-1}, \\ \hat x_t &amp;= \hat x_{t|t-1} + K_t e_t . \end{aligned}">e_t = z_t - H \hat x_{t|t-1}, \qquad S_t = H P_{t|t-1} H^\top + R, \qquad K_t = P_{t|t-1} H^\top S_t^{-1}, \qquad \hat x_t = \hat x_{t|t-1} + K_t e_t .</div>
+    <p>The gain is a ratio of uncertainties: <span class="m">P H^\top</span> is how much each state component co-varies with the measured quantity, <span class="m">S</span> is how uncertain the measured quantity is in total. If the sensor is much better than the prediction, <span class="m">K \to H^+</span> and the measurement is believed outright; if the prediction is much better, <span class="m">K \to 0</span> and the measurement is ignored. Notice that the velocity gets corrected too, through the off-diagonal entry of <span class="m">P</span>: the filter knows that a position surprise is partly a velocity surprise.</p>
+    <p><b>Covariance update, in Joseph form.</b> The textbook formula <span class="m">P_t = (I - K_t H) P_{t|t-1}</span> is correct only for the exact optimal gain and, computed in floating point, can lose symmetry and positive-definiteness. The repository uses the form due to Bucy and Joseph, valid for any gain and manifestly symmetric and non-negative <a href="#ref-2">[2]</a>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} P_t = {} &amp; (I - K_t H) P_{t|t-1} (I - K_t H)^\top \\ &amp; + K_t R K_t^\top . \end{aligned}">P_t = (I - K_t H)\, P_{t|t-1}\, (I - K_t H)^\top + K_t R K_t^\top .</div>
+    <p>It also avoids the explicit inverse: the gain is computed as the solution of <span class="m">S K^\top = H P^\top</span>, one linear solve, as <code>jnp.linalg.solve</code> in <code>kalman_jax/filters.py</code>. The page does the same.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is the Kalman filter?</p>
+      <p><b>In plain words:</b> a running weighted average between what the model predicts and what the sensor says, with the weights set by how uncertain each is, and an honest bookkeeping of the remaining uncertainty.</p>
+      <p><b>More precisely:</b> for a linear model with Gaussian noise it is the exact Bayesian posterior <span class="m">p(x_t \mid z_{1:t})</span>, which stays Gaussian, so the mean and covariance are the whole story. For any linear model with any noise of the given covariances it is the linear estimator of minimum mean-square error. Its covariance recursion does not depend on the data, only on <span class="m">F, H, Q, R</span> and <span class="m">P_0</span>, which is why the gain can be computed, and inspected, before a single measurement arrives.</p>
+      <dl>
+        <dt>Innovation</dt><dd><span class="m">e_t = z_t - H\hat x_{t|t-1}</span>: the part of the measurement the model did not foresee. For a correct model it is white with covariance <span class="m">S_t</span>, the basis of every consistency test on a filter.</dd>
+        <dt>Gain</dt><dd><span class="m">K_t = P_{t|t-1} H^\top S_t^{-1}</span>: how far each state component moves per unit of innovation.</dd>
+        <dt>Joseph form</dt><dd>The covariance update written as a sum of two positive terms, stable in floating point and correct for any gain.</dd>
+      </dl>
+    </div>
+    <h3>A worked first step</h3>
+    <p>Start from <span class="m">\hat x_0 = (0, 0)</span>, <span class="m">P_0 = I</span>. Prediction: <span class="m">F P_0 F^\top = \begin{pmatrix} 1 + \Delta t^2 &amp; \Delta t \\ \Delta t &amp; 1 \end{pmatrix} = \begin{pmatrix} 1.01 &amp; 0.1 \\ 0.1 &amp; 1 \end{pmatrix}</span>, plus the tiny <span class="m">Q</span>: <span class="m">P_{1|0} \approx \begin{pmatrix} 1.0100 &amp; 0.1001 \\ 0.1001 &amp; 1.0010 \end{pmatrix}</span>. The measured quantity is the position, so <span class="m">S_1 = 1.0100 + 0.25 = 1.2600</span>, and</p>
+    <div class="math-block">K_1 = \frac{1}{1.2600} \begin{pmatrix} 1.0100 \\ 0.1001 \end{pmatrix} = \begin{pmatrix} 0.8016 \\ 0.0794 \end{pmatrix}.</div>
+    <p>The first measurement moves the position estimate 80% of the way to the reading (the prior sd 1 against the sensor's 0.5, variances 1 against 0.25, 1/1.25 = 0.8 up to the process noise) and nudges the velocity by 8% of the innovation, through the correlation that one time step created. The posterior position variance is <span class="m">P_{1|0,11} - K_1^2 S_1 = 1.0100 - 0.8016^2 \times 1.2600 = 0.2004</span>, a standard deviation of 0.448: one reading of a 0.5-sd sensor combined with a prior of sd 1 gives <span class="m">(1^{-2} + 0.5^{-2})^{-1/2} = 0.447</span>, as it should. The gain then falls step after step as the filter learns the velocity; Part 5 shows where it settles.</p>
+    <div class="callout"><p><b>On the repository's data.</b> With the true model, the linear filter achieves a position RMSE of 0.1554 against the sensor's 0.5 and a velocity RMSE of 0.1351 for a quantity it never sees. Its steady-state covariance predicts standard deviations of 0.1631 and 0.1315; the achieved values are within a few percent, the agreement one expects when the filter's model is the one that generated the data.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="ekf">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The extended filter: linearise where you are</h2>
+  </div>
+  <div class="col prose">
+    <p>When the dynamics or the measurement are nonlinear, <span class="m">x_{t+1} = f(x_t) + w_t</span> and <span class="m">z_t = h(x_t) + \nu_t</span>, the posterior is no longer Gaussian and no finite recursion is exact. The extended Kalman filter (EKF) keeps the Kalman equations and replaces the matrices by the Jacobians of <span class="m">f</span> and <span class="m">h</span> at the current estimate <a href="#ref-2">[2]</a>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \hat x_{t|t-1} &amp;= f(\hat x_{t-1}), \\ P_{t|t-1} &amp;= F_t P_{t-1} F_t^\top + Q, \\ F_t &amp;= \left.\frac{\partial f}{\partial x}\right|_{\hat x_{t-1}}, \\ e_t &amp;= z_t - h(\hat x_{t|t-1}), \\ H_t &amp;= \left.\frac{\partial h}{\partial x}\right|_{\hat x_{t|t-1}}. \end{aligned}">\hat x_{t|t-1} = f(\hat x_{t-1}), \qquad P_{t|t-1} = F_t P_{t-1} F_t^\top + Q, \qquad F_t = \left.\frac{\partial f}{\partial x}\right|_{\hat x_{t-1}}, \qquad e_t = z_t - h(\hat x_{t|t-1}), \qquad H_t = \left.\frac{\partial h}{\partial x}\right|_{\hat x_{t|t-1}}.</div>
+    <p>The means go through the true nonlinear functions; only the covariances are propagated through the linearisation. The repository's <code>extended_kf_predict</code> and <code>extended_kf_update</code> take <span class="m">f, h</span> and their Jacobians as arguments, and in JAX the Jacobians can be <code>jax.jacfwd(f)</code> rather than hand-derived.</p>
+    <p><b>Example.</b> If the sensor measured the distance to a beacon at <span class="m">s</span> rather than the position itself, <span class="m">h(x) = |p - s|</span> and <span class="m">H_t = (\operatorname{sign}(\hat p - s),\ 0)</span>: the same update equations, with a matrix that changes sign when the object passes the beacon, and a filter that is briefly very wrong near it, where the linearisation is worst.</p>
+    <div class="callout"><p><b>What the repository's script tests.</b> Its EKF is run on the linear model, with <span class="m">f(x) = Fx</span>, <span class="m">h(x) = Hx</span> and constant Jacobians. The Jacobians are then the matrices themselves and the EKF <em>is</em> the linear filter: the two agree to the last bit on this page, and to 32-bit rounding in JAX. This is a sanity check of the implementation, not a test of the EKF's approximation; the script's identical RMSE lines (0.1554 and 0.1351) are the expected outcome, not a finding.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="ukf">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The unscented filter: sigma points, weights, and a 32-bit catastrophe</h2>
+  </div>
+  <div class="col prose">
+    <p>The unscented Kalman filter (UKF) avoids Jacobians altogether <a href="#ref-3">[3]</a>. It represents the belief by <span class="m">2n+1</span> deterministic sample points, the sigma points, pushes each through the nonlinear function exactly, and recovers the mean and covariance of the results by weighted sums. For a belief with mean <span class="m">\hat x</span> and covariance <span class="m">P = L L^\top</span> (Cholesky factor <span class="m">L</span>, columns <span class="m">L_i</span>):</p>
+    <div class="math-block" data-narrow="\begin{aligned} \mathcal X_0 &amp;= \hat x, \\ \mathcal X_{i} &amp;= \hat x + \sqrt{n + \lambda}\, L_i, \\ \mathcal X_{n+i} &amp;= \hat x - \sqrt{n + \lambda}\, L_i, \\ \lambda &amp;= \alpha^2 (n + \kappa) - n . \end{aligned}">\mathcal X_0 = \hat x, \qquad \mathcal X_{i} = \hat x + \sqrt{n + \lambda}\, L_i, \qquad \mathcal X_{n+i} = \hat x - \sqrt{n + \lambda}\, L_i, \qquad \lambda = \alpha^2 (n + \kappa) - n .</div>
+    <p>With weights, in the parametrisation of Wan and van der Merwe <a href="#ref-5">[5]</a>,</p>
+    <div class="math-block" data-narrow="\begin{aligned} W_0^{(m)} &amp;= \frac{\lambda}{n + \lambda}, \\ W_0^{(c)} &amp;= \frac{\lambda}{n + \lambda} + 1 - \alpha^2 + \beta, \\ W_i^{(m)} = W_i^{(c)} &amp;= \frac{1}{2(n + \lambda)} . \end{aligned}">W_0^{(m)} = \frac{\lambda}{n + \lambda}, \qquad W_0^{(c)} = \frac{\lambda}{n + \lambda} + 1 - \alpha^2 + \beta, \qquad W_i^{(m)} = W_i^{(c)} = \frac{1}{2(n + \lambda)} .</div>
+    <p>The predicted mean is <span class="m">\sum_i W_i^{(m)} f(\mathcal X_i)</span>, the predicted covariance <span class="m">\sum_i W_i^{(c)} (f(\mathcal X_i) - \hat x_{t|t-1})(\cdot)^\top + Q</span>, and the update uses the same construction for <span class="m">h</span>, with the cross-covariance <span class="m">P_{xz}</span> and the innovation covariance <span class="m">P_{zz}</span> giving the gain <span class="m">K = P_{xz} P_{zz}^{-1}</span>. For a linear <span class="m">f</span> the weighted sums reproduce <span class="m">F\hat x</span> and <span class="m">FPF^\top</span> exactly, since the weights sum to one and the points' spread is exactly <span class="m">P</span>: on the repository's linear model the UKF should match the linear filter, and in double precision it does, to <span class="m">10^{-7}</span>.</p>
+    <p><b>The repository's default is <span class="m">\alpha = 10^{-3}</span>, <span class="m">\beta = 2</span>, <span class="m">\kappa = 0</span>.</b> These are the textbook values <a href="#ref-5">[5]</a>, and for <span class="m">n = 2</span> they give <span class="m">\lambda = 2 \times 10^{-6} - 2</span>, so <span class="m">n + \lambda = 2 \times 10^{-6}</span>, a centre weight <span class="m">W_0^{(m)} = -999\,999</span>, four outer weights of <span class="m">250\,000</span>, and sigma points only <span class="m">\sqrt{2 \times 10^{-6}} = 0.0014</span> standard deviations from the mean. The covariance is then reconstructed as a difference of terms a million times larger than the result. In double precision (16 significant digits) ten digits survive; in JAX's default 32-bit floats (7 digits) none do. The repository's UKF loses the symmetry and positive-definiteness of <span class="m">P</span>, the Cholesky factor becomes NaN, and from step 335 the script prints <code>nan</code> for the UKF's RMSE. Two of its own tests fail for the same reason.</p>
+  </div>
+  <div class="col widget" id="ukfW">
+    <label class="field"><span>Spread parameter <span class="m">\alpha</span> (log scale): <b id="ukAV"></b></span>
+      <span class="row"><input type="range" id="ukA" min="-3" max="0" step="0.25" value="-3"></span>
+    </label>
+    <canvas id="ukfC" aria-label="Distance between the unscented and the linear filter's position estimates over the first 40 seconds, in double precision and with 32-bit rounding emulated" aria-describedby="ukfCap"></canvas>
+    <p class="status" id="ukfCap"></p>
+  </div>
+  <div class="col prose">
+    <div class="define">
+      <p class="define-title">Catastrophic cancellation</p>
+      <p><b>In plain words:</b> subtracting two nearly equal numbers throws away their leading digits and keeps only their rounding errors.</p>
+      <p><b>More precisely:</b> a floating-point number carries about 7 significant decimal digits in 32-bit and 16 in 64-bit <a href="#ref-6">[6]</a>. If the UKF's covariance <span class="m">P \approx 0.03</span> is the difference of weighted terms of size <span class="m">10^6 \times 10^{-6} \times \ldots</span> that each carry an absolute rounding error of order <span class="m">10^{-7}</span> times their own magnitude, the result's error is of order <span class="m">10^{-1}</span> times the result itself: wrong in the first digit. A filter's covariance must stay positive-definite; once a rounding error pushes an eigenvalue below zero the Cholesky factor does not exist and every later step is NaN.</p>
+      <dl>
+        <dt>The fix</dt><dd>Spread the points: <span class="m">\alpha = 1</span>, so <span class="m">\lambda = 0</span>, <span class="m">W_0^{(m)} = 0</span>, <span class="m">W_i = 1/4</span>, points <span class="m">\sqrt 2</span> standard deviations out. All weights are of order one and both precisions track the linear filter; the hero demo uses this. Alternatively enable 64-bit in JAX (<code>jax.config.update("jax_enable_x64", True)</code>), which the repository does not.</dd>
+        <dt>Why the textbook value exists</dt><dd>A small <span class="m">\alpha</span> keeps the sigma points close to the mean so that strongly nonlinear functions are sampled locally; with <span class="m">\beta = 2</span> this also captures the fourth moment of a Gaussian. It presumes double precision. The point of the parameters is a trade-off between local accuracy and numerical range, and <span class="m">10^{-3}</span> sits at the wrong end of it for single precision.</dd>
+      </dl>
+    </div>
+    <div class="callout"><p><b>What the page emulates.</b> Browsers compute in double precision. To reproduce the failure, the widget rounds every intermediate result to the nearest 32-bit float with <code>Math.fround</code>, including the Cholesky factor and every weighted sum. The emulated filter turns to NaN at step 168 against JAX's 335: the exact step depends on the order in which the sums are accumulated, which JAX's compiled code and the page's loops do differently, but the mechanism and the outcome are the same. The repository already fixed one UKF bug, the sigma points used rows of the Cholesky factor instead of columns; this one is next. The patch proposed to the repository sets the default <span class="m">\alpha = 1</span>, documents why, and makes the two failing tests pass.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="steady">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Gain and covariance over time</h2>
+  </div>
+  <div class="col prose">
+    <p>Nothing in the covariance recursion involves a measurement. Eliminating the gain, the predicted covariance obeys the discrete Riccati recursion</p>
+    <div class="math-block" data-narrow="\begin{aligned} P_{t+1|t} = {} &amp; F P_{t|t-1} F^\top + Q \\ &amp; - F P_{t|t-1} H^\top S_t^{-1} H P_{t|t-1} F^\top, \end{aligned}">P_{t+1|t} = F P_{t|t-1} F^\top + Q - F P_{t|t-1} H^\top S_t^{-1} H P_{t|t-1} F^\top,</div>
+    <p>a deterministic iteration from <span class="m">P_0</span> that, for an observable model with <span class="m">Q \succ 0</span>, converges to a fixed point <span class="m">P_\infty</span>: the steady-state covariance, with the steady-state gain <span class="m">K_\infty = P_\infty H^\top (H P_\infty H^\top + R)^{-1}</span> <a href="#ref-2">[2]</a>. A filter run with the constant gain <span class="m">K_\infty</span> is a fixed linear filter, the <span class="m">\alpha</span>–<span class="m">\beta</span> tracker of radar practice, and is what the full filter becomes after its transient.</p>
+  </div>
+  <div class="col widget" id="gainW">
+    <canvas id="gainC" aria-label="Kalman gain on position and velocity and the posterior standard deviations of both over the first six seconds, converging to constant values" aria-describedby="gainCap"></canvas>
+    <p class="status" id="gainCap"></p>
+  </div>
+  <div class="col prose">
+    <p>The numbers say what the filter is doing. The steady-state gain <span class="m">(0.106, 0.060)</span> means each new reading moves the position estimate a tenth of the way to it, averaging over roughly ten readings, and corrects the velocity by six hundredths of the innovation per step, which over a second of readings adds up to a velocity correction of order the innovation's size divided by the window. The position sd settles at 0.163, a third of the sensor's 0.5; the velocity sd at 0.132, for a quantity that is never measured and wanders by 0.032 per step. The innovation sd is <span class="m">\sqrt{S_\infty} = 0.529</span>: slightly more than the sensor noise, the excess being the filter's own position uncertainty. On a correct model the actual innovations should have exactly this spread; on the repository's run they do, which is the simplest check that the filter and the simulator agree.</p>
+    <div class="big-idea"><p>The Kalman filter is two equations and a ratio of uncertainties, and everything about its behaviour, the gain, the convergence, the achievable accuracy, can be read from the covariance recursion before the first measurement arrives. Its nonlinear cousins keep the equations and change how the belief is pushed through the model; the unscented version buys exactness on linear maps at the price of a numerical range that single precision does not have.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why is the process-noise covariance <span class="m">Q</span> not diagonal?</summary><p>Because one random acceleration changes both the velocity (by <span class="m">\tau</span> times itself) and the position (by <span class="m">\tau^2/2</span> times itself) within the same step. The two perturbations share a cause, so they are correlated, here with correlation <span class="m">\sqrt 3 / 2 \approx 0.87</span>.</p></details>
+    <details class="sol"><summary>2. The filter never sees a velocity. How does it estimate one?</summary><p>Through the off-diagonal entry of the covariance. After a prediction step, position and velocity uncertainties are correlated (<span class="m">F P F^\top</span> has an off-diagonal <span class="m">\Delta t\, P_{22}</span>), so a position innovation carries information about the velocity and the gain's second component is non-zero: 0.079 on the first step, 0.060 in steady state.</p></details>
+    <details class="sol"><summary>3. What does the innovation covariance <span class="m">S_t</span> add up?</summary><p>The sensor's own noise <span class="m">R</span> and the belief's uncertainty about the measured quantity <span class="m">H P_{t|t-1} H^\top</span>. In steady state here <span class="m">S_\infty = 0.25 + 0.0298 = 0.280</span>, sd 0.529.</p></details>
+    <details class="sol"><summary>4. Why use the Joseph form rather than <span class="m">(I - KH)P</span>?</summary><p>The short form is only correct for the exact optimal gain and, in floating point, produces a matrix that is not exactly symmetric and can acquire a negative eigenvalue after many steps. The Joseph form is a sum of two symmetric non-negative terms, so it stays a valid covariance for any gain and any rounding.</p></details>
+    <details class="sol"><summary>5. Does the EKF beat the linear filter on this problem?</summary><p>No, and it cannot: the model is linear, so the Jacobians equal <span class="m">F</span> and <span class="m">H</span> and the EKF is the linear filter under another name. The script's identical RMSE lines confirm the implementation, not any advantage.</p></details>
+    <details class="sol"><summary>6. Why does the UKF with <span class="m">\alpha = 10^{-3}</span> fail only in 32-bit arithmetic?</summary><p>Its weights are <span class="m">\pm 10^6</span> and <span class="m">2.5 \times 10^5</span>, so the covariance is a difference of terms a million times larger than itself. That costs six of the available significant digits: ten remain in double precision, none in single, where the covariance loses positive-definiteness and the Cholesky factorisation returns NaN.</p></details>
+    <details class="sol"><summary>7. What does the steady-state gain <span class="m">(0.106, 0.060)</span> mean operationally?</summary><p>Each new reading moves the position estimate about a tenth of the way to it, an effective average over roughly ten readings, and nudges the velocity by six hundredths of the innovation. These two numbers define a fixed linear filter that the full filter becomes after about five seconds.</p></details>
+    <details class="sol"><summary>8. The achieved position RMSE is 0.155 and the filter's own sd is 0.163. Is the gap a problem?</summary><p>No. The RMSE is estimated from 1000 correlated errors and has a sampling spread of a few percent; the two agree within it. A systematic gap, especially one in the other direction, would indicate that the filter's <span class="m">Q</span> or <span class="m">R</span> disagree with the data, which chapter 03 meets on a real series.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Reproduce the failure, then fix it.</b> Run the repository's script and watch the UKF line print <code>nan</code>. Then run the UKF with <span class="m">\alpha = 1</span> and compare its RMSE with the linear filter's.</div>
+        <details class="sol"><summary>Hint</summary><p><code>run_ukf</code> takes <code>alpha</code>, <code>beta</code>, <code>kappa</code> as keyword arguments. Find the first step at which <code>jnp.isnan</code> is true.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With the defaults the estimates are NaN from step 335 onward and the RMSE is NaN. With <span class="m">\alpha = 1</span> the UKF returns 0.1554 and 0.1351, equal to the linear filter's to four decimals (the worst difference between the two state trajectories is <span class="m">2.3 \times 10^{-5}</span>, 32-bit rounding).</p>
+          <pre><code class="language-python">import jax, jax.numpy as jnp
+from kalman_jax.filters import generate_linear_synthetic_data, run_linear_kf, run_ukf, compute_rmse
+
+F, H, Q, R, xs, zs = generate_linear_synthetic_data(jax.random.PRNGKey(42), n_steps=1000)
+x0, P0 = jnp.zeros(2), jnp.eye(2)
+f, h = (lambda x: F @ x), (lambda x: H @ x)
+bad = run_ukf(zs, f, h, Q, R, x0, P0)                 # alpha = 1e-3 by default
+print("first NaN at step", int(jnp.argmax(jnp.isnan(bad[:, 0]))))     # 335
+good = run_ukf(zs, f, h, Q, R, x0, P0, alpha=1.0)
+print(compute_rmse(xs, good), compute_rmse(xs, run_linear_kf(zs, F, H, Q, R, x0, P0)))</code></pre></details>
+      </li>
+      <li><div><b>Lie to the filter about the sensor.</b> Keep the data fixed and run the linear filter with <span class="m">R</span> four times too large, then four times too small. What happens to the RMSE and to the spread of the innovations relative to <span class="m">\sqrt{S}</span>?</div>
+        <details class="sol"><summary>Hint</summary><p>Compare the sample standard deviation of <span class="m">e_t</span> with the filter's <span class="m">\sqrt{S_\infty}</span>. A consistent filter has a ratio near one.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The two lies are not symmetric. Overstating <span class="m">R</span> (1.0 instead of 0.25) makes the filter more sluggish, but on this slowly drifting track that costs almost nothing: the position RMSE on the repository's data moves from 0.1554 to 0.1562 (and by a few percent either way on fresh rollouts), while the innovations come out at 0.52 of the filter's own <span class="m">\sqrt S</span>, the filter over-states its uncertainty by the factor 2 it was lied to by. Understating <span class="m">R</span> (0.0625) makes the filter chase the sensor noise: the RMSE rises by 8 to 10%, to 0.168 on the repository's data and 0.18 to 0.20 on fresh rollouts, and the innovations are twice the claimed <span class="m">\sqrt S</span>. With the true <span class="m">R</span> the ratio is 1.03. The innovation ratio diagnoses the lie and its direction even when the RMSE barely moves, which is why it, and not the RMSE one cannot compute without ground truth, is the working engineer's check.</p></details>
+      </li>
+      <li><div><b>Derive <span class="m">Q</span> for a jerk model.</b> Suppose the acceleration, not the velocity, is the integrated white noise, with state <span class="m">(p, v, a)</span>. Write <span class="m">F</span> and <span class="m">Q</span> for a sample time <span class="m">\Delta t</span>.</div>
+        <details class="sol"><summary>Hint</summary><p>The transition over <span class="m">\tau</span> is <span class="m">\Phi(\tau)</span> with entries <span class="m">1, \tau, \tau^2/2</span> above the diagonal; the noise enters the last component. Integrate <span class="m">\Phi(\tau) G G^\top \Phi(\tau)^\top</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">F = \begin{pmatrix} 1 &amp; \Delta t &amp; \Delta t^2/2 \\ 0 &amp; 1 &amp; \Delta t \\ 0 &amp; 0 &amp; 1 \end{pmatrix}</span> and, with <span class="m">G = (0, 0, 1)^\top</span> and <span class="m">v(\tau) = (\tau^2/2,\ \tau,\ 1)^\top</span>,</p>
+          <div class="math-block" data-narrow="\begin{aligned} Q &amp;= q \int_0^{\Delta t} v(\tau) v(\tau)^\top d\tau \\ &amp;= q \begin{pmatrix} \frac{\Delta t^5}{20} &amp; \frac{\Delta t^4}{8} &amp; \frac{\Delta t^3}{6} \\[0.3em] \frac{\Delta t^4}{8} &amp; \frac{\Delta t^3}{3} &amp; \frac{\Delta t^2}{2} \\[0.3em] \frac{\Delta t^3}{6} &amp; \frac{\Delta t^2}{2} &amp; \Delta t \end{pmatrix}, \end{aligned}">Q = q \int_0^{\Delta t} v(\tau) v(\tau)^\top d\tau = q \begin{pmatrix} \dfrac{\Delta t^5}{20} &amp; \dfrac{\Delta t^4}{8} &amp; \dfrac{\Delta t^3}{6} \\[0.6em] \dfrac{\Delta t^4}{8} &amp; \dfrac{\Delta t^3}{3} &amp; \dfrac{\Delta t^2}{2} \\[0.6em] \dfrac{\Delta t^3}{6} &amp; \dfrac{\Delta t^2}{2} &amp; \Delta t \end{pmatrix},</div>
+          <p>the discrete Wiener-process-acceleration model of the tracking literature <a href="#ref-4">[4]</a>.</p></details>
+      </li>
+      <li><div><b>Write the steady state down without iterating.</b> For the scalar model <span class="m">x_{t+1} = x_t + w_t</span>, <span class="m">z_t = x_t + \nu_t</span>, with variances <span class="m">q</span> and <span class="m">r</span>, solve the Riccati fixed point for the predicted variance and the gain.</div>
+        <details class="sol"><summary>Hint</summary><p>The recursion is <span class="m">p^+ = p + q - p^2/(p + r)</span>; set <span class="m">p^+ = p</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The fixed point satisfies <span class="m">p^2 - qp - qr = 0</span>, so <span class="m">p_\infty = \frac{q + \sqrt{q^2 + 4qr}}{2}</span> and <span class="m">K_\infty = \frac{p_\infty}{p_\infty + r}</span>. For <span class="m">q \ll r</span>, <span class="m">p_\infty \approx \sqrt{qr}</span> and <span class="m">K_\infty \approx \sqrt{q/r}</span>: the gain is the ratio of the noise standard deviations, and the filter averages over about <span class="m">\sqrt{r/q}</span> readings. With <span class="m">q = 0.05</span> and <span class="m">r = 0.25</span>, the values chapter 03's forecaster uses, <span class="m">p_\infty = 0.140</span> and <span class="m">K_\infty = 0.36</span>; chapter 03's filter has <span class="m">A = 0.9</span> instead of 1, which shrinks the predicted variance and gives <span class="m">K_\infty = 0.31</span>.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The model</b>: constant velocity sampled at 0.1 s with integrated white acceleration noise, <span class="m">Q = q\,[\Delta t^3/3,\ \Delta t^2/2;\ \Delta t^2/2,\ \Delta t]</span>, and a position sensor with sd 0.5.</div></li>
+      <li><div><b>The filter</b>: predict with <span class="m">F</span> and <span class="m">Q</span>, update with the gain <span class="m">K = PH^\top S^{-1}</span>, covariance in Joseph form, gain by a linear solve rather than an inverse.</div></li>
+      <li><div><b>The numbers</b>: position RMSE 0.1554 against the sensor's 0.5, velocity RMSE 0.1351 without a velocity sensor; steady-state gain (0.106, 0.060), posterior sds 0.163 and 0.132, innovation sd 0.529; convergence within about five seconds.</div></li>
+      <li><div><b>The EKF</b>: Jacobians in place of the matrices; identical to the linear filter on a linear model, which is what the repository's script checks.</div></li>
+      <li><div><b>The UKF</b>: five sigma points, weights from <span class="m">\lambda = \alpha^2(n+\kappa) - n</span>; exact on linear maps in double precision; with the default <span class="m">\alpha = 10^{-3}</span> the weights are <span class="m">\pm 10^6</span> and the filter is NaN from step 335 in JAX's float32. Fix: <span class="m">\alpha = 1</span> or 64-bit.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>State, measurement</td><td>What the filter estimates (position and velocity); what it observes (position plus noise).</td></tr>
+        <tr><td>Predict, update</td><td>Push the belief through the dynamics; correct it with a measurement.</td></tr>
+        <tr><td>Innovation</td><td>Measurement minus its prediction; white with covariance <span class="m">S</span> for a correct model.</td></tr>
+        <tr><td>Kalman gain</td><td><span class="m">P H^\top S^{-1}</span>: state correction per unit of innovation.</td></tr>
+        <tr><td>Joseph form</td><td>Covariance update as <span class="m">(I-KH)P(I-KH)^\top + KRK^\top</span>; stable and valid for any gain.</td></tr>
+        <tr><td>Riccati recursion, steady state</td><td>The data-free iteration of <span class="m">P</span>; its fixed point and the constant gain it implies.</td></tr>
+        <tr><td>Extended Kalman filter</td><td>Kalman equations with the Jacobians of <span class="m">f, h</span> at the current estimate.</td></tr>
+        <tr><td>Sigma points, unscented transform</td><td><span class="m">2n+1</span> weighted points whose mean and covariance match the belief, pushed through the nonlinearity exactly.</td></tr>
+        <tr><td><span class="m">\alpha, \beta, \kappa</span></td><td>Spread of the sigma points, a fourth-moment correction, a secondary scaling; set <span class="m">\lambda</span> and the weights.</td></tr>
+        <tr><td>Catastrophic cancellation</td><td>Loss of significant digits when nearly equal large terms are subtracted; fatal to a covariance in 32-bit.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers the repository's first script and its filter module: the linear filter in Joseph form, the EKF interface, and the UKF with its sigma-point construction, all on a linear tracking problem where the exact answer is known. It does not treat smoothing, square-root filters or the nonlinear cases where the EKF and UKF actually differ, which <a href="#ref-2">[2]</a> and <a href="#ref-7">[7]</a> do. Chapter 02 keeps the linear filter and puts a neural network inside its prediction step.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>R. E. Kalman. A new approach to linear filtering and prediction problems. <em>Journal of Basic Engineering</em>, 82(1):35–45, 1960. <a href="https://doi.org/10.1115/1.3662552">doi:10.1115/1.3662552</a>. The original paper: the recursive estimator for linear state-space models with Gaussian noise.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>D. Simon. <em>Optimal State Estimation: Kalman, H∞, and Nonlinear Approaches</em>. Wiley, 2006. <a href="https://doi.org/10.1002/0470045345">doi:10.1002/0470045345</a>. A complete, readable treatment of the linear filter, the Joseph form, the Riccati equation and the extended and unscented filters.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>S. J. Julier and J. K. Uhlmann. Unscented filtering and nonlinear estimation. <em>Proceedings of the IEEE</em>, 92(3):401–422, 2004. <a href="https://doi.org/10.1109/JPROC.2003.823141">doi:10.1109/JPROC.2003.823141</a>. The unscented transform and the UKF by their inventors, including the choice and meaning of the sigma-point parameters.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>Y. Bar-Shalom, X. R. Li and T. Kirubarajan. <em>Estimation with Applications to Tracking and Navigation</em>. Wiley, 2001. The discretised white-noise-acceleration and Wiener-process-acceleration motion models, and the <span class="m">\alpha</span>–<span class="m">\beta</span> tracker as the steady-state Kalman filter.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>E. A. Wan and R. van der Merwe. The unscented Kalman filter for nonlinear estimation. In <em>Proceedings of the IEEE 2000 Adaptive Systems for Signal Processing, Communications, and Control Symposium</em>, pages 153–158, 2000. <a href="https://doi.org/10.1109/ASSPCC.2000.882463">doi:10.1109/ASSPCC.2000.882463</a>. The <span class="m">\alpha, \beta, \kappa</span> parametrisation the repository uses, with the recommended <span class="m">\alpha = 10^{-3}</span> that fails in single precision.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>D. Goldberg. What every computer scientist should know about floating-point arithmetic. <em>ACM Computing Surveys</em>, 23(1):5–48, 1991. <a href="https://doi.org/10.1145/103162.103163">doi:10.1145/103162.103163</a>. Rounding, cancellation and the precision of single and double floats.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>S. Särkkä. <em>Bayesian Filtering and Smoothing</em>. Cambridge University Press, 2013. <a href="https://doi.org/10.1017/CBO9781139344203">doi:10.1017/CBO9781139344203</a>. The Bayesian view of filtering in which the Kalman filter, EKF and UKF are successive approximations of the same posterior recursion.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>R. S. Bucy and P. D. Joseph. <em>Filtering for Stochastic Processes with Applications to Guidance</em>. Wiley Interscience, 1968. The stabilised covariance update now called the Joseph form.</div></li>
+      <li id="ref-9"><span class="rn">[9]</span><div>J. Bradbury, R. Frostig, P. Hawkins, M. J. Johnson, C. Leary, D. Maclaurin, G. Necula, A. Paszke, J. VanderPlas, S. Wanderman-Milne and Q. Zhang. JAX: composable transformations of Python+NumPy programs, 2018. <a href="https://github.com/jax-ml/jax">github.com/jax-ml/jax</a>. The library the repository is written in; its default 32-bit arithmetic is the subject of Part 4.</div></li>
+    </ul>
+    <p>Next, chapter 02 keeps the filter and makes its model learnable: a small network inside the prediction step, trained by differentiating through the whole recursion, and the question of whether what it learns survives a new trajectory.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="next" rel="next" href="02-learning-what-the-model-leaves-out.html"><span class="lbl">Next · 02</span><span class="t">Learning what the model leaves out</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 01 of "Kalman Filters with JAX" by Elie Rouphael. The filters run in your browser from the same equations as the repository's JAX code; the repository's rollout and results come from its script run with random key 42, and the page's numerics were checked against them. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch01-data.js"></script>
+<script src="interactive/ch01.js"></script>
+</body>
+</html>
