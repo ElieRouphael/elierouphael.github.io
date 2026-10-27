@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>05 · A First-Order Filter in C · Kalman Filters with JAX</title>
+<meta name="description" content="How a filter is written in C, for a device with no NumPy: the first-order low-pass filter and its exact discretisation, then the C language needed to implement it, types, arrays, pointers, functions, return codes and file I/O, read through the author's coursework program line by line. The program's three bugs are found by compiling and running it, the fixed version is given, the filter runs live in the browser with adjustable time constant, and the link to the Kalman filter is made explicit. Every number is checked against the compiled C program.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  #cT td, #vocT td, #bugT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #cT, #bugT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Chapter 05 of 05</span>
+  <h1>A first-order filter in C</h1>
+  <p class="lede">Four chapters of Python and JAX, and then the filter has to run on a microcontroller with 32 kilobytes of memory and no NumPy. This chapter is about that step. It takes the simplest useful filter, the first-order low-pass, derives its exact discrete form, and implements it in C the way the author's coursework program <code>TD3.c</code> does: arrays, pointers, functions with return codes, and files read and written by hand. The program is read line by line as a C lesson; compiling and running it finds three bugs that turned its output into a column of zeros; and the fixed filter runs below on the program's own recording, where it also teaches what a first-order filter cannot do.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 01 and any programming language; no C assumed · Every number is checked against the compiled C program</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/First-Order-Filter-using-C">The repository on GitHub</a>
+    <a class="btn ghost" href="kalman-jax-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The C program's filter on its own recording: a noisy 1 Hz sine, and what comes out for a given time constant</p>
+        <canvas id="heroC" aria-label="The recorded noisy sine as dots, the fitted clean sine dashed, and the output of the first-order filter as a line" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--muted)"></i>recording u</span><span><i style="background:var(--ink)"></i>fitted clean sine</span><span><i style="background:var(--post)"></i>filter output y</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Input" id="inSeg">
+        <button class="btn" type="button" data-i="record" aria-pressed="true">the recording</button>
+        <button class="btn" type="button" data-i="step" aria-pressed="false">unit step</button>
+        <button class="btn" type="button" data-i="impulse" aria-pressed="false">unit impulse</button>
+      </div>
+      <label class="field"><span>Time constant <span class="m">\tau</span> (log scale): <b id="hTauV"></b></span>
+        <span class="row"><input type="range" id="hTau" min="-2.5" max="0.5" step="0.05" value="0.301"></span>
+      </label>
+      <div class="btn-row"><button class="btn ghost" type="button" data-tau="2">repository's τ = 2 s</button><button class="btn ghost" type="button" data-tau="0.2">0.2 s</button><button class="btn ghost" type="button" data-tau="0.02">0.02 s</button></div>
+      <label class="field"><span>Static gain <span class="m">K</span>: <b id="hKV"></b></span>
+        <span class="row"><input type="range" id="hK" min="0.2" max="2" step="0.05" value="1"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span><span class="m">z_0 = e^{-T_e/\tau}</span></span><span class="v" id="rZ0">–</span>
+        <span>cutoff <span class="m">1/(2\pi\tau)</span></span><span class="v" id="rFc">–</span>
+        <span>gain and lag at the signal's 1 Hz</span><span class="v" id="rGain">–</span>
+        <span>RMSE to the clean sine (raw recording)</span><span class="v" id="rErr">–</span>
+        <span>sd of the removed part <span class="m">u - y</span></span><span class="v" id="rRes">–</span>
+      </div>
+      <p class="hint">The filter is the program's <code>filtrage()</code> recursion, run in the browser; its outputs were checked against the program compiled with gcc to <span class="m">5 \times 10^{-9}</span>, the precision the check printed with. The sampling period is the program's <span class="m">T_e = 0.01</span> s.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#filter"><span class="n">1</span><span class="t">The first-order filter</span><span class="d">Continuous, discretised exactly, and in the frequency domain</span></a>
+    <a href="#c"><span class="n">2</span><span class="t">The C you need</span><span class="d">Compile, types, arrays, pointers, functions, files</span></a>
+    <a href="#program"><span class="n">3</span><span class="t">The program, line by line</span><span class="d">Five functions and a main</span></a>
+    <a href="#bugs"><span class="n">4</span><span class="t">Compile, run, and find the bugs</span><span class="d">Why the output file is all zeros</span></a>
+    <a href="#signal"><span class="n">5</span><span class="t">What the filter does to the signal</span><span class="d">Gain, lag, and the limit of a causal low-pass</span></a>
+    <a href="#kalman"><span class="n">6</span><span class="t">Back to Kalman</span><span class="d">The steady-state filter is a first-order filter</span></a>
+    <a href="#check"><span class="n">7</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="filter">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The first-order filter</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Continuous time.</b> The first-order low-pass filter is the simplest system with memory: an output that chases its input with a time constant <span class="m">\tau</span> and a static gain <span class="m">K</span>,</p>
+    <div class="math-block" data-narrow="\begin{aligned} \tau\,\dot y(t) + y(t) &amp;= K\,u(t), \\ H(s) = \frac{Y(s)}{U(s)} &amp;= \frac{K}{1 + \tau s}. \end{aligned}">\tau\,\dot y(t) + y(t) = K\,u(t), \qquad H(s) = \frac{Y(s)}{U(s)} = \frac{K}{1 + \tau s}.</div>
+    <p>An RC circuit, a thermometer in a bath, a motor's speed under a voltage step: all are first-order. Its step response is <span class="m">K(1 - e^{-t/\tau})</span>, 63% of the way after one time constant; its frequency response has magnitude <span class="m">K/\sqrt{1 + (\omega\tau)^2}</span> and phase <span class="m">-\arctan(\omega\tau)</span>, so it passes frequencies well below the cutoff <span class="m">f_c = 1/(2\pi\tau)</span> and attenuates those above it by a factor of ten per decade (20 dB per decade), with a lag that reaches 45° at the cutoff and 90° far above it <a href="#ref-1">[1]</a>.</p>
+    <p><b>Discrete time, exactly.</b> A program sees the input only at the sampling instants <span class="m">kT_e</span> and must produce <span class="m">y_k</span> from <span class="m">y_{k-1}</span> and past inputs. If the input is held constant over each sampling interval (what a digital-to-analogue converter does, the zero-order hold), the differential equation can be solved exactly over one interval: the homogeneous part decays by <span class="m">z_0 = e^{-T_e/\tau}</span> and the held input contributes <span class="m">K(1 - z_0)u_{k-1}</span>, so</p>
+    <div class="math-block" data-narrow="\begin{aligned} y_k &amp;= z_0\, y_{k-1} + K(1 - z_0)\, u_{k-1}, \\ z_0 &amp;= e^{-T_e/\tau}. \end{aligned}">y_k = z_0\, y_{k-1} + K(1 - z_0)\, u_{k-1}, \qquad z_0 = e^{-T_e/\tau}.</div>
+    <p>This is the recursion in the program's <code>filtrage()</code>. It is an infinite-impulse-response filter with one pole at <span class="m">z_0</span>, and it costs one multiplication, one multiply-add and one memory cell per sample, which is why it runs on anything. Two things to notice: the coefficients sum to <span class="m">K</span>, so a constant input gives output <span class="m">K</span> times it; and the input enters with one sample of delay, <span class="m">u_{k-1}</span>, because the sample held over the interval ending at <span class="m">k</span> is the one taken at <span class="m">k-1</span>. (Many implementations use <span class="m">u_k</span> instead, which is the bilinear or backward-Euler variant; the difference is one sample of lag, visible in the phase plot of Part 5.)</p>
+    <p><b>Numbers for the program's setting.</b> With <span class="m">T_e = 0.01</span> s and <span class="m">\tau = 2</span> s, <span class="m">z_0 = e^{-0.005} = 0.99501</span> and <span class="m">K(1 - z_0) = 0.00499</span>: each new sample moves the output half a percent of the way toward it, an average over about 200 samples. The cutoff is <span class="m">1/(4\pi) = 0.080</span> Hz. The recording the program filters is a sine at 1.00 Hz, thirteen times the cutoff, which the filter passes at 8% of its amplitude. Part 4 shows what the program made of that.</p>
+    <div class="define">
+      <p class="define-title">Exact (zero-order-hold) discretisation</p>
+      <p><b>In plain words:</b> instead of approximating the derivative by a difference, solve the differential equation exactly between two samples, assuming the input stays constant in between.</p>
+      <p><b>More precisely:</b> for <span class="m">\dot y = -y/\tau + (K/\tau)u</span> with <span class="m">u</span> constant on <span class="m">[kT_e - T_e, kT_e)</span>, <span class="m">y_k = e^{-T_e/\tau} y_{k-1} + \int_0^{T_e} e^{-s/\tau} (K/\tau)\,u_{k-1}\,ds = z_0 y_{k-1} + K(1 - z_0) u_{k-1}</span>. The discrete system has the continuous one's pole mapped by <span class="m">z_0 = e^{sT_e}</span> with <span class="m">s = -1/\tau</span>, is stable for every <span class="m">T_e</span> (since <span class="m">0 &lt; z_0 &lt; 1</span>), and matches the continuous response exactly at the sampling instants for held inputs <a href="#ref-2">[2]</a>.</p>
+      <dl>
+        <dt>Forward Euler</dt><dd><span class="m">y_k = (1 - T_e/\tau)y_{k-1} + (KT_e/\tau)u_{k-1}</span>: the first-order Taylor approximation of the same thing, unstable for <span class="m">T_e &gt; 2\tau</span>.</dd>
+        <dt>Pole</dt><dd><span class="m">z_0</span>: the factor by which the output decays per sample when the input is zero; the closer to one, the longer the memory.</dd>
+        <dt>Cutoff</dt><dd><span class="m">f_c = 1/(2\pi\tau)</span>, where the gain is <span class="m">K/\sqrt 2</span> and the lag 45°.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="c">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The C you need</h2>
+  </div>
+  <div class="col prose">
+    <p>C is a small language that maps almost directly onto the machine: numbers live in typed memory cells, arrays are consecutive cells, a pointer is the address of a cell, and nothing is checked at run time. That is what makes it fast and portable to microcontrollers, and what makes the bugs of Part 4 possible. This section covers exactly the subset the program uses <a href="#ref-3">[3]</a>.</p>
+    <p><b>Compile and run.</b> A C program is text that a compiler turns into an executable. With gcc, which the repository's editor configuration also uses:</p>
+    <pre><code class="language-bash">gcc -Wall -Wextra -o td3 TD3.c
+./td3</code></pre>
+    <p><code>-Wall -Wextra</code> turns on the warnings; read them, they are free bug reports. On Windows the executable is <code>td3.exe</code>.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="cT">
+      <thead><tr><th>Construct</th><th>In the program</th><th>What it means</th></tr></thead>
+      <tbody>
+        <tr><td><code>#include &lt;stdio.h&gt;</code></td><td>top of the file</td><td>Paste in the declarations of the standard I/O functions (<code>printf</code>, <code>fopen</code>, …); <code>&lt;math.h&gt;</code> for <code>exp</code>.</td></tr>
+        <tr><td>Types</td><td><code>double z0</code>, <code>int taille</code></td><td>Every variable has a fixed type and size: <code>double</code> is a 64-bit float, <code>int</code> a 32-bit integer. Assigning a <code>double</code> to an <code>int</code> truncates toward zero.</td></tr>
+        <tr><td>Arrays</td><td><code>double u[taille]</code>, <code>double valeurs[10000]</code></td><td>Consecutive cells, indexed from 0 to length−1. The length is not stored anywhere: the program must carry it separately, and reading <code>u[60]</code> of a 51-cell array is not an error the machine reports.</td></tr>
+        <tr><td>Pointers as array parameters</td><td><code>int filtrage(double *u, int taille_u, double *y, …)</code></td><td>A function receives the address of the first cell, not a copy; writing <code>y[k]</code> inside the function changes the caller's array. Hence the length arguments.</td></tr>
+        <tr><td>Output parameters</td><td><code>void ChercheMinMax(…, double *min, double *max)</code> with <code>*min = …</code></td><td>C returns one value, so extra results go through pointers: the caller passes <code>&amp;min</code>, the address of its variable, and the function writes through it with <code>*min</code>.</td></tr>
+        <tr><td>Return codes</td><td><code>return -1;</code> on error, <code>return 0;</code> on success</td><td>C has no exceptions. A function reports failure by its return value, and the caller must check it, as <code>main</code> does after each call.</td></tr>
+        <tr><td><code>for</code> loops</td><td><code>for (int k = 1; k &lt; taille_u; k++)</code></td><td>Initialise, test before each pass, step after. The filter's loop starts at 1 because <code>y[k-1]</code> must exist.</td></tr>
+        <tr><td>Files</td><td><code>FILE *f = fopen(name, "r"); fscanf(f, "%lf", &amp;x); fprintf(f, "%.2f\n", v); fclose(f);</code></td><td>Open (mode "r" read, "w" write, returns <code>NULL</code> on failure), read a number with a format (<code>%lf</code> for <code>double</code>), write with a format (<code>%.2f</code>: two decimals), close. <code>feof</code> says whether the end was reached.</td></tr>
+        <tr><td>Formatted output</td><td><code>printf("%.2f\t%d\n", y, n)</code></td><td><code>%f</code> for floats with a precision, <code>%d</code> for integers, <code>\t</code> tab, <code>\n</code> newline.</td></tr>
+        <tr><td>The stack</td><td><code>double valeurs[10000]</code> inside <code>main</code></td><td>Local arrays live on the call stack, usually a megabyte or so; three 10000-double arrays are 240 KB, fine on a PC and impossible on a small microcontroller, where they would be <code>static</code> or sized to the device.</td></tr>
+        <tr><td>Undefined behaviour</td><td>reading past the end of an array</td><td>The language promises nothing: the program may crash, print garbage, or appear to work. Part 4 shows the third case, which is the dangerous one.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="program">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The program, line by line</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The filter.</b> The heart of the program is six lines. The length check and the return code are the C idiom for "this can fail":</p>
+    <pre><code class="language-c">int filtrage(double *u, int taille_u, double *y, int taille_y, double K, double tau, double Te) {
+    if (taille_u != taille_y) return -1;        /* the caller passed arrays of different lengths */
+    double z0 = exp(-Te / tau);                 /* the pole: how much of y survives one sample   */
+    y[0] = 0;                                   /* start at rest                                  */
+    for (int k = 1; k &lt; taille_u; k++)
+        y[k] = z0 * y[k - 1] + K * (1 - z0) * u[k - 1];
+    return 0;
+}</code></pre>
+    <p>Note what is <em>not</em> here: no allocation (the caller owns both arrays), no state between calls (a real-time version would keep <code>y[k-1]</code> in a variable and process one sample per call, Exercise 1), and <code>exp</code> computed once, outside the loop.</p>
+    <p><b>Reading a file of numbers.</b> <code>LireEntree</code> opens the file, reads <code>double</code>s one at a time with <code>fscanf</code> until it fails, and distinguishes "end of file" from "something else went wrong":</p>
+    <pre><code class="language-c">int LireEntree(const char *nom_fichier, double *valeurs) {
+    FILE *fichier = fopen(nom_fichier, "r");
+    if (fichier == NULL) return -1;
+    int compteur = 0;
+    while (compteur &lt; 10000) {
+        if (fscanf(fichier, "%lf", &amp;valeurs[compteur]) != 1) {
+            if (feof(fichier)) break;           /* clean end of file */
+            fclose(fichier); return -1;         /* a line that is not a number */
+        }
+        compteur++;
+    }
+    fclose(fichier);
+    return compteur;                            /* how many values were read */
+}</code></pre>
+    <p>The return value does double duty, count on success and −1 on failure, a common C convention. The cap of 10000 protects the caller's array, which the function cannot otherwise know the size of. <code>EcrireSortie</code> is the mirror image: <code>fopen(…, "w")</code>, a loop of <code>fprintf(fichier, "%.2f\n", valeurs[i])</code>, <code>fclose</code>. The two decimals of <code>%.2f</code> will matter in Part 4.</p>
+    <p><b>Minimum, maximum, histogram.</b> <code>ChercheMinMax</code> walks the array once and writes its two results through pointers. <code>CalculeHistogramme</code> divides <span class="m">[\min, \max]</span> into <code>nb_bins</code> equal bins and counts; the one subtle line is</p>
+    <pre><code class="language-c">int index = (tableau[i] - min) / largeur_bin;   /* double -&gt; int truncates */
+if (index &gt;= nb_bins) index = nb_bins - 1;       /* the maximum lands exactly on the edge */</code></pre>
+    <p>where the implicit conversion from <code>double</code> to <code>int</code> is the floor for non-negative values, and the clamp catches the maximum, whose index would otherwise be <code>nb_bins</code>.</p>
+    <p><b>main.</b> Three stages. First a self-test: build a 51-sample input (0.5 s at <span class="m">T_e = 0.01</span>) with a 1 at <span class="m">t = 0</span>, filter it with <span class="m">K = 1</span>, <span class="m">\tau = 2</span>, and print the table. Second, read <code>enregistrement-bruit.txt</code> into <code>valeurs</code> and print it. Third, read it again into <code>bruit</code>, filter it into <code>sortie</code>, write <code>sortie.txt</code>, and print a 16-bin histogram of <code>bruit − sortie</code>. Each stage checks its return codes.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="bugs">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Compile, run, and find the bugs</h2>
+  </div>
+  <div class="col prose">
+    <p>The program compiles cleanly with gcc 13 and runs to completion, printing "250 valeurs écrites dans sortie.txt". The file it writes, which is also committed in the repository, is 250 lines of <code>0.00</code>. Nothing crashed and nothing warned; this is what undefined behaviour usually looks like. Three things went wrong, in order of consequence.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="bugT">
+      <thead><tr><th>Bug</th><th>The line</th><th>What happens</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td><b>1. The wrong array is filtered.</b></td><td><code>filtrage(u, taille_bruit, sortie, taille_bruit, K, tau, Te)</code></td><td><code>u</code> is the 51-sample self-test impulse, not the 250-sample recording in <code>bruit</code>. The filter reads <code>u[51]</code> to <code>u[249]</code>, memory beyond the array, and its output is the impulse response of a near-zero input: essentially zero. Compiled here, every one of the 250 outputs rounds to 0.00.</td><td>Pass <code>bruit</code>.</td></tr>
+        <tr><td><b>2. The histogram counts memory that was never read.</b></td><td><code>for (int i = 0; i &lt; 500; i++) difference[i] = bruit[i] - sortie[i];</code></td><td>Only 250 values were read, but 500 are differenced and binned; entries 250 to 499 of both arrays hold whatever was on the stack. In this run bin 7 collected 264 of the 500 counts, mostly those zeros.</td><td>Loop to <code>taille_bruit</code>; size <code>difference</code> to match.</td></tr>
+        <tr><td><b>3. The wrong time constant, and a self-test that cannot show it.</b></td><td><code>double tau = 2;</code> and <code>u[i] = (i == 0) ? 1.0 : 0.0;</code> with <code>%.2f</code></td><td>A 1 Hz signal through a 0.08 Hz low-pass comes out at 8% amplitude, so even the corrected program prints a column of 0.00 to 0.08. The self-test, labelled a step response ("réponse indicielle") but coded as an impulse, prints 0.00 and 0.01 for 51 rows, since the first output is <span class="m">1 - z_0 = 0.005</span>; it could not have revealed the problem.</td><td>Choose <span class="m">\tau</span> from the signal (Part 5), test with a unit step, print with <code>%.4f</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>With bugs 1 and 2 fixed and nothing else changed, the program writes outputs between −0.08 and 0.08 (at two decimals) and prints the histogram 13, 17, 19, 16, 5, 11, 9, 13, 17, 15, 9, 20, 20, 31, 30, 5, which the page's widget in Part 5 reproduces from the same routine. The lesson is older than C: a test whose expected output is all zeros tests nothing, and a program that runs without error has only been shown to not crash.</p>
+    <div class="callout"><p><b>The corrected program</b>, with the three fixes, a unit-step self-test and the real-time form of the filter from Exercise 1, is now the repository's <code>TD3.c</code>; the program discussed above is kept beside it as <code>TD3_original.c</code>, and both are in the course download. The repository's <code>sortie.txt</code> was regenerated and its committed executable removed.</p></div>
+    <div class="big-idea"><p>C gives you the machine and nothing else: no bounds checks, no exceptions, no length on an array. Every function therefore carries its lengths and returns its errors, and every program is tested with an input whose correct output is known and not zero.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="signal">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>What the filter does to the signal</h2>
+  </div>
+  <div class="col prose">
+    <p>The recording is 250 samples of a sine at 1.00 Hz with amplitude 1.00 and additive noise of standard deviation 0.096 (a least-squares sine fit; the fitted sine is the dashed line in the hero demo). The question a filter is supposed to answer is: can we get the sine back with less noise? The response plots say how a first-order filter trades the two.</p>
+  </div>
+  <div class="col widget" id="bodeW">
+    <div class="two">
+      <canvas id="bodeC" aria-label="Gain in decibels against frequency on a log scale for the continuous filter and the C recursion, with the cutoff and the signal frequency marked" aria-describedby="bodeCap"></canvas>
+      <canvas id="phaseC" aria-label="Phase in degrees against frequency for the C recursion" aria-describedby="bodeCap"></canvas>
+    </div>
+    <p class="status" id="bodeCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Three settings tell the story. At the program's <span class="m">\tau = 2</span> s the sine is thirteen times above the cutoff: gain 0.08, lag 87°, the signal is gone. At <span class="m">\tau = 0.2</span> s the gain is 0.62 and the lag 52°: a smaller, later sine, further from the clean one (RMSE 0.54) than the raw recording (0.10). At <span class="m">\tau = 0.02</span> s the gain is 0.99 and the lag 9°, two samples; the output is now within 0.12 of the clean sine, close to the raw recording's 0.10 but still not better. Sweeping <span class="m">\tau</span> finely, the output is never closer to the clean sine than the recording itself: the best time constant is 0.008 s, less than a sample, where the filter does almost nothing.</p>
+    <p>This is not a failure of the implementation. A causal first-order low-pass removes noise by averaging the recent past, and averaging the recent past of a sine delays it; at 100 samples per period and 10% noise, the delay costs more than the averaging saves. Removing noise from a signal at a known frequency calls for a filter that knows the frequency, a narrow band-pass, a notch on the noise, or an oscillator model inside a Kalman filter, or for an offline zero-phase filter run forwards and backwards. The first-order filter earns its keep where the signal is much slower than the noise, which the program's own recording is not.</p>
+  </div>
+  <div class="col widget" id="histW">
+    <canvas id="histC" aria-label="Sixteen-bin histogram of input minus output for the repository's time constant and for the current one" aria-describedby="histCap"></canvas>
+    <p class="status" id="histCap"></p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="kalman">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Back to Kalman</h2>
+  </div>
+  <div class="col prose">
+    <p>The first-order filter and the Kalman filter of chapters 01 and 02 are closer than they look. Take the scalar Kalman filter for a slowly drifting level, <span class="m">x_{k+1} = x_k + w_k</span>, <span class="m">z_k = x_k + \nu_k</span>, with noise variances <span class="m">q</span> and <span class="m">r</span>. Chapter 02's exercise 4 shows that its gain converges to a constant <span class="m">K_\infty</span>, after which the update reads</p>
+    <div class="math-block" data-narrow="\begin{aligned} \hat x_k &amp;= (1 - K_\infty)\,\hat x_{k-1} + K_\infty\, z_k, \\ K_\infty &amp;= \frac{p_\infty}{p_\infty + r}, \\ p_\infty &amp;= \frac{q + \sqrt{q^2 + 4qr}}{2}. \end{aligned}">\hat x_k = (1 - K_\infty)\,\hat x_{k-1} + K_\infty\, z_k, \qquad K_\infty = \frac{p_\infty}{p_\infty + r}, \quad p_\infty = \frac{q + \sqrt{q^2 + 4qr}}{2}.</div>
+    <p>That is the C program's recursion with <span class="m">z_0 = 1 - K_\infty</span>, static gain 1, and the current sample instead of the delayed one: a first-order low-pass with time constant <span class="m">\tau = -T_e / \ln(1 - K_\infty)</span>. The Kalman filter's contribution is not the recursion, which is forty years older, but the choice of its coefficient: the time constant is derived from how fast the level drifts (<span class="m">q</span>) relative to how noisy the sensor is (<span class="m">r</span>), rather than guessed. For <span class="m">q \ll r</span>, <span class="m">K_\infty \approx \sqrt{q/r}</span>, and the filter averages over about <span class="m">\sqrt{r/q}</span> samples. Chapter 04's forecaster had <span class="m">K_\infty = 0.31</span>, a three-sample time constant, and lagged the series for exactly the reason the sine lags here.</p>
+    <p>Conversely, a first-order filter whose time constant was chosen by ear is a Kalman filter for some unstated <span class="m">q/r</span>, and stating it is often the quickest way to see whether the choice is reasonable. On a microcontroller the two cost the same: one multiply-add per sample. The full Kalman filter with a time-varying gain costs a few more and a 2×2 matrix in memory, chapter 01's twenty lines translated to C, which Exercise 4 asks for.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why is <span class="m">z_0 = e^{-T_e/\tau}</span> rather than <span class="m">1 - T_e/\tau</span>?</summary><p>Because the differential equation is solved exactly over one sampling interval for a held input; <span class="m">1 - T_e/\tau</span> is the first-order Taylor approximation (forward Euler), which is less accurate and unstable for <span class="m">T_e &gt; 2\tau</span>. For the program's values the two differ in the fifth decimal, but the exact form costs nothing more.</p></details>
+    <details class="sol"><summary>2. Why does the recursion use <span class="m">u_{k-1}</span> and not <span class="m">u_k</span>?</summary><p>With a zero-order hold the sample taken at <span class="m">k-1</span> is the input applied during the interval that ends at <span class="m">k</span>. Using <span class="m">u_k</span> gives a different, also common, discretisation with one sample less delay; the phase plot shows the extra <span class="m">360° f T_e</span> of lag that <span class="m">u_{k-1}</span> adds.</p></details>
+    <details class="sol"><summary>3. Why does every C function in the program take a length argument?</summary><p>A C array carries no length; a pointer parameter is just an address. The function must be told how many cells it may touch, and the mismatch check in <code>filtrage</code> is the only protection the program has.</p></details>
+    <details class="sol"><summary>4. How does <code>LireEntree</code> return both a count and an error?</summary><p>By convention: a non-negative return is the count, −1 is an error, and the caller tests <code>&lt; 0</code>. C has no exceptions and one return value, so this and output pointers are the two mechanisms available.</p></details>
+    <details class="sol"><summary>5. Why did the original program produce all zeros without crashing?</summary><p>It filtered the wrong array, a 51-sample impulse, and read 199 cells past its end. Reading past an array is undefined behaviour: here the memory happened to hold small values, the output was near zero, and <code>%.2f</code> printed it as 0.00. Nothing in C checks the index.</p></details>
+    <details class="sol"><summary>6. The corrected program still prints mostly 0.00. Is it still wrong?</summary><p>It is correct and badly configured: with <span class="m">\tau = 2</span> s the 1 Hz signal is attenuated to 8%, and two decimals cannot show it. The test (an impulse of amplitude 0.005) could not reveal either problem. A unit step and <code>%.4f</code> would.</p></details>
+    <details class="sol"><summary>7. Why can no time constant make the output closer to the clean sine than the recording?</summary><p>Because a causal low-pass delays what it smooths, and at 100 samples per period the delay of even a two-sample time constant costs as much as the noise it removes. Denoising a known-frequency signal needs a filter that knows the frequency, or an offline zero-phase filter.</p></details>
+    <details class="sol"><summary>8. In what sense is the steady-state Kalman filter a first-order filter?</summary><p>Its update <span class="m">\hat x_k = (1-K_\infty)\hat x_{k-1} + K_\infty z_k</span> is the same recursion with <span class="m">z_0 = 1 - K_\infty</span>. The Kalman filter supplies the coefficient from <span class="m">q</span> and <span class="m">r</span> instead of a guess, and, before convergence, a time-varying one.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Make it real-time.</b> Rewrite the filter as a function that takes one input sample and returns one output sample, keeping its state between calls, as a sensor loop on a microcontroller would call it.</div>
+        <details class="sol"><summary>Hint</summary><p>The state is the previous output and the previous input. Keep them in a <code>struct</code> that the caller owns, or in <code>static</code> variables if there is only ever one filter.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-c">typedef struct { double z0, b, y_prev, u_prev; } Filtre;
+
+void filtre_init(Filtre *f, double K, double tau, double Te) {
+    f-&gt;z0 = exp(-Te / tau); f-&gt;b = K * (1 - f-&gt;z0); f-&gt;y_prev = 0; f-&gt;u_prev = 0;
+}
+double filtre_step(Filtre *f, double u) {
+    double y = f-&gt;z0 * f-&gt;y_prev + f-&gt;b * f-&gt;u_prev;   /* one multiply-add, one multiply */
+    f-&gt;y_prev = y; f-&gt;u_prev = u;
+    return y;
+}</code></pre>
+          <p>Calling <code>filtre_step</code> on each sample of the recording reproduces <code>filtrage()</code> exactly; the whole state is four doubles, and nothing is allocated.</p></details>
+      </li>
+      <li><div><b>Test it properly.</b> Replace the impulse self-test by a unit step and check, in code, that the output reaches 63.2% of <span class="m">K</span> after <span class="m">\tau/T_e</span> samples (plus one for the delay) and 99.3% after five time constants.</div>
+        <details class="sol"><summary>Hint</summary><p>Use <span class="m">\tau = 0.05</span> s so that the test fits in half a second; compare with a tolerance, since 63.2% falls between samples.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With <span class="m">\tau = 0.05</span> s the step response first exceeds 0.632 at the fifth sample after the step and 0.993 at the 25th (the recursion's one-sample delay shifts the whole curve by one sample, so the count from the step itself is exact); the page's "unit step" input shows the curve. A test that prints <code>PASS</code> or <code>FAIL</code> and returns a non-zero exit code on failure is worth more than the printed table, because a build script can run it.</p></details>
+      </li>
+      <li><div><b>Choose <span class="m">\tau</span> for the recording.</b> Fit the clean sine, as the page does, then sweep <span class="m">\tau</span> and report the RMSE between the filter output and the clean sine. Where is the minimum, and what does that say about using a first-order filter here?</div>
+        <details class="sol"><summary>Hint</summary><p>In Python: a least-squares fit of <span class="m">a\sin\omega t + b\cos\omega t + c</span> over a grid of frequencies, then <code>np.exp(-Te/tau)</code> and the recursion in a loop.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The fit gives 1.002 Hz, amplitude 0.997, noise sd 0.096. The RMSE to the clean sine is 0.697 at <span class="m">\tau = 2</span>, 0.539 at 0.2, 0.228 at 0.05, 0.120 at 0.02, and its minimum, 0.095, is at <span class="m">\tau \approx 0.008</span> s, below one sample, where the filter barely acts. The recording is not a job for a causal first-order filter.</p></details>
+      </li>
+      <li><div><b>Chapter 01 in C.</b> Translate the two-state Kalman filter of chapter 01 to C: a <code>struct</code> with <span class="m">x</span> and the four entries of <span class="m">P</span>, a <code>predict</code> and an <code>update</code> function with the scalar innovation, and no matrix library. Run it on the vehicle CSV and compare with the Python estimates.</div>
+        <details class="sol"><summary>Hint</summary><p>With <span class="m">H = (1, 0)</span> the innovation covariance is the scalar <span class="m">P_{00} + R</span>, so no inverse is needed; write the 2×2 products out by hand, as the page's JavaScript does.</p></details>
+        <details class="sol"><summary>Solution</summary><p>About forty lines. The estimates agree with the NumPy class to rounding (the page's JavaScript version, written the same way, matches the Python output to <span class="m">7 \times 10^{-5}</span>, the precision of the CSV). The cost per sample is a dozen multiply-adds and eight doubles of state: a Kalman filter fits on any microcontroller that has a floating-point unit, and on most that do not.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The filter</b>: <span class="m">\tau\dot y + y = Ku</span>; discretised exactly as <span class="m">y_k = z_0 y_{k-1} + K(1-z_0)u_{k-1}</span>, <span class="m">z_0 = e^{-T_e/\tau}</span>; cutoff <span class="m">1/(2\pi\tau)</span>, 20 dB per decade, 45° lag at the cutoff.</div></li>
+      <li><div><b>The C</b>: typed cells, arrays without lengths, pointers as array and output parameters, return codes instead of exceptions, <code>fopen</code>/<code>fscanf</code>/<code>fprintf</code>/<code>fclose</code>, and undefined behaviour when an index is out of range.</div></li>
+      <li><div><b>The bugs</b>: the wrong array passed to the filter (output all zeros, 199 cells read past the end), a histogram over 500 entries of 250-entry arrays, and a time constant of 2 s for a 1 Hz signal with a self-test that prints 0.00 either way.</div></li>
+      <li><div><b>The signal</b>: 1.00 Hz, amplitude 1.00, noise sd 0.096; gain 0.08 at <span class="m">\tau = 2</span>, 0.62 at 0.2, 0.99 at 0.02; no <span class="m">\tau</span> beats the raw recording, because a causal low-pass lags what it smooths.</div></li>
+      <li><div><b>The link</b>: the steady-state scalar Kalman filter is this recursion with <span class="m">z_0 = 1 - K_\infty</span>, its time constant derived from <span class="m">q/r</span> rather than guessed.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>First-order low-pass</td><td><span class="m">K/(1+\tau s)</span>: passes slow changes, attenuates fast ones, one time constant.</td></tr>
+        <tr><td>Time constant <span class="m">\tau</span>, cutoff</td><td>63% of a step after <span class="m">\tau</span>; gain <span class="m">1/\sqrt2</span> and 45° lag at <span class="m">1/(2\pi\tau)</span>.</td></tr>
+        <tr><td>Zero-order hold, exact discretisation</td><td>Input held between samples; <span class="m">z_0 = e^{-T_e/\tau}</span> solves the interval exactly.</td></tr>
+        <tr><td>Pole <span class="m">z_0</span></td><td>Per-sample decay of the output; memory length about <span class="m">1/(1-z_0)</span> samples.</td></tr>
+        <tr><td>IIR filter</td><td>A recursion on past outputs; infinite memory with finite cost.</td></tr>
+        <tr><td>Pointer</td><td>The address of a memory cell; how C passes arrays and returns extra results.</td></tr>
+        <tr><td>Return code</td><td>An integer that says whether a function succeeded; the caller must check it.</td></tr>
+        <tr><td>Undefined behaviour</td><td>What C promises when an index is out of range: anything, including silence.</td></tr>
+        <tr><td>Group delay, phase lag</td><td>How late the output is; the price a causal filter pays for smoothing.</td></tr>
+        <tr><td>Steady-state Kalman gain</td><td>The constant <span class="m">K_\infty</span> that makes the Kalman filter a first-order filter with a derived time constant.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers the first-order filter, its exact discretisation, the subset of C needed to implement it with file I/O, and the reading of a small program for bugs. It does not cover higher-order or FIR filter design, fixed-point arithmetic, which a microcontroller without a floating-point unit would need, or the toolchains of specific devices.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>A. V. Oppenheim and A. S. Willsky with S. H. Nawab. <em>Signals and Systems</em>, 2nd ed. Prentice Hall, 1997. First-order systems, their step and frequency responses, and the relation between continuous and discrete time.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>G. F. Franklin, J. D. Powell and M. L. Workman. <em>Digital Control of Dynamic Systems</em>, 3rd ed. Addison-Wesley, 1998. The zero-order-hold equivalent of a continuous system, which gives the program's recursion exactly, and its comparison with Euler and bilinear approximations.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>B. W. Kernighan and D. M. Ritchie. <em>The C Programming Language</em>, 2nd ed. Prentice Hall, 1988. Arrays, pointers, functions and the standard I/O library, in the authors' own words and in fewer pages than any later book.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>R. G. Lyons. <em>Understanding Digital Signal Processing</em>, 3rd ed. Prentice Hall, 2011. IIR filters, phase lag and group delay, and why a causal filter cannot smooth without delaying.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>D. Simon. <em>Optimal State Estimation</em>. Wiley, 2006. <a href="https://doi.org/10.1002/0470045345">doi:10.1002/0470045345</a>. The steady-state Kalman filter and its reading as a fixed-gain filter.</div></li>
+    </ul>
+    <p>This ends the course. From a NumPy class on a simulated vehicle to a JAX filter with a network inside, a real series that humbled it, and six lines of C that would run it on a sensor: the same recursion throughout, and in every chapter the model and the test mattered more than the code.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="04-a-real-series-next-hour-no2.html"><span class="lbl">Previous · 04</span><span class="t">A real series: next-hour NO2</span></a>
+  <a class="next" rel="next" href="index.html"><span class="lbl">Course</span><span class="t">Back to the overview</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 05 of "Kalman Filters with JAX" by Elie Rouphael. The filter runs in your browser as the repository's <code>filtrage()</code> recursion on the repository's recording; its outputs were checked against the program compiled with gcc 13, and the bugs were found by running it. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/c.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch05-data.js"></script>
+<script src="interactive/ch05.js"></script>
+</body>
+</html>

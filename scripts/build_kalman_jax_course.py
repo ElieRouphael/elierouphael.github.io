@@ -3,7 +3,8 @@
 The chapter pages of this course are hand-built interactive HTML (public/tutorials/kalman-jax/*.html with
 interactive/*.js); this script only produces the two generated assets next to them:
 
-    kalman-jax-course.zip   the repository's code: package, scripts, tests, README, requirements, data notes
+    kalman-jax-course.zip   the JAX repository's code (package, scripts, tests, README, requirements, data notes),
+                            the vehicle-tracking repository (chapter 01) and the C program, original and corrected (chapter 05)
     cover.png               preview image for the tutorials card
 
 Usage:  python scripts/build_kalman_jax_course.py [path/to/Kalman-Filter-with-JAX]
@@ -17,7 +18,10 @@ from pathlib import Path
 
 SITE = Path(__file__).resolve().parents[1]
 OUT = SITE / "public" / "tutorials" / "kalman-jax"
-DEFAULT_REPO = Path(r"C:/Users/elier/OneDrive/Desktop/Workshops/Kalman Filter with JAX")
+WORKSHOPS = Path(r"C:/Users/elier/OneDrive/Desktop/Workshops")
+DEFAULT_REPO = WORKSHOPS / "Kalman Filter with JAX"
+VEHICLE_REPO = WORKSHOPS / "kalman_vehicle_tracking"            # chapter 01 (github.com/ElieRouphael/kalman_vehicle_tracking)
+C_REPO = WORKSHOPS / "First-Order-Filter-using-C"               # chapter 05 (github.com/ElieRouphael/First-Order-Filter-using-C)
 ZIP_NAME = "kalman-jax-course.zip"
 ARCHIVE_FOLDER = "kalman-jax-course"
 
@@ -27,6 +31,15 @@ MEMBERS = [
     "kalman_jax/__init__.py", "kalman_jax/filters.py", "kalman_jax/learned_dynamics.py",
     "kalman_jax/forecasters.py", "kalman_jax/air_quality.py",
     "tests/test_filters.py", "tests/test_air_quality.py",
+]
+EXTRA_MEMBERS = [  # (source path, path inside the archive)
+    (VEHICLE_REPO / "README.md", "vehicle/README.md"), (VEHICLE_REPO / "requirements.txt", "vehicle/requirements.txt"),
+    (VEHICLE_REPO / "kalman/__init__.py", "vehicle/kalman/__init__.py"), (VEHICLE_REPO / "kalman/kalman_filter.py", "vehicle/kalman/kalman_filter.py"),
+    (VEHICLE_REPO / "tracker/vehicle_tracker.py", "vehicle/tracker/vehicle_tracker.py"), (VEHICLE_REPO / "data/simulate_data.py", "vehicle/data/simulate_data.py"),
+    (VEHICLE_REPO / "data/example_data.csv", "vehicle/data/example_data.csv"),
+    (C_REPO / "README.md", "first-order-c/README.md"), (C_REPO / "TD3_original.c", "first-order-c/TD3_original.c"),
+    (C_REPO / "TD3.c", "first-order-c/TD3.c"), (C_REPO / "enregistrement-bruit.txt", "first-order-c/enregistrement-bruit.txt"),
+    (C_REPO / "sortie.txt", "first-order-c/sortie.txt"),
 ]
 
 
@@ -40,6 +53,11 @@ def write_zip(repo: Path) -> Path:
                 z.write(src, f"{ARCHIVE_FOLDER}/{rel}")
             else:
                 print(f"  (skipped, not found: {rel})")
+        for src, arc in EXTRA_MEMBERS:
+            if src.exists():
+                z.write(src, f"{ARCHIVE_FOLDER}/{arc}")
+            else:
+                print(f"  (skipped, not found: {src})")
     return path
 
 

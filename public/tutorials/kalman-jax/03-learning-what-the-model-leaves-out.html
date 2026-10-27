@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>02 · Learning What the Model Leaves Out · Kalman Filters with JAX</title>
+<title>03 · Learning What the Model Leaves Out · Kalman Filters with JAX</title>
 <meta name="description" content="A small neural network inside a Kalman filter learns the nonlinear part of a plant's dynamics, trained by differentiating through the whole filter recursion; the training runs live in the browser with a hand-derived backpropagation that matches JAX's automatic one. The repository's loss and a one-step forecast loss, what the network actually learned, why it fits the training trajectory and fails on a new one, and the three changes that make the learned residual transfer. Every number is checked against the JAX code.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,10 +28,10 @@
 <nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
 
 <header class="hero col">
-  <span class="eyebrow">Kalman Filters with JAX · Chapter 02 of 03</span>
+  <span class="eyebrow">Kalman Filters with JAX · Chapter 03 of 05</span>
   <h1>Learning what the model leaves out</h1>
-  <p class="lede">Chapter 01's filter knew its model exactly. Real plants have a part we can write down, the linear dynamics, and a part we cannot, friction, aerodynamics, a sensor's drift. The repository's second experiment keeps the known part and puts a small neural network inside the filter's prediction step to learn the rest, training it by differentiating straight through the Kalman recursion. This chapter rebuilds that training in the browser, with the gradient derived by hand and checked against JAX's, and then asks the question the repository does not: does the network learn the <em>dynamics</em>, or just the one trajectory it was shown? The answer is the second, and the three changes that fix it are the real lesson.</p>
-  <p class="byline">Elie Rouphael · Needs chapter 01, calculus and some comfort with neural networks · Every number is checked against the JAX code</p>
+  <p class="lede">Chapter 02's filter knew its model exactly. Real plants have a part we can write down, the linear dynamics, and a part we cannot, friction, aerodynamics, a sensor's drift. The repository's second experiment keeps the known part and puts a small neural network inside the filter's prediction step to learn the rest, training it by differentiating straight through the Kalman recursion. This chapter rebuilds that training in the browser, with the gradient derived by hand and checked against JAX's, and then asks the question the repository does not: does the network learn the <em>dynamics</em>, or just the one trajectory it was shown? The answer is the second, and the three changes that fix it are the real lesson.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 02, calculus and some comfort with neural networks · Every number is checked against the JAX code</p>
   <div class="downloads">
     <a class="btn" href="https://github.com/ElieRouphael/Kalman-Filter-with-JAX">The repository on GitHub</a>
     <a class="btn ghost" href="kalman-jax-course.zip" download>Download the code (.zip)</a>
@@ -93,10 +93,10 @@
   <div class="col prose">
     <p><b>The plant.</b> The repository's simulator (<code>kalman_jax/learned_dynamics.py</code>) is a two-state system driven by a scalar input <span class="m">u_t \sim \mathcal N(0, 1)</span>:</p>
     <div class="math-block" data-narrow="\begin{aligned} x_{t+1} &amp;= A x_t + B u_t + r(x_t) \mathbf 1, \\ A &amp;= \begin{pmatrix} 1 &amp; 0.1 \\ 0 &amp; 1 \end{pmatrix}, \quad B = \begin{pmatrix} 0 \\ 0.1 \end{pmatrix}, \\ r(x) &amp;= 3 \sin x_0 + 2 \cos x_1, \\ y_t &amp;= x_t + \nu_t, \quad \nu_t \sim \mathcal N(0, 0.05^2 I). \end{aligned}">x_{t+1} = A x_t + B u_t + r(x_t)\, \mathbf 1, \qquad A = \begin{pmatrix} 1 &amp; 0.1 \\ 0 &amp; 1 \end{pmatrix}, \quad B = \begin{pmatrix} 0 \\ 0.1 \end{pmatrix}, \qquad r(x) = 3 \sin x_0 + 2 \cos x_1, \qquad y_t = x_t + \nu_t, \quad \nu_t \sim \mathcal N(0, 0.05^2 I).</div>
-    <p>Two things about it matter later. The linear part is chapter 01's double integrator, <span class="m">A</span> has both eigenvalues at 1, so without the residual the state would random-walk; with it, the state wanders over tens of units in 50 steps. And the residual is a scalar added to <em>both</em> components (the generator computes <span class="m">3\sin x_0 + 2\cos x_1</span> and NumPy broadcasting adds it to each entry), with an RMS size of <span class="m">\sqrt{9/2 + 4/2} = 2.55</span> per component; it is the dominant term of the dynamics, not a small correction. There is no process noise in the simulator; the only noise is the sensor's, sd 0.05 on both components.</p>
+    <p>Two things about it matter later. The linear part is chapter 02's double integrator, <span class="m">A</span> has both eigenvalues at 1, so without the residual the state would random-walk; with it, the state wanders over tens of units in 50 steps. And the residual is a scalar added to <em>both</em> components (the generator computes <span class="m">3\sin x_0 + 2\cos x_1</span> and NumPy broadcasting adds it to each entry), with an RMS size of <span class="m">\sqrt{9/2 + 4/2} = 2.55</span> per component; it is the dominant term of the dynamics, not a small correction. There is no process noise in the simulator; the only noise is the sensor's, sd 0.05 on both components.</p>
     <p><b>The learned model.</b> The filter is told <span class="m">A</span>, <span class="m">B</span> and <span class="m">C = I</span>, and learns the residual with a network <span class="m">f_\theta: \mathbb R^3 \to \mathbb R^2</span> of input <span class="m">(x_0, x_1, u)</span>, four hidden layers of 16 tanh units and a linear output (914 parameters). Its prediction step is</p>
     <div class="math-block" data-narrow="\begin{aligned} \hat x_{t}^- &amp;= A \hat x_{t-1} + B u_t + f_\theta(\hat x_{t-1}, u_t), \\ P_t^- &amp;= A P_{t-1} A^\top + Q, \end{aligned}">\hat x_{t}^- = A \hat x_{t-1} + B u_t + f_\theta(\hat x_{t-1}, u_t), \qquad P_t^- = A P_{t-1} A^\top + Q,</div>
-    <p>followed by chapter 01's update with <span class="m">C = I</span>, filter noise <span class="m">Q = 0.1 I</span> and <span class="m">R = 0.5 I</span>, and <span class="m">P_0 = I</span>. Note what the covariance does not know: it is propagated with <span class="m">A</span> alone, as if the residual were a known function with no derivative. The gains therefore do not depend on <span class="m">\theta</span> at all, and the page precomputes the whole sequence <span class="m">K_1, \ldots, K_T</span> once. Note too the mismatch: the filter assumes process noise of sd 0.32 and sensor noise of sd 0.71 per component, while the simulator has none of the first and 0.05 of the second. The filter's steady-state gain is about 0.36 per component (chapter 01, exercise 4, gives the scalar formula), so it moves its state only a third of the way to each measurement, which it should trust almost completely.</p>
+    <p>followed by chapter 02's update with <span class="m">C = I</span>, filter noise <span class="m">Q = 0.1 I</span> and <span class="m">R = 0.5 I</span>, and <span class="m">P_0 = I</span>. Note what the covariance does not know: it is propagated with <span class="m">A</span> alone, as if the residual were a known function with no derivative. The gains therefore do not depend on <span class="m">\theta</span> at all, and the page precomputes the whole sequence <span class="m">K_1, \ldots, K_T</span> once. Note too the mismatch: the filter assumes process noise of sd 0.32 and sensor noise of sd 0.71 per component, while the simulator has none of the first and 0.05 of the second. The filter's steady-state gain is about 0.36 per component (chapter 02, exercise 4, gives the scalar formula), so it moves its state only a third of the way to each measurement, which it should trust almost completely.</p>
     <p><b>Two losses.</b> The repository trains <span class="m">\theta</span> by Adam on</p>
     <div class="math-block" data-narrow="\begin{aligned} L_{\text{filt}}(\theta) &amp;= \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t \rVert^2 \\ &amp;\quad \text{(the repository's \texttt{loss\_fn}),} \\ L_{\text{pred}}(\theta) &amp;= \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t^- \rVert^2 \\ &amp;\quad \text{(its \texttt{forecasters.py}),} \end{aligned}">L_{\text{filt}}(\theta) = \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t \rVert^2 \ \ \text{(the repository's \texttt{loss\_fn})}, \qquad L_{\text{pred}}(\theta) = \frac{1}{2T} \sum_{t=1}^{T} \lVert y_t - C \hat x_t^- \rVert^2 \ \ \text{(its \texttt{forecasters.py})},</div>
     <p>the first comparing the measurement with the state <em>after</em> it has been used, the second with the prediction <em>before</em>. The first is leaky: since <span class="m">y_t - C\hat x_t = (I - CK_t)(y_t - C\hat x_t^-)</span>, it is the forecast error shrunk by the factor <span class="m">I - K_t</span>, and a filter that trusted its sensor completely (<span class="m">K = I</span>) would score zero whatever <span class="m">\theta</span>. With the repository's gain of about 0.36 the loss still sees 64% of each forecast error, so training works, but the scores are not comparable: the repository's final loss 0.0120 against the forecast loss's 0.0947 does not mean the first model is eight times better. On the fresh-rollout tests below the two train to much the same thing.</p>
@@ -284,7 +284,7 @@ print(jnp.sqrt(jnp.mean((y_pred - ys7) ** 2)), jnp.sqrt(jnp.mean((zero - ys7[1:]
     <h2>Scope and further reading</h2>
   </div>
   <div class="col prose">
-    <p><b>Scope.</b> This chapter covers the repository's learned-dynamics module and forecaster: a residual network in the prediction step of a linear Kalman filter with fixed gains, trained end to end. It does not cover learned covariances, variational or sampling-based state-space models <a href="#ref-4">[4]</a>, or networks designed to extrapolate periodic structure. Chapter 03 takes the same forecaster to a real series, where the baseline to beat is simpler and harder.</p>
+    <p><b>Scope.</b> This chapter covers the repository's learned-dynamics module and forecaster: a residual network in the prediction step of a linear Kalman filter with fixed gains, trained end to end. It does not cover learned covariances, variational or sampling-based state-space models <a href="#ref-4">[4]</a>, or networks designed to extrapolate periodic structure. Chapter 04 takes the same forecaster to a real series, where the baseline to beat is simpler and harder.</p>
     <ul class="refs">
       <li id="ref-1"><span class="rn">[1]</span><div>P. J. Werbos. Backpropagation through time: what it does and how to do it. <em>Proceedings of the IEEE</em>, 78(10):1550–1560, 1990. <a href="https://doi.org/10.1109/5.58337">doi:10.1109/5.58337</a>. The reverse-mode derivative of a recurrence, which Part 2 writes out for the filter.</div></li>
       <li id="ref-2"><span class="rn">[2]</span><div>D. P. Kingma and J. Ba. Adam: a method for stochastic optimization. <em>International Conference on Learning Representations</em>, 2015. <a href="https://arxiv.org/abs/1412.6980">arXiv:1412.6980</a>. The optimiser, with the bias-corrected moment estimates the page reproduces from <code>optax.adam</code>.</div></li>
@@ -294,23 +294,23 @@ print(jnp.sqrt(jnp.mean((y_pred - ys7) ** 2)), jnp.sqrt(jnp.mean((zero - ys7[1:]
       <li id="ref-6"><span class="rn">[6]</span><div>D. Simon. <em>Optimal State Estimation</em>. Wiley, 2006. <a href="https://doi.org/10.1002/0470045345">doi:10.1002/0470045345</a>. The effect of mismatched noise covariances on a Kalman filter's gain and lag.</div></li>
       <li id="ref-7"><span class="rn">[7]</span><div>J. Bradbury et al. JAX: composable transformations of Python+NumPy programs, 2018. <a href="https://github.com/jax-ml/jax">github.com/jax-ml/jax</a>. <code>value_and_grad</code> and <code>lax.scan</code>, the two primitives that make the repository's training loop one line.</div></li>
     </ul>
-    <p>Next, chapter 03 fits the same forecaster to a year of air-quality measurements and asks the question real data always ask first: does it beat predicting that the next hour will look like this one?</p>
+    <p>Next, chapter 04 fits the same forecaster to a year of air-quality measurements and asks the question real data always ask first: does it beat predicting that the next hour will look like this one?</p>
   </div>
 </section>
 
 <nav class="col pager" aria-label="Chapters">
-  <a class="prev" rel="prev" href="01-the-kalman-filter-and-its-nonlinear-cousins.html"><span class="lbl">Previous · 01</span><span class="t">The Kalman filter and its nonlinear cousins</span></a>
-  <a class="next" rel="next" href="03-a-real-series-next-hour-no2.html"><span class="lbl">Next · 03</span><span class="t">A real series: next-hour NO2</span></a>
+  <a class="prev" rel="prev" href="02-the-kalman-filter-and-its-nonlinear-cousins.html"><span class="lbl">Previous · 02</span><span class="t">The Kalman filter and its nonlinear cousins</span></a>
+  <a class="next" rel="next" href="04-a-real-series-next-hour-no2.html"><span class="lbl">Next · 04</span><span class="t">A real series: next-hour NO2</span></a>
 </nav>
 
 <footer class="col">
-  <p>Chapter 02 of "Kalman Filters with JAX" by Elie Rouphael. The training in the hero demo runs in your browser from the same equations as the repository's JAX code, with a hand-derived gradient checked against JAX's; the generalisation study was run with the repository's own training functions. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+  <p>Chapter 03 of "Kalman Filters with JAX" by Elie Rouphael. The training in the hero demo runs in your browser from the same equations as the repository's JAX code, with a hand-derived gradient checked against JAX's; the generalisation study was run with the repository's own training functions. Math rendered with KaTeX, code highlighted with highlight.js.</p>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="../kit/kit.js"></script>
-<script src="interactive/ch02-data.js"></script>
-<script src="interactive/ch02.js"></script>
+<script src="interactive/ch03-data.js"></script>
+<script src="interactive/ch03.js"></script>
 </body>
 </html>

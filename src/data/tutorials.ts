@@ -143,8 +143,8 @@ export const tutorials: Tutorial[] = [
   {
     title: 'Kalman Filters with JAX',
     description:
-      "A three-chapter interactive tutorial built from the author's Kalman-Filter-with-JAX workshop: the linear, extended and unscented filters on a tracking problem, a neural network that learns the unmodelled dynamics from inside the filter by differentiating through it, and the same forecaster tested on a year of real air-quality data. Every demo runs in the browser, every number is checked against the JAX code, and the bugs found on the way, including a filter that returns NaN in 32-bit arithmetic, are explained and fixed.",
-    topics: ['Kalman Filtering', 'JAX', 'Learned Dynamics', 'Time Series', 'Numerics'],
+      "A five-chapter interactive tutorial built from four of the author's filtering repositories: a first Kalman filter in twenty lines of NumPy on a simulated vehicle, the linear, extended and unscented filters in JAX, a neural network that learns the unmodelled dynamics from inside the filter by differentiating through it, the same forecaster tested on a year of real air-quality data, and a first-order filter written in C with the language explained from scratch. Every demo runs in the browser, every number is checked against the original code, and the bugs found on the way, including a filter that returns NaN in 32-bit arithmetic, are explained and fixed.",
+    topics: ['Kalman Filtering', 'JAX', 'Learned Dynamics', 'Time Series', 'C', 'Numerics'],
     prerequisites: 'Python, linear algebra and basic probability',
     level: 'Intermediate',
     added: '2026-10-27T12:00',

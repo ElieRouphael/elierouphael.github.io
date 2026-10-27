@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>01 · Tracking a Vehicle with a Kalman Filter · Kalman Filters with JAX</title>
+<meta name="description" content="A first Kalman filter in twenty lines of NumPy, from the kalman_vehicle_tracking repository: a vehicle's position measured with noise, a constant-velocity model, the predict and update steps, and what happens when the motion is faster than the model. The filter runs live in the browser on the repository's data with adjustable noise matrices; the repository's inconsistent velocity column and its tuning are examined. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .hero2 canvas, .widget canvas { display: block; width: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  #mapT td, #symT td, #vocT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #mapT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  canvas + canvas { margin-top: 0.4rem; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Chapter 01 of 05</span>
+  <h1>Tracking a vehicle with a Kalman filter</h1>
+  <p class="lede">A vehicle's position is measured a hundred times a second by a sensor that is five metres wrong on average. We want a cleaner position and, if possible, the velocity nobody measures. This opening chapter does it with the smallest possible Kalman filter, the twenty-line NumPy class of the author's <code>kalman_vehicle_tracking</code> repository: a constant-velocity model, two equations, and two noise matrices to choose. The filter runs below on the repository's own simulation. It helps, but less than one might hope, and finding out why is the first lesson of the course: a Kalman filter is only as good as the model inside it.</p>
+  <p class="byline">Elie Rouphael · Needs Python and a little linear algebra; no prior filtering · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/kalman_vehicle_tracking">The repository on GitHub</a>
+    <a class="btn ghost" href="kalman-jax-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The repository's tracker: measured, true and estimated position, and the velocity it infers</p>
+        <div class="hero2">
+          <canvas id="heroP" aria-label="True position of the vehicle, its noisy measurements and the Kalman estimate over a window of the run" aria-describedby="heroStatus"></canvas>
+          <canvas id="heroV" aria-label="The velocity inferred by the filter against the true velocity of the chirp and the CSV's inconsistent true_velocity column" aria-describedby="heroStatus"></canvas>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--ink)"></i>truth</span><span><i style="background:var(--muted)"></i>measurements</span><span><i style="background:var(--post)"></i>Kalman estimate</span><span><i style="background:var(--muted);height:1px;border-top:2px dashed var(--muted);background:none"></i>CSV "true_velocity" (2t)</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Window: <b id="hWinV"></b></span>
+        <span class="row"><input type="range" id="hWin" min="0" max="700" step="50" value="0"></span>
+      </label>
+      <label class="field"><span>Process noise scale on <span class="m">Q = \mathrm{diag}(1, 3)</span> (log): <b id="hQV"></b></span>
+        <span class="row"><input type="range" id="hQ" min="-2" max="3" step="0.1" value="0"></span>
+      </label>
+      <label class="field"><span>Measurement variance <span class="m">R</span> (log; the data's is 25): <b id="hRV"></b></span>
+        <span class="row"><input type="range" id="hR" min="0" max="3" step="0.1" value="1.4"></span>
+      </label>
+      <div class="btn-row"><button class="btn" type="button" id="hJoseph" aria-pressed="false">Joseph-form update</button><button class="btn ghost" type="button" id="hRepo" aria-pressed="true">repository's CSV</button><button class="btn ghost" type="button" id="hNew">new simulation</button><button class="btn ghost" type="button" id="hReset">reset</button></div>
+      <div class="readouts" aria-live="off">
+        <span>position RMSE, measurements</span><span class="v" id="rMeas">–</span>
+        <span>position RMSE, filter</span><span class="v" id="rKF">–</span>
+        <span>filter RMSE by thirds of the run</span><span class="v" id="rThirds">–</span>
+        <span>velocity RMSE against <span class="m">30t\cos t^2</span></span><span class="v" id="rVel">–</span>
+        <span>final gain</span><span class="v" id="rK">–</span>
+      </div>
+      <p class="hint">The filter is the repository's class step for step; "Joseph-form update" swaps its covariance update for the stable form of chapter 02 (on this problem the two agree to 15 digits). "New simulation" regenerates the chirp with fresh noise using the page's random numbers.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scope"><span class="n">0</span><span class="t">The course in one table</span><span class="d">Five chapters, four repositories</span></a>
+    <a href="#problem"><span class="n">1</span><span class="t">The problem and the data</span><span class="d">A chirp, a noisy sensor, and a column that lies</span></a>
+    <a href="#filter"><span class="n">2</span><span class="t">A Kalman filter in twenty lines</span><span class="d">Predict, update, and what each line means</span></a>
+    <a href="#tuning"><span class="n">3</span><span class="t">Choosing Q and R</span><span class="d">What the two matrices say, and a sweep</span></a>
+    <a href="#mismatch"><span class="n">4</span><span class="t">When the model is wrong</span><span class="d">Lag against a chirp</span></a>
+    <a href="#check"><span class="n">5</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">6</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">8</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="scope">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The course in one table</h2>
+  </div>
+  <div class="col prose">
+    <p>This course gathers four of the author's small public repositories on filtering into one sequence. Each chapter reproduces one repository's computation, runs it live in the browser, checks every printed number, and reports what is wrong with the code or its claims. The first chapter needs only NumPy and this page; chapters 02 to 04 use the JAX repository; chapter 05 leaves Python for C.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="mapT">
+      <thead><tr><th>Chapter</th><th>Question</th><th>Repository and tool</th></tr></thead>
+      <tbody>
+        <tr><td><b>01</b></td><td>What does a Kalman filter do, and what does it need from us?</td><td><code>kalman_vehicle_tracking</code>: a NumPy class on a simulated vehicle</td></tr>
+        <tr><td><a href="02-the-kalman-filter-and-its-nonlinear-cousins.html">02</a></td><td>How does the filter work in detail, and what do its nonlinear cousins add?</td><td><code>Kalman-Filter-with-JAX</code>: linear KF, EKF, UKF in JAX</td></tr>
+        <tr><td><a href="03-learning-what-the-model-leaves-out.html">03</a></td><td>Can a network inside the filter learn the dynamics the model leaves out?</td><td>the same repository: a residual network trained through the filter</td></tr>
+        <tr><td><a href="04-a-real-series-next-hour-no2.html">04</a></td><td>Does the learned filter beat simple baselines on a real series?</td><td>the same repository: next-hour NO2 from the UCI air-quality sensors</td></tr>
+        <tr><td><a href="05-a-first-order-filter-in-c.html">05</a></td><td>How is a filter written in C, for a device with no NumPy?</td><td><code>First-Order-Filter-using-C</code>: a first-order low-pass filter with file I/O</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="problem">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The problem and the data</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The data.</b> The repository ships a CSV of 1000 rows produced by <code>data/simulate_data.py</code>: ten seconds sampled at <span class="m">\Delta t = 0.01</span> s, a true position <span class="m">p(t) = 15 \sin t^2</span> in metres, and a measured position with Gaussian noise of standard deviation 5 m. The position is a <em>chirp</em>: a sine whose frequency grows with time, <span class="m">\omega(t) = 2t</span> rad/s, from zero to 20 rad/s, about 3 Hz, by the end. The vehicle oscillates ever faster between <span class="m">-15</span> and <span class="m">+15</span> m, a demanding motion for any tracker, and the sensor's noise is a third of the amplitude.</p>
+    <p><b>Columns that do not belong.</b> The file also carries <code>true_velocity</code> <span class="m">= 2t</span>, <code>noisy_velocity</code>, and a constant <code>acceleration</code> of 2. None of these describes the motion in the file: the velocity of <span class="m">15\sin t^2</span> is <span class="m">30\,t\cos t^2</span>, which reaches <span class="m">\pm 300</span> m/s, not <span class="m">2t</span>. The generator mixes two scenarios, a constant-acceleration car and a chirp, and keeps the position of one and the velocity of the other. The tracker only reads the noisy position, so its estimates are unaffected, but anyone scoring the velocity estimate against that column would conclude the filter is broken. The hero demo draws the true velocity and the column side by side; the correction proposed for the repository derives the velocity from the position.</p>
+    <p><b>The task.</b> From the noisy positions alone, estimate the position better than the sensor does, and estimate the velocity.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="symT">
+      <thead><tr><th>Symbol</th><th>Meaning</th><th>Here</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m">x = (p, v)^\top</span></td><td>State: position and velocity</td><td>2-vector, unknown</td></tr>
+        <tr><td><span class="m">z</span></td><td>Measurement</td><td>noisy position, one number per step</td></tr>
+        <tr><td><span class="m">F</span></td><td>How the state moves in one step</td><td><span class="m">\begin{pmatrix} 1 &amp; \Delta t \\ 0 &amp; 1 \end{pmatrix}</span>: constant velocity</td></tr>
+        <tr><td><span class="m">H</span></td><td>Which part of the state is measured</td><td><span class="m">(1\ \ 0)</span>: the position</td></tr>
+        <tr><td><span class="m">Q, R</span></td><td>How much the model and the sensor are to be distrusted</td><td><span class="m">\mathrm{diag}(1, 3)</span> and <span class="m">25</span>, the repository's choice</td></tr>
+        <tr><td><span class="m">P</span></td><td>The filter's own uncertainty about its estimate</td><td>2×2, starts at <span class="m">I</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="filter">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>A Kalman filter in twenty lines</h2>
+  </div>
+  <div class="col prose">
+    <p>The repository's whole filter is a class with two methods (<code>kalman/kalman_filter.py</code>):</p>
+    <pre><code class="language-python">class KalmanFilter:
+    def __init__(self, F, H, Q, R, P, x0):
+        self.F, self.H, self.Q, self.R, self.P, self.x = F, H, Q, R, P, x0
+
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.x
+
+    def update(self, z):
+        y = z - self.H @ self.x                      # innovation
+        S = self.H @ self.P @ self.H.T + self.R      # its covariance
+        K = self.P @ self.H.T @ np.linalg.inv(S)     # Kalman gain
+        self.x = self.x + K @ y
+        self.P = self.P - K @ self.H @ self.P
+        return self.x</code></pre>
+    <p>and the tracker calls <code>predict()</code> then <code>update(z)</code> for each measurement. Read the two methods as a conversation between a model and a sensor.</p>
+    <p><b>Predict: what the model expects.</b> If the vehicle kept its velocity for one step, the position would advance by <span class="m">v\,\Delta t</span>: that is <span class="m">x \leftarrow Fx</span>. The filter is less sure after moving than before, because the velocity may have changed: its uncertainty grows, <span class="m">P \leftarrow FPF^\top + Q</span>. The matrix <span class="m">Q</span> is how much the model admits the state can change in one step for reasons it does not describe <a href="#ref-1">[1]</a>.</p>
+    <p><b>Update: what the sensor says.</b> The innovation <span class="m">y = z - Hx</span> is the surprise: the measurement minus what the model expected to measure. Its covariance <span class="m">S</span> is the model's uncertainty about the measured quantity plus the sensor's own noise <span class="m">R</span>. The gain</p>
+    <div class="math-block">K = P H^\top S^{-1}</div>
+    <p>is the ratio of how much the state co-varies with the measured quantity to the total uncertainty of the measurement, and it decides how far to move toward the measurement. When the sensor is precise compared with the model (<span class="m">R</span> small against <span class="m">HPH^\top</span>), <span class="m">K \to H^+</span> and the measurement is believed; when the model is precise, <span class="m">K \to 0</span> and the measurement is ignored. The velocity gets corrected too, by the second component of <span class="m">K</span>, because a prediction step correlates position and velocity: a position surprise is partly a velocity surprise. Finally the uncertainty shrinks, <span class="m">P \leftarrow P - KHP</span>, since a measurement has been absorbed.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a Kalman filter?</p>
+      <p><b>In plain words:</b> a running compromise between a model's prediction and a sensor's reading, weighted by how much each is trusted, with the trust itself updated every step.</p>
+      <p><b>More precisely:</b> for a linear model with Gaussian noise it is the exact Bayesian posterior over the state, and the minimum-variance linear estimator for any noise with the given covariances <a href="#ref-2">[2]</a>. The twenty lines above are the complete algorithm; everything else in filtering is about the model, the noise matrices, and numerical care.</p>
+      <dl>
+        <dt>Innovation</dt><dd>Measurement minus predicted measurement. For a correct model it is unpredictable (white) with covariance <span class="m">S</span>.</dd>
+        <dt>Gain</dt><dd>The step taken per unit of innovation; a 2-vector here, one entry for the position and one for the velocity.</dd>
+        <dt>Covariance update</dt><dd>The repository's <span class="m">P - KHP</span> is the textbook form, exact for the optimal gain but able to lose symmetry in floating point over long runs. Chapter 02 uses the Joseph form; on this 1000-step run they agree to 15 digits.</dd>
+      </dl>
+    </div>
+    <div class="callout"><p><b>The repository's numbers.</b> With <span class="m">Q = \mathrm{diag}(1, 3)</span>, <span class="m">R = 25</span>, <span class="m">P_0 = I</span> and <span class="m">x_0 = 0</span>, the filter's position RMSE over the run is 4.50 m against 5.00 m for the raw measurements: a 10% improvement, not the factor of three that chapter 02 gets on a well-modelled track. The gain settles at <span class="m">(0.195, 0.311)</span>: each measurement moves the position estimate a fifth of the way to the reading. The page reproduces the repository's estimates to <span class="m">7 \times 10^{-5}</span> m, the rounding of the data file.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="tuning">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Choosing <span class="m">Q</span> and <span class="m">R</span></h2>
+  </div>
+  <div class="col prose">
+    <p><span class="m">R</span> is the easy one: it is the sensor's noise variance, and the simulation says <span class="m">5^2 = 25</span>. On a real sensor it comes from the datasheet or from the spread of readings of a known position. <span class="m">Q</span> is the hard one. It should describe how much the true state departs from the model's prediction in one step. For a vehicle whose velocity changes by an unknown acceleration <span class="m">a</span> over <span class="m">\Delta t</span>, the position departs by <span class="m">a\Delta t^2/2</span> and the velocity by <span class="m">a\Delta t</span>, which gives the structured <span class="m">Q</span> of chapter 02; the repository instead picks <span class="m">\mathrm{diag}(1, 3)</span>, a position wobble of 1 m and a velocity wobble of 1.7 m/s per hundredth of a second, with no correlation between them. It is a guess, and the sweep below shows what the guess costs.</p>
+  </div>
+  <div class="col widget" id="sweepW">
+    <canvas id="sweepC" aria-label="Position RMSE of the filter against the scale applied to the repository's Q, with the raw measurement error as a dashed line and the minimum marked" aria-describedby="sweepCap"></canvas>
+    <p class="status" id="sweepCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Two readings of the curve. First, the repository's <span class="m">Q</span> is a factor of ten too small for this motion: scaling it up by ten brings the RMSE from 4.50 to 2.93 m. Second, no scale makes the filter as good as it was on chapter 02's gentle track, because the model is wrong in a way that no noise level repairs. A larger <span class="m">Q</span> buys agility at the price of noise: at the optimum the filter has stopped averaging very much, and at scale 1000 it is the raw sensor again.</p>
+    <div class="big-idea"><p><span class="m">R</span> is a property of the sensor; <span class="m">Q</span> is a confession about the model. When tuning <span class="m">Q</span> changes the result by a factor of two, the model is missing something, and the right fix is usually in <span class="m">F</span>, not in <span class="m">Q</span>.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="mismatch">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>When the model is wrong</h2>
+  </div>
+  <div class="col prose">
+    <p>Split the run into thirds. In the first, where the chirp is slow, the filter's error is 2.2 m against the sensor's 5.1: it works as advertised. In the second, 4.3 against 4.7. In the last, 6.1 against 5.1: the filter is now <em>worse</em> than the sensor it is filtering. The constant-velocity model predicts that the vehicle keeps going; a chirp at 3 Hz turns around every sixth of a second; the estimate lags behind the truth, and an estimate that lags a sine by a quarter period is as wrong as no estimate at all.</p>
+  </div>
+  <div class="col widget" id="lagW">
+    <canvas id="lagC" aria-label="Filter and measurement RMSE over half-second windows against time, the filter's error overtaking the measurements' as the chirp speeds up" aria-describedby="lagCap"></canvas>
+    <p class="status" id="lagCap"></p>
+  </div>
+  <div class="col prose">
+    <p>The velocity estimate tells the same story more bluntly. The filter's velocity never gets near the true <span class="m">30\,t\cos t^2</span> (RMSE 127 m/s over the run); it tracks a smoothed, delayed version of it, which is all a constant-velocity model fed with noisy positions can offer. This is not a defect of the Kalman filter. It is what the filter correctly computes for the model it was given, and the lesson carries through the course: chapter 02 shows what the same filter achieves when the model is right, chapter 03 lets a network learn the part of the model that is missing, and chapter 04 meets a real series where the "model" is a guess again.</p>
+    <div class="callout"><p><b>Corrections to the repository.</b> (1) The <code>true_velocity</code> and <code>acceleration</code> columns are inconsistent with the position; derive them from <span class="m">15\sin t^2</span>. (2) The generator uses an unseeded random state, so the CSV cannot be regenerated; seed it. (3) <span class="m">Q = \mathrm{diag}(1, 3)</span> is ten times too small for the chirp (RMSE 4.50 against 2.93 m at ten times the scale) and should be derived from an acceleration budget, or the model should carry an acceleration state. (4) <code>np.linalg.inv(S)</code> and <span class="m">P - KHP</span> are harmless here but worth replacing by a solve and the Joseph form before the code grows. All four are now applied in the repository; this page keeps running on the CSV as first committed, so that the numbers above can be checked against the original script, and the regenerated CSV in the download has consistent columns and a new noise draw.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What are the two steps of the filter, in one sentence each?</summary><p>Predict moves the estimate forward with the model and grows the uncertainty by <span class="m">Q</span>; update corrects the estimate toward the measurement by the gain times the innovation and shrinks the uncertainty.</p></details>
+    <details class="sol"><summary>2. Why can the filter estimate a velocity it never measures?</summary><p>Because the prediction step correlates position and velocity (<span class="m">FPF^\top</span> has an off-diagonal <span class="m">\Delta t\,P_{vv}</span>), so a position surprise carries information about the velocity. The second entry of the gain, 0.31 here, applies it.</p></details>
+    <details class="sol"><summary>3. What is <span class="m">R</span> for this data, and how would you know on a real sensor?</summary><p>The noise variance of the position sensor, <span class="m">5^2 = 25</span>. On a real sensor: the datasheet, or the variance of readings taken at a known position.</p></details>
+    <details class="sol"><summary>4. The repository's <span class="m">Q</span> is diagonal. What would a physically derived <span class="m">Q</span> look like?</summary><p>For an unknown acceleration, the position and velocity perturbations share a cause and are correlated: <span class="m">Q = \sigma_a^2 \begin{pmatrix} \Delta t^4/4 &amp; \Delta t^3/2 \\ \Delta t^3/2 &amp; \Delta t^2 \end{pmatrix}</span> for a piecewise-constant acceleration, or chapter 02's integrated white-noise version.</p></details>
+    <details class="sol"><summary>5. Why does increasing <span class="m">Q</span> help here, and why does it stop helping?</summary><p>A larger <span class="m">Q</span> makes the filter trust the model less and the measurements more, so it follows the fast chirp with less lag. Past the optimum it follows the sensor's noise too, and at very large <span class="m">Q</span> the estimate is the raw measurement.</p></details>
+    <details class="sol"><summary>6. In the last third the filter is worse than the sensor. Is the filter wrong?</summary><p>No, the model is. The filter computes the optimal estimate for a constant-velocity vehicle; the actual vehicle reverses every sixth of a second. The estimate lags, and a lagged sine can be further from the truth than a noisy one.</p></details>
+    <details class="sol"><summary>7. Would the Joseph-form covariance update change the estimates?</summary><p>Not visibly: on this 1000-step run the two updates agree to 15 digits. The Joseph form matters for long runs, badly scaled problems and single precision, where <span class="m">P - KHP</span> can lose symmetry or positive-definiteness.</p></details>
+    <details class="sol"><summary>8. What is wrong with scoring the velocity estimate against the CSV's <code>true_velocity</code>?</summary><p>That column is <span class="m">2t</span>, the velocity of a different scenario; the position in the file has velocity <span class="m">30\,t\cos t^2</span>. Against the wrong column any estimator looks broken; against the right one the filter's velocity is a lagged, smoothed version of the truth.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Fix the generator.</b> Rewrite <code>simulate_data.py</code> so that velocity and acceleration are the derivatives of the position, and seed the random generator.</div>
+        <details class="sol"><summary>Hint</summary><p><span class="m">\frac{d}{dt} 15\sin t^2 = 30t\cos t^2</span>; differentiate once more for the acceleration, or use <code>np.gradient</code> on the position.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-python">rng = np.random.default_rng(0)
+time = np.arange(0, T, dt)
+true_position = 15 * np.sin(time**2)
+true_velocity = 30 * time * np.cos(time**2)
+acceleration = 30 * np.cos(time**2) - 60 * time**2 * np.sin(time**2)
+noisy_position = true_position + rng.normal(0, 5, size=time.shape)
+noisy_velocity = true_velocity + rng.normal(0, 1, size=time.shape)</code></pre>
+          <p>The velocity now reaches ±300 m/s and the acceleration ±6000 m/s², which also says why a constant-velocity model struggles.</p></details>
+      </li>
+      <li><div><b>Give the model an acceleration state.</b> Use <span class="m">x = (p, v, a)</span> with <span class="m">F</span> from chapter 02's exercise 3 and a small <span class="m">Q</span> on the acceleration only. Does the position RMSE improve on the chirp?</div>
+        <details class="sol"><summary>Hint</summary><p>Keep <span class="m">H = (1, 0, 0)</span> and <span class="m">R = 25</span>; sweep the acceleration noise variance over several decades as the page does for <span class="m">Q</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>It improves in the slow part of the run, where the acceleration is nearly constant over many samples, and still lags at the end, where the acceleration itself reverses every sixth of a second. A chirp is not well described by any low-order polynomial model; a model with the oscillation built in (a rotating state, as in a phase-locked loop) would do better. The honest answer to "which model" is "one that contains the motion".</p></details>
+      </li>
+      <li><div><b>Check the innovations.</b> Compute the innovations <span class="m">y_t</span> and their predicted variance <span class="m">S_t</span> for the repository's settings. Is the ratio of their sample variance to <span class="m">S</span> near one? What does it say about <span class="m">Q</span>?</div>
+        <details class="sol"><summary>Hint</summary><p>Store <code>y</code> and <code>S</code> inside <code>update</code>. A consistent filter has <span class="m">\mathrm{var}(y)/S \approx 1</span>; a ratio well above one means the filter is over-confident.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The ratio is well above one, and it grows through the run as the chirp accelerates: the innovations are larger than the filter predicts because the model's lag feeds systematic error into them. This is the diagnostic that says "increase <span class="m">Q</span> or fix the model" without needing the ground truth that only a simulation provides.</p></details>
+      </li>
+      <li><div><b>Run it on your own sensor.</b> Record any noisy scalar signal you can get (a phone's accelerometer, a potentiometer, a stock price) at a fixed rate and apply the class with a constant-velocity model. Tune <span class="m">Q</span> by the innovation ratio of exercise 3, not by eye.</div>
+        <details class="sol"><summary>Hint</summary><p>Estimate <span class="m">R</span> first from a stretch where the signal is constant.</p></details>
+        <details class="sol"><summary>Solution</summary><p>There is no single answer; the point is the procedure. Expect the same shape of result as here: the filter averages well where the signal is smooth and lags where it turns, and the innovation ratio tells you which regime you are in.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The data</b>: a chirp <span class="m">15\sin t^2</span> over ten seconds at 100 Hz, measured with noise of sd 5 m; the file's velocity and acceleration columns belong to another scenario.</div></li>
+      <li><div><b>The filter</b>: twenty lines, predict (<span class="m">Fx</span>, <span class="m">FPF^\top + Q</span>) and update (innovation, <span class="m">S</span>, gain, correction, <span class="m">P - KHP</span>).</div></li>
+      <li><div><b>The numbers</b>: RMSE 4.50 m against the sensor's 5.00; by thirds 2.2, 4.3, 6.1 against 5.1, 4.7, 5.1; gain (0.195, 0.311); the repository's estimates reproduced to <span class="m">7 \times 10^{-5}</span>.</div></li>
+      <li><div><b>Tuning</b>: <span class="m">R</span> is the sensor's variance; the repository's <span class="m">Q</span> is ten times too small for this motion (2.93 m at ten times the scale), and no <span class="m">Q</span> makes a constant-velocity model follow a 3 Hz chirp.</div></li>
+      <li><div><b>The lesson</b>: the filter is optimal for the model it is given; when the model is wrong the estimate lags, and the fix belongs in the model.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>State</td><td>What the filter estimates; here position and velocity.</td></tr>
+        <tr><td>Measurement</td><td>What the sensor reports; here the position plus noise.</td></tr>
+        <tr><td>Constant-velocity model</td><td><span class="m">p \leftarrow p + v\Delta t</span>, <span class="m">v \leftarrow v</span>: the matrix <span class="m">F</span>.</td></tr>
+        <tr><td>Predict, update</td><td>Apply the model and grow the uncertainty; absorb a measurement and shrink it.</td></tr>
+        <tr><td>Innovation</td><td>Measurement minus its prediction; the surprise.</td></tr>
+        <tr><td>Kalman gain</td><td>How far to move per unit of surprise, for each state component.</td></tr>
+        <tr><td>Process noise <span class="m">Q</span></td><td>How much the state can change per step for reasons the model omits.</td></tr>
+        <tr><td>Measurement noise <span class="m">R</span></td><td>The sensor's noise variance.</td></tr>
+        <tr><td>Chirp</td><td>A sinusoid whose frequency changes with time; here <span class="m">\sin t^2</span>.</td></tr>
+        <tr><td>Model mismatch, lag</td><td>The truth moves in a way the model does not describe; the estimate trails it.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter is the gentlest possible start: one filter, one model, one simulation, and a reading of its result. It does not derive the filter, treat numerical stability or consider nonlinear models; chapter 02 does all three on a track where the model is right, so that the filter's behaviour can be separated from the model's errors.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>G. Welch and G. Bishop. An introduction to the Kalman filter. Technical Report TR 95-041, University of North Carolina at Chapel Hill, 2006. <a href="https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf">cs.unc.edu/~welch/kalman</a>. The classic short introduction whose predict-and-update presentation the repository's class follows.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>R. E. Kalman. A new approach to linear filtering and prediction problems. <em>Journal of Basic Engineering</em>, 82(1):35–45, 1960. <a href="https://doi.org/10.1115/1.3662552">doi:10.1115/1.3662552</a>. The original paper.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>Y. Bar-Shalom, X. R. Li and T. Kirubarajan. <em>Estimation with Applications to Tracking and Navigation</em>. Wiley, 2001. Motion models for tracking, how to derive <span class="m">Q</span> from an acceleration budget, and the consequences of model mismatch.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>D. Simon. <em>Optimal State Estimation: Kalman, H∞, and Nonlinear Approaches</em>. Wiley, 2006. <a href="https://doi.org/10.1002/0470045345">doi:10.1002/0470045345</a>. Where to go next for the derivation, the Joseph form and the innovation-based consistency checks of exercise 3.</div></li>
+    </ul>
+    <p>Next, chapter 02 rebuilds the filter in JAX on a track that the constant-velocity model describes exactly, derives the equations, and adds the extended and unscented filters, with a numerical surprise along the way.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="next" rel="next" href="02-the-kalman-filter-and-its-nonlinear-cousins.html"><span class="lbl">Next · 02</span><span class="t">The Kalman filter and its nonlinear cousins</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 01 of "Kalman Filters with JAX" by Elie Rouphael. The filter runs in your browser step for step as the repository's NumPy class, on the repository's recorded simulation; its estimates were checked against the Python run. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/ch01-data.js"></script>
+<script src="interactive/ch01.js"></script>
+</body>
+</html>
