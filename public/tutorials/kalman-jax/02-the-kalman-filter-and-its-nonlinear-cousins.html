@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>02 · The Kalman Filter and Its Nonlinear Cousins · Kalman Filters with JAX</title>
-<meta name="description" content="The linear Kalman filter, the extended filter and the unscented filter, written in JAX and run live in the browser on a constant-velocity tracking problem: the model and its discretised noise, the predict and update equations with a worked first step, the Joseph form, sigma points and their weights, why the textbook unscented filter turns to NaN in 32-bit arithmetic and how to fix it, and the steady-state gain. Every number is checked against the JAX code.">
+<meta name="description" content="The linear Kalman filter, the extended filter and the unscented filter, written in JAX and run live in the browser on a constant-velocity tracking problem: the model and its discretised noise, the predict and update equations with a worked first step, the Joseph form, sigma points and their weights, why the unscented filter with its paper's recommended setting turns to NaN in 32-bit arithmetic, traced step by step, and why the repository uses alpha = 1, and the steady-state gain. Every number is checked against the JAX code.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
@@ -19,6 +19,8 @@
   .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
   .qa details.sol { margin-top: 0.6rem; }
   canvas + canvas { margin-top: 0.4rem; }
+  #ukf .table-wrap + .prose { margin-top: 0.9rem; }
+  .numT td.n { font-family: var(--font-mono); font-size: 0.88rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -28,7 +30,7 @@
 <header class="hero col">
   <span class="eyebrow">Kalman Filters with JAX · Chapter 02 of 05</span>
   <h1>The Kalman filter and its nonlinear cousins</h1>
-  <p class="lede">A sensor reports a position every tenth of a second, half a metre wrong on average. From that alone the Kalman filter recovers the position three times more accurately than the sensor and a velocity nobody measured, and it says how sure it is. This chapter builds the filter from its two equations, then its two nonlinear relatives, the extended and the unscented filter, in the form the companion repository implements them in JAX. Along the way it finds a real bug: the textbook unscented filter, run in JAX's default 32-bit arithmetic, destroys itself after 33 seconds of data. Below, all three filters run in your browser on the repository's own data.</p>
+  <p class="lede">A sensor reports a position every tenth of a second, half a metre wrong on average. From that alone the Kalman filter recovers the position three times more accurately than the sensor and a velocity nobody measured, and it says how sure it is. This chapter builds the filter from its two equations, then its two nonlinear relatives, the extended and the unscented filter, in the form the companion repository implements them in JAX. Along the way the unscented filter becomes a lesson in floating point: with the setting its original paper recommends, JAX's default 32-bit arithmetic loses six of its seven digits and the filter turns to NaN after 33 seconds of data. The page traces the failure step by step and explains why the repository uses a different setting. Below, all three filters run in your browser on the repository's own data.</p>
   <p class="byline">Elie Rouphael · Needs Python, linear algebra and basic probability · Every number is checked against the JAX code</p>
   <div class="downloads">
     <a class="btn" href="https://github.com/ElieRouphael/Kalman-Filter-with-JAX">The repository on GitHub</a>
@@ -84,7 +86,7 @@
     <a href="#model"><span class="n">1</span><span class="t">The model</span><span class="d">Constant velocity, discretised noise</span></a>
     <a href="#filter"><span class="n">2</span><span class="t">The Kalman filter</span><span class="d">Predict, update, Joseph form, a worked step</span></a>
     <a href="#ekf"><span class="n">3</span><span class="t">The extended filter</span><span class="d">Linearise where you are</span></a>
-    <a href="#ukf"><span class="n">4</span><span class="t">The unscented filter</span><span class="d">Sigma points, weights, and a 32-bit catastrophe</span></a>
+    <a href="#ukf"><span class="n">4</span><span class="t">The unscented filter</span><span class="d">Sigma points, weights, and a lesson in floating point</span></a>
     <a href="#steady"><span class="n">5</span><span class="t">Gain and covariance over time</span><span class="d">The Riccati recursion and its fixed point</span></a>
     <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
     <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
@@ -199,7 +201,7 @@
 <section id="ukf">
   <div class="col part-head">
     <span class="part-num">Part 4</span>
-    <h2>The unscented filter: sigma points, weights, and a 32-bit catastrophe</h2>
+    <h2>The unscented filter: sigma points, weights, and a lesson in floating point</h2>
   </div>
   <div class="col prose">
     <p>The unscented Kalman filter (UKF) avoids Jacobians altogether <a href="#ref-3">[3]</a>. It represents the belief by <span class="m">2n+1</span> deterministic sample points, the sigma points, pushes each through the nonlinear function exactly, and recovers the mean and covariance of the results by weighted sums. For a belief with mean <span class="m">\hat x</span> and covariance <span class="m">P = L L^\top</span> (Cholesky factor <span class="m">L</span>, columns <span class="m">L_i</span>):</p>
@@ -207,7 +209,8 @@
     <p>With weights, in the parametrisation of Wan and van der Merwe <a href="#ref-5">[5]</a>,</p>
     <div class="math-block" data-narrow="\begin{aligned} W_0^{(m)} &amp;= \frac{\lambda}{n + \lambda}, \\ W_0^{(c)} &amp;= \frac{\lambda}{n + \lambda} + 1 - \alpha^2 + \beta, \\ W_i^{(m)} = W_i^{(c)} &amp;= \frac{1}{2(n + \lambda)} . \end{aligned}">W_0^{(m)} = \frac{\lambda}{n + \lambda}, \qquad W_0^{(c)} = \frac{\lambda}{n + \lambda} + 1 - \alpha^2 + \beta, \qquad W_i^{(m)} = W_i^{(c)} = \frac{1}{2(n + \lambda)} .</div>
     <p>The predicted mean is <span class="m">\sum_i W_i^{(m)} f(\mathcal X_i)</span>, the predicted covariance <span class="m">\sum_i W_i^{(c)} (f(\mathcal X_i) - \hat x_{t|t-1})(\cdot)^\top + Q</span>, and the update uses the same construction for <span class="m">h</span>, with the cross-covariance <span class="m">P_{xz}</span> and the innovation covariance <span class="m">P_{zz}</span> giving the gain <span class="m">K = P_{xz} P_{zz}^{-1}</span>. For a linear <span class="m">f</span> the weighted sums reproduce <span class="m">F\hat x</span> and <span class="m">FPF^\top</span> exactly, since the weights sum to one and the points' spread is exactly <span class="m">P</span>: on the repository's linear model the UKF should match the linear filter, and in double precision it does, to <span class="m">10^{-7}</span>.</p>
-    <p><b>The repository's default is <span class="m">\alpha = 10^{-3}</span>, <span class="m">\beta = 2</span>, <span class="m">\kappa = 0</span>.</b> These are the textbook values <a href="#ref-5">[5]</a>, and for <span class="m">n = 2</span> they give <span class="m">\lambda = 2 \times 10^{-6} - 2</span>, so <span class="m">n + \lambda = 2 \times 10^{-6}</span>, a centre weight <span class="m">W_0^{(m)} = -999\,999</span>, four outer weights of <span class="m">250\,000</span>, and sigma points only <span class="m">\sqrt{2 \times 10^{-6}} = 0.0014</span> standard deviations from the mean. The covariance is then reconstructed as a difference of terms a million times larger than the result. In double precision (16 significant digits) ten digits survive; in JAX's default 32-bit floats (7 digits) none do. The repository's UKF loses the symmetry and positive-definiteness of <span class="m">P</span>, the Cholesky factor becomes NaN, and from step 335 the script prints <code>nan</code> for the UKF's RMSE. Two of its own tests fail for the same reason.</p>
+    <p><b>Which values: the paper's recommendation.</b> The repository computes the weights exactly as Wan and van der Merwe's paper does <a href="#ref-5">[5]</a>, and its first version also took the paper's suggested values: a small positive <span class="m">\alpha</span>, for which the paper gives <span class="m">10^{-3}</span> as its example; <span class="m">\beta = 2</span>, which the paper calls optimal for a Gaussian belief; and <span class="m">\kappa = 0</span>. The current version keeps <span class="m">\beta</span> and <span class="m">\kappa</span> and sets <span class="m">\alpha = 1</span>. The rest of this part explains why. The reason has little to do with filtering and a lot to do with how a computer stores numbers.</p>
+    <p>For <span class="m">n = 2</span> and <span class="m">\alpha = 10^{-3}</span>, <span class="m">\lambda = 2 \times 10^{-6} - 2</span> and <span class="m">n + \lambda = 2 \times 10^{-6}</span>: the centre weight is <span class="m">W_0^{(m)} = -999\,999</span> (and <span class="m">W_0^{(c)} = -999\,996</span>), the four outer weights are <span class="m">250\,000</span>, and the sigma points sit only <span class="m">\sqrt{2 \times 10^{-6}} = 0.0014</span> standard deviations from the mean. In exact arithmetic nothing is wrong with this: the weights sum to one, the points' spread is exactly <span class="m">P</span>, and the filter reproduces the linear one. In 64-bit arithmetic it does too, to <span class="m">2 \times 10^{-7}</span> over all 1000 steps. In JAX's default 32-bit arithmetic the same code returns NaN from step 335 on. The widget runs it both ways; move <span class="m">\alpha</span> from <span class="m">10^{-3}</span> towards 1 and watch the 32-bit curve come back.</p>
   </div>
   <div class="col widget" id="ukfW">
     <label class="field"><span>Spread parameter <span class="m">\alpha</span> (log scale): <b id="ukAV"></b></span>
@@ -217,16 +220,114 @@
     <p class="status" id="ukfCap"></p>
   </div>
   <div class="col prose">
+    <h3>What goes wrong in 32-bit arithmetic, step by step</h3>
+    <p>The numbers below come from running the repository's own <code>unscented_kf_predict</code> and <code>unscented_kf_update</code> in JAX, in float32, on the script's data, with the state of every step recorded. Exercise 2 shows how.</p>
+    <p><b>1. A float32 keeps 24 binary digits, so the gap between neighbouring numbers grows with their size.</b> A 32-bit float stores a sign, an exponent and 24 significant bits, about 7 decimal digits <a href="#ref-6">[6]</a>. Every arithmetic result is rounded to the nearest number that can be stored, and those numbers are spaced like this:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="gapT" class="numT">
+      <thead><tr><th>Size of the number</th><th>Gap to the next float32</th><th>Where it appears below</th></tr></thead>
+      <tbody>
+        <tr><td class="n">1</td><td class="n">1.2 × 10⁻⁷</td><td>float32's relative precision</td></tr>
+        <tr><td class="n">33</td><td class="n">3.8 × 10⁻⁶</td><td>the vehicle's position at step 335</td></tr>
+        <tr><td class="n">250 000</td><td class="n">0.016</td><td>an outer weight</td></tr>
+        <tr><td class="n">1 000 000</td><td class="n">0.0625</td><td>the centre weight</td></tr>
+        <tr><td class="n">33 000 000</td><td class="n">2</td><td>a weight times a position</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>JAX defaults to 32-bit because accelerators run it faster and it halves memory; 64-bit has to be switched on.</p>
+    <p><b>2. The weights are not the problem.</b> <span class="m">-999\,999</span> and <span class="m">250\,000</span> are whole numbers below <span class="m">2^{24} \approx 16.8</span> million, so float32 stores them exactly, and they still sum to exactly one. (<span class="m">W_0^{(c)}</span> rounds to <span class="m">-999\,996</span>, an error of <span class="m">3 \times 10^{-5}</span> that does not matter.)</p>
+    <p><b>3. The mean is a difference of numbers in the tens of millions.</b> The predicted mean is <span class="m">\sum_i W_i^{(m)} f(\mathcal X_i)</span>. Here is its position component at step 335, with the values JAX actually held:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="meanT" class="numT">
+      <thead><tr><th>Sigma point</th><th>Predicted position <span class="m">f(\mathcal X_i)</span></th><th>Weight</th><th>Weighted term</th></tr></thead>
+      <tbody>
+        <tr><td>centre</td><td class="n">32.700024</td><td class="n">−999 999</td><td class="n">−32 699 990</td></tr>
+        <tr><td>+ first column of <span class="m">L</span></td><td class="n">32.701190</td><td class="n">250 000</td><td class="n">8 175 297.5</td></tr>
+        <tr><td>+ second column</td><td class="n">32.700120</td><td class="n">250 000</td><td class="n">8 175 030</td></tr>
+        <tr><td>− first column</td><td class="n">32.698853</td><td class="n">250 000</td><td class="n">8 174 713</td></tr>
+        <tr><td>− second column</td><td class="n">32.699924</td><td class="n">250 000</td><td class="n">8 174 981</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The answer, about 32.7, is what is left after numbers of 33 million cancel, and at 33 million float32 can only count in steps of 2. So the result depends on details that should not matter:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="sumT" class="numT">
+      <thead><tr><th>The same five terms, added</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>exactly, from the five stored positions and weights</td><td class="n">30.79</td></tr>
+        <tr><td>exactly, from the five rounded terms in the table</td><td class="n">31.5</td></tr>
+        <tr><td>by <code>jnp.sum</code> on its own</td><td class="n">32.0</td></tr>
+        <tr><td>inside the compiled filter</td><td class="n">32.117</td></tr>
+        <tr><td><b>correct</b>, <span class="m">F \hat x</span> in 64-bit</td><td class="n"><b>32.700</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>None of the four is right, and none broke a rule: every single operation was rounded correctly. Even exact addition gets 30.79, because the damage happened earlier. The five positions were rounded to the nearest <span class="m">3.8 \times 10^{-6}</span> when they were stored, and the weights multiply that last-digit rounding by up to a million. The compiled filter and <code>jnp.sum</code> get different answers from the same inputs because XLA is free to fuse and reorder the operations it compiles, and floating-point addition is not associative, so here the order changes the answer by more than the sensor's noise. The filter's mean is wrong by 0.58; the sensor's own noise is 0.5.</p>
+    <p><b>4. The error grows with the distance from the origin, which is why the failure waits until step 335.</b> The terms are a million times the position, so the mean's error scales with the position too. Over the run it averages about 3% of the position: 0.10 while the position is below 5, 0.26 between 5 and 10, 0.58 between 10 and 20, 0.83 between 20 and 40. The simulated vehicle starts at the origin and has drifted to 33.7 by step 335. Early on, the mean is off by about 0.1 and nothing looks broken. Whether this bug shows up depends on where the object is, not on which line of code runs.</p>
+    <p><b>5. A wrong mean turns into an impossible covariance.</b> The predicted covariance is <span class="m">\sum_i W_i^{(c)} (f(\mathcal X_i) - \hat x_{t|t-1})(\cdot)^\top + Q</span>. With the mean off by 0.58, every deviation is about 0.58, so every term is a weight times about 0.34: hundreds of thousands, which must cancel down to a variance below one. The position variance at step 335:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="varT" class="numT">
+      <thead><tr><th>Deviation from the computed mean</th><th>Weight <span class="m">W_i^{(c)}</span></th><th>Term</th></tr></thead>
+      <tbody>
+        <tr><td class="n">0.5827751</td><td class="n">−999 996</td><td class="n">−339 625.5</td></tr>
+        <tr><td class="n">0.5839424</td><td class="n">250 000</td><td class="n">85 247.19</td></tr>
+        <tr><td class="n">0.5828705</td><td class="n">250 000</td><td class="n">84 934.5</td></tr>
+        <tr><td class="n">0.5816040</td><td class="n">250 000</td><td class="n">84 565.81</td></tr>
+        <tr><td class="n">0.5826759</td><td class="n">250 000</td><td class="n">84 877.81</td></tr>
+        <tr><td><b>Sum</b> (the filter's value, with <span class="m">Q</span>)</td><td></td><td class="n"><b>−0.196</b></td></tr>
+        <tr><td><b>Correct</b> <span class="m">(FPF^\top + Q)_{11}</span></td><td></td><td class="n"><b>0.687</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The information about the spread lives in the third and fourth decimals of the deviations, and float32's rounding of numbers near 32.7 already reaches the sixth. Multiplied by a million, those last digits decide the sign. A variance of <span class="m">-0.196</span> means nothing: no estimate can be more certain than exact.</p>
+    <p><b>6. The next step takes a square root of it, and quietly gets NaN.</b> The update builds new sigma points from the Cholesky factor of <span class="m">P</span>, a matrix square root that exists only when <span class="m">P</span> is positive-definite. Asked for one that does not exist, JAX does not raise an error. It returns NaN, "not a number":</p>
+    <pre><code class="language-python">print(jnp.linalg.cholesky(jnp.array([[-0.2, 0.04], [0.04, 0.49]])))</code></pre>
+    <pre class="output"><code>[[nan  0.]
+ [nan nan]]</code></pre>
+    <p>This is a design choice, not an oversight. Under <code>jit</code> and <code>lax.scan</code> the whole filter is compiled once and runs without returning to Python between operations, so it has no way to stop at a value it has not seen yet. The error is reported as a value instead. The IEEE 754 standard that defines floating-point arithmetic provides NaN for exactly this, the result of an invalid operation such as the square root of a negative number <a href="#ref-6">[6]</a>. NaN is contagious: <code>nan + 1</code> and <code>nan * 0</code> are NaN, and <code>nan == nan</code> is false. Once one entry of the state is NaN, so is every later estimate. That is the <code>nan</code> the script prints.</p>
+    <p><b>7. The NaN was the lucky outcome.</b> Before step 335 the 32-bit filter was already as much as 1.92 away from the linear filter, almost four times the sensor's noise, with no sign of trouble. A slightly larger <span class="m">\alpha</span> avoids the NaN without avoiding the problem:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="alphaT" class="numT">
+      <thead><tr><th><span class="m">\alpha</span></th><th>First NaN</th><th>Largest distance from the linear filter</th><th>Position RMSE (linear filter: 0.1554)</th></tr></thead>
+      <tbody>
+        <tr><td class="n">10⁻³</td><td class="n">step 335</td><td class="n">1.92 (before the NaN)</td><td class="n">NaN</td></tr>
+        <tr><td class="n">10⁻²</td><td class="n">none</td><td class="n">0.23</td><td class="n">0.1609</td></tr>
+        <tr><td class="n">10⁻¹</td><td class="n">none</td><td class="n">0.0025</td><td class="n">0.1554</td></tr>
+        <tr><td class="n">1</td><td class="n">none</td><td class="n">2.3 × 10⁻⁵</td><td class="n">0.1554</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>With <span class="m">\alpha = 10^{-2}</span> the filter runs to the end and prints a plausible RMSE, 3.5% worse than it should be, and nothing reports that anything went wrong. A loud failure costs a debugging session. A silent one costs a wrong result that nobody questions.</p>
     <div class="define">
       <p class="define-title">Catastrophic cancellation</p>
-      <p><b>In plain words:</b> subtracting two nearly equal numbers throws away their leading digits and keeps only their rounding errors.</p>
-      <p><b>More precisely:</b> a floating-point number carries about 7 significant decimal digits in 32-bit and 16 in 64-bit <a href="#ref-6">[6]</a>. If the UKF's covariance <span class="m">P \approx 0.03</span> is the difference of weighted terms of size <span class="m">10^6 \times 10^{-6} \times \ldots</span> that each carry an absolute rounding error of order <span class="m">10^{-7}</span> times their own magnitude, the result's error is of order <span class="m">10^{-1}</span> times the result itself: wrong in the first digit. A filter's covariance must stay positive-definite; once a rounding error pushes an eigenvalue below zero the Cholesky factor does not exist and every later step is NaN.</p>
+      <p><b>In plain words:</b> when nearly equal large numbers are subtracted, their difference survives but so do their rounding errors, which are now large compared with what is left.</p>
+      <p><b>More precisely:</b> each float32 operation has a relative rounding error of at most <span class="m">u = 2^{-24} \approx 6 \times 10^{-8}</span> <a href="#ref-6">[6]</a>. A sum <span class="m">s = \sum_i a_i</span> carries an error of order <span class="m">u \sum_i |a_i|</span>, so its relative error can reach <span class="m">u \sum_i |a_i| / |s|</span>. For the mean at step 335, <span class="m">\sum_i |a_i| \approx 6.5 \times 10^7</span> and <span class="m">s \approx 33</span>: the bound is about 12%, and the first digit is already uncertain. In 64-bit, <span class="m">u \approx 1.1 \times 10^{-16}</span> and the same bound is <span class="m">2 \times 10^{-10}</span>.</p>
       <dl>
-        <dt>The fix</dt><dd>Spread the points: <span class="m">\alpha = 1</span>, so <span class="m">\lambda = 0</span>, <span class="m">W_0^{(m)} = 0</span>, <span class="m">W_i = 1/4</span>, points <span class="m">\sqrt 2</span> standard deviations out. All weights are of order one and both precisions track the linear filter; the hero demo uses this. Alternatively enable 64-bit in JAX (<code>jax.config.update("jax_enable_x64", True)</code>), which the repository does not.</dd>
-        <dt>Why the textbook value exists</dt><dd>A small <span class="m">\alpha</span> keeps the sigma points close to the mean so that strongly nonlinear functions are sampled locally; with <span class="m">\beta = 2</span> this also captures the fourth moment of a Gaussian. It presumes double precision. The point of the parameters is a trade-off between local accuracy and numerical range, and <span class="m">10^{-3}</span> sits at the wrong end of it for single precision.</dd>
+        <dt>Amplification</dt><dd>The ratio <span class="m">\sum_i |a_i| / |s|</span>, here <span class="m">2 \times 10^6</span>. Its base-10 logarithm is the number of decimal digits lost: about six of float32's seven, six of float64's sixteen.</dd>
+        <dt>What it is not</dt><dd>A bug in JAX or in the rounding. Each operation is as accurate as the format allows; the formula asks for more digits than the format has.</dd>
       </dl>
     </div>
-    <div class="callout"><p><b>What the page emulates.</b> Browsers compute in double precision. To reproduce the failure, the widget rounds every intermediate result to the nearest 32-bit float with <code>Math.fround</code>, including the Cholesky factor and every weighted sum. The emulated filter turns to NaN at step 168 against JAX's 335: the exact step depends on the order in which the sums are accumulated, which JAX's compiled code and the page's loops do differently, but the mechanism and the outcome are the same. The repository already fixed one UKF bug, the sigma points used rows of the Cholesky factor instead of columns; this one is next. The patch proposed to the repository sets the default <span class="m">\alpha = 1</span>, documents why, and makes the two failing tests pass.</p></div>
+    <h3>Why the repository uses <span class="m">\alpha = 1</span>, and what else would work</h3>
+    <p><b><span class="m">\alpha = 1</span>, the repository's choice.</b> Then <span class="m">\lambda = 0</span>, the centre's mean weight is 0 and the four outer weights are <span class="m">1/4</span>. The points sit <span class="m">\sqrt 2</span> standard deviations from the mean, no term is larger than the result it builds, and nothing cancels. In float32 the UKF matches the linear filter to <span class="m">2.3 \times 10^{-5}</span>, with the same RMSEs to four decimals, 0.1554 and 0.1351. The price is the reason the paper chose a small <span class="m">\alpha</span>: points further out sample a strongly nonlinear <span class="m">f</span> less locally. On this linear model the price is zero.</p>
+    <p><b>64-bit arithmetic.</b> <code>jax.config.update("jax_enable_x64", True)</code>, set at startup, keeps the paper's <span class="m">\alpha</span>. On the same data the UKF with <span class="m">\alpha = 10^{-3}</span> then matches the linear filter to <span class="m">1.9 \times 10^{-7}</span>: six digits are still lost, but out of sixteen, not seven. The costs are twice the memory, much slower arithmetic on many GPUs, and a switch that applies to the whole program.</p>
+    <p><b>Reordering the sums does not help.</b> A standard remedy for cancellation is to sum around a reference point: <span class="m">\hat x = f(\mathcal X_0) + \sum_{i \ge 1} W_i (f(\mathcal X_i) - f(\mathcal X_0))</span>, which never adds numbers of size <span class="m">3 \times 10^7</span>. Tried on the same data, it removes the NaN, but the position RMSE becomes 0.405, more than twice the linear filter's: another silent failure. The digits were lost before any sum, when the sigma points were stored. They sit 0.0012 from a position of 32.6, where float32 resolves <span class="m">3.8 \times 10^{-6}</span>, so each offset is known to about 0.3%. No rearrangement of later arithmetic recovers digits that were never stored.</p>
+    <p><b>A square-root filter.</b> Van der Merwe and Wan's square-root UKF <a href="#ref-10">[10]</a> propagates the Cholesky factor itself instead of <span class="m">P</span>, so the covariance cannot lose positive-definiteness. It is the robust choice for filters that must run unattended, and it is not tested here.</p>
+    <h3>How you would find a bug like this</h3>
+    <p>Three tools, from cheapest to most informative. The first is a check: <code>jnp.isnan(estimates).any()</code>, and <code>jnp.argmax</code> on the same mask for the first bad step, 335. The second is JAX's NaN flag, <code>jax.config.update("jax_debug_nans", True)</code>, which makes JAX check every computation for NaN and raise an error. On this script it reports</p>
+    <pre class="output"><code>FloatingPointError: invalid value (nan) encountered in scan</code></pre>
+    <p>which says that something went wrong, but not where: the whole filter is one <code>scan</code>. The third is to instrument the scan. Have the step function return diagnostics alongside the state, such as the mean's error against <span class="m">F\hat x</span> and the smallest eigenvalue of <span class="m">P</span>, and read them as a time series. That is how the tables above were made, and it is exercise 2.</p>
+    <div class="callout"><p><b>What the page emulates.</b> Browsers compute in double precision. To reproduce the failure, the widget rounds every intermediate result to the nearest 32-bit float with <code>Math.fround</code>, including the Cholesky factor and every weighted sum. The emulated filter turns to NaN at step 168 against JAX's 335. As step 3 showed, the exact step depends on the order in which the sums are taken, which JAX's compiled code and the page's loops do differently; the mechanism and the outcome are the same. The repository's <code>filters.py</code> sets <span class="m">\alpha = 1</span> by default and explains the choice in the docstring of <code>_unscented_weights</code>.</p></div>
   </div>
 </section>
 
@@ -263,9 +364,10 @@
     <details class="sol"><summary>3. What does the innovation covariance <span class="m">S_t</span> add up?</summary><p>The sensor's own noise <span class="m">R</span> and the belief's uncertainty about the measured quantity <span class="m">H P_{t|t-1} H^\top</span>. In steady state here <span class="m">S_\infty = 0.25 + 0.0298 = 0.280</span>, sd 0.529.</p></details>
     <details class="sol"><summary>4. Why use the Joseph form rather than <span class="m">(I - KH)P</span>?</summary><p>The short form is only correct for the exact optimal gain and, in floating point, produces a matrix that is not exactly symmetric and can acquire a negative eigenvalue after many steps. The Joseph form is a sum of two symmetric non-negative terms, so it stays a valid covariance for any gain and any rounding.</p></details>
     <details class="sol"><summary>5. Does the EKF beat the linear filter on this problem?</summary><p>No, and it cannot: the model is linear, so the Jacobians equal <span class="m">F</span> and <span class="m">H</span> and the EKF is the linear filter under another name. The script's identical RMSE lines confirm the implementation, not any advantage.</p></details>
-    <details class="sol"><summary>6. Why does the UKF with <span class="m">\alpha = 10^{-3}</span> fail only in 32-bit arithmetic?</summary><p>Its weights are <span class="m">\pm 10^6</span> and <span class="m">2.5 \times 10^5</span>, so the covariance is a difference of terms a million times larger than itself. That costs six of the available significant digits: ten remain in double precision, none in single, where the covariance loses positive-definiteness and the Cholesky factorisation returns NaN.</p></details>
-    <details class="sol"><summary>7. What does the steady-state gain <span class="m">(0.106, 0.060)</span> mean operationally?</summary><p>Each new reading moves the position estimate about a tenth of the way to it, an effective average over roughly ten readings, and nudges the velocity by six hundredths of the innovation. These two numbers define a fixed linear filter that the full filter becomes after about five seconds.</p></details>
-    <details class="sol"><summary>8. The achieved position RMSE is 0.155 and the filter's own sd is 0.163. Is the gap a problem?</summary><p>No. The RMSE is estimated from 1000 correlated errors and has a sampling spread of a few percent; the two agree within it. A systematic gap, especially one in the other direction, would indicate that the filter's <span class="m">Q</span> or <span class="m">R</span> disagree with the data, which chapter 04 meets on a real series.</p></details>
+    <details class="sol"><summary>6. Why does the UKF with <span class="m">\alpha = 10^{-3}</span> fail only in 32-bit arithmetic?</summary><p>Its weights are <span class="m">-999\,999</span> and <span class="m">250\,000</span>, so the mean and the covariance are what is left after terms about a million times larger cancel. That costs about six significant digits: ten of float64's sixteen remain, but almost none of float32's seven. The mean comes out wrong, the covariance loses positive-definiteness, and the Cholesky factorisation returns NaN.</p></details>
+    <details class="sol"><summary>7. Why did the failure wait until step 335 instead of happening at once?</summary><p>Because the rounding error scales with the size of the numbers being cancelled, and those are a million times the position. The simulated vehicle starts at the origin, where the mean is off by about 0.1, and drifts away; by step 335 it is at 33.7, the mean is off by more than the sensor's noise, and the covariance goes negative. The bug depends on where the object is, not on which code runs.</p></details>
+    <details class="sol"><summary>8. What does the steady-state gain <span class="m">(0.106, 0.060)</span> mean operationally?</summary><p>Each new reading moves the position estimate about a tenth of the way to it, an effective average over roughly ten readings, and nudges the velocity by six hundredths of the innovation. These two numbers define a fixed linear filter that the full filter becomes after about five seconds.</p></details>
+    <details class="sol"><summary>9. The achieved position RMSE is 0.155 and the filter's own sd is 0.163. Is the gap a problem?</summary><p>No. The RMSE is estimated from 1000 correlated errors and has a sampling spread of a few percent; the two agree within it. A systematic gap, especially one in the other direction, would indicate that the filter's <span class="m">Q</span> or <span class="m">R</span> disagree with the data, which chapter 04 meets on a real series.</p></details>
   </div>
 </section>
 
@@ -277,19 +379,35 @@
   </div>
   <div class="col prose">
     <ol class="exercises">
-      <li><div><b>Reproduce the failure, then fix it.</b> Run the repository's script and watch the UKF line print <code>nan</code>. Then run the UKF with <span class="m">\alpha = 1</span> and compare its RMSE with the linear filter's.</div>
+      <li><div><b>See the paper's spread fail, then compare.</b> Run the UKF with the paper's recommended <span class="m">\alpha = 10^{-3}</span> and find where it turns to NaN. Then run it with the repository's default <span class="m">\alpha = 1</span> and compare its RMSE with the linear filter's.</div>
         <details class="sol"><summary>Hint</summary><p><code>run_ukf</code> takes <code>alpha</code>, <code>beta</code>, <code>kappa</code> as keyword arguments. Find the first step at which <code>jnp.isnan</code> is true.</p></details>
-        <details class="sol"><summary>Solution</summary><p>With the defaults the estimates are NaN from step 335 onward and the RMSE is NaN. With <span class="m">\alpha = 1</span> the UKF returns 0.1554 and 0.1351, equal to the linear filter's to four decimals (the worst difference between the two state trajectories is <span class="m">2.3 \times 10^{-5}</span>, 32-bit rounding).</p>
+        <details class="sol"><summary>Solution</summary><p>With <span class="m">\alpha = 10^{-3}</span> the estimates are NaN from step 335 onward and the RMSE is NaN. With <span class="m">\alpha = 1</span> the UKF returns 0.1554 and 0.1351, equal to the linear filter's to four decimals (the worst difference between the two state trajectories is <span class="m">2.3 \times 10^{-5}</span>, 32-bit rounding).</p>
           <pre><code class="language-python">import jax, jax.numpy as jnp
 from kalman_jax.filters import generate_linear_synthetic_data, run_linear_kf, run_ukf, compute_rmse
 
 F, H, Q, R, xs, zs = generate_linear_synthetic_data(jax.random.PRNGKey(42), n_steps=1000)
 x0, P0 = jnp.zeros(2), jnp.eye(2)
 f, h = (lambda x: F @ x), (lambda x: H @ x)
-bad = run_ukf(zs, f, h, Q, R, x0, P0)                 # alpha = 1e-3 by default
+bad = run_ukf(zs, f, h, Q, R, x0, P0, alpha=1e-3)     # the paper's spread
 print("first NaN at step", int(jnp.argmax(jnp.isnan(bad[:, 0]))))     # 335
-good = run_ukf(zs, f, h, Q, R, x0, P0, alpha=1.0)
+good = run_ukf(zs, f, h, Q, R, x0, P0)                # alpha = 1, the default
 print(compute_rmse(xs, good), compute_rmse(xs, run_linear_kf(zs, F, H, Q, R, x0, P0)))</code></pre></details>
+      </li>
+      <li><div><b>Instrument the scan.</b> Rewrite the UKF's loop so that each step also returns the error of the predicted mean against <span class="m">F\hat x</span> and the smallest eigenvalue of the predicted covariance. Run it with <span class="m">\alpha = 10^{-3}</span> and find the first step at which that eigenvalue is not positive. How large is the mean's error there?</div>
+        <details class="sol"><summary>Hint</summary><p><code>lax.scan</code>'s step function returns <code>(carry, output)</code>; anything put in <code>output</code> is stacked over the steps. Use <code>unscented_kf_predict</code> and <code>unscented_kf_update</code> from <code>kalman_jax.filters</code> and <code>jnp.linalg.eigvalsh</code>, which returns eigenvalues in ascending order.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The predicted covariance first has a negative eigenvalue at step 335, where the predicted position is off by 0.58: exactly the step at which <code>run_ukf</code>'s estimates turn to NaN, one Cholesky factorisation later.</p>
+          <pre><code class="language-python">from kalman_jax.filters import unscented_kf_predict, unscented_kf_update
+
+def step(carry, z):
+    x, P = carry
+    x_pred, P_pred = unscented_kf_predict(x, P, f, Q, alpha=1e-3)
+    x_new, P_new, _, _ = unscented_kf_update(x_pred, P_pred, z, h, R, alpha=1e-3)
+    diagnostics = (x_pred - F @ x, jnp.linalg.eigvalsh(P_pred)[0])
+    return (x_new, P_new), diagnostics
+
+_, (mean_err, min_eig) = jax.lax.scan(step, (x0, P0), zs)
+k = int(jnp.argmax(min_eig &lt;= 0))
+print(k, mean_err[k])                     # 335 [-0.5827751   0.04341573]</code></pre></details>
       </li>
       <li><div><b>Lie to the filter about the sensor.</b> Keep the data fixed and run the linear filter with <span class="m">R</span> four times too large, then four times too small. What happens to the RMSE and to the spread of the innovations relative to <span class="m">\sqrt{S}</span>?</div>
         <details class="sol"><summary>Hint</summary><p>Compare the sample standard deviation of <span class="m">e_t</span> with the filter's <span class="m">\sqrt{S_\infty}</span>. A consistent filter has a ratio near one.</p></details>
@@ -321,7 +439,7 @@ print(compute_rmse(xs, good), compute_rmse(xs, run_linear_kf(zs, F, H, Q, R, x0,
       <li><div><b>The filter</b>: predict with <span class="m">F</span> and <span class="m">Q</span>, update with the gain <span class="m">K = PH^\top S^{-1}</span>, covariance in Joseph form, gain by a linear solve rather than an inverse.</div></li>
       <li><div><b>The numbers</b>: position RMSE 0.1554 against the sensor's 0.5, velocity RMSE 0.1351 without a velocity sensor; steady-state gain (0.106, 0.060), posterior sds 0.163 and 0.132, innovation sd 0.529; convergence within about five seconds.</div></li>
       <li><div><b>The EKF</b>: Jacobians in place of the matrices; identical to the linear filter on a linear model, which is what the repository's script checks.</div></li>
-      <li><div><b>The UKF</b>: five sigma points, weights from <span class="m">\lambda = \alpha^2(n+\kappa) - n</span>; exact on linear maps in double precision; with the default <span class="m">\alpha = 10^{-3}</span> the weights are <span class="m">\pm 10^6</span> and the filter is NaN from step 335 in JAX's float32. Fix: <span class="m">\alpha = 1</span> or 64-bit.</div></li>
+      <li><div><b>The UKF</b>: five sigma points, weights from <span class="m">\lambda = \alpha^2(n+\kappa) - n</span>; exact on linear maps in double precision; with the paper's recommended <span class="m">\alpha = 10^{-3}</span> the weights are <span class="m">-999\,999</span> and <span class="m">250\,000</span>, the mean is computed from terms of 33 million and is off by 3% of the position, the covariance goes negative at step 335, and the filter is NaN from there on in JAX's float32. The repository uses <span class="m">\alpha = 1</span>; 64-bit also works; reordering the sums does not.</div></li>
     </ol>
   </div>
   <div class="col prose" style="margin-top:1rem">
@@ -341,6 +459,8 @@ print(compute_rmse(xs, good), compute_rmse(xs, run_linear_kf(zs, F, H, Q, R, x0,
         <tr><td>Sigma points, unscented transform</td><td><span class="m">2n+1</span> weighted points whose mean and covariance match the belief, pushed through the nonlinearity exactly.</td></tr>
         <tr><td><span class="m">\alpha, \beta, \kappa</span></td><td>Spread of the sigma points, a fourth-moment correction, a secondary scaling; set <span class="m">\lambda</span> and the weights.</td></tr>
         <tr><td>Catastrophic cancellation</td><td>Loss of significant digits when nearly equal large terms are subtracted; fatal to a covariance in 32-bit.</td></tr>
+        <tr><td>float32, float64</td><td>32- and 64-bit floating-point numbers: 24 and 53 significant bits, about 7 and 16 decimal digits. JAX defaults to float32.</td></tr>
+        <tr><td>NaN</td><td>"Not a number", the IEEE 754 result of an invalid operation such as the square root of a negative number; it propagates through every later operation.</td></tr>
       </tbody>
     </table>
   </div>
@@ -364,6 +484,7 @@ print(compute_rmse(xs, good), compute_rmse(xs, run_linear_kf(zs, F, H, Q, R, x0,
       <li id="ref-7"><span class="rn">[7]</span><div>S. Särkkä. <em>Bayesian Filtering and Smoothing</em>. Cambridge University Press, 2013. <a href="https://doi.org/10.1017/CBO9781139344203">doi:10.1017/CBO9781139344203</a>. The Bayesian view of filtering in which the Kalman filter, EKF and UKF are successive approximations of the same posterior recursion.</div></li>
       <li id="ref-8"><span class="rn">[8]</span><div>R. S. Bucy and P. D. Joseph. <em>Filtering for Stochastic Processes with Applications to Guidance</em>. Wiley Interscience, 1968. The stabilised covariance update now called the Joseph form.</div></li>
       <li id="ref-9"><span class="rn">[9]</span><div>J. Bradbury, R. Frostig, P. Hawkins, M. J. Johnson, C. Leary, D. Maclaurin, G. Necula, A. Paszke, J. VanderPlas, S. Wanderman-Milne and Q. Zhang. JAX: composable transformations of Python+NumPy programs, 2018. <a href="https://github.com/jax-ml/jax">github.com/jax-ml/jax</a>. The library the repository is written in; its default 32-bit arithmetic is the subject of Part 4.</div></li>
+      <li id="ref-10"><span class="rn">[10]</span><div>R. van der Merwe and E. A. Wan. The square-root unscented Kalman filter for state and parameter-estimation. In <em>Proceedings of the 2001 IEEE International Conference on Acoustics, Speech, and Signal Processing (ICASSP)</em>, 2001. <a href="https://doi.org/10.1109/ICASSP.2001.940586">doi:10.1109/ICASSP.2001.940586</a>. Propagates the Cholesky factor, so the covariance stays positive-definite by construction.</div></li>
     </ul>
     <p>Next, chapter 03 keeps the filter and makes its model learnable: a small network inside the prediction step, trained by differentiating through the whole recursion, and the question of whether what it learns survives a new trajectory.</p>
   </div>
