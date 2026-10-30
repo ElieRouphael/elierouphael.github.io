@@ -119,6 +119,30 @@ def main() -> None:
         diffs = np.array(diffs)
         print(f"{name}: consecutive transitions {n}; true-time transition minus midpoint transition [s] min / median / max: "
               f"{diffs.min()} / {np.median(diffs):g} / {diffs.max()}; gaps too short with true-time angles: {short}")
+        tight = sum(plan[b] - plan[a] - opps[a].duration == inst.transition(a, b)
+                    for ids in per.values() for a, b in zip(ids, ids[1:]))
+        print(f"   {name}: consecutive gaps with zero slack in the model (gap == midpoint transition): {tight}")
+        # Can the same tasks, in the same order, be retimed (whole-second starts inside their windows) so that every
+        # consecutive gap meets the true-time rule? Forward pass over the set of reachable start times.
+        def dirs(o, ts):
+            ts = np.asarray(ts, dtype=float)
+            g = ground_points_eci(lat[o.target:o.target + 1], lon[o.target:o.target + 1], ts)[:, 0, :]
+            u = g - orbits[o.sat].position_eci(ts)
+            return u / np.linalg.norm(u, axis=1, keepdims=True)
+        retimable = []
+        for s, ids in sorted(per.items()):
+            feas = np.arange(opps[ids[0]].earliest_start, opps[ids[0]].latest_start + 1)
+            for a, b in zip(ids, ids[1:]):
+                oa, ob = opps[a], opps[b]
+                T = np.arange(ob.earliest_start, ob.latest_start + 1)
+                ang = np.degrees(np.arccos(np.clip(dirs(oa, feas + oa.duration) @ dirs(ob, T).T, -1, 1)))
+                ok = feas[:, None] + oa.duration + np.ceil(inst.settle_s + ang / inst.slew_rate_deg_s) <= T[None, :]
+                feas = T[ok.any(axis=0)]
+                if len(feas) == 0:
+                    break
+            retimable.append(len(feas) > 0)
+        print(f"   {name}: satellites whose task sequence can be retimed to meet the true-time rule between consecutive "
+              f"tasks (same order, whole-second starts): {sum(retimable)} of {len(retimable)} {retimable}")
 
     print("\n== triangle inequality ==")
     n_tri, worst_angle, worst_s = 0, 1e9, 1e9
@@ -272,6 +296,33 @@ def main() -> None:
         rr = solve_cpsat(sub, 30, workers=8, seed=0)
         print(f"   default pass alone ({len(pass_ids)} opportunities), power {duty} s: best value {rr['objective']} {rr['status']}, "
               f"tasks {sorted(pass_ids[k] for k in rr['plan'])}")
+    # the hero demo's suggestions and exercise 4 in the context of the whole optimal plan
+    b164 = dict(cpsat); b164[164] = opps[164].earliest_start
+    print("   CP-SAT plan plus opportunity 164 at its earliest start:", check_plan(inst, b164))
+    rest = {i for i in cpsat if i not in pass_ids}
+    blocked = [i for i in pass_ids if opps[i].target in {opps[j].target for j in rest}]
+    print("   pass opportunities whose target the rest of the optimal plan already collects:",
+          [(i, opps[i].target, [j for j in rest if opps[j].target == opps[i].target]) for i in blocked])
+    best_sets = []
+    cand = [i for i in pass_ids if i not in blocked]
+    for r_ in range(1, len(cand) + 1):
+        for S_ in itertools.combinations(cand, r_):
+            if sum(opps[i].weight for i in S_) != 30 or sum(opps[i].duration for i in S_) > 240:
+                continue
+            for perm in itertools.permutations(S_):  # earliest placement is optimal for a fixed order (triangle inequality)
+                t_, prev, good = None, None, True
+                for i in perm:
+                    t_ = opps[i].earliest_start if prev is None else max(opps[i].earliest_start, t_ + opps[prev].duration + inst.transition(prev, i))
+                    if t_ > opps[i].latest_start:
+                        good = False
+                        break
+                    prev = i
+                if good:
+                    best_sets.append(S_)
+                    break
+        if r_ >= 8:
+            break
+    print("   value-30 sets for the pass within 240 s, excluding targets collected elsewhere:", best_sets)
     # exercise 1: a break that uses s_ab instead of s_max
     def sweep_bad(I):
         out = set()

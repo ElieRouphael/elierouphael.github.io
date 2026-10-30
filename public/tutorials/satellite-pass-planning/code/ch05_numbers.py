@@ -40,12 +40,16 @@ def straddles(inst, meta) -> dict:
     for o in inst.opportunities:
         d, mid = o.duration, 0.5 * (o.window_start + o.window_end)
         bounds = [("revolution boundary", B) for B in rev_b] + [("contact start", c0) for c0, _ in meta["contacts"][o.sat]]
+        movable = False
         for kind, B in bounds:
             if o.window_start < B < o.window_end:
                 out[f"windows containing a {kind}"] += 1
                 after = mid >= B
                 if (after and o.window_start + d <= B) or ((not after) and o.latest_start >= B):
                     out[f"  ... where a task can lie wholly on the other side of the {kind}"] += 1
+                    movable = True
+        if movable:  # a window can contain both a revolution boundary and a contact start: count it once
+            out["distinct windows with a task that can lie wholly on the wrong side"] += 1
         if any(o.window_start <= c1 and c0 <= o.window_end for c0, c1 in meta["contacts"][o.sat]):
             out["windows overlapping a ground contact in time"] += 1
     return dict(out)
@@ -153,7 +157,7 @@ def main() -> None:
     for k, v in straddles(med, med_meta).items():
         print(f"   medium seed 0, {k}: {v}")
     sm = straddles(med, med_meta)
-    movable = sum(v for k, v in sm.items() if "other side" in k)
+    movable = sm.get("distinct windows with a task that can lie wholly on the wrong side", 0)
     print(f"   medium seed 0: windows whose task could be charged to the wrong segment: {movable} of "
           f"{len(med.opportunities)} = {100 * movable / len(med.opportunities):.1f} %")
 

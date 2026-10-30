@@ -174,6 +174,42 @@ def main() -> None:
         print(f"along-track (argument of latitude) offset over {hours} h with the Kepler period kept: {np.degrees(du):.2f} deg = "
               f"{du * a / 1e3:.0f} km in orbit = {abs(du) / n:.1f} s of timing")
     print(f"relative change of the argument-of-latitude rate: {k:.3e}; period that would match it: {T / (1 + k):.2f} s vs {T:.2f} s")
+    # The a in that formula is the theory's mean semi-major axis, not the satellite's average distance from the
+    # centre. Compare at the same average distance instead: integrate the J2 equations of motion (point mass + J2)
+    # from a circular state at r = a on the ascending node, and measure the node-to-node period against Kepler's
+    # period for the time-averaged radius.
+    from scipy.integrate import solve_ivp
+
+    def rhs(_t, s):
+        r, v = s[:3], s[3:]
+        rn = np.linalg.norm(r)
+        f = 1.5 * J2 * MU * R_EQ**2 / rn**5
+        zz = 5 * r[2] ** 2 / rn**2
+        return np.concatenate([v, -MU * r / rn**3 + f * np.array([r[0] * (zz - 1), r[1] * (zz - 1), r[2] * (zz - 3)])])
+
+    inc = np.radians(97.6)
+    v0 = np.sqrt(MU / a)
+    s0 = [a, 0.0, 0.0, 0.0, v0 * np.cos(inc), v0 * np.sin(inc)]
+    sol = solve_ivp(rhs, [0, 30 * T], s0, method="DOP853", rtol=1e-11, atol=1e-5, dense_output=True)
+    tt = np.linspace(0, 30 * T, 300001)
+    st = sol.sol(tt)
+    zs = st[2]
+    up = np.flatnonzero((zs[:-1] < 0) & (zs[1:] >= 0))
+    tn = np.array([tt[q] - zs[q] * (tt[q + 1] - tt[q]) / (zs[q + 1] - zs[q]) for q in up])
+    TN = (tn[-1] - tn[0]) / (len(tn) - 1)
+    sel = (tt >= tn[0]) & (tt < tn[-1])
+    rbar = np.linalg.norm(st[:3], axis=0)[sel].mean()
+    TK = 2 * np.pi * np.sqrt(rbar**3 / MU)
+    rel = TN / TK - 1
+    abar = (MU * (TN * (1 + k) / (2 * np.pi)) ** 2) ** (1 / 3)  # mean semi-major axis that the formula would need
+    print(f"numerical J2 orbit: nodal period {TN:.2f} s, time-averaged radius {rbar / 1e3:.1f} km, Kepler period there {TK:.2f} s: "
+          f"longer by {TN - TK:.2f} s per revolution ({rel:.2e}); the formula's mean a for this orbit = {abar / 1e3:.1f} km, "
+          f"{(rbar - abar) / 1e3:.1f} km below the average radius")
+    vorb = 2 * np.pi * a / T
+    for hours in (6, 12):
+        lag = rel / (1 + rel) * hours * 3600
+        print(f"  at the same average radius, lag after {hours} h = {lag:.1f} s = {lag * vorb / 1e3:.0f} km along the track")
+    print(f"  period that would match it: {T * (1 + rel):.2f} s vs {T:.2f} s")
 
     print("\n== Exercises")
     Trep = sid / 15

@@ -239,8 +239,8 @@ function propagate() {
     const lits = ["\\lnot x_a", "\\lnot x_b"];
     if (pp.kind === "both" && pp.ord !== "free") lits.push(pp.ord === "ab" ? "\\lnot o_{ab}" : "o_{ab}");
     if (pp.kind !== "none") {
-      if (pp.lbA > A.ws) lits.push(`\lbrack s_a < ${pp.lbA} \rbrack`);
-      if (pp.lbB > B.ws) lits.push(`\lbrack s_b < ${pp.lbB} \rbrack`);
+      if (pp.lbA > A.ws) lits.push(`\\lbrack s_a < ${pp.lbA} \\rbrack`);
+      if (pp.lbB > B.ws) lits.push(`\\lbrack s_b < ${pp.lbB} \\rbrack`);
     }
     learned = lits.join(" \\lor ");
   }

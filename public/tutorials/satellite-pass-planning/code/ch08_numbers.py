@@ -339,9 +339,10 @@ def main() -> None:
     s2, _ = sub_instance(inst, ids2)
     g2 = solve_greedy(s2)
     b2 = branch_and_bound(s2, "knap", g2["objective"], True)
+    b0 = branch_and_bound(s2, "knap", 0, True)
     c2 = run_cpsat(s2, 20.0, 8)
-    print(f"{len(ids2)} opportunities: greedy {g2['objective']}, fixed-order branch and bound {b2[0]}, CP-SAT {c2['value']} "
-          f"({c2['status']})")
+    print(f"{len(ids2)} opportunities: greedy {g2['objective']}, fixed-order branch and bound from the greedy start "
+          f"{b2[0]} (never beaten), from no start {b0[0]} (the fixed-order optimum), CP-SAT {c2['value']} ({c2['status']})")
 
     if not write:
         print("\n(run with --write to rewrite interactive/ch08-data.js)")

@@ -197,6 +197,10 @@ for m in STEPPERS:
     e60, e30 = run(m, 60.0, N0)["pos_err"], run(m, 30.0, N0)["pos_err"]
     print(f"  {m:<17} {e60 / 1e3:,.4g} km -> {e30 / 1e3:,.4g} km, ratio {e60 / e30:.2f} (log2 {math.log2(e60 / e30):.2f})")
 
+section("symplectic Euler's energy band (largest |dE/E| over 5 revolutions) against the step")
+for h in (120.0, 60.0, 30.0, 15.0):
+    print(f"  h = {h:g} s: {run('symplectic Euler', h, N0)['max_dE']:.3e}")
+
 section("symplectic Euler, long run: 50 revolutions at h = 60 s")
 for m in ("symplectic Euler", "RK4"):
     s = run(m, 60.0, 50)

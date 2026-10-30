@@ -203,8 +203,8 @@ def benchmark():
                      "pairs": r["stats"]["conflict_pairs"], "limit": r["time_limit_s"],
                      "greedy": g["objective"], "cpsat": c["objective"], "rolling": rh["objective"], "milp": m["objective"],
                      "cpsat_bound": round(c["bound"], 3), "milp_bound": round(m["bound"], 3) if m["bound"] is not None else None,
-                     "t_greedy": round(g["time_s"], 2), "t_cpsat": round(c["time_s"], 2),
-                     "t_rolling": round(rh["time_s"], 2), "t_milp": round(m["time_s"], 2),
+                     "t_greedy": round(g["time_s"], 2), "t_cpsat": round(c["time_s"], 4),  # 4 decimals: the page's
+                     "t_rolling": round(rh["time_s"], 2), "t_milp": round(m["time_s"], 4),  # ratios round correctly
                      "cpsat_status": c["status"], "milp_status": m["status"]})
     print("[benchmark.json, cited]")
     for r in recs:
@@ -276,6 +276,13 @@ def main():
         print(f"[{name}] LP with {len(cliques)} greedy clique inequalities: {val:.2f} "
               f"(without: {data[name]['lp']['tight']['bound']:.2f}); time-indexed binaries: {ti1} on a 1 s grid, "
               f"{ti10} on a 10 s grid ({n} opportunities)")
+    # the integer optimum with the precedence rows deleted: how much of the LP-to-optimum distance is reconfiguration
+    s_inst = insts["small"]; ns = len(s_inst.opportunities)
+    cp_, csp, bp = build_variant(s_inst, "noprec")
+    integ_p = np.ones(len(cp_)); integ_p[ns:2 * ns] = 0
+    rp = milp(cp_, constraints=csp, bounds=bp, integrality=integ_p, options={"time_limit": 60.0, "disp": False})
+    print(f"[small] integer optimum with the precedence rows deleted: {-rp.fun:.0f} (status {rp.status}); "
+          f"so of LP {data['small']['lp']['tight']['bound']:.2f} - 219, {-rp.fun - 219:.0f} points are reconfiguration")
     lp, opt = data["small"]["lp"]["tight"]["bound"], 219
     print(f"[small] LP bound {lp:.2f} vs optimum {opt}: {100 * (lp - opt) / opt:.1f} % above; floor (integer weights) {int(np.floor(lp + 1e-9))}")
     lpm = data["medium"]["lp"]["tight"]["bound"]
