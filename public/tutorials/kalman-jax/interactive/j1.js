@@ -7,7 +7,7 @@
    Needs ../kit/kit.js and j1-data.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
+const { $, $$, css, fmt, caption, fit, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
 const D = window.J1;
 
 /* ============================================================ exact floats */
@@ -77,15 +77,103 @@ const toNum = x => (x.neg ? -1 : 1) * Number(`${x.digits}e${x.p}`);
 function sci(v, d = 2) {
   if (v === 0) return "0";
   if (!isFinite(v)) return String(v);
-  const e = Math.floor(Math.log10(Math.abs(v))), m = v / 10 ** e;
-  if (e >= -3 && e <= 5) return String(+v.toPrecision(d + 1));
+  const e0 = Math.floor(Math.log10(Math.abs(v)));
+  if (e0 >= -3 && e0 <= 5) return String(+v.toPrecision(d + 1));
+  const [m, e] = v.toExponential(d).split("e");          // exact for every finite double, subnormals included
+  return `${(+m).toString()} × 10${sup(+e)}`;
+}
+/* The same for an exact decimal { neg, digits, p }, which may be far below the smallest double. */
+function sciExact(x, d = 2) {
+  if (x.digits === 0n) return "0";
+  const str = x.digits.toString(), e = str.length - 1 + x.p;
+  if (e > -300) return sci(Math.abs(toNum(x)), d);
+  const m = Number(str.slice(0, d + 1)) / 10 ** Math.min(d, str.length - 1);
   return `${(+m.toFixed(d)).toString()} × 10${sup(e)}`;
+}
+/* log10 of |x| for an exact decimal, without converting it to a double first. */
+const log10Exact = x => { const str = x.digits.toString(), k = Math.min(15, str.length); return Math.log10(Number(str.slice(0, k))) + (str.length - k) + x.p; };
+/* A small positive number as a plain decimal, 0.000000119209 rather than 1.19209e-7. */
+function plainSmall(x, digits = 6) {
+  if (x === 0) return "0";
+  if (x >= 1e-3) return String(+x.toPrecision(digits));
+  const [m, e] = x.toExponential(digits - 1).split("e");
+  return "0." + "0".repeat(-Number(e) - 1) + m.replace(".", "").replace(/0+$/, "");
+}
+const minus = v => String(v).replace("-", "−");
+/* The float next to x in format f, towards +infinity (dir = 1) or -infinity (dir = -1), by stepping its bits. */
+function stepFloat(x, f, dir) {
+  const dv = new DataView(new ArrayBuffer(8));
+  if (f.bits === 32) {
+    dv.setFloat32(0, x);
+    let u = dv.getUint32(0);
+    if (x === 0) u = dir > 0 ? 1 : 0x80000001;
+    else u = (x > 0) === (dir > 0) ? u + 1 : u - 1;
+    dv.setUint32(0, u >>> 0);
+    return dv.getFloat32(0);
+  }
+  dv.setFloat64(0, x);
+  let u = dv.getBigUint64(0);
+  if (x === 0) u = dir > 0 ? 1n : 0x8000000000000001n;
+  else u = (x > 0) === (dir > 0) ? u + 1n : u - 1n;
+  dv.setBigUint64(0, u);
+  return dv.getFloat64(0);
 }
 const SUP = { "-": "⁻", 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹" };
 const sup = e => String(e).split("").map(c => SUP[c]).join("");
 
 /* ============================================================ 1. the float explorer */
 const fx = { text: "0.1", f: "f32" };
+let nl = null;                                               // what the number line shows, set by drawFloat
+/* The stored float and its neighbours on a line measured in gaps, the typed number, and the interval that rounds
+   to the stored float. Neighbours come from stepping the bits, so the spacing is exact, including the halving just
+   below a power of two. */
+function drawLine() {
+  const cv = $("#nlC");
+  const { ctx, w, h } = fit(cv, narrowOf(cv) ? 2.6 : 5.2);
+  if (!nl) {
+    ctx.fillStyle = css("--muted"); ctx.font = "13px " + css("--font-ui"); ctx.textAlign = "center";
+    ctx.fillText("No number line: nothing finite is stored.", w / 2, h / 2);
+    return;
+  }
+  const { stored, f, unit, typedPos, exact } = nl;
+  const R = 2.6, pad = 18, y = h * 0.52;
+  const X = p => pad + (p + R) / (2 * R) * (w - 2 * pad);
+  const pos = v => (v - stored) / unit;
+  const floats = [stored];
+  for (let v = stored, i = 0; i < 12; i++) { v = stepFloat(v, f, 1); if (!isFinite(v) || pos(v) > R) break; floats.push(v); }
+  for (let v = stored, i = 0; i < 12; i++) { v = stepFloat(v, f, -1); if (!isFinite(v) || pos(v) < -R) break; floats.push(v); }
+  const up = stepFloat(stored, f, 1), down = stepFloat(stored, f, -1);
+  const lo = isFinite(down) ? pos(down) / 2 : -0.5, hi = isFinite(up) ? pos(up) / 2 : 0.5;
+  ctx.fillStyle = alpha("--accent", 0.14);                   // every real number in here rounds to the stored float
+  ctx.fillRect(X(lo), y - 16, X(hi) - X(lo), 32);
+  ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
+  seg(ctx, pad, y, w - pad, y);
+  ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.6;
+  for (const v of floats) { const x = X(pos(v)); seg(ctx, x, y - 9, x, y + 9); }
+  ctx.fillStyle = css("--accent");
+  ctx.beginPath(); ctx.arc(X(0), y, 5.5, 0, 7); ctx.fill();
+  ctx.font = "11px " + css("--font-mono"); ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.fillStyle = css("--ink-2");
+  ctx.fillText("stored", X(0), y + 13);
+  if (isFinite(up)) {                                         // second row, at the edges, so labels never collide
+    ctx.textAlign = "right";
+    ctx.fillText(`gap above: ${sci(Math.abs(up - stored))}`, w - pad, y + 28);
+  }
+  if (isFinite(down) && Math.abs(Math.abs(pos(down)) - 1) > 1e-9) {
+    ctx.textAlign = "left";
+    ctx.fillText("gap below: half as wide", pad, y + 28);    // the stored float is a power of two
+  }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  if (!exact) {
+    const tx = X(Math.max(-R, Math.min(R, typedPos)));
+    ctx.fillStyle = css("--warm");
+    ctx.beginPath(); ctx.moveTo(tx, y - 7); ctx.lineTo(tx - 5, y - 15); ctx.lineTo(tx + 5, y - 15); ctx.closePath(); ctx.fill();
+    ctx.fillText("typed", tx, y - 17);
+  } else {
+    ctx.fillStyle = css("--warm"); ctx.fillText("typed = stored", X(0), y - 17);
+  }
+}
 function drawFloat() {
   const f = FMT[fx.f], typed = parseDecimal(fx.text);
   const input = $("#fxIn");
@@ -93,6 +181,7 @@ function drawFloat() {
   if (!typed) {
     ["#rStored", "#rErr", "#rGap", "#rDigits", "#rForm"].forEach(id => { $(id).textContent = "–"; });
     $("#bits").innerHTML = ""; $("#bitLegend").innerHTML = "";
+    nl = null; drawLine();
     caption($("#heroStatus"), "Type a decimal number such as 0.1, 33.7, 16777217 or 1e-45.");
     return;
   }
@@ -109,29 +198,33 @@ function drawFloat() {
   const sig = Number(d.frac) / 2 ** f.fracBits + (sub_ ? 0 : 1);
   $("#bitLegend").innerHTML =
     `<span><i class="b-s"></i>sign ${d.sign}</span>` +
-    `<span><i class="b-e"></i>exponent ${d.exp}${d.exp === maxExp ? " (all ones: infinity or NaN)" : sub_ ? " (all zeros: subnormal)" : ` − ${f.bias} = ${E}`}</span>` +
-    `<span><i class="b-f"></i>fraction ${d.exp === maxExp ? "" : (sub_ ? "0." : "1.") + "…" + " = " + sig.toPrecision(f.bits === 32 ? 9 : 17)}</span>`;
+    `<span><i class="b-e"></i>exponent ${d.exp}${d.exp === maxExp ? " (all ones: infinity or NaN)" : sub_ ? " (all zeros: subnormal)" : ` − ${f.bias} = ${minus(E)}`}</span>` +
+    `<span><i class="b-f"></i>fraction ${d.exp === maxExp ? "" : (sub_ ? "0." : "1.") + "…" + " = " + (sub_ ? plainSmall(sig, 9) : sig.toPrecision(f.bits === 32 ? 9 : 17))}</span>`;
   if (!ex) {
     $("#rStored").textContent = isNaN(stored) ? "NaN" : (stored > 0 ? "+∞" : "−∞");
     ["#rErr", "#rGap", "#rDigits"].forEach(id => { $(id).textContent = "–"; });
     $("#rForm").textContent = "–";
+    nl = null; drawLine();
     caption($("#heroStatus"), `${fx.text} is beyond the largest ${f.name} (${f.bits === 32 ? "3.4 × 10³⁸" : "1.8 × 10³⁰⁸"}), so the conversion overflows to infinity: the exponent field is all ones and the fraction zero. Arithmetic that overflows does the same, and infinity minus infinity is NaN.`);
     return;
   }
-  const err = sub(ex, typed), errN = toNum(err), typedN = toNum(typed), gap = gapOf(d, f);
-  $("#rStored").textContent = decString(ex);
-  $("#rErr").textContent = errN === 0 ? "0 (exact)" : `${errN > 0 ? "+" : "−"}${sci(Math.abs(errN))}` + (typedN !== 0 ? ` (relative ${sci(Math.abs(errN / typedN))})` : "");
+  const err = sub(ex, typed), exact = err.digits === 0n, typedZero = typed.digits === 0n, gap = gapOf(d, f);
+  const relErr = exact || typedZero ? 0 : 10 ** (log10Exact(err) - log10Exact(typed));
+  $("#rStored").textContent = stored === 0 && d.sign === 1 ? "−0" : decString(ex);
+  $("#rErr").textContent = exact ? "0 (exact)" : `${err.neg ? "−" : "+"}${sciExact(err)}` + (typedZero ? "" : ` (relative ${sci(relErr)})`);
   $("#rGap").textContent = sci(gap);
   const digits = stored === 0 ? null : Math.log10(Math.abs(stored) / gap);
   $("#rDigits").textContent = digits == null ? "–" : `about ${Math.max(0, Math.floor(digits))}`;
-  $("#rForm").textContent = sub_ ? `(−1)^${d.sign} × ${sig.toPrecision(6)} × 2^${E}` : `(−1)^${d.sign} × ${sig.toPrecision(f.bits === 32 ? 9 : 12)} × 2^${E}`;
+  $("#rForm").textContent = `(−1)${sup(d.sign)} × ${sub_ ? plainSmall(sig) : sig.toPrecision(f.bits === 32 ? 9 : 12)} × 2${sup(E)}`;
+  nl = { stored, f, unit: gap, exact, typedPos: exact ? 0 : (err.neg ? 1 : -1) * 10 ** (log10Exact(err) - Math.log10(gap)) };
+  drawLine();
   const isInt = typed.p >= 0 || (typed.digits % pow10(-typed.p) === 0n);
   let msg;
   if (stored === 0 && typed.digits !== 0n) msg = `${fx.text} is smaller than half the smallest positive ${f.name}, so it rounds to zero: underflow. The smallest positive ${f.name} is ${f.bits === 32 ? "1.4 × 10⁻⁴⁵" : "4.9 × 10⁻³²⁴"}, a subnormal number with a single 1 at the end of the fraction.`;
-  else if (sub_ && stored !== 0) msg = `This is a subnormal ${f.name}: the exponent field is all zeros, the leading 1 is dropped, and precision is lost gradually as numbers approach zero. Only ${Math.max(1, Math.floor(digits + 1e-9))} significant decimal digit${digits >= 2 ? "s are" : " is"} left. Error: ${errN === 0 ? "none" : sci(Math.abs(errN))}.`;
-  else if (errN === 0) msg = `${fx.text} is stored exactly: it is a whole number times a power of two that fits in ${f.fracBits + 1} significant bits. Most decimal fractions are not. Try 0.1. The next ${f.name} up is ${sci(gap)} away.`;
+  else if (sub_ && stored !== 0) msg = `This is a subnormal ${f.name}: the exponent field is all zeros, the leading 1 is dropped, and precision is lost gradually as numbers approach zero. Only ${Math.max(1, Math.floor(digits + 1e-9))} significant decimal digit${digits >= 2 ? "s are" : " is"} left. Error: ${exact ? "none" : sciExact(err)}.`;
+  else if (exact) msg = `${fx.text} is stored exactly: it is a whole number times a power of two that fits in ${f.fracBits + 1} significant bits. Most decimal fractions are not. Try 0.1. The next ${f.name} up is ${sci(gap)} away.`;
   else if (isInt) msg = `${fx.text} is a whole number, but above ${f.bits === 32 ? "2²⁴ = 16 777 216" : "2⁵³ = 9 007 199 254 740 992"} ${f.name} has no room for the units: neighbouring ${f.name}s are ${sci(gap)} apart here, and ${fx.text} is stored as ${decString(ex)}. Integers beyond that point are rounded like any other number.`;
-  else msg = `${fx.text} has no finite binary expansion, so ${f.name} stores the nearest number it can: ${decString(ex, 40)}. The error, ${sci(Math.abs(errN))}, is at most half the gap of ${sci(gap)} between neighbouring ${f.name}s here, a relative error below ${f.bits === 32 ? "2⁻²⁴ ≈ 6 × 10⁻⁸" : "2⁻⁵³ ≈ 1.1 × 10⁻¹⁶"}. That gap grows with the size of the number: it doubles at every power of two.`;
+  else msg = `${fx.text} has no finite binary expansion, so ${f.name} stores the nearest number it can: ${decString(ex, 40)}. The error, ${sciExact(err)}, is at most half the gap of ${sci(gap)} between neighbouring ${f.name}s here, a relative error below ${f.bits === 32 ? "2⁻²⁴ ≈ 6 × 10⁻⁸" : "2⁻⁵³ ≈ 1.1 × 10⁻¹⁶"}. That gap grows with the size of the number: it doubles at every power of two.`;
   caption($("#heroStatus"), msg);
   $$("#fxPresets [data-v]").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === fx.text));
 }
@@ -177,12 +270,13 @@ function drawBroadcast() {
   </tbody></table>`;
   const stretched = r.status.map((s, i) => s === "a" || s === "b" ? i : -1).filter(i => i >= 0);
   const padded = r.A.filter(v => v == null).length + r.B.filter(v => v == null).length;
+  const lead = t => bc.label ? `<code>${bc.label}</code>: ${t}` : t[0].toUpperCase() + t.slice(1);
   let msg;
-  if (r.ok) msg = `${bc.label ? `<code>${bc.label}</code>: ` : ""}the shapes are lined up from the right${padded ? `, the shorter one padded on the left with axes of length 1 (dots)` : ""}. Along every axis the lengths are equal or one of them is 1, and a length-1 axis is stretched to match (highlighted) without copying any data. The result has shape <b>${pyShape(r.out)}</b>${stretched.length ? `: ${n === 0 ? "" : `${stretched.length} ax${stretched.length > 1 ? "es" : "is"} stretched`}.` : "."}`;
+  if (r.ok) msg = lead(`the shapes are lined up from the right${padded ? `, the shorter one padded on the left with axes of length 1 (dots)` : ""}. Along every axis the lengths are equal or one of them is 1, and a length-1 axis is stretched to match (highlighted) without copying any data. The result has shape <b>${pyShape(r.out)}</b>${stretched.length ? `: ${n === 0 ? "" : `${stretched.length} ax${stretched.length > 1 ? "es" : "is"} stretched`}.` : "."}`);
   else {
     const bad = r.status.map((s, i) => s === "bad" ? i : -1).filter(i => i >= 0);
     const many = bad.length > 1;
-    msg = `${bc.label ? `<code>${bc.label}</code>: ` : ""}lined up from the right, ax${many ? "es" : "is"} ${bad.map(i => (i - n).toString().replace("-", "−")).join(" and ")} (counting from the end) ${many ? "have" : "has"} lengths ${bad.map(i => `${r.A[i]} and ${r.B[i]}`).join(", and ")}: ${many ? "on each, neither length" : "neither"} is 1, so there is no way to stretch one onto the other and JAX raises an error. ${bc.label === "Wm * transformed_points" ? "This is the line the repository does <em>not</em> write: the weights must become a column, <code>Wm[:, None]</code>, so that weight i multiplies row i." : "Add an axis of length 1 with <code>None</code> where you want stretching."}`;
+    msg = lead(`lined up from the right, ax${many ? "es" : "is"} ${bad.map(i => (i - n).toString().replace("-", "−")).join(" and ")} (counting from the end) ${many ? "have" : "has"} lengths ${bad.map(i => `${r.A[i]} and ${r.B[i]}`).join(", and ")}: ${many ? "on each, neither length" : "neither"} is 1, so there is no way to stretch one onto the other and JAX raises an error. ${bc.label === "Wm * transformed_points" ? "This is the line the repository does <em>not</em> write: the weights must become a column, <code>Wm[:, None]</code>, so that weight i multiplies row i." : "Add an axis of length 1 with <code>None</code> where you want stretching."}`);
   }
   caption($("#bcCap"), msg);
   $$("#bcPresets [data-a]").forEach(btn => btn.setAttribute("aria-pressed", btn.dataset.a === bc.a && btn.dataset.b === bc.b));
@@ -254,4 +348,5 @@ $("#sumN").addEventListener("input", e => { sm.e = +e.target.value; drawSum(); }
 
 drawFloat(); drawBroadcast(); drawSum();
 onRedraw(drawSum);
+onRedraw(drawLine);
 })();
