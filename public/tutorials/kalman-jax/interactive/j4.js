@@ -37,12 +37,13 @@ function drawHero() {
 
   const notes = [];
   const batchedDots = (c.jaxpr.match(/\(\[0\], \[0\]\)\)/g) || []).length;
-  const bcast = (c.jaxpr.match(/f32\[1000,2,2\] = broadcast_in_dim/g) || []).length;
-  const xOnly = key[0] === "b" && key[1] === "-" && key[2] === "-";
+  const xB = key[0] === "b" || key[2] === "b";                       // x_pred = F @ x
+  const pB = key[1] === "b" || key[2] === "b" || key[3] === "b";     // P_pred = F @ P @ F.T + Q
   if (batchedDots) notes.push(`${batchedDots === 1 ? "One product has" : `${batchedDots} products have`} both operands batched, and became a <code>dot_general</code> with batch dimensions <code>([0], [0])</code>: 1000 independent 2 × 2 products in one operation.`);
   if (key[0] === "b" && key[2] === "-") notes.push("<code>F @ x</code> with one shared <code>F</code> and 1000 states became a single matrix product with the states as columns, then a transpose to put the batch axis back in front.");
-  if (bcast && xOnly) notes.push("<code>P_pred</code> depends on nothing batched, so it is computed once; because every output gets a batch axis by default, it is then broadcast to 1000 identical copies. <code>out_axes=(0, None)</code> would return it once.");
-  else if (bcast) notes.push("An unbatched operand is broadcast to the batch where it meets a batched one.");
+  if (!xB) notes.push("<code>x_pred = F @ x</code> uses only unbatched arguments, so it is computed once; because every output gets a batch axis by default, it is then broadcast to 1000 identical copies. <code>out_axes=(None, 0)</code> would return it once.");
+  if (!pB) notes.push("<code>P_pred</code> uses only unbatched arguments, so it is computed once; because every output gets a batch axis by default, it is then broadcast to 1000 identical copies. <code>out_axes=(0, None)</code> would return it once.");
+  if (/f32\[1,2,2\] = broadcast_in_dim/.test(c.jaxpr)) notes.push("Where an unbatched value meets a batched one, in the addition of <code>Q</code>, the unbatched one is broadcast across the batch first.");
   if (key[2] === "b" && key.slice(0, 2) !== "bb") notes.push("Batching <code>F</code> turns its transpose into a batched transpose too. With 1000 copies of one model, this does 1000 times the work of sharing it: use <code>None</code> where an argument is the same for every element.");
   if (key === "bbbb") notes.push("Everything is batched: the program has the same five operations as for one input, each on 1000 at once.");
   if (!notes.length) notes.push("Each operation on a batched value became the same operation with a batch axis; operations on shared values run once.");
