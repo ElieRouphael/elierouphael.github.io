@@ -115,7 +115,7 @@ function drawHero() {
     $("#rInput").textContent = f3(ZS[i]);
     $("#lCarryOut").textContent = `carry out, and output y_${k}`;
     $("#rCarryOut").textContent = st(xf[i], Pf[i]);
-    $("#rStack").textContent = `${k} outputs: an array of shape (${k}, 2) so far, (1000, 2) at the end`;
+    $("#rStack").textContent = `${k} output${k === 1 ? "" : "s"}: an array of shape (${k}, 2) so far, (1000, 2) at the end`;
   } else {
     $("#lCarryIn").textContent = k === T ? "initial carry" : `carry in: smoothed (x, P) at step ${k + 1}`;
     $("#rCarryIn").textContent = k === T ? "the filter's last estimate, already smoothed" : st(xs[i + 1], Ps[i + 1]);
@@ -123,7 +123,8 @@ function drawHero() {
     $("#rInput").textContent = k === T ? "none: the backward scan starts here" : `x̂_${k}|${k} = (${f3(xf[i][0])}, ${f3(xf[i][1])}), x̂_${k + 1}|${k} = (${f3(xp[i + 1][0])}, ${f3(xp[i + 1][1])})`;
     $("#lCarryOut").textContent = `carry out, and output: smoothed at ${k}`;
     $("#rCarryOut").textContent = st(xs[i], Ps[i]);
-    $("#rStack").textContent = `${T - k + 1} smoothed steps, from ${T} back to ${k}; stacked in time order at the end`;
+    $("#rStack").textContent = k === T ? `1 smoothed step, the last; stacked in time order at the end`
+      : `${T - k + 1} smoothed steps, from ${T} back to ${k}; stacked in time order at the end`;
   }
   $("#rCheck").textContent = `filter ${maxF.toExponential(0)}, smoother ${maxS.toExponential(0)} (largest position difference)`;
   let msg;
@@ -131,7 +132,9 @@ function drawHero() {
     msg = `<b>Step ${k} of the forward scan.</b> The step function receives the carry, the filter's belief after step ${k - 1}, and one input, measurement ${f3(ZS[i])}. It returns a new carry, which the next step will receive, and one output, which <code>scan</code> stacks. Only the carry crosses from step to step: six numbers, whatever the length of the sequence. The band is the filter's ±2σ, from the carry's [[P]].`;
   } else {
     const gain = Math.abs(xf[i][0] - D.true_pos[i]) - Math.abs(xs[i][0] - D.true_pos[i]);
-    msg = `<b>Step ${k} of the backward scan</b> (<code>reverse=True</code>): the carry now flows from the future. The smoother corrects the filter's estimate at ${k} using the smoothed estimate at ${k + 1 > T ? T : k + 1}, which already contains every later measurement. ${k === T ? "At the last step there are no later measurements, so the smoother starts from the filter's estimate." : `Here it moves the position estimate from ${f3(xf[i][0])} to ${f3(xs[i][0])}, ${gain > 0 ? "closer to" : "away from"} the true ${f3(D.true_pos[i])}.`} Over all 1000 steps the smoother's position error is ${D.smooth.rmse_smoother.toFixed(3)} against the filter's ${D.smooth.rmse_filter.toFixed(3)}.`;
+    msg = k === T
+      ? `<b>Step ${T}: the backward scan starts here</b> (<code>reverse=True</code>). There are no later measurements, so the smoothed estimate at the last step is the filter's own, and it becomes the initial carry. Step back to see the carry flow from the future. Over all ${T} steps the smoother's position error is ${D.smooth.rmse_smoother.toFixed(3)} against the filter's ${D.smooth.rmse_filter.toFixed(3)}.`
+      : `<b>Step ${k} of the backward scan</b> (<code>reverse=True</code>): the carry now flows from the future. The smoother corrects the filter's estimate at ${k} using the smoothed estimate at ${k + 1}, which already contains every later measurement. Here it moves the position estimate from ${f3(xf[i][0])} to ${f3(xs[i][0])}, ${gain > 0 ? "closer to" : "away from"} the true ${f3(D.true_pos[i])}. Over all ${T} steps the smoother's position error is ${D.smooth.rmse_smoother.toFixed(3)} against the filter's ${D.smooth.rmse_filter.toFixed(3)}.`;
   }
   caption($("#heroStatus"), msg);
 }
