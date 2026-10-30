@@ -230,7 +230,12 @@ def linear_kf_predict(x, P, F, Q):
   </div>
   <div class="col prose">
     <p><b>Three stages.</b> The first call of a jitted function goes through three stages, and JAX lets you run them one at a time:</p>
-    <pre><code class="language-python">traced = jax.jit(kf_step).trace(x0, P0, z, F, H, Q, R)   # 1. trace: Python runs, a jaxpr is recorded
+    <pre><code class="language-python">def kf_step(x, P, z, F, H, Q, R):                        # one predict-and-update step
+    x_pred, P_pred = linear_kf_predict(x, P, F, Q)
+    x_new, P_new, _, _ = linear_kf_update(x_pred, P_pred, z, H, R)
+    return x_new, P_new
+
+traced = jax.jit(kf_step).trace(x0, P0, z, F, H, Q, R)   # 1. trace: Python runs, a jaxpr is recorded
 lowered = traced.lower()                                 # 2. lower: the jaxpr is translated to StableHLO
 compiled = lowered.compile()                             # 3. compile: XLA optimises it and emits machine code
 compiled(x0, P0, z, F, H, Q, R)                          # run</code></pre>
@@ -454,7 +459,7 @@ power(2.0, 5)    # traces again with n = 5</code></pre>
     return estimated_states</code></pre>
     <p>Each call creates a new <code>step</code> object, and the function itself is part of the cache key, so the cache never hits. JAX's compilation log confirms it: one XLA compilation on every call, and each call takes about 94 ms. Wrapping the whole function in <code>jit</code> moves the boundary outwards. The outer function is traced once per signature, the inner <code>step</code> is traced as part of that trace, and later calls find the compiled program in the cache: 1.2 ms.</p>
     <p>For the repository's scripts this costs nothing that matters, since each runs the filter once. It would matter as soon as the filter ran in a loop, for example to tune <code>Q</code> over a grid of 100 values: 9.4 s instead of 0.24 s. The fix is one line, <code>run_linear_kf = jax.jit(run_linear_kf)</code>, or the decorator <code>@jax.jit</code> on the definition.</p>
-    <p><b>The training loop.</b> Chapters 03 and 04 train a model with this pattern from <code>kalman_jax/forecasters.py</code>:</p>
+    <p><b>The training loop.</b> Chapters 03 and 04 train a model with the same pattern, in <code>kalman_jax/learned_dynamics.py</code> and <code>kalman_jax/forecasters.py</code>. Here is chapter 04's, from <code>forecasters.py</code>:</p>
     <pre><code class="language-python">@jax.jit
 def update(current_params, current_opt_state):
     loss, grads = value_and_grad(forecasting_loss_fn)(current_params, A, B, C, Q, R, x0, P0, us, ys)
@@ -549,8 +554,9 @@ def gate(z, z_pred, threshold):
         <details class="sol"><summary>Solution</summary><p>Plain <code>jax.jit(run_ekf)</code> fails with <code>TypeError: Error interpreting argument to &lt;function run_ekf at 0x...&gt; as an abstract array. The problematic value is of type &lt;class 'function'&gt; and was passed to the function at path f.</code> Marking the functions static fixes it. Two calls with the same function objects trace once; the fresh <code>lambda</code> is a new key and traces again, for two traces in all. Static functions are compared by identity, so define them once and reuse them.</p>
           <pre><code class="language-python">run_ekf_jit = jax.jit(run_ekf, static_argnums=(1, 2, 3, 4))
 f, h = (lambda x: F @ x), (lambda x: H @ x)
-estimates = run_ekf_jit(zs, f, h, jax.jacfwd(f), jax.jacfwd(h), Q, R, x0, P0)</code></pre>
-          <p>Note that <code>jax.jacfwd(f)</code> also creates a new function each time it is called, so build the Jacobians once too. On this linear model the EKF's estimates equal the linear filter's exactly.</p></details>
+F_jac, H_jac = jax.jacfwd(f), jax.jacfwd(h)      # built once: a new function object would retrace
+estimates = run_ekf_jit(zs, f, h, F_jac, H_jac, Q, R, x0, P0)</code></pre>
+          <p><code>jax.jacfwd(f)</code> also creates a new function each time it is called, which is why the code builds the Jacobians once and reuses them. On this linear model the EKF's estimates equal the linear filter's exactly.</p></details>
       </li>
       <li><div><b>A missing measurement.</b> Sensors drop readings. Write a jitted <code>kf_step</code> that takes <code>z = [nan]</code> to mean "no measurement" and then returns the prediction unchanged. Check that a NaN gives exactly <code>linear_kf_predict</code>'s output, and that a real measurement gives the usual step.</div>
         <details class="sol"><summary>Hint</summary><p>Whether a reading is missing is a value, so it must be selected, not branched on. <code>jnp.where</code> then discards the update's NaN result, so the value comes out right; replacing the NaN first with <code>jnp.nan_to_num</code> also keeps it out of gradients (J3), where <span class="m">0 \times \text{NaN}</span> is still NaN.</p></details>

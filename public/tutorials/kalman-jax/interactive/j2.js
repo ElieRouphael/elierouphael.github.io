@@ -198,7 +198,8 @@ $$("#callBtns [data-call]").forEach(b => b.addEventListener("click", () => {
     else msg += "Same shapes and dtypes as before.";
   } else {
     msg = `<b>A miss.</b> No program for ${code(key)} yet: tracing took ${ms(c.st[0])}, lowering ${ms(c.st[1])} and XLA's compilation ${ms(c.st[2])}, then the program ran in ${ms(run)}. `;
-    if (name === "state4") msg += "A new shape is a new signature. Both programs now sit in the cache side by side.";
+    if ((name === "newvalues" || name === "numpy64") && cache.misses === 1) msg += "Nothing with this signature was cached yet, so even this call compiles. Click it again to see the hit.";
+    else if (name === "state4") msg += "A new shape is a new signature. Both programs now sit in the cache side by side.";
     else if (name === "intz") msg += "A new dtype is a new signature too, even though the arithmetic inside promotes <code>z</code> to float32.";
     else if (cache.misses === 1) msg += "Every later call with this signature will skip all of that.";
     else msg += "The cache was empty for this signature, so the work is done again.";
