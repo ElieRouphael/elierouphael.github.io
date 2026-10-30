@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J6 · Keys, Trees and a Training Loop · Kalman Filters with JAX</title>
+<meta name="description" content="The last chapter of Part I of a computer-science course on JAX: random numbers without hidden state, with JAX's counter-based Threefry generator rebuilt in the page and checked against JAX bit for bit; the rules for splitting keys; pytrees, the nested containers every JAX transformation accepts; Optax's gradient transformations; and a training loop, used to estimate a Kalman filter's noise levels with gradient descent, momentum and Adam. Every number is produced by JAX 0.12 and Optax 0.2.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .numT td.n { font-family: var(--font-mono); font-size: 0.88rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .table-wrap + .prose { margin-top: 0.9rem; }
+  #vocT td, #kT td, #partT td, #treeT td, #optT td { white-space: normal; }
+  .readouts.wide-v { grid-template-columns: minmax(0, 1fr); }
+  .readouts.wide-v .v { text-align: left; margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+  .field input[type="text"] { font: 0.95rem var(--font-mono); padding: 0.35rem 0.5rem; border-radius: 7px; border: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); width: 100%; min-width: 0; }
+  .field input[aria-invalid="true"] { border-color: var(--warm); }
+  /* the key tree */
+  .ktree { font: 0.8rem var(--font-mono); display: grid; gap: 0.3rem; max-height: 24rem; overflow: auto; padding: 0.2rem; }
+  .knode { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.1rem 0.6rem; align-items: baseline; border: 1px solid var(--rule); border-radius: 8px; padding: 0.35rem 0.55rem; background: var(--surface); cursor: pointer; text-align: left; color: var(--ink); font: inherit; }
+  .knode[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-wash); }
+  .knode .path { color: var(--muted); grid-column: 1 / -1; overflow-wrap: anywhere; }
+  .knode .w { color: var(--ink); overflow-wrap: anywhere; }
+  .knode .draws { grid-column: 1 / -1; color: var(--c4); overflow-wrap: anywhere; }
+  .knode .warn { grid-column: 1 / -1; color: var(--warm); }
+  @media (max-width: 480px) { #vocT, #kT, #partT, #treeT, #optT { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Part I, JAX · Chapter J6 of J6</span>
+  <h1>Keys, trees and a training loop</h1>
+  <p class="lede">Three pieces of JAX remain before the Kalman chapters, and each follows from J2's demand that functions be pure. Random numbers cannot come from a hidden generator, so JAX makes the generator's state an explicit value, a <em>key</em>; the demo below rebuilds JAX's generator in the page and matches it bit for bit. Parameters come in nested containers, so every transformation works on <em>pytrees</em>. And an optimiser cannot update anything in place, so Optax returns new parameters and a new optimiser state from pure functions. Put together, they make the training loop of chapters 03 and 04, and they finish J3's work: Adam finds chapter 02's noise levels in under a quarter of the steps gradient descent needed.</p>
+  <p class="byline">Elie Rouphael · Needs chapters J1 to J5 · Every number is produced by JAX 0.12 and Optax 0.2 on a laptop CPU</p>
+  <div class="downloads">
+    <a class="btn" href="code/j6_numbers.py" download>Reproduce every number (.py)</a>
+    <a class="btn ghost" href="https://docs.jax.dev/en/latest/random-numbers.html">JAX's guide to random numbers</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <p class="chart-title">Keys, made in this page by JAX's own algorithm: click a key, then split it, fold in a number, or draw from it</p>
+      <div class="ktree" id="kTree" role="group" aria-label="The keys made so far"></div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Seed for <code>jax.random.PRNGKey(seed)</code></span>
+        <input type="text" id="seedIn" value="42" inputmode="numeric" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="btn-row">
+        <button class="btn primary" type="button" id="splitBtn">split(key)</button>
+        <button class="btn" type="button" id="drawBtn">uniform(key, (4,))</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" type="button" id="foldBtn">fold_in(key, n)</button>
+        <label class="field" style="flex:1"><span class="hint">n</span><input type="text" id="foldIn" value="7" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="The number to fold in"></label>
+      </div>
+      <button class="btn ghost" type="button" id="resetBtn">Start again</button>
+      <div class="readouts wide-v" aria-live="off">
+        <span>selected key, as two uint32 words</span><span class="v" id="rKey">–</span>
+        <span>this page against JAX</span><span class="v" id="rCheck">–</span>
+      </div>
+      <p class="hint">A key is two 32-bit unsigned integers. Splitting and drawing hash it with Threefry-2x32, 20 rounds of add, rotate and exclusive-or, written in this page's script in about 25 lines and compared with JAX's outputs for seed 42 in <code>j6_numbers.py</code>.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#random"><span class="n">1</span><span class="t">Random numbers without hidden state</span><span class="d">Keys, Threefry, split and fold_in</span></a>
+    <a href="#rules"><span class="n">2</span><span class="t">The rules for keys</span><span class="d">Never reuse, split before use, pass keys in</span></a>
+    <a href="#trees"><span class="n">3</span><span class="t">Pytrees</span><span class="d">The containers every transformation understands</span></a>
+    <a href="#optax"><span class="n">4</span><span class="t">Optax</span><span class="d">Optimisers as pure gradient transformations</span></a>
+    <a href="#loop"><span class="n">5</span><span class="t">The training loop</span><span class="d">The repository's pattern, and a scan</span></a>
+    <a href="#kalman"><span class="n">6</span><span class="t">Back to Kalman</span><span class="d">Chapter 02's noise levels by gradient descent, momentum and Adam</span></a>
+    <a href="#part1"><span class="n">7</span><span class="t">Part I, assembled</span><span class="d">What each chapter unlocks in the Kalman code</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="random">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Random numbers without hidden state</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The problem.</b> <code>np.random.normal()</code> reads and advances a generator hidden inside NumPy: a side effect. J2 showed what tracing does with it: inside <code>jit</code> the number is drawn once, while tracing, and frozen into the program. Under <code>vmap</code> or on several devices there is a second problem: a single hidden generator advanced from many places at once gives results that depend on the order things happened to run in.</p>
+    <p><b>JAX's answer: the state is a value.</b> A <b>key</b> is a small array, and every random function takes one and returns numbers, with no other effect:</p>
+    <pre><code class="language-python">key = jax.random.PRNGKey(42)        # Array([ 0, 42], dtype=uint32): two 32-bit words
+jax.random.uniform(key, (4,))        # [0.48870957, 0.6797972, 0.6162715, 0.5610161]
+jax.random.uniform(key, (4,))        # the same four numbers: same key, same draw</code></pre>
+    <p>The key for seed 42 is literally <code>[0, 42]</code>, the seed's high and low 32 bits. In JAX's default 32-bit mode the seed is converted to 32 bits first, so the high word is always 0 and, silently, <code>PRNGKey(2**32 + 5)</code> is the same key as <code>PRNGKey(5)</code>. A pure function of the key always gives the same result, which is what makes it safe inside <code>jit</code>, <code>vmap</code> and <code>grad</code>, and what makes a run reproducible from its seed.</p>
+    <p><b>Counter-based generation.</b> How do two words become a stream of random numbers? JAX's default generator is <b>Threefry-2x32</b> <a href="#ref-1">[1]</a>: a hash function that mixes a 64-bit key with a 64-bit counter through 20 rounds of addition, bit rotation and exclusive-or, and returns 64 bits that pass standard statistical test batteries. The <span class="m">i</span>-th random number drawn from a key is the hash of the counter <span class="m">i</span>. There is no sequence to advance: any number of the stream can be computed directly, in any order, in parallel. Here is the whole algorithm as the page's script implements it:</p>
+    <pre><code class="language-javascript">function threefry2x32(k1, k2, c1, c2) {             // all values are uint32
+  const ks = [k1, k2, (k1 ^ k2 ^ 0x1BD11BDA) >>> 0];
+  const rot = [[13, 15, 26, 6], [17, 29, 16, 24]];
+  let x0 = (c1 + ks[0]) >>> 0, x1 = (c2 + ks[1]) >>> 0;
+  for (let i = 0; i &lt; 5; i++) {                      // 5 blocks of 4 rounds
+    for (const r of rot[i % 2]) {
+      x0 = (x0 + x1) >>> 0;                         // add
+      x1 = ((x1 &lt;&lt; r) | (x1 >>> (32 - r))) >>> 0;   // rotate
+      x1 = (x1 ^ x0) >>> 0;                         // exclusive-or
+    }
+    x0 = (x0 + ks[(i + 1) % 3]) >>> 0;              // inject the key, and the block number
+    x1 = (x1 + ks[(i + 2) % 3] + i + 1) >>> 0;
+  }
+  return [x0, x1];
+}</code></pre>
+    <p>With it, everything in <code>jax.random</code> is a few lines. In JAX 0.12's default mode:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="kT" class="numT">
+      <thead><tr><th>Operation</th><th>What it computes</th><th>For <code>PRNGKey(42)</code></th></tr></thead>
+      <tbody id="opBody">
+        <tr><td><code>split(key, n)[i]</code></td><td>the new key <code>threefry(key, (0, i))</code>: a hash of the counter <span class="m">i</span></td><td class="n" id="cSplit"></td></tr>
+        <tr><td><code>fold_in(key, d)</code></td><td><code>threefry(key, (0, d))</code>: the same hash, of the number <span class="m">d</span></td><td class="n" id="cFold"></td></tr>
+        <tr><td><code>bits(key, (n,))[i]</code></td><td>the two words of <code>threefry(key, (0, i))</code>, exclusive-or'ed</td><td class="n" id="cBits"></td></tr>
+        <tr><td><code>uniform(key, (n,))[i]</code></td><td>the top 23 bits of <code>bits[i]</code> as a float32 mantissa in [1, 2), minus 1</td><td class="n" id="cUnif"></td></tr>
+        <tr><td><code>normal(key, (n,))[i]</code></td><td><span class="m">\sqrt2\,\mathrm{erf}^{-1}(u)</span> for a uniform <span class="m">u</span> in (−1, 1); not reproduced in the page</td><td class="n" id="cNorm"></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Two consequences are worth seeing. <code>fold_in(key, 2)</code> equals <code>split(key, 5)[2]</code>: both hash the counter 2. And <code>split(key, 3)</code> begins with the two keys of <code>split(key, 2)</code>: a key's children do not depend on how many you ask for. Try both in the demo. (Older JAX versions split differently; the switch to this "partitionable" scheme lets a split be computed piecewise on many devices.)</p>
+    <div class="define">
+      <p class="define-title">Counter-based random number generator</p>
+      <p><b>In plain words:</b> random number <span class="m">i</span> is a scrambled version of the pair (key, <span class="m">i</span>); nothing is remembered between draws.</p>
+      <p><b>More precisely:</b> a generator whose output is <span class="m">b_i = h(k, i)</span> for a keyed bijection <span class="m">h</span> designed to look random, here Threefry, a reduced-round version of the Threefish block cipher <a href="#ref-1">[1]</a>. Splitting derives new keys by hashing counters, which gives the tree of independent streams that functional programs need <a href="#ref-2">[2]</a>.</p>
+      <dl>
+        <dt>Raw and typed keys</dt><dd><code>PRNGKey(42)</code> returns the raw <code>uint32[2]</code> array that the repository uses. The newer <code>jax.random.key(42)</code> returns a typed key, printed as <code>Array((), dtype=key&lt;fry&gt;) overlaying: [ 0 42]</code>, which cannot be confused with ordinary data; <code>jax.random.key_data</code> gives the words back.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="rules">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The rules for keys</h2>
+  </div>
+  <div class="col prose">
+    <p><b>1. Never use a key twice.</b> The same key gives the same numbers. Two noise sequences drawn from one key are not two samples; they are one sample twice:</p>
+    <pre><code class="language-python">process_noise = jax.random.normal(key, (1000,))
+measurement_noise = jax.random.normal(key, (1000,))    # correlation with the first: 0.99999994</code></pre>
+    <p>A simulation built this way would feed the filter process and measurement noise that are perfectly correlated, and nothing would raise an error. Split instead, and the correlation is <span class="m">-0.003</span>, what independent samples of 1000 give.</p>
+    <p><b>2. Split before use, and keep one key to split again.</b> The repository's data generator does exactly this, at every step:</p>
+    <pre><code class="language-python">key, process_key = jax.random.split(key)          # kalman_jax/filters.py
+x_true = F @ x_true + jax.random.multivariate_normal(process_key, jnp.zeros(2), Q)
+key, measurement_key = jax.random.split(key)</code></pre>
+    <p>and <code>init_mlp_params</code> splits its key into one per weight matrix and bias vector, as its docstring promises: "distinct random keys for each weight and bias".</p>
+    <p><b>3. Pass keys in; do not create them inside.</b> A function that calls <code>PRNGKey(0)</code> internally gives the same "random" output on every call. Take the key as an argument, as <code>generate_linear_synthetic_data(key, ...)</code> does, and the caller decides. Inside a <code>scan</code>, a per-step key is <code>fold_in(key, k)</code> for step <span class="m">k</span>, or a key carried and split at each step, as J4's batched generator did. Under <code>vmap</code>, give each element its own key: <code>jax.vmap(f)(jax.random.split(key, n))</code>.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="trees">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Pytrees</h2>
+  </div>
+  <div class="col prose">
+    <p>The networks chapters 03 and 04 train keep their parameters in a list of <code>(W, b)</code> tuples: chapter 03's is built by <code>init_mlp_params(key, [3, 16, 16, 16, 16, 2])</code>, chapter 04's by the same function with sizes <code>[9, 32, 32, 1]</code>. Nobody had to tell <code>jax.grad</code>, <code>jit</code> or Optax how to handle that list. JAX treats any nesting of lists, tuples, dicts and a few other containers as a <b>pytree</b>: a tree whose internal nodes are containers and whose <em>leaves</em> are arrays. Every transformation flattens its arguments into leaves, works on those, and rebuilds the same structure.</p>
+    <pre><code class="language-python">leaves, treedef = jax.tree_util.tree_flatten(params)
+treedef            # PyTreeDef([(*, *), (*, *), (*, *), (*, *), (*, *)])
+len(leaves)        # 10 arrays
+jax.tree_util.tree_map(lambda p: p.shape, params)</code></pre>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="treeT" class="numT">
+      <thead><tr><th>Layer</th><th>W</th><th>b</th><th>Numbers</th></tr></thead>
+      <tbody id="treeBody"></tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p><code>jax.grad</code> of a loss of <code>params</code> returns a pytree with the same structure, one gradient array per parameter array; an optimiser maps over both together. The same mechanism is why J5's scan could carry <code>(x, P)</code> and why J4's <code>in_axes</code> could be nested. Three details matter in practice:</p>
+    <ul>
+      <li><b>Structure is part of the type.</b> A list and a tuple of the same arrays are different trees. Since J2's cache key includes the structure of the arguments, switching between them recompiles.</li>
+      <li><b><code>None</code> is an empty node.</b> <code>{"a": None, "b": 1.0}</code> has one leaf. It is how optional parts of a tree are left out.</li>
+      <li><b>Named tuples are trees.</b> A filter state can be a <code>NamedTuple</code>:
+        <pre><code class="language-python">class KFState(NamedTuple):
+    x: jax.Array
+    P: jax.Array
+
+jax.tree_util.tree_map(lambda v: 2 * v, KFState(x0, P0))     # still a KFState</code></pre>
+        It flattens to its two arrays and rebuilds as a <code>KFState</code>, so it can be a scan carry with readable field names. Other classes can be registered with <code>jax.tree_util.register_pytree_node</code> <a href="#ref-4">[4]</a>.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="optax">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Optax</h2>
+  </div>
+  <div class="col prose">
+    <p>An optimiser in PyTorch owns the parameters and changes them in place, <code>optimizer.step()</code>. That is a side effect, so JAX cannot trace it. Optax <a href="#ref-5">[5]</a> splits an optimiser into two pure functions, a <b>gradient transformation</b>:</p>
+    <pre><code class="language-python">optimizer = optax.adam(1e-3)                          # the repository's choice
+opt_state = optimizer.init(params)                    # a pytree: the optimiser's memory
+updates, opt_state = optimizer.update(grads, opt_state, params)
+params = optax.apply_updates(params, updates)          # params + updates, leaf by leaf</code></pre>
+    <p><code>update</code> takes gradients and returns <em>updates</em>, the changes to add, plus a new state. Nothing is modified. For Adam the state mirrors the parameters twice:</p>
+    <pre class="output"><code class="nohl">(ScaleByAdamState(count=(), mu=[((16, 3), (16,)), ...], nu=[((16, 3), (16,)), ...]), EmptyState())</code></pre>
+    <p>That is the state's tree with each array replaced by its shape: a step counter, then <code>mu</code> and <code>nu</code>, each a copy of the parameter tree, 21 leaves in all. Adam keeps, per parameter, a running mean of the gradient <span class="m">m</span> and of its square <span class="m">v</span>, and steps by their ratio <a href="#ref-6">[6]</a>:</p>
+    <div class="math-block" data-narrow="\begin{aligned} m_t &amp;= \beta_1 m_{t-1} + (1-\beta_1) g_t, \\ v_t &amp;= \beta_2 v_{t-1} + (1-\beta_2) g_t^2, \\ \Delta\theta_t &amp;= -\eta\, \frac{m_t/(1-\beta_1^t)}{\sqrt{v_t/(1-\beta_2^t)} + \epsilon}. \end{aligned}">m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t, \qquad v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2, \qquad \Delta\theta_t = -\eta\, \frac{m_t/(1-\beta_1^t)}{\sqrt{v_t/(1-\beta_2^t)} + \epsilon} .</div>
+    <p>with <span class="m">\beta_1 = 0.9</span>, <span class="m">\beta_2 = 0.999</span>, <span class="m">\epsilon = 10^{-8}</span>. The division makes each parameter's step about <span class="m">\eta</span> in size whatever the scale of its gradient. On the first step it is exactly <span class="m">\pm\eta</span>: in the run in <code>j6_numbers.py</code>, the largest first update of the 914 parameters is 0.00099999, the learning rate. That per-coordinate scaling is what J3's valley needed.</p>
+    <p>Transformations compose. <code>optax.chain(optax.clip_by_global_norm(1.0), optax.adam(1e-3))</code> first rescales the gradient tree so that its overall norm is at most 1, then applies Adam; its state is the tuple of the two states. Learning-rate schedules, weight decay and gradient accumulation are further links in the chain.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="loop">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The training loop</h2>
+  </div>
+  <div class="col prose">
+    <p>Everything in Part I meets in the repository's loop (<code>kalman_jax/learned_dynamics.py</code>):</p>
+    <pre><code class="language-python">@jax.jit                                                          # J2: compiled once
+def update(current_params, current_opt_state):                    # J2: pure; J6: pytrees in and out
+    loss, grads = value_and_grad(loss_fn)(current_params, A, B, C, Q, R, x0, P0, us, ys)   # J3, through a J5 scan
+    updates, next_opt_state = optimizer.update(grads, current_opt_state, current_params)    # J6: Optax
+    next_params = optax.apply_updates(current_params, updates)
+    return next_params, next_opt_state, loss
+
+for step in range(num_steps):                                     # a Python loop of compiled steps
+    params, opt_state, loss = update(params, opt_state)</code></pre>
+    <p>The parameters and the optimiser state go in and come out every step; nothing persists in between except what the loop variables hold. Because every step has the same signature, <code>update</code> is compiled once (J2), and the data, closed over, is a constant of the compiled program.</p>
+    <p>The Python loop could itself become a <code>lax.scan</code> over steps, with <code>(params, opt_state)</code> as the carry (exercise 5), so that the whole training run is one compiled program. Is that faster? For 1000 Adam steps on Part 6's problem, each step a gradient through a 1000-step filter, the Python loop took <span id="tLoop">1.8 s</span> and the scan <span id="tScan">2.1 s</span>, with the order reversed in another run; both ended at exactly the same parameters. Each step does about 2 ms of work, so a dispatch of about 13 µs (J2) is lost in it. A scan over training steps pays off when the steps are tiny, or when the whole run must be one function, to be vmapped over seeds (J4) or differentiated with respect to a hyperparameter. Otherwise the Python loop is simpler, and lets you log, save and stop early.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="kalman">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Back to Kalman</h2>
+  </div>
+  <div class="col prose">
+    <p>J3 estimated chapter 02's two noise levels by minimising the filter's negative log-likelihood with plain gradient descent, and found the likelihood's valley 89 times flatter in one direction than the other: gradient descent crept along it. J4 confirmed the method is sound: chapter 02's low estimate of <span class="m">\sigma_a</span> came from an unlucky dataset, not a biased estimator. Now the same problem with Optax. The training function is the repository's loop above with <code>nll</code> as the loss and <span class="m">\theta = (\log\sigma_a, \log\sigma_z)</span> as the parameters, run from <span class="m">\sigma_a = \sigma_z = 1</span>:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="optT" class="numT">
+      <thead><tr><th>Optimiser (Optax)</th><th>Steps until both levels are within 0.1% of the minimum, and stay</th><th>Where it is after 1000 steps</th></tr></thead>
+      <tbody id="optBody"></tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Gradient descent needs 713 steps; momentum and Adam about 150 to 160. Both remedies attack the same valley in different ways. Momentum accumulates the small but consistent gradient along the valley floor into speed. Adam divides each coordinate's step by that coordinate's typical gradient size, so the shallow direction gets a step as large as the steep one. The demo runs all four on the likelihood surface, computed in this page with J3's forward-mode dual numbers. Click anywhere on the map to start them elsewhere.</p>
+  </div>
+  <div class="col widget" id="raceW">
+    <p class="chart-title">The negative log-likelihood over the two noise levels (darker is lower), and four optimisers descending it</p>
+    <canvas id="raceC" aria-label="A map of the negative log-likelihood over the process-noise and measurement-noise levels, with the paths of four optimisers" aria-describedby="raceCap"></canvas>
+    <canvas id="lossC" aria-label="The distance of each optimiser's loss from the minimum, against the step number, on a log scale" aria-describedby="raceCap"></canvas>
+    <div class="legend" id="raceLegend" aria-hidden="true"></div>
+    <div class="btn-row">
+      <button class="btn primary" type="button" id="raceBtn">Run 1000 steps</button>
+      <button class="btn ghost" type="button" id="raceReset">Back to σ = 1, 1</button>
+    </div>
+    <div class="readouts" aria-live="off" id="raceReadouts"></div>
+    <p class="status" id="raceCap" role="status" aria-live="polite"></p>
+  </div>
+  <div class="col prose">
+    <p>Chapters 03 and 04 use the same machinery at a larger scale: <code>optax.adam(1e-3)</code> on the parameters of <code>init_mlp_params</code>, 914 in chapter 03's network and 1409 in chapter 04's, with keys split per layer, gradients through a scan of the filter, and the Python training loop of Part 5.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="kT2">
+      <thead><tr><th>In the Kalman code</th><th>What J6 says about it</th></tr></thead>
+      <tbody>
+        <tr><td><code>key, process_key = jax.random.split(key)</code></td><td>Split before use and keep a key to split again; never reuse (Parts 1 and 2).</td></tr>
+        <tr><td><code>init_mlp_params(key, sizes)</code></td><td>One key per weight and bias, from one split; for chapter 03's sizes, a pytree of 10 arrays, 914 numbers (Part 3).</td></tr>
+        <tr><td><code>optimizer = optax.adam(1e-3)</code></td><td>A pure gradient transformation with a state that mirrors the parameters (Part 4).</td></tr>
+        <tr><td><code>@jax.jit def update(current_params, current_opt_state)</code></td><td>The training step: pytrees in, pytrees out, compiled once (Part 5).</td></tr>
+        <tr><td><code>for step in range(num_steps)</code></td><td>A Python loop of compiled steps; a scan would be one program, no faster here (Part 5).</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="part1">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Part I, assembled</h2>
+  </div>
+  <div class="col prose">
+    <p>Part I set out to make every line of JAX in the Kalman chapters readable as a computer-science idea. Here is the map, with what each chapter found along the way.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="partT">
+      <thead><tr><th>Chapter</th><th>The idea</th><th>What it found in the Kalman code</th></tr></thead>
+      <tbody>
+        <tr><td><a href="j1-arrays-and-the-numbers-inside-them.html">J1</a></td><td>Immutable arrays, broadcasting, IEEE 754 floats, float32 by default</td><td>The jitter of <span class="m">10^{-9}</span> vanishes in float32; the unscented filter's NaN in chapter 02 is predictable from a table of gaps.</td></tr>
+        <tr><td><a href="j2-pure-functions-tracing-and-jit.html">J2</a></td><td>Pure functions, tracing to jaxprs, compilation and its cache</td><td>One filter step is 33 times faster compiled; <code>run_linear_kf</code> without <code>jit</code> recompiles on every call.</td></tr>
+        <tr><td><a href="j3-automatic-differentiation-from-scratch.html">J3</a></td><td>Forward and reverse mode, from scratch</td><td>The gradient of the filter's likelihood estimates its noise levels; a NaN guard is needed for gradients, not only values.</td></tr>
+        <tr><td><a href="j4-vmap-one-function-many-inputs.html">J4</a></td><td>Vectorisation by batching rules</td><td>1000 filters in one call; the filter is consistent; chapter 02's noise estimate was an unlucky dataset.</td></tr>
+        <tr><td><a href="j5-loops-as-data-scan.html">J5</a></td><td>Loops as compiled primitives</td><td>A Python loop takes minutes to compile; the smoother is a reverse scan and halves the filter's error.</td></tr>
+        <tr><td>J6</td><td>Keys, pytrees, gradient transformations</td><td>Adam finds the noise levels in under a quarter of gradient descent's steps.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Part II begins with chapter 01, a vehicle tracker in plain Python, and then chapter 02, where every line of <code>kalman_jax/filters.py</code> should now read as something you have seen built.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why does JAX make the random generator's state an explicit key?</summary><p>A hidden generator is a side effect: under <code>jit</code> it would be read once while tracing, and under <code>vmap</code> or on several devices its results would depend on execution order. A key passed in and numbers returned make random functions pure, so they compose with every transformation and are reproducible from the seed.</p></details>
+    <details class="sol"><summary>2. What does <code>PRNGKey(42)</code> contain, and how is the <span class="m">i</span>-th number of its stream produced?</summary><p>The two uint32 words <code>[0, 42]</code>. The <span class="m">i</span>-th 32 random bits are the two words of <code>threefry2x32(key, (0, i))</code> combined by exclusive-or; nothing is stored between draws.</p></details>
+    <details class="sol"><summary>3. Why is <code>fold_in(key, 2)</code> equal to <code>split(key, 5)[2]</code>?</summary><p>In JAX's default mode both compute the Threefry hash of the counter pair <span class="m">(0, 2)</span> under the key. It also follows that the first keys of a split do not depend on how many keys are requested.</p></details>
+    <details class="sol"><summary>4. What goes wrong if process noise and measurement noise are drawn from the same key?</summary><p>They are the same numbers, correlation 0.99999994 instead of about 0. The simulated data then violates the filter's assumption of independent noises, and no error is raised.</p></details>
+    <details class="sol"><summary>5. What is a pytree, and why does <code>jax.grad</code> of a loss of a list of tuples return a list of tuples?</summary><p>A nested structure of containers with arrays as leaves. Transformations flatten their inputs into leaves, work on the leaves and rebuild the structure, so the gradient has one leaf per parameter in the same arrangement.</p></details>
+    <details class="sol"><summary>6. How does an Optax optimiser avoid modifying parameters in place?</summary><p>It is a pair of pure functions: <code>init(params)</code> returns a state, and <code>update(grads, state, params)</code> returns updates and a new state. The caller applies the updates with <code>apply_updates</code> and keeps the new state.</p></details>
+    <details class="sol"><summary>7. Why is Adam's first step exactly <span class="m">\pm\eta</span> for every parameter?</summary><p>After one step the bias-corrected averages are <span class="m">\hat m = g</span> and <span class="m">\hat v = g^2</span>, so the step is <span class="m">-\eta\, g / (|g| + \epsilon)</span>, which is <span class="m">-\eta\,\mathrm{sign}(g)</span> up to <span class="m">\epsilon</span>.</p></details>
+    <details class="sol"><summary>8. When does writing the training loop as a <code>scan</code> pay off?</summary><p>When each step is cheap enough that per-call dispatch matters, or when the whole run must be a single function, to vmap it over seeds or differentiate it. For steps costing milliseconds, as here, it made no consistent difference.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Find the bug.</b> This simulator is wrong. Say how, measure it, and fix it.</div>
+        <pre><code class="language-python">def simulate(key, T):
+    w = 0.1 * jax.random.normal(key, (T,))     # process noise
+    v = 0.5 * jax.random.normal(key, (T,))     # measurement noise
+    x = jnp.cumsum(w)
+    return x, x + v</code></pre>
+        <details class="sol"><summary>Hint</summary><p>Compute <code>jnp.corrcoef(w, v)</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Both noises come from the same key, so <code>v</code> is the same draws as <code>w</code>, scaled by 5: correlation 1 (0.99999994 in float32 for 1000 draws). Split first: <code>kw, kv = jax.random.split(key)</code>, and draw <code>w</code> from <code>kw</code> and <code>v</code> from <code>kv</code>; the correlation becomes <span class="m">-0.003</span>.</p></details>
+      </li>
+      <li><div><b>Per-step keys in a scan.</b> Write a scan whose step <span class="m">k</span> draws its noise with <code>jax.random.fold_in(key, k)</code>, and check that the keys it uses are exactly <code>jax.random.split(key, T)</code>.</div>
+        <details class="sol"><summary>Hint</summary><p>Pass <code>jnp.arange(T)</code> as the scan's inputs, so each step knows its <span class="m">k</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><code>jax.vmap(lambda k: jax.random.fold_in(key, k))(jnp.arange(5))</code> equals <code>jax.random.split(key, 5)</code> element for element in JAX 0.12's default mode. Folding in the step number is therefore a stateless way to give each step its own key, with no key in the carry.</p></details>
+      </li>
+      <li><div><b>Count with tree utilities.</b> Using <code>jax.tree_util</code>, count the numbers in <code>init_mlp_params(key, [3, 16, 16, 16, 16, 2])</code>, and the numbers in the Adam state built from it. How much memory does Adam add?</div>
+        <details class="sol"><summary>Hint</summary><p><code>sum(p.size for p in jax.tree_util.tree_leaves(tree))</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>914 parameters in 10 arrays. Adam's state has 21 leaves: <code>mu</code> and <code>nu</code>, 914 numbers each, and a counter. So Adam keeps twice the parameters' memory again, three copies in all, which is why memory-light optimisers matter for very large models.</p></details>
+      </li>
+      <li><div><b>Clip the gradient.</b> Build <code>optax.chain(optax.clip_by_global_norm(1.0), optax.adam(1e-3))</code>. Multiply a gradient tree by 100 and pass it through the clipping transformation alone: what is the global norm before and after?</div>
+        <details class="sol"><summary>Hint</summary><p><code>optax.global_norm(tree)</code> is the square root of the sum of squares of all leaves.</p></details>
+        <details class="sol"><summary>Solution</summary><p>For the network's gradient at <code>x = (1, 1, 1)</code> in <code>j6_numbers.py</code>, the norm is 0.426; times 100 it is 42.6, and after clipping exactly 1.0, with every leaf scaled by the same factor so the direction is unchanged. Clipping guards training against a single huge gradient, for instance from a filter step whose covariance is nearly singular.</p></details>
+      </li>
+      <li><div><b>Train with a scan.</b> Rewrite Part 5's loop as a <code>lax.scan</code> over 1000 steps, with <code>(params, opt_state)</code> as the carry and the loss as the output. Check that it ends at the same parameters, and time both versions.</div>
+        <details class="sol"><summary>Hint</summary><p>The scan has no inputs: pass <code>None</code> and <code>length=1000</code>, as J4's batched generator did.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Both end at exactly the same parameters. On the laptop the two took 1.8 s and 2.1 s, in an order that changed between runs: each step's 2 ms of work hides the loop's overhead.</p>
+          <pre><code class="language-python">@jax.jit
+def train_scanned(theta0):
+    def body(carry, _):
+        theta, state = carry
+        loss, g = jax.value_and_grad(nll)(theta)
+        updates, state = optimizer.update(g, state, theta)
+        return (optax.apply_updates(theta, updates), state), loss
+    (theta, _), losses = jax.lax.scan(body, (theta0, optimizer.init(theta0)), None, length=1000)
+    return theta, losses</code></pre></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Keys</b>: a key is two uint32 words; <code>PRNGKey(42)</code> is <code>[0, 42]</code>. Random bits are Threefry hashes of counters, so draws are pure functions of the key, reproducible and parallel.</div></li>
+      <li><div><b><code>split</code> and <code>fold_in</code></b> hash counters into new keys; <code>fold_in(key, i) == split(key, n)[i]</code>. Never reuse a key: two draws from one key correlate at 0.99999994.</div></li>
+      <li><div><b>Pytrees</b> are nested containers with array leaves; every transformation flattens and rebuilds them. Chapter 03's network is a tree of 10 arrays, 914 numbers. Structure is part of the cache key.</div></li>
+      <li><div><b>Optax</b> optimisers are pure <code>init</code> and <code>update</code> functions over pytrees; Adam's state holds two more copies of the parameters; transformations chain.</div></li>
+      <li><div><b>The training loop</b> is a jitted pure step in a Python loop; a scan over steps is one program, and here no faster.</div></li>
+      <li><div><b>In the Kalman code</b>: on chapter 02's noise levels, gradient descent needs 713 steps, momentum 150 and Adam 156 to 163; Part I's six ideas cover every line of JAX in the Kalman chapters.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Key</td><td>The explicit state of JAX's random generator: two uint32 words.</td></tr>
+        <tr><td>Counter-based generator</td><td>One whose <span class="m">i</span>-th output is a keyed hash of <span class="m">i</span>; Threefry here.</td></tr>
+        <tr><td>split, fold_in</td><td>Deriving new keys by hashing counters, or a given number.</td></tr>
+        <tr><td>Pytree, leaf, treedef</td><td>A nested container of arrays; one of its arrays; its structure without the arrays.</td></tr>
+        <tr><td>Gradient transformation</td><td>Optax's optimiser: pure <code>init</code> and <code>update</code> functions over pytrees.</td></tr>
+        <tr><td>Optimiser state</td><td>What an optimiser remembers between steps, such as Adam's moving averages.</td></tr>
+        <tr><td>Momentum, Adam</td><td>Accumulating gradients into a velocity; rescaling each coordinate by its gradient's typical size.</td></tr>
+        <tr><td>Gradient clipping</td><td>Rescaling a gradient whose norm exceeds a threshold.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers JAX's default random generator, key handling, pytrees, Optax's interface and Adam, and the training loop, enough to read the Kalman chapters' data generation and training. Not covered: other generator implementations (<code>rbg</code>, Philox), sharding random numbers, learning-rate schedules in detail, and checkpointing parameters to disk.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>J. K. Salmon, M. A. Moraes, R. O. Dror and D. E. Shaw. Parallel random numbers: as easy as 1, 2, 3. In <em>Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC '11)</em>, 2011. <a href="https://doi.org/10.1145/2063384.2063405">doi:10.1145/2063384.2063405</a>. Counter-based generators, Threefry and Philox, and their statistical testing.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>K. Claessen and M. H. Pałka. Splittable pseudorandom number generators using cryptographic hashing. In <em>Proceedings of the 2013 ACM SIGPLAN Symposium on Haskell</em>, 2013. <a href="https://doi.org/10.1145/2503778.2503784">doi:10.1145/2503778.2503784</a>. Splitting keys by hashing, the design JAX's <code>split</code> follows.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/random-numbers.html">Pseudorandom numbers</a> and <a href="https://docs.jax.dev/en/latest/jep/263-prng.html">JEP 263: JAX PRNG design</a>. Keys, splitting, and why the design is explicit. This chapter's outputs were produced with version 0.12.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/pytrees.html">Pytrees</a>. Flattening, <code>tree_map</code>, and registering custom nodes.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>DeepMind et al. The DeepMind JAX ecosystem, 2020, and <a href="https://optax.readthedocs.io/">Optax</a>. Gradient transformations and their composition; version 0.2.8 was used here.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>D. P. Kingma and J. Ba. Adam: a method for stochastic optimization. In <em>International Conference on Learning Representations (ICLR)</em>, 2015. <a href="https://arxiv.org/abs/1412.6980">arxiv.org/abs/1412.6980</a>. The update of Part 4.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>B. T. Polyak. Some methods of speeding up the convergence of iteration methods. <em>USSR Computational Mathematics and Mathematical Physics</em>, 4(5):1–17, 1964. <a href="https://doi.org/10.1016/0041-5553(64)90137-5">doi:10.1016/0041-5553(64)90137-5</a>. The heavy-ball method, the momentum of Part 6.</div></li>
+    </ul>
+    <p>Part I ends here. Next, Part II: <a href="01-tracking-a-vehicle-with-a-kalman-filter.html">chapter 01, tracking a vehicle with a Kalman filter</a>.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="j5-loops-as-data-scan.html"><span class="lbl">Part I · J5</span><span class="t">Loops as data: scan, fori_loop and while_loop</span></a>
+  <a class="next" rel="next" href="01-tracking-a-vehicle-with-a-kalman-filter.html"><span class="lbl">Part II · 01</span><span class="t">Tracking a vehicle with a Kalman filter</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter J6 of "Kalman Filters with JAX" by Elie Rouphael. Every key, tree, timing and training result on this page was produced by <code>code/j6_numbers.py</code> with JAX 0.12.0.1, Optax 0.2.8 and NumPy 2.5 on a laptop CPU; the demo's Threefry is checked against JAX bit for bit, and its optimisers run in the page on J3's likelihood. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/j6-data.js"></script>
+<script src="interactive/j6.js"></script>
+</body>
+</html>

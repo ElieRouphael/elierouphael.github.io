@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J4 · vmap: One Function, Many Inputs · Kalman Filters with JAX</title>
+<meta name="description" content="The fourth chapter of a computer-science course on JAX, before the Kalman filters: how jax.vmap turns a function written for one input into one that runs on a batch, by tracing it and applying a batching rule to every primitive; in_axes and out_axes; what happens to branches and loops; composing vmap with grad and jit; and a thousand Kalman filters run at once to test the filter's consistency and to ask whether chapter 02's noise estimate was bad luck. Every jaxpr, message and number is produced by JAX 0.12.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  .legend i.box { height: 10px; opacity: 0.35; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .numT td.n { font-family: var(--font-mono); font-size: 0.88rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .table-wrap + .prose { margin-top: 0.9rem; }
+  #vocT td, #kT td, #ruleT td, #errT td { white-space: normal; }
+  .readouts.wide-v { grid-template-columns: minmax(0, 1fr); }
+  .readouts.wide-v .v { text-align: left; margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+  /* the hero: two jaxprs */
+  .jx { min-width: 0; }
+  .jx .chart-title, .stage > .chart-title { overflow-wrap: anywhere; }
+  .jx pre { font-size: 0.74rem; line-height: 1.5; padding: 0.7rem 0.6rem; max-height: 22rem; overflow: auto; }
+  .jx .b { color: var(--accent); font-weight: 600; }
+  .jx .err { color: var(--warm); white-space: pre-wrap; }
+  .toggles .btn { min-width: 3.4rem; font-family: var(--font-mono); }
+  /* timing bars */
+  #timeT td.barc { width: 34%; min-width: 6rem; }
+  #timeT .tb { height: 9px; border-radius: 3px; min-width: 2px; margin: 2px 0; }
+  #timeT .tb.loop { background: var(--warm); }
+  #timeT .tb.vm { background: var(--c4); }
+  @media (max-width: 480px) { #vocT, #kT, #ruleT, #errT, #timeT { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Part I, JAX · Chapter J4 of J6</span>
+  <h1><code>vmap</code>: one function, many inputs</h1>
+  <p class="lede">The repository's filter steps are written for one state, one covariance, one measurement. The unscented filter needs the motion model applied to five sigma points; a test of the filter needs a thousand simulated runs. You could loop, or rewrite every function with an extra axis. <code>jax.vmap</code> does the rewrite for you: it traces the function once, as <code>jit</code> does, and turns every operation on one input into the same operation on a batch, with no loop in the program it produces. This chapter shows how, then runs a thousand Kalman filters in one call, 85 times faster than a loop, to check that the filter is honest about its own uncertainty and to settle a question J3 left open: was chapter 02's low noise estimate bad luck?</p>
+  <p class="byline">Elie Rouphael · Needs chapters J1 to J3 · Every jaxpr, message and number is produced by JAX 0.12 on a laptop CPU</p>
+  <div class="downloads">
+    <a class="btn" href="code/j4_numbers.py" download>Reproduce every number (.py)</a>
+    <a class="btn ghost" href="https://docs.jax.dev/en/latest/automatic-vectorization.html">JAX's guide to vmap</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <p class="chart-title">The program vmap writes: <span class="keep">vmap(linear_kf_predict, in_axes=…)</span> for a batch of 1000</p>
+      <div class="jx">
+        <p class="chart-title">For one input: <span class="keep">make_jaxpr(linear_kf_predict)</span></p>
+        <pre><code class="nohl" id="jxOne"></code></pre>
+      </div>
+      <div class="jx">
+        <p class="chart-title">For the batch: <span class="keep">make_jaxpr(vmap(linear_kf_predict, in_axes=<b id="axesLabel"></b>))</span></p>
+        <pre><code class="nohl" id="jxBatch"></code></pre>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <p class="hint" style="margin:0">Which arguments have a batch axis? Batched ones get a leading axis of 1000; the others are shared by every element (<code>in_axes</code> entry <code>None</code>).</p>
+      <div class="btn-row toggles" id="axToggles" role="group" aria-label="Batched arguments">
+        <button class="btn" type="button" data-arg="0" aria-pressed="true">x</button>
+        <button class="btn" type="button" data-arg="1" aria-pressed="false">P</button>
+        <button class="btn" type="button" data-arg="2" aria-pressed="false">F</button>
+        <button class="btn" type="button" data-arg="3" aria-pressed="false">Q</button>
+      </div>
+      <div class="btn-row" id="axPresets" role="group" aria-label="Examples">
+        <button class="btn ghost" type="button" data-p="b---">1000 states, one covariance</button>
+        <button class="btn ghost" type="button" data-p="bb--">1000 filters, one model</button>
+        <button class="btn ghost" type="button" data-p="bbbb">everything batched</button>
+      </div>
+      <div class="readouts wide-v" aria-live="off">
+        <span>arguments' shapes</span><span class="v" id="rIn">–</span>
+        <span>outputs' shapes</span><span class="v" id="rOut">–</span>
+        <span>operations: one input → batch</span><span class="v" id="rOps">–</span>
+        <span>loops in the batched program</span><span class="v" id="rLoops">–</span>
+      </div>
+      <p class="hint">Both jaxprs are JAX's own output, from <code>jax.make_jaxpr</code>, for all 16 choices of batched arguments. Batched shapes are highlighted.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#problem"><span class="n">1</span><span class="t">The batching problem</span><span class="d">Loop, rewrite by hand, or let the compiler do it</span></a>
+    <a href="#how"><span class="n">2</span><span class="t">How vmap works</span><span class="d">Batching rules, one primitive at a time</span></a>
+    <a href="#axes"><span class="n">3</span><span class="t">in_axes and out_axes</span><span class="d">Saying which axis is the batch, and the four errors you will meet</span></a>
+    <a href="#control"><span class="n">4</span><span class="t">Branches and loops in a batch</span><span class="d">When <code>cond</code> runs both branches, and why <code>while_loop</code> waits for the slowest</span></a>
+    <a href="#compose"><span class="n">5</span><span class="t">Composing transformations</span><span class="d">Per-example gradients, <code>jacfwd</code> as <code>vmap(jvp)</code>, nested batches</span></a>
+    <a href="#speed"><span class="n">6</span><span class="t">What a batch buys</span><span class="d">1000 filters: a loop against one call</span></a>
+    <a href="#kalman"><span class="n">7</span><span class="t">Back to Kalman</span><span class="d">Sigma points, a consistency test on 1000 runs, and J3's estimate on 1000 datasets</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="problem">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The batching problem</h2>
+  </div>
+  <div class="col prose">
+    <p>A function is usually easiest to write, read and test for one input. Here is a one-layer network applied to one vector:</p>
+    <pre><code class="language-python">def predict_one(x, W):        # x: (2,), W: (3, 2)
+    return jnp.tanh(W @ x)      # (3,)</code></pre>
+    <p>Now there are 4 inputs, stacked as <code>xs</code> of shape <code>(4, 2)</code>. Three ways to apply the function to all of them:</p>
+    <p><b>1. Loop.</b> <code>jnp.stack([predict_one(x, W) for x in xs])</code>. Correct, and simple, but each call is a separate dispatch (J2), and inside <code>jit</code> the loop is unrolled into one copy of the function per input.</p>
+    <p><b>2. Rewrite by hand.</b> <code>jnp.tanh(xs @ W.T)</code>. Fast, but now the code is about batches, and every line must be rethought with an extra axis: which side of <code>@</code>, which axis to transpose, which to sum over, what broadcasts (J1). That is where shape bugs live, and the per-example version is no longer the one you read and tested.</p>
+    <p><b>3. Let JAX do the rewrite.</b></p>
+    <pre><code class="language-python">jax.vmap(predict_one, in_axes=(0, None))(xs, W)     # (4, 3), equal to the loop's result</code></pre>
+    <p><code>in_axes=(0, None)</code> says: map over axis 0 of the first argument, and give every call the same second argument. The result is exactly the loop's. The program is the hand-written one. Compare the two jaxprs:</p>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[2] b:f32[3,2]. let                 # predict_one
+    c:f32[3] = dot_general[dimension_numbers=(([1], [0]), ([], []))] b a
+    d:f32[3] = tanh c
+  in (d,) }
+
+{ lambda ; a:f32[4,2] b:f32[3,2]. let               # vmap(predict_one, in_axes=(0, None))
+    c:f32[3,4] = dot_general[dimension_numbers=(([1], [1]), ([], []))] b a
+    d:f32[3,4] = tanh c
+    e:f32[4,3] = transpose[permutation=(1, 0)] d
+  in (e,) }</code></pre>
+    <p>(The <code>preferred_element_type</code> parameters are removed; the rest is JAX's output.) The matrix-vector product became one matrix-matrix product, contracting <code>W</code>'s axis 1 with the batch's axis 1: <span class="m">W X^\top</span>, all four inputs at once. <code>tanh</code> was applied to the whole <code>(3, 4)</code> result, and a transpose put the batch axis first. There is no loop: four inputs or a million, one program of three operations.</p>
+    <div class="define">
+      <p class="define-title">vmap</p>
+      <p><b>In plain words:</b> write the function for one input; <code>vmap</code> gives you the version for many, as if you had rewritten it with an extra axis.</p>
+      <p><b>More precisely:</b> <code>jax.vmap(f, in_axes, out_axes)</code> returns a function that maps <code>f</code> over an axis of some of its arguments. It traces <code>f</code> once with tracers that carry a batch axis, and each primitive's <em>batching rule</em> produces an equivalent operation on the batched arrays. The result is a program with no loop over the batch, and the same values as a loop <a href="#ref-1">[1]</a>.</p>
+      <dl>
+        <dt>Vectorisation</dt><dd>Expressing a computation as operations on whole arrays instead of loops over elements, so that the hardware can process many elements at once.</dd>
+        <dt>Batch axis</dt><dd>The axis <code>vmap</code> maps over; its length is the batch size.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="how">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>How vmap works</h2>
+  </div>
+  <div class="col prose">
+    <p><code>vmap</code> is another interpretation of the same trace as J2's <code>jit</code> and J3's <code>grad</code>. Its tracer carries the value's per-example type and where the batch axis is. Inside a vmapped function an argument prints as</p>
+    <pre class="output"><code class="nohl">VmapTracer(aval=float32[2], batched=float32[4,2])</code></pre>
+    <p>The function sees a vector of length 2, as it was written for; underneath is a <code>(4, 2)</code> array. Every primitive has a batching rule that says how to apply it when some inputs carry a batch axis <a href="#ref-2">[2]</a>:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="ruleT">
+      <thead><tr><th>Primitive</th><th>Batching rule</th></tr></thead>
+      <tbody>
+        <tr><td><code>sin</code>, <code>tanh</code>, <code>add</code>, <code>mul</code>, … (elementwise)</td><td>Apply to the batched array as it is; an unbatched operand is broadcast.</td></tr>
+        <tr><td><code>dot_general</code> (matrix products)</td><td>If both operands are batched, the batch axes become a <em>batch dimension</em> of the product: a batched matrix multiply. If one is, its batch axis is carried through as a free axis.</td></tr>
+        <tr><td><code>reduce_sum</code>, <code>transpose</code>, indexing</td><td>Shift the axis numbers by one to step around the batch axis.</td></tr>
+        <tr><td><code>cond</code>, <code>while</code></td><td>With a condition that depends on the batch: turned into selections and masked loops (Part 4). With an unbatched condition: kept as they are, on batched operands.</td></tr>
+        <tr><td><code>cholesky</code>, <code>solve</code>, …</td><td>Call the batched version of the linear-algebra routine.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The demo at the top shows this for the repository's <code>linear_kf_predict</code>. Batch only <code>x</code>: <code>F @ x</code> becomes a matrix product with the 1000 states as columns, and <code>P_pred</code>, which does not depend on <code>x</code>, is computed once and then <em>broadcast</em> to 1000 identical copies, because every output of a vmapped function gets a batch axis by default. Batch everything: each <code>@</code> becomes a <code>dot_general</code> with batch dimensions <code>([0], [0])</code>, 1000 independent 2 × 2 products in one operation. In every case the batched program is a straight list of array operations, the same length or a few operations longer, and never a loop.</p>
+    <p>Because the result is an ordinary jaxpr, it can be compiled by <code>jit</code>, differentiated by <code>grad</code> and batched again by another <code>vmap</code>. The transformations compose, which is the design idea of JAX <a href="#ref-3">[3]</a>.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="axes">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>in_axes and out_axes</h2>
+  </div>
+  <div class="col prose">
+    <p><code>in_axes</code> has one entry per positional argument: an integer, the axis of that argument to map over, or <code>None</code>, meaning the argument is shared by every element. A single integer applies to all arguments; the default is 0. For containers such as tuples or dicts of arrays, the entry can be a matching container (J6 calls these pytrees). <code>out_axes</code>, default 0, says where the batch axis goes in each output:</p>
+    <pre><code class="language-python">jax.vmap(predict_one, in_axes=(0, None))(xs, W).shape                  # (4, 3)
+jax.vmap(predict_one, in_axes=(0, None), out_axes=1)(xs, W).shape      # (3, 4)
+jax.vmap(predict_one, in_axes=(1, None))(xs.T, W).shape                # (4, 3): batch along axis 1 of the input</code></pre>
+    <p>Every mapped axis must have the same length, the batch size. Four mistakes produce four messages, worth recognising:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="errT">
+      <thead><tr><th>Mistake</th><th>JAX 0.12 says</th></tr></thead>
+      <tbody>
+        <tr><td>Batches of different sizes: <code>vmap(add)(jnp.ones(3), jnp.ones(4))</code></td><td><code>ValueError: vmap got inconsistent sizes for array axes to be mapped:</code> followed by each argument's size</td></tr>
+        <tr><td>Nothing to map: <code>in_axes=(None, None)</code></td><td><code>ValueError: vmap must have at least one non-None value in in_axes or axis_size must be specified</code></td></tr>
+        <tr><td>Wrong number of entries: <code>in_axes=(0,)</code> for two arguments</td><td><code>ValueError: vmap in_axes must be an int, None, or a tuple of entries corresponding to the positional arguments passed to the function, but got len(in_axes)=1, len(args)=2.</code></td></tr>
+        <tr><td>An axis the array does not have: <code>in_axes=(1, 0)</code> on a vector</td><td><code>ValueError: vmap was requested to map its argument along axis 1, which implies that its rank should be at least 2, but is only 1 (its shape is (3,))</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Choosing <code>None</code> where it is true matters for speed as well as correctness. Sharing <code>F</code> and <code>Q</code> lets XLA use a plain matrix product; batching them, even with 1000 identical copies, forces 1000 small ones and 1000 times the memory. Toggle <b>F</b> in the demo and watch the <code>dot_general</code> change.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="control">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Branches and loops in a batch</h2>
+  </div>
+  <div class="col prose">
+    <p>Python control flow on values fails under <code>vmap</code> for the same reason as under <code>jit</code> (J2, Part 5): the tracer has no single value to branch on. And a batch adds a new difficulty to JAX's own control flow: different elements may want different branches, or different numbers of iterations. A program without a loop over the batch cannot give each element its own path, so <code>vmap</code> changes what the control flow means.</p>
+    <p><b><code>lax.cond</code> becomes a select</b> when its condition depends on the batched input. (When it does not, every element takes the same branch and <code>vmap</code> keeps the <code>cond</code>.) A function that takes the square root of positive inputs and negates the others:</p>
+    <pre><code class="language-python">def branchy(x):
+    return lax.cond(x > 0, lambda v: jnp.sqrt(v), lambda v: -v, x)
+
+jax.make_jaxpr(jax.vmap(branchy))(jnp.ones(4))</code></pre>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[4]. let
+    b:bool[4] = gt a 0.0:f32[]
+    c:i32[4] = convert_element_type[new_dtype=int32 weak_type=False] b
+    d:bool[4] = eq c 0:i32[]
+    e:f32[4] = stop_gradient a
+    f:f32[4] = select_n d e a
+    g:f32[4] = neg f
+    h:bool[4] = eq c 1:i32[]
+    i:f32[4] = stop_gradient a
+    j:f32[4] = select_n h i a
+    k:f32[4] = sqrt j
+    l:f32[4] = select_n c g k
+  in (l,) }</code></pre>
+    <p>The <code>cond</code> is gone. Both branches, <code>neg</code> and <code>sqrt</code>, run on all four elements, and <code>select_n</code> keeps the right one per element: J2's <code>jnp.where</code>. The <code>stop_gradient</code> lines feed each branch the inputs that belong to the other branch without letting them carry a gradient, which defuses J3's <code>where</code> trap. The cost is that an expensive branch is now paid by every element. If you batch a <code>cond</code> to skip work, the work is no longer skipped.</p>
+    <p><b><code>lax.while_loop</code> waits for the slowest element.</b> A loop that counts the steps of the Collatz sequence until it reaches 1 needs 0 steps for 1, 7 for 3 and 111 for 27. Vmapped over <code>[1, 2, 3, 6, 7, 27]</code>, it returns the right counts, <code>[0, 1, 7, 8, 16, 111]</code>. It gets them by running the body on the whole batch until every element is done, freezing finished elements with a select. Every element pays for 111 iterations.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="compose">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Composing transformations</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Per-example gradients.</b> <code>jax.grad(loss)</code> differentiates a loss for one example; vmapping it gives one gradient per example, something a framework built around a batch-mean loss makes awkward:</p>
+    <pre><code class="language-python">def loss(w, x, y):
+    return (jnp.dot(w, x) - y) ** 2
+
+jax.vmap(jax.grad(loss), in_axes=(None, 0, 0))(w, Xs, Ys)   # one row per example</code></pre>
+    <p>For <code>w = [1, -1]</code> and three examples this gives <code>[[-2, -4], [6, 2], [0, -6]]</code>, whose mean, <code>[1.333, -2.667]</code>, is the gradient of the mean loss, as linearity requires. Per-example gradients are used for differentially private training, for spotting examples that pull a model the wrong way, and for the variance of a stochastic gradient.</p>
+    <p><b><code>jacfwd</code> is <code>vmap</code> of <code>jvp</code>.</b> J3's forward mode computes one Jacobian column per sweep. Feed it all the unit vectors at once and the columns come out together:</p>
+    <pre><code class="language-python">jax.vmap(lambda t: jax.jvp(g, (x,), (t,))[1], out_axes=1)(jnp.eye(2))   # equal to jax.jacfwd(g)(x)</code></pre>
+    <p>That is how JAX implements <code>jacfwd</code>; <code>jacrev</code> is <code>vmap</code> of <code>vjp</code> over the rows. The two match bit for bit on the example in <code>j4_numbers.py</code>.</p>
+    <p><b>Nesting and <code>jit</code>.</b> <code>vmap(vmap(f, in_axes=(None, 0)), in_axes=(0, None))</code> maps over two axes: all pairs (exercise 1). And <code>jax.jit(jax.vmap(f))</code> compiles the batched program once per batch size; every timing below is of such a function.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="speed">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>What a batch buys</h2>
+  </div>
+  <div class="col prose">
+    <p>The test: run <span class="m">B</span> Kalman filters, each over its own 1000 measurements, with the repository's <code>run_linear_kf</code>. Either a Python loop of <span class="m">B</span> calls to <code>jax.jit(run_linear_kf)</code>, or one call to <code>jax.jit(jax.vmap(run_linear_kf, in_axes=(0, None, None, None, None, None, None)))</code>, which maps over the measurements and shares the model. The results are identical: filter 37 of a batch equals its own single run exactly. Timed on the laptop CPU used for this course:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="timeT" class="numT">
+      <thead><tr><th>Filters <span class="m">B</span></th><th>Loop of jitted calls</th><th>One vmapped call</th><th>Speed-up</th><th class="barc">Log scale: <span style="color:var(--warm)">loop</span>, <span style="color:var(--c4)">vmap</span></th></tr></thead>
+      <tbody id="timeBody"></tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>For one filter the two are the same, as they should be. The loop's time grows in proportion to <span class="m">B</span>: 0.7 ms a filter, nearly all of it dispatch and the overhead of a sequential scan over 2 × 2 matrices. The batched call grows far more slowly, because each of the 1000 scan steps now does 1000 filters' arithmetic in one operation, and the per-step overhead is shared: 1000 filters cost 8.2 ms instead of 692, 85 times less. Ten thousand cost 107 ms. On a GPU, where a single 2 × 2 filter would leave almost all of the hardware idle, the gap would be wider still.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="kalman">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Back to Kalman</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The unscented filter's two vmaps.</b> <code>unscented_kf_predict</code> pushes its five sigma points through the motion model with <code>jax.vmap(f)(sigma_points)</code>: <code>f</code> is written for one state, which is how a user would write a motion model. Then it forms the five outer products for the covariance with <code>jax.vmap(lambda diff: jnp.outer(diff, diff))(diffs)</code>. The jaxpr of the second is</p>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[5,2]. let
+    b:f32[5,2,1] = broadcast_in_dim[broadcast_dimensions=(0, np.int64(1))] a
+    c:f32[5,1,2] = broadcast_in_dim[broadcast_dimensions=(0, np.int64(2))] a
+    d:f32[5,2,2] = mul b c
+  in (d,) }</code></pre>
+    <p>which is exactly the hand-written <code>diffs[:, :, None] * diffs[:, None, :]</code>, or <code>jnp.einsum("ni,nj->nij", diffs, diffs)</code>: all three give the same array. <code>vmap</code> wrote J1's broadcasting for you.</p>
+    <p><b>Is the filter honest about its uncertainty?</b> A Kalman filter reports an estimate <span class="m">\hat x_k</span> and a covariance <span class="m">P_k</span> that claims how wrong the estimate is. If the claim is right, the <em>normalised estimation error squared</em></p>
+    <div class="math-block">\epsilon_k = (x_k - \hat x_k)^\top P_k^{-1} (x_k - \hat x_k)</div>
+    <p>follows a chi-square distribution with 2 degrees of freedom, so its average over many independent runs should be 2 at every step <a href="#ref-5">[5]</a>. That needs the true state, which only a simulation has, and many runs, which is where <code>vmap</code> comes in: 1000 simulated runs of chapter 02's model, 200 steps each, filtered in one call. The test can also be run on the innovations, which real data does have: the <em>normalised innovation squared</em> <span class="m">v_k^2 / S_k</span> should average 1. Below, the filter assumes noise levels that are a multiple of the true ones. Choose the multiples and see whether the tests notice.</p>
+  </div>
+  <div class="col widget" id="neesW">
+    <div class="btn-row" id="faBtns" role="group" aria-label="Assumed process noise, as a multiple of the true one"></div>
+    <div class="btn-row" id="fzBtns" role="group" aria-label="Assumed measurement noise, as a multiple of the true one"></div>
+    <p class="chart-title">Average NEES (expect 2) and average NIS (expect 1) over 1000 runs, step by step, with the 95% band for a correct filter</p>
+    <canvas id="neesC" aria-label="Average normalised estimation error and innovation over 1000 runs against time, with the bands a consistent filter stays within" aria-describedby="neesCap"></canvas>
+    <div class="legend" id="neesLegend" aria-hidden="true"></div>
+    <div class="readouts" aria-live="off">
+      <span>average NEES over all steps</span><span class="v" id="nE">–</span>
+      <span>average NIS over all steps</span><span class="v" id="nI">–</span>
+      <span>steps with NEES inside its band</span><span class="v" id="nIn">–</span>
+      <span>steps with NIS inside its band</span><span class="v" id="nInI">–</span>
+    </div>
+    <p class="status" id="neesCap" role="status" aria-live="polite"></p>
+  </div>
+  <div class="col prose">
+    <p>With the true noise levels the average NEES over all steps is 2.002 and the average NIS 1.002, and 195 of the 200 steps fall inside the 95% band, as about 190 should: the filter is consistent. Underestimate the process noise and the NEES climbs (4.44 at half, 13.2 at a quarter): the filter is overconfident. Overestimate it and the NEES falls below 2: it is too cautious. The NIS, the test available on real data, catches errors in the measurement noise at once, but it barely notices the process noise: with <span class="m">\sigma_a</span> four times too large it reads 0.954, inside its band at 168 of 200 steps, while the NEES reads 1.14. Averaged over all 200 000 innovations the shortfall does show, since a consistent filter's average would lie between 0.994 and 1.006; so the NIS can detect it, but only with a great deal of data, where the NEES sees it at every step. Innovations are dominated by the measurement noise, so they say little about a process noise this small. That is a property of this model, worth knowing before trusting an NIS test on chapter 04's real data.</p>
+    <p><b>J3's question, answered.</b> J3 estimated the two noise levels from chapter 02's 1000 measurements by maximum likelihood and found <span class="m">\sigma_z = 0.513</span>, close to the true 0.5, but <span class="m">\sigma_a = 0.061</span>, far from the true 0.1. Bad luck, or a biased method? One record cannot say; a thousand can. The repository's generator is a Python loop that <code>vmap</code> cannot batch efficiently, so <code>j4_numbers.py</code> rewrites it as a <code>lax.scan</code> with the same keys and draws; for key 42 it reproduces chapter 02's data exactly. Then <code>jax.vmap(fit)</code> runs J3's estimate, 12 Newton steps each with a gradient and a Hessian through 1000 filter steps, on the datasets for keys 0 to 999. All 1000 converge, in 12 seconds for the lot.</p>
+  </div>
+  <div class="col widget" id="fitW">
+    <div class="seg" role="group" aria-label="Parameter" id="fitSeg">
+      <button class="btn" type="button" data-p="sa" aria-pressed="true">process noise σa</button>
+      <button class="btn" type="button" data-p="sz" aria-pressed="false">measurement noise σz</button>
+    </div>
+    <p class="chart-title">The maximum-likelihood estimate on 1000 datasets from the repository's generator</p>
+    <canvas id="fitC" aria-label="Histogram of the estimated noise level over 1000 datasets, with the true value and chapter 02's dataset marked" aria-describedby="fitCap"></canvas>
+    <div class="legend" id="fitLegend" aria-hidden="true"></div>
+    <div class="readouts" aria-live="off">
+      <span>median of the 1000 estimates</span><span class="v" id="fMed">–</span>
+      <span>90% of estimates between</span><span class="v" id="fRange">–</span>
+      <span>chapter 02's dataset (key 42)</span><span class="v" id="f42">–</span>
+    </div>
+    <p class="status" id="fitCap" role="status" aria-live="polite"></p>
+  </div>
+  <div class="col prose">
+    <p>The estimate is centred on the truth: the median <span class="m">\hat\sigma_a</span> is 0.099 and the median <span class="m">\hat\sigma_z</span> 0.4996. It is also spread out, as J3's Hessian predicted: 90% of the <span class="m">\hat\sigma_a</span> lie between 0.073 and 0.125, while the <span class="m">\hat\sigma_z</span> lie between 0.481 and 0.518. Chapter 02's 0.061 is the 7th lowest of the 1000. The method is fine; key 42 is a dataset that comes up less than once in a hundred. Without <code>vmap</code> this would have taken a thousand-iteration Python loop, or a rewrite of the fitting code with a batch axis through the filter, its gradient and its Hessian.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="kT">
+      <thead><tr><th>In the Kalman code</th><th>What J4 says about it</th></tr></thead>
+      <tbody>
+        <tr><td><code>jax.vmap(f)(sigma_points)</code></td><td>A motion model written for one state, applied to five (Parts 1 and 2).</td></tr>
+        <tr><td><code>jax.vmap(lambda diff: jnp.outer(diff, diff))(diffs)</code></td><td>Compiles to J1's broadcasting, <code>diffs[:, :, None] * diffs[:, None, :]</code> (Part 7).</td></tr>
+        <tr><td><code>jax.vmap(lambda x, u: ...)(xs, us)</code> in <code>learned_dynamics.py</code></td><td>Two arguments mapped together along axis 0 (Part 3).</td></tr>
+        <tr><td><code>run_linear_kf</code></td><td>Batched over measurements with <code>in_axes=(0, None, ...)</code>: 1000 filters in 8.2 ms (Part 6).</td></tr>
+        <tr><td><code>generate_linear_synthetic_data</code></td><td>A Python loop: rewritten as a <code>scan</code> to be batched over keys, with the same output (Part 7).</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Next, J5 looks inside the <code>lax.scan</code> that every filter here runs on: how a loop becomes a single primitive that can be compiled, differentiated and, as just seen, batched.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What does <code>vmap</code> produce, and how does it differ from a loop?</summary><p>A function whose program applies each operation to the whole batch, produced by tracing the per-example function once and applying each primitive's batching rule. The values equal the loop's; the program has no loop over the batch, so its length does not grow with the batch size and each operation processes all elements at once.</p></details>
+    <details class="sol"><summary>2. What does <code>in_axes=(0, None)</code> mean?</summary><p>Map over axis 0 of the first argument; pass the second argument unchanged to every element. <code>None</code> marks shared arguments such as model matrices.</p></details>
+    <details class="sol"><summary>3. Batching only <code>x</code> in <code>linear_kf_predict</code>, why does <code>P_pred</code> come out as 1000 identical matrices?</summary><p><code>P_pred</code> does not depend on <code>x</code>, so it is computed once, but <code>out_axes=0</code> gives every output a batch axis, so <code>vmap</code> broadcasts it. Setting <code>out_axes=(0, None)</code> would return it once.</p></details>
+    <details class="sol"><summary>4. Why does a vmapped <code>lax.cond</code> whose condition depends on the batched input run both branches?</summary><p>Different elements may need different branches, and a program without a loop over the batch cannot take one path for some elements and another for the rest. So both branches are computed for all elements and a select keeps the right result for each. If the condition does not depend on a batched value, <code>vmap</code> keeps the <code>cond</code> and only one branch runs, on the whole batch.</p></details>
+    <details class="sol"><summary>5. How is <code>jax.jacfwd</code> built from other transformations?</summary><p>As <code>vmap</code> of <code>jvp</code> over the unit vectors: each JVP gives one Jacobian column, and vmapping computes them all in one batched sweep.</p></details>
+    <details class="sol"><summary>6. One vmapped call runs 1000 filters 85 times faster than a loop of 1000 jitted calls. Where does the saving come from?</summary><p>The loop pays the per-call dispatch and the per-step overhead of a sequential scan 1000 times, each time for one 2 × 2 filter. The batched call pays them once, and each of its scan steps does 1000 filters' arithmetic as one array operation.</p></details>
+    <details class="sol"><summary>7. What does the average NEES test, and why can it only be run in simulation?</summary><p>Whether the filter's covariance matches its actual errors: for a consistent filter the NEES averages the state dimension, here 2. It needs the true state, which only simulated data provides; on real data the NIS, built from innovations, is the substitute.</p></details>
+    <details class="sol"><summary>8. Was chapter 02's estimate <span class="m">\hat\sigma_a = 0.061</span> evidence that maximum likelihood is biased here?</summary><p>No. Over 1000 datasets from the same generator the estimates centre on 0.099, with 90% between 0.073 and 0.125. Chapter 02's dataset is the 7th lowest: an unlucky record, not a biased method.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>All pairs with two vmaps.</b> Write <code>dist(a, b)</code> for two points, then build the matrix of all pairwise distances between the rows of <code>pts = jnp.array([[0., 0.], [3., 4.], [6., 8.]])</code> with nested <code>vmap</code>. Check it against J1's broadcasting.</div>
+        <details class="sol"><summary>Hint</summary><p>The inner <code>vmap</code> maps over the second point with the first fixed; the outer maps over the first.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Both give <code>[[0, 5, 10], [5, 0, 5], [10, 5, 0]]</code>.</p>
+          <pre><code class="language-python">dist = lambda a, b: jnp.sqrt(jnp.sum((a - b) ** 2))
+D = jax.vmap(jax.vmap(dist, in_axes=(None, 0)), in_axes=(0, None))(pts, pts)
+D_hand = jnp.sqrt(jnp.sum((pts[:, None, :] - pts[None, :, :]) ** 2, axis=-1))</code></pre></details>
+      </li>
+      <li><div><b>Batch over a parameter, not the data.</b> Using J3's negative log-likelihood <code>nll(theta)</code>, evaluate it on a 40 × 40 grid of <span class="m">(\log\sigma_a, \log\sigma_z)</span> with one call, and find the grid point with the smallest value.</div>
+        <details class="sol"><summary>Hint</summary><p>Stack the grid into an array of shape <code>(1600, 2)</code> and vmap over its rows, or nest two vmaps over the two axes.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The data is shared and the parameter is batched. On chapter 02's data the smallest value is at <span class="m">(\sigma_a, \sigma_z) = (0.060, 0.507)</span>, the grid point nearest J3's minimum <span class="m">(0.061, 0.513)</span>; this is the surface of J3's demo, in one call.</p>
+          <pre><code class="language-python">ta = jnp.linspace(jnp.log(0.01), jnp.log(1.5), 40)
+tz = jnp.linspace(jnp.log(0.2), jnp.log(1.5), 40)
+grid = jnp.stack(jnp.meshgrid(ta, tz), axis=-1).reshape(-1, 2)
+values = jax.jit(jax.vmap(nll))(grid)
+jnp.exp(grid[jnp.argmin(values)])</code></pre></details>
+      </li>
+      <li><div><b>Choose the in_axes.</b> Give <code>in_axes</code> for <code>run_linear_kf(measurements, F, H, Q, R, x0, P0)</code> in each case: (a) 50 sequences, one model; (b) one sequence, 50 values of <code>R</code> stacked as <code>(50, 1, 1)</code>; (c) 50 sequences, each with its own <code>R</code>.</div>
+        <details class="sol"><summary>Hint</summary><p>One entry per argument; 0 for each argument that has the batch axis in front, <code>None</code> for the rest.</p></details>
+        <details class="sol"><summary>Solution</summary><p>(a) <code>(0, None, None, None, None, None, None)</code>. (b) <code>(None, None, None, None, 0, None, None)</code>. (c) <code>(0, None, None, None, 0, None, None)</code>; the two batches must both have length 50, or <code>vmap</code> raises "inconsistent sizes".</p></details>
+      </li>
+      <li><div><b>What the NIS cannot see.</b> In the demo, compare the filter that assumes <span class="m">4\sigma_a</span> with the correct one, by NEES and by NIS. Explain why the NIS hardly changes, using the size of the innovation variance <span class="m">S_k = H P_{k|k-1} H^\top + R</span> and its two parts.</div>
+        <details class="sol"><summary>Hint</summary><p>How large is <span class="m">R</span> here? How large is the predicted position variance once the filter has settled?</p></details>
+        <details class="sol"><summary>Solution</summary><p>Average NEES 1.14 against 2.00, average NIS 0.954 against 1.002. Once the filter has settled, the innovation variance is <span class="m">R = 0.25</span> plus a predicted position variance of 0.030. Quadrupling <span class="m">\sigma_a</span> multiplies <span class="m">Q</span> by 16 and doubles that second part, to 0.063, but <span class="m">S_k</span> only grows from 0.280 to 0.313, because it is dominated by <span class="m">R</span>. So the average NIS falls by only about 5%: <span class="m">S_k</span> grows by 12%, but the more responsive filter's actual innovations also grow, from a variance of 0.280 to about 0.297. That shift is within the NIS's noise at most steps (168 of 200 stay in its band), while the state covariance, which NEES tests directly, grows about 1.9 times in position and nearly 8 times in velocity.</p></details>
+      </li>
+      <li><div><b>Make the generator batchable.</b> Rewrite <code>generate_linear_synthetic_data</code> with <code>lax.scan</code> so that it can be vmapped over keys, and check that it reproduces the original for key 42.</div>
+        <details class="sol"><summary>Hint</summary><p>Carry the key and the state. Split the key exactly as the original does, in the same order, so that every draw is the same.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The maximum difference from the original's measurements is 0.0. Then <code>jax.vmap(generate_scan)(keys)</code> makes a thousand datasets in one call.</p>
+          <pre><code class="language-python">def generate_scan(key, n_steps=1000):
+    def step(carry, _):
+        key, x = carry
+        key, process_key = jax.random.split(key)
+        x = F @ x + jax.random.multivariate_normal(process_key, jnp.zeros(2), Q)
+        key, measurement_key = jax.random.split(key)
+        z = H @ x + jax.random.normal(measurement_key, (1,)) * 0.5
+        return (key, x), (x, z)
+    _, (xs, zs) = jax.lax.scan(step, (key, jnp.array([0.0, 1.0])), None, length=n_steps)
+    return xs, zs</code></pre></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b><code>vmap</code></b> turns a function written for one input into one for a batch, with the loop's values and without a loop in the program.</div></li>
+      <li><div><b>It works by tracing</b> with tracers that carry a batch axis; each primitive's batching rule rewrites it: elementwise operations stay, matrix products gain batch dimensions or free axes, axes are renumbered.</div></li>
+      <li><div><b><code>in_axes</code></b> names the mapped axis of each argument, <code>None</code> for shared ones; <code>out_axes</code> places the batch axis in each output. Mapped axes must share one length.</div></li>
+      <li><div><b>Control flow</b>: a <code>cond</code> whose condition depends on the batch runs both branches and selects; a <code>while_loop</code> whose condition does runs until the slowest element finishes.</div></li>
+      <li><div><b>Composition</b>: <code>vmap(grad(f))</code> gives per-example gradients, <code>jacfwd</code> is <code>vmap(jvp)</code>, nested <code>vmap</code> gives all pairs, and <code>jit(vmap(f))</code> compiles the batch.</div></li>
+      <li><div><b>In the Kalman code</b>: 1000 filters run in 8.2 ms batched against 692 ms in a loop; over 1000 runs the filter is consistent (average NEES 2.002), and the NIS barely notices an overstated process noise; J3's estimator centres on the true <span class="m">\sigma_a</span>, and chapter 02's 0.061 is the 7th lowest of 1000.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Vectorisation</td><td>Replacing a loop over elements by operations on whole arrays.</td></tr>
+        <tr><td>Batch axis, batch size</td><td>The axis <code>vmap</code> maps over, and its length.</td></tr>
+        <tr><td>Batching rule</td><td>How one primitive is applied when some inputs carry a batch axis.</td></tr>
+        <tr><td><code>in_axes</code>, <code>out_axes</code></td><td>Where the batch axis is in each argument (or <code>None</code>), and where to put it in each output.</td></tr>
+        <tr><td>Batched matrix multiply</td><td>Many independent matrix products in one operation; a <code>dot_general</code> with batch dimensions.</td></tr>
+        <tr><td>Per-example gradient</td><td>The gradient of the loss of one example, for every example; <code>vmap(grad(loss))</code>.</td></tr>
+        <tr><td>NEES</td><td>Normalised estimation error squared; averages the state dimension for a consistent filter.</td></tr>
+        <tr><td>NIS</td><td>Normalised innovation squared; averages the measurement dimension; usable on real data.</td></tr>
+        <tr><td>Consistent filter</td><td>One whose reported covariance matches its actual errors.</td></tr>
+        <tr><td>Monte Carlo</td><td>Estimating a property by repeating a random experiment many times.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers <code>vmap</code>, its arguments and errors, how it treats control flow, its composition with <code>grad</code>, <code>jvp</code> and <code>jit</code>, its speed on batched filters, and two Monte Carlo uses in Kalman filtering. Not covered: <code>axis_name</code> and collective operations inside <code>vmap</code>, <code>jax.lax.map</code> for batches too large for memory, sharding a batch across devices, and custom batching rules.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/automatic-vectorization.html">Automatic vectorization</a> and the <a href="https://docs.jax.dev/en/latest/_autosummary/jax.vmap.html"><code>jax.vmap</code></a> reference. <code>in_axes</code>, <code>out_axes</code> and examples. This chapter's outputs were produced with version 0.12.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/autodidax.html">Autodidax: JAX core from scratch</a>. A small JAX built in a notebook, including the batching interpreter and its rules for each primitive.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>R. Frostig, M. J. Johnson and C. Leary. Compiling machine learning programs via high-level tracing. In <em>SysML Conference</em>, 2018. <a href="https://mlsys.org/Conferences/doc/2018/146.pdf">mlsys.org/Conferences/doc/2018/146.pdf</a>. Tracing as the common mechanism of JAX's composable transformations.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>A. Agarwal and I. Ganichev. Auto-vectorizing TensorFlow graphs: Jacobians, auto-batching and beyond. <em>arXiv:1903.04243</em>, 2019. <a href="https://arxiv.org/abs/1903.04243">arxiv.org/abs/1903.04243</a>. The same idea in TensorFlow, with per-example gradients and Jacobians as uses.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>Y. Bar-Shalom, X. R. Li and T. Kirubarajan. <em>Estimation with Applications to Tracking and Navigation</em>. Wiley, 2001. <a href="https://doi.org/10.1002/0471221279">doi:10.1002/0471221279</a>. Filter consistency, the NEES and NIS tests and their chi-square bands (chapter 5).</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>J. Durbin and S. J. Koopman. <em>Time Series Analysis by State Space Methods</em>, 2nd ed. Oxford University Press, 2012. <a href="https://doi.org/10.1093/acprof:oso/9780199641178.001.0001">doi:10.1093/acprof:oso/9780199641178.001.0001</a>. Maximum-likelihood estimation of the noise variances and its sampling variability.</div></li>
+    </ul>
+    <p>Next, J5: loops as data, with <code>lax.scan</code>, <code>fori_loop</code> and <code>while_loop</code>.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="j3-automatic-differentiation-from-scratch.html"><span class="lbl">Part I · J3</span><span class="t">Automatic differentiation from scratch</span></a>
+  <a class="next" rel="next" href="j5-loops-as-data-scan.html"><span class="lbl">Part I · J5</span><span class="t">Loops as data: scan, fori_loop and while_loop</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter J4 of "Kalman Filters with JAX" by Elie Rouphael. Every jaxpr, error message, timing and Monte Carlo result on this page was produced by <code>code/j4_numbers.py</code> with JAX 0.12.0.1 and NumPy 2.5 on a laptop CPU; timings differ between machines, the Monte Carlo results do not. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/j4-data.js"></script>
+<script src="interactive/j4.js"></script>
+</body>
+</html>

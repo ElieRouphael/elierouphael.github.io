@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J2 · Pure Functions, Tracing and jit · Kalman Filters with JAX</title>
+<meta name="description" content="The second chapter of a computer-science course on JAX, before the Kalman filters: what a pure function is, how jax.jit traces a Python function on stand-in values into a small program called a jaxpr, how that program is lowered and compiled by XLA and cached by the shapes and dtypes of its inputs, why print, globals and NumPy randomness misbehave inside it, and how to write control flow that depends on values. Applied to the repository's filter, which runs 480 times faster compiled. Every jaxpr, message and timing is produced by JAX 0.12.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .numT td.n { font-family: var(--font-mono); font-size: 0.88rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .table-wrap + .prose { margin-top: 0.9rem; }
+  #vocT td, #kT td, #fxT td, #keyT td { white-space: normal; }
+  /* the tracer: source and jaxpr side by side */
+  .panes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+  .pane { min-width: 0; }
+  .pane pre { min-height: 4rem; padding: 0.7rem 0.4rem; font-size: 0.76rem; line-height: 1.55; }
+  .pane .ln { display: block; padding: 0 0.5rem; border-radius: 4px; white-space: pre; }
+  .pane .ln .no { display: inline-block; width: 1.4em; color: var(--muted); user-select: none; }
+  .pane .ln.now { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+  .pane .ln.done { color: var(--ink); }
+  .pane .ln.todo { color: var(--muted); }
+  .pane .ln.outside { color: var(--muted); font-style: italic; }
+  .pane .eq { display: block; padding: 0 0.5rem; border-radius: 4px; white-space: pre; }
+  .pane .eq.fresh { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+  .pane .eq.dim { color: var(--muted); }
+  .console { min-height: 2.6rem; padding: 0.55rem 0.8rem; font-size: 0.78rem; background: var(--surface); border: 1px dashed var(--rule); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .console .err { color: var(--warm); }
+  .console .quiet { color: var(--muted); font-style: italic; }
+  .readouts.wide-v { grid-template-columns: minmax(0, 1fr); }
+  .readouts.wide-v .v { text-align: left; margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+  /* the cache */
+  .calls .btn { text-align: left; }
+  .log { display: grid; gap: 0.45rem; font: 0.8rem var(--font-mono); }
+  .log .row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.2rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--grid); }
+  .log .what { color: var(--ink); overflow-wrap: anywhere; }
+  .log .what b { font-weight: 600; }
+  .log .what .hit { color: var(--c4); }
+  .log .what .miss { color: var(--warm); }
+  .bar { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--surface-2); }
+  .bar i { display: block; height: 100%; }
+  .bar .s-trace { background: var(--c5); }
+  .bar .s-lower { background: var(--accent); }
+  .bar .s-compile { background: var(--warm); }
+  .bar .s-run { background: var(--c4); min-width: 2px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 0.35rem; }
+  .cacheT { font-size: 0.85rem; }
+  .cacheT td { font-family: var(--font-mono); font-size: 0.8rem; white-space: normal; }
+  /* timing table bars */
+  #runT td.barc { width: 40%; min-width: 7rem; }
+  #runT .tb { height: 12px; border-radius: 3px; background: var(--accent); min-width: 2px; }
+  #runT tr.slow .tb { background: var(--warm); }
+  #runT tr.fast .tb { background: var(--c4); }
+  @media (max-width: 480px) { #vocT, #kT, #fxT, #keyT, #runT { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Part I, JAX · Chapter J2 of J6</span>
+  <h1>Pure functions, tracing and <code>jit</code></h1>
+  <p class="lede">J1 was about the data; this chapter is about the code. When you wrap a function in <code>jax.jit</code>, JAX does not run it on your numbers. It runs it once on stand-ins that carry only a shape and a dtype, records every operation into a small program, and hands that program to a compiler. That one idea explains what surprises people about JAX: a <code>print</code> that fires only once, a global variable whose new value is ignored, an <code>if</code> that raises an error. It also explains why one predict-and-update step of the Kalman filter takes 421 µs uncompiled and 13 µs compiled. The demo below runs the trace one line at a time.</p>
+  <p class="byline">Elie Rouphael · Needs chapter J1 and some Python · Every jaxpr, message and timing is produced by JAX 0.12 on a laptop CPU</p>
+  <div class="downloads">
+    <a class="btn" href="code/j2_numbers.py" download>Reproduce every number (.py)</a>
+    <a class="btn ghost" href="https://docs.jax.dev/en/latest/jit-compilation.html">JAX's guide to jit</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <p class="chart-title">What <span class="keep">jit</span> sees: your Python function, run once on stand-ins, and the program it records</p>
+      <div class="panes">
+        <div class="pane"><p class="chart-title">Your Python function</p><pre id="srcPane" aria-label="The Python source, with the line being run highlighted"></pre></div>
+        <div class="pane"><p class="chart-title">What <span class="keep">jit</span> records: the jaxpr</p><pre id="jxPane" aria-label="The jaxpr recorded so far"></pre></div>
+      </div>
+      <div>
+        <p class="chart-title">Printed by Python</p>
+        <pre class="console" id="console" aria-live="polite"></pre>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Function to trace" id="fnSeg">
+        <button class="btn" type="button" data-fn="predict" aria-pressed="true">linear_kf_predict</button>
+        <button class="btn" type="button" data-fn="prints" aria-pressed="false">calls print</button>
+        <button class="btn" type="button" data-fn="global" aria-pressed="false">reads a global</button>
+        <button class="btn" type="button" data-fn="if" aria-pressed="false">if on a value</button>
+        <button class="btn" type="button" data-fn="where" aria-pressed="false">jnp.where</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" type="button" id="stepBtn">Run one line</button>
+        <button class="btn" type="button" id="allBtn">Trace it all</button>
+        <button class="btn" type="button" id="againBtn">Call it again</button>
+        <button class="btn ghost" type="button" id="resetBtn">Reset</button>
+      </div>
+      <div class="readouts wide-v" aria-live="off">
+        <span>what Python sees for <code>x</code></span><span class="v" id="rSees">–</span>
+        <span>operations recorded</span><span class="v" id="rOps">–</span>
+        <span>times the Python body has run</span><span class="v" id="rPy">–</span>
+        <span>times the compiled program has run</span><span class="v" id="rRuns">–</span>
+      </div>
+      <p class="hint">The jaxprs are JAX's own output for these functions, from <code>jax.make_jaxpr</code>, and each equation is matched to the source line that produced it. The functions are traced with <code>x</code> a float32 vector of length 2, as in chapter 02's filter, except <b>if on a value</b>, which uses a float32 scalar.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#pure"><span class="n">1</span><span class="t">Pure functions</span><span class="d">What they are, and what a compiler can do with them</span></a>
+    <a href="#tracing"><span class="n">2</span><span class="t">Tracing</span><span class="d">Running a function on stand-ins, and reading the jaxpr it leaves</span></a>
+    <a href="#compiling"><span class="n">3</span><span class="t">Compiling and caching</span><span class="d">Lowering, XLA, what the cache is keyed on, and asynchronous dispatch</span></a>
+    <a href="#effects"><span class="n">4</span><span class="t">Side effects run once</span><span class="d">print, globals, escaping values and NumPy randomness</span></a>
+    <a href="#control"><span class="n">5</span><span class="t">Control flow on values</span><span class="d">jnp.where, lax.cond, static arguments, and shapes that cannot depend on data</span></a>
+    <a href="#kalman"><span class="n">6</span><span class="t">Back to Kalman</span><span class="d">The filter eager, jitted and scanned, and a function that recompiles on every call</span></a>
+    <a href="#check"><span class="n">7</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="pure">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Pure functions</h2>
+  </div>
+  <div class="col prose">
+    <p>A function is <b>pure</b> when its result depends only on its arguments, and calling it does nothing except return that result. <code>def f(x): return 2 * x + 1</code> is pure. Each of these is not:</p>
+    <pre><code class="language-python">def shout(x):
+    print("x is", x)        # writes to the terminal
+    return x
+
+def scaled(x):
+    return scale * x        # reads a global
+
+def remember(x):
+    history.append(x)       # changes a list outside
+    return x
+
+def noisy(x):
+    return x + np.random.normal()   # reads and advances a hidden state</code></pre>
+    <p>A pure call can be replaced by its value without changing the program: <code>f(3)</code> and <code>7</code> mean the same thing. This property, <b>referential transparency</b>, is what gives a compiler room to work. It may compute <code>f(3)</code> once and reuse the result, which is called <em>memoization</em> <a href="#ref-7">[7]</a>. It may reorder independent calls, run them in parallel, fuse them, or drop a call whose result is never used. None of that is safe for <code>shout</code>, whose output would then appear once, twice or never.</p>
+    <p>JAX's transformations are all of this kind. <code>jit</code> compiles a function once and reuses the compiled code; <code>grad</code> (J3) builds a new function that computes a derivative; <code>vmap</code> (J4) runs a function on a batch. Each assumes that the function's arguments are its only inputs and its return value its only output. JAX does not check this. Part 4 shows what happens when it is not true: there is usually no error, only a wrong answer.</p>
+    <p><b>The repository is written this way.</b> Every step function in <code>kalman_jax/filters.py</code> carries a docstring that says so, for example <code>"""Pure function for the linear Kalman-filter prediction step."""</code>. The filter's state goes in as arguments and comes out as return values; nothing is stored between calls. Compare the object-oriented style common in other Kalman libraries, where the state lives inside an object and each step changes it:</p>
+    <pre><code class="language-python"># object-oriented: the state lives in the object, and predict() changes it
+class KalmanFilter:
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+
+# functional, as in kalman_jax/filters.py: the state goes in and comes out
+def linear_kf_predict(x, P, F, Q):
+    x_pred = F @ x
+    P_pred = F @ P @ F.T + Q
+    return x_pred, P_pred</code></pre>
+    <p>The two compute the same numbers. Only the second can be compiled, differentiated and batched by JAX, because only the second says, in its signature, everything it reads and everything it produces.</p>
+    <div class="define">
+      <p class="define-title">Pure function</p>
+      <p><b>In plain words:</b> same inputs, same output, and no other effects.</p>
+      <p><b>More precisely:</b> a function is pure if its return value is determined by its arguments alone and evaluating it has no observable side effect. A call to a pure function is referentially transparent: it can be replaced by its value anywhere in a program without changing the program's meaning <a href="#ref-6">[6]</a>.</p>
+      <dl>
+        <dt>Side effect</dt><dd>Anything a call does besides returning its value: printing, writing a file or a global variable, changing an argument in place, advancing a random number generator.</dd>
+        <dt>Why J1 mattered</dt><dd>JAX arrays are immutable, so a function cannot change its argument in place. Half of purity is enforced by the array type; the other half, globals and I/O, is up to you.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="tracing">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Tracing: running a function on stand-ins</h2>
+  </div>
+  <div class="col prose">
+    <p><b>What <code>jit</code> does on the first call.</b> <code>jax.jit(f)</code> returns a new function. When you call it, it does not pass your arrays to <code>f</code>. It replaces each argument with a <b>tracer</b>, an object that carries the argument's shape and dtype but no values, and calls <code>f</code> on the tracers. Python then runs <code>f</code>'s body as usual, line by line. Every <code>jnp</code> operation that receives a tracer does not compute anything: it records an equation, "this primitive applied to these inputs gives an output of this shape and dtype", and returns a new tracer for the output. When <code>f</code> returns, the recorded equations are the program. JAX calls it a <b>jaxpr</b> <a href="#ref-1">[1]</a>.</p>
+    <p>You can see it without compiling anything, with <code>jax.make_jaxpr</code>. Here is the repository's prediction step:</p>
+    <pre><code class="language-python">jax.make_jaxpr(linear_kf_predict)(x0, P0, F, Q)</code></pre>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[2] b:f32[2,2] c:f32[2,2] d:f32[2,2]. let
+    e:f32[2] = dot_general[
+      dimension_numbers=(([1], [0]), ([], []))
+      preferred_element_type=float32
+    ] c a
+    f:f32[2,2] = dot_general[
+      dimension_numbers=(([1], [0]), ([], []))
+      preferred_element_type=float32
+    ] c b
+    g:f32[2,2] = transpose[permutation=(1, 0)] c
+    h:f32[2,2] = dot_general[
+      dimension_numbers=(([1], [0]), ([], []))
+      preferred_element_type=float32
+    ] f g
+    i:f32[2,2] = add h d
+  in (e, i) }</code></pre>
+    <p><b>Reading a jaxpr.</b> The first line names the inputs and their types: <code>a</code> to <code>d</code> are <code>x</code>, <code>P</code>, <code>F</code> and <code>Q</code>, with <code>f32[2]</code> meaning a float32 vector of length 2. Each following line is one <b>primitive</b> operation, its output's name and type on the left. <code>F @ x</code> became <code>e = dot_general c a</code>, a general matrix product whose parameters say which axes are summed: axis 1 of <code>F</code> against axis 0 of <code>x</code>. <code>F @ P @ F.T + Q</code> became four equations, one per operator, in Python's evaluation order. The last line lists the outputs: <code>(e, i)</code> is <code>(x_pred, P_pred)</code>.</p>
+    <p>What is missing is as instructive as what is there. The names <code>x_pred</code> and <code>P_pred</code> are gone, and so is the docstring. A helper function called from <code>f</code> would leave no trace either: its operations would simply appear in the list. A Python <code>for</code> loop would leave one copy of its body per iteration. Python numbers would appear as constants such as <code>2.0:f32[]</code>. Everything that Python decided while tracing is fixed in the program; only the array operations remain.</p>
+    <p>The form of the program matters too. Each variable is assigned exactly once and never changed. Compilers call this <b>static single assignment</b> form <a href="#ref-5">[5]</a>, and it is the form in which they analyse and optimise code: every use of a value points to the one place it was defined. J1's immutable arrays are what let JAX produce it directly.</p>
+    <div class="define">
+      <p class="define-title">Tracing</p>
+      <p><b>In plain words:</b> running a program on descriptions of values instead of values, and writing down what it does.</p>
+      <p><b>More precisely:</b> each argument is replaced by a tracer whose <em>abstract value</em> is a shape and a dtype, a <code>ShapedArray</code>. JAX's operations are defined on tracers too: given abstract inputs, they compute the abstract output and record the operation. Evaluating a program over abstract values rather than concrete ones is known in programming-language theory as abstract interpretation <a href="#ref-4">[4]</a>; JAX uses it to extract the program <a href="#ref-2">[2]</a>.</p>
+      <dl>
+        <dt>Tracer</dt><dd>The stand-in object. Printing one inside <code>jit</code> shows <code>JitTracer(float32[2])</code>: a shape and dtype, no numbers.</dd>
+        <dt>Primitive</dt><dd>One of the basic operations JAX knows how to compile and differentiate: <code>add</code>, <code>dot_general</code>, <code>transpose</code>, <code>cholesky</code>, and many more. Every <code>jnp</code> function is built from them.</dd>
+        <dt>jaxpr</dt><dd>The recorded program: typed inputs, a list of primitive equations in single-assignment form, and outputs.</dd>
+      </dl>
+    </div>
+    <p>The demo at the top runs this trace one line at a time. Step through <code>linear_kf_predict</code> and watch which line produces which equation. Then press <b>Call it again</b>: the function's Python body does not run a second time.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="compiling">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Compiling and caching</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Three stages.</b> The first call of a jitted function goes through three stages, and JAX lets you run them one at a time:</p>
+    <pre><code class="language-python">def kf_step(x, P, z, F, H, Q, R):                        # one predict-and-update step
+    x_pred, P_pred = linear_kf_predict(x, P, F, Q)
+    x_new, P_new, _, _ = linear_kf_update(x_pred, P_pred, z, H, R)
+    return x_new, P_new
+
+traced = jax.jit(kf_step).trace(x0, P0, z, F, H, Q, R)   # 1. trace: Python runs, a jaxpr is recorded
+lowered = traced.lower()                                 # 2. lower: the jaxpr is translated to StableHLO
+compiled = lowered.compile()                             # 3. compile: XLA optimises it and emits machine code
+compiled(x0, P0, z, F, H, Q, R)                          # run</code></pre>
+    <p>Here <code>kf_step</code> is one predict-and-update step of chapter 02's filter, with every matrix passed as an argument. The jaxpr is translated, or <em>lowered</em>, into StableHLO, a representation of array programs that compilers for different hardware share. For the prediction step it reads much like the jaxpr (the body of the module, as JAX prints it):</p>
+    <pre class="output"><code class="nohl">%0 = stablehlo.dot_general %arg2, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor&lt;2x2xf32&gt;, tensor&lt;2xf32&gt;) -&gt; tensor&lt;2xf32&gt;
+%1 = stablehlo.dot_general %arg2, %arg1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor&lt;2x2xf32&gt;, tensor&lt;2x2xf32&gt;) -&gt; tensor&lt;2x2xf32&gt;
+%2 = stablehlo.transpose %arg2, dims = [1, 0] : (tensor&lt;2x2xf32&gt;) -&gt; tensor&lt;2x2xf32&gt;
+%3 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor&lt;2x2xf32&gt;, tensor&lt;2x2xf32&gt;) -&gt; tensor&lt;2x2xf32&gt;
+%4 = stablehlo.add %3, %arg3 : tensor&lt;2x2xf32&gt;</code></pre>
+    <p>Then the XLA compiler <a href="#ref-3">[3]</a> optimises the whole program at once, which it can do because it sees all of it. In the compiled code for the prediction step, the transpose is gone (three lines of XLA's output, with layout annotations and metadata removed):</p>
+    <pre class="output"><code class="nohl">%dot_general.4 = f32[2,2] dot(%F.1, %P.1), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+%dot_general.5 = f32[2,2] dot(%dot_general.4, %F.1), lhs_contracting_dims={1}, rhs_contracting_dims={1}
+%wrapped_add   = f32[2,2] fusion(%dot_general.5, %Q.1), kind=kLoop, calls=%wrapped_add_computation</code></pre>
+    <p>The second product sums over axis 1 of <code>F</code> instead of axis 0 of <span class="m">F^\top</span>, which computes <span class="m">(FP)F^\top</span> without ever building <span class="m">F^\top</span>. The addition of <code>Q</code> has become a <em>fusion</em>, a loop XLA generates itself. On a GPU, fusing a chain of elementwise operations into one kernel saves a round trip to memory per operation, and that is often most of the speed-up from <code>jit</code>.</p>
+    <p><b>What it costs.</b> On the laptop CPU used for this page, compiling <code>kf_step</code> for the first time took 23 ms to trace, 23 ms to lower and 66 ms to compile: about 0.11 s before the first result. Each later call took 13 µs. Compilation is paid once, and the result is cached.</p>
+    <p><b>The cache key.</b> A jitted function keeps a cache of compiled programs. The key is what JAX can see at the call: the function itself, and for each argument its shape, its dtype, whether it is weakly typed (J1, Part 4), and the structure of nested containers such as tuples. Values the body reads from elsewhere, such as globals, are not part of it (Part 4). The <em>values</em> in the arrays are not part of the key, because the trace never saw them. So a call with new values of the same shapes reuses the compiled program; a call with a new shape or dtype traces and compiles again. The demo below is the jitted <code>kf_step</code>, with the timings measured for each stage. Make some calls and watch the cache.</p>
+  </div>
+  <div class="col widget" id="cacheW">
+    <p class="chart-title">Calls to <span class="keep">kf_step = jax.jit(kf_step)</span>, and what each one costs</p>
+    <div class="btn-row calls" id="callBtns" role="group" aria-label="Calls to make">
+      <button class="btn ghost" type="button" data-call="chapter02">x (2,), P (2, 2), z (1,): chapter 02's filter</button>
+      <button class="btn ghost" type="button" data-call="newvalues">Same shapes, new values</button>
+      <button class="btn ghost" type="button" data-call="numpy64">z as a NumPy float64 array</button>
+      <button class="btn ghost" type="button" data-call="state4">A 4-state model: x (4,), P (4, 4)</button>
+      <button class="btn ghost" type="button" data-call="intz">z as an int32 array</button>
+      <button class="btn ghost" type="button" id="clearBtn">Start a new Python process</button>
+    </div>
+    <div class="legend" id="stageLegend" aria-hidden="true"></div>
+    <div class="log" id="callLog" aria-live="polite"></div>
+    <div class="readouts" aria-live="off">
+      <span>calls</span><span class="v" id="cCalls">0</span>
+      <span>traces and compilations</span><span class="v" id="cMiss">0</span>
+      <span>total time</span><span class="v" id="cTime">0</span>
+      <span>of which tracing and compiling</span><span class="v" id="cComp">0</span>
+    </div>
+    <div class="table-wrap"><table class="cacheT"><thead><tr><th>Cache entry: types of x, P, z</th><th>Calls served</th></tr></thead><tbody id="cacheBody"></tbody></table></div>
+    <p class="status" id="cacheCap" role="status" aria-live="polite"></p>
+  </div>
+  <div class="col prose">
+    <p><b>What counts as a new signature.</b> The same experiment on a one-line function, <code>k(x) = x * 2</code>, run in JAX. Each row says whether the call ran the Python body again:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="keyT" class="numT">
+      <thead><tr><th>Call, in this order</th><th>Traced again?</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td class="n">k(jnp.array([1.0, 2.0]))</td><td>yes, as <code>float32[2]</code></td><td>The first call.</td></tr>
+        <tr><td class="n">k(jnp.array([5.0, 6.0]))</td><td>no</td><td>Same shape and dtype; values are not in the key.</td></tr>
+        <tr><td class="n">k(np.array([1.0, 2.0]))</td><td>no</td><td>A NumPy float64 array is converted to float32 first (J1, Part 4), so its signature is the same.</td></tr>
+        <tr><td class="n">k(jnp.array([1.0, 2.0, 3.0]))</td><td>yes, as <code>float32[3]</code></td><td>A new shape.</td></tr>
+        <tr><td class="n">k(jnp.array([1, 2]))</td><td>yes, as <code>int32[2]</code></td><td>A new dtype.</td></tr>
+        <tr><td class="n">k(1.0)</td><td>yes, as <code>~float32[]</code></td><td>A Python float: a scalar, weakly typed, which the <code>~</code> marks.</td></tr>
+        <tr><td class="n">k(7.0)</td><td>no</td><td>Another Python float: same signature.</td></tr>
+        <tr><td class="n">k(jnp.float32(1.0))</td><td>yes, as <code>float32[]</code></td><td>Strongly typed, so a different key from the Python float.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The practical rule: keep shapes and dtypes stable across calls. A training loop that feeds batches of varying length, or a filter run on sequences of different lengths, compiles once per length. Padding to a few fixed sizes is the usual cure.</p>
+    <p><b>Asynchronous dispatch.</b> A call to a compiled function returns as soon as the work has been handed to the device, before the result exists. Python can then queue more work while the device computes. The returned array is a placeholder that waits when you look at it. On the same laptop, <code>A @ A</code> for a 3000 × 3000 matrix returned in 5 ms, and the result was ready after 161 ms:</p>
+    <pre><code class="language-python">t0 = time.perf_counter(); C = A @ A; t1 = time.perf_counter()   # 5 ms: queued, not computed
+C.block_until_ready(); t2 = time.perf_counter()                 # 161 ms: now it is done</code></pre>
+    <p>Anything that needs the numbers waits for them: <code>print(C)</code>, <code>float(C)</code>, <code>np.asarray(C)</code>. For timing, this means a benchmark must call <code>.block_until_ready()</code> on the result, or it measures only how long it took to place the order. It must also exclude the first call, which compiles. All timings on this page follow both rules.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="effects">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Side effects run once</h2>
+  </div>
+  <div class="col prose">
+    <p>Tracing runs your Python once per signature. Every side effect therefore happens once per signature, at trace time, and never when the compiled program runs. JAX raises no error. These are the four cases you will meet.</p>
+    <p><b>print shows a tracer, once.</b></p>
+    <pre><code class="language-python">@jax.jit
+def f(x):
+    print("tracing f with", x)
+    return 2.0 * x + 1.0
+
+f(jnp.array([1.0, 2.0]))         # prints: tracing f with JitTracer(float32[2])
+f(jnp.array([3.0, 4.0]))         # prints nothing: the cached program ran
+f(jnp.array([1.0, 2.0, 3.0]))    # prints: tracing f with JitTracer(float32[3])</code></pre>
+    <p>This is useful: a <code>print</code> inside a jitted function is a free counter of how often it recompiles. To see values at run time, use <code>jax.debug.print("x = {x}", x=x)</code>, which records a print operation in the program itself; it prints <code>x = [1. 2.]</code>, then <code>x = [3. 4.]</code>, on every call.</p>
+    <p><b>A global is read once, and becomes a constant.</b></p>
+    <pre><code class="language-python">scale = 2.0
+
+@jax.jit
+def g(x):
+    return scale * x
+
+g(jnp.float32(1.0))     # 2.0
+scale = 3.0
+g(jnp.float32(1.0))     # 2.0: the jaxpr says  mul 2.0:f32[] a
+g(jnp.ones(2))          # [3. 3.]: a new shape retraces, and this trace reads 3.0</code></pre>
+    <p>The two calls with the same argument now disagree with the code as written, and whether you get the old or the new value depends on whether some earlier call happened to have the same shape. The cure is to pass anything that can change as an argument.</p>
+    <p><b>A tracer can escape.</b> Storing a value outside the function stores a tracer, which is meaningless once the trace is over:</p>
+    <pre><code class="language-python">seen = []
+
+@jax.jit
+def h(x):
+    seen.append(x)
+    return x + 1
+
+h(jnp.float32(1.0))
+seen              # [JitTracer(float32[])]
+seen[0] + 1</code></pre>
+    <pre class="output"><code class="nohl">UnexpectedTracerError: Encountered an unexpected tracer. A function transformed by JAX had a side
+effect, allowing for a reference to an intermediate value with type float32[] wrapped in a
+DynamicJaxprTracer to escape the scope of the transformation. ...</code></pre>
+    <p><b>NumPy randomness is drawn once.</b> <code>np.random.normal()</code> is not a JAX operation; it runs during tracing and returns a Python number, which becomes a constant:</p>
+    <pre><code class="language-python">np.random.seed(0)
+
+@jax.jit
+def noisy(x):
+    return x + np.random.normal()
+
+noisy(0.0), noisy(0.0), noisy(0.0)    # 1.7640524 three times</code></pre>
+    <p>JAX's own random numbers avoid this by making the generator's state an explicit argument, a <em>key</em>, which J6 covers. The repository's data generator takes one: <code>generate_linear_synthetic_data(key, ...)</code>.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="fxT">
+      <thead><tr><th>Inside a jitted function</th><th>What happens</th><th>What to write instead</th></tr></thead>
+      <tbody>
+        <tr><td><code>print(x)</code></td><td>Prints a tracer, once per new signature.</td><td><code>jax.debug.print("{x}", x=x)</code></td></tr>
+        <tr><td>Read a global that can change</td><td>Its value at trace time is baked into the program.</td><td>Pass it as an argument.</td></tr>
+        <tr><td>Write to a list, a global or an attribute</td><td>A tracer is stored; using it later raises <code>UnexpectedTracerError</code>.</td><td>Return the value.</td></tr>
+        <tr><td><code>np.random</code>, <code>time.time()</code>, reading a file</td><td>Runs once, at trace time; the result is a constant.</td><td>Pass a <code>jax.random</code> key, or do it outside the function.</td></tr>
+        <tr><td><code>x[0] = 1.0</code></td><td>Impossible: arrays are immutable (J1).</td><td><code>x = x.at[0].set(1.0)</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="control">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Control flow on values</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The error.</b> Python's <code>if</code> needs <code>True</code> or <code>False</code> now. During tracing, <code>x > 0</code> is a tracer of type <code>bool[]</code> with no value, so the question cannot be answered:</p>
+    <pre><code class="language-python">@jax.jit
+def relu(x):
+    if x > 0:
+        return x
+    return 0.0 * x
+
+relu(2.0)</code></pre>
+    <pre class="output"><code class="nohl">TracerBoolConversionError: Attempted boolean conversion of traced array with shape bool[].
+The error occurred while tracing the function relu at ... for jit. This concrete value was not
+available in Python because it depends on the value of the argument x.</code></pre>
+    <p>The program a compiler receives must be the same for every input of a given signature, so a branch that depends on a value has to be <em>inside</em> the program, as an operation, rather than decided by Python before the program exists. There are three ways to put it there.</p>
+    <p><b>1. Compute both and select: <code>jnp.where</code>.</b> <code>jnp.where(x > 0, x, 0.0)</code> evaluates both alternatives for every element and keeps one, through the primitive <code>select_n</code>. It works on arrays of any shape and is the usual choice when both branches are cheap. Step through it in the demo at the top: the comparison and the selection are recorded, and nothing fails.</p>
+    <p><b>2. Run one branch: <code>lax.cond</code>.</b> <code>lax.cond(x > 0, lambda v: v, lambda v: jnp.zeros_like(v), x)</code> traces <em>both</em> branches into the program and decides at run time which one to execute:</p>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[]. let
+    b:bool[] = gt a 0.0:f32[]
+    c:i32[] = convert_element_type[new_dtype=int32 weak_type=False] b
+    d:f32[] = cond[
+      branches=(
+        { lambda ; e:f32[]. let  in (0.0:f32[],) }
+        { lambda ; f:f32[]. let  in (f,) }
+      )
+    ] c a
+  in (d,) }</code></pre>
+    <p>The predicate must be a single boolean, and both branches must return the same shapes and dtypes, because the program's output type cannot depend on which branch runs. (The first branch's <code>zeros_like</code> has already been simplified to the constant <code>0.0</code>.) Use it when a branch is expensive.</p>
+    <p><b>3. Make the value static: <code>static_argnums</code>.</b> If the value is a configuration choice rather than data, tell <code>jit</code> to treat it as part of the cache key. Python then sees the real value and may branch or loop on it:</p>
+    <pre><code class="language-python">@partial(jax.jit, static_argnums=1)
+def power(x, n):
+    y = x
+    for _ in range(n - 1):
+        y = y * x
+    return y
+
+power(2.0, 3)    # traces with n = 3; the jaxpr is two multiplications: mul a a; mul b a
+power(2.0, 3)    # cache hit
+power(2.0, 5)    # traces again with n = 5</code></pre>
+    <p>Every new value of <code>n</code> compiles a new program, so static arguments should take few distinct values. Without <code>static_argnums</code>, <code>range(n - 1)</code> fails with <code>TracerIntegerConversionError</code>, the integer version of the same problem.</p>
+    <div class="define">
+      <p class="define-title">Static and traced</p>
+      <p><b>In plain words:</b> static things are known while the program is being written down; traced things are known only when it runs.</p>
+      <p><b>More precisely:</b> static values are those available during tracing: Python numbers and objects the function reads or builds (literals, globals, closed-over values), the shapes and dtypes of arguments, and arguments marked with <code>static_argnums</code> or <code>static_argnames</code>. Only the shapes, dtypes and marked arguments are part of the cache key: a global is not, which is Part 4's bug, and a Python number passed as an ordinary argument is traced, as a weakly typed scalar. Traced values are the contents of array arguments and everything computed from them. Python's control flow, <code>if</code>, <code>for</code>, <code>while</code>, <code>range</code>, may depend on static values only.</p>
+      <dl>
+        <dt>Shapes are static</dt><dd><code>if x.ndim == 1:</code> is fine inside <code>jit</code>, and so is <code>jnp.eye(P.shape[0])</code>: the repository's Joseph update builds its identity matrix that way.</dd>
+        <dt>Shapes cannot depend on values</dt><dd><code>x[x > 0]</code> has a length that depends on the data, so it fails with <code>NonConcreteBooleanIndexError: Array boolean indices must be concrete; got bool[3]</code>. Keep the shape fixed and mask instead: <code>jnp.sum(jnp.where(x > 0, x, 0.0))</code> gives 5.0 for <code>[-1, 2, 3]</code>.</dd>
+        <dt>Functions are static</dt><dd>A function is not an array, so passing one as an ordinary argument fails with <code>TypeError: Error interpreting argument to &lt;function ...&gt; as an abstract array</code>. Mark it static; exercise 3 does this for the EKF.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="kalman">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Back to Kalman</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Why one step is 33 times faster compiled.</b> One predict-and-update step of chapter 02's filter, <code>kf_step</code>, is 31 primitive operations. Without <code>jit</code>, JAX runs them one at a time, and each pays a fixed cost to be dispatched from Python: about 13 µs here, against 0.37 µs for the same tiny addition in NumPy. Thirty-one dispatches come to about 400 µs; the measured step takes 421 µs. Compiled, the step is one dispatch of one program: 13 µs, nearly all of it the same fixed cost. For arrays this small the arithmetic itself is a rounding error; the overhead of calling is everything.</p>
+    <p><b>Running 1000 steps.</b> Chapter 02 runs the filter over 1000 measurements. Here are six ways to do it, timed on the same laptop:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="runT" class="numT">
+      <thead><tr><th>How the 1000 steps run</th><th>Time</th><th class="barc">On a log scale</th></tr></thead>
+      <tbody>
+        <tr class="slow" data-k="loop_eager_ms"><td>A Python loop calling <code>kf_step</code> without <code>jit</code>: 31 000 dispatches</td><td class="n">567 ms</td><td class="barc"><div class="tb"></div></td></tr>
+        <tr class="slow" data-k="run_plain_ms"><td><code>run_linear_kf(...)</code> as the repository calls it: a <code>lax.scan</code>, compiled again on every call</td><td class="n">94 ms</td><td class="barc"><div class="tb"></div></td></tr>
+        <tr data-k="loop_numpy_ms"><td>The same loop in NumPy, float32</td><td class="n">24 ms</td><td class="barc"><div class="tb"></div></td></tr>
+        <tr data-k="loop_jit_ms"><td>A Python loop calling the jitted <code>kf_step</code>: 1000 dispatches</td><td class="n">13 ms</td><td class="barc"><div class="tb"></div></td></tr>
+        <tr class="slow" data-k="jrun_first_ms"><td><code>jax.jit(run_linear_kf)</code>, first call: trace, compile and run</td><td class="n">123 ms</td><td class="barc"><div class="tb"></div></td></tr>
+        <tr class="fast" data-k="jrun_ms"><td><code>jax.jit(run_linear_kf)</code>, every later call: one dispatch</td><td class="n">1.2 ms</td><td class="barc"><div class="tb"></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The fastest version is about 480 times faster than the slowest, and it gives the same estimates: after 1000 steps the eager loop and the compiled scan agree to <span class="m">3 \times 10^{-6}</span>, float32 rounding in a different order. J5 explains <code>lax.scan</code>, which turns the loop itself into one primitive so that all 1000 steps are a single program.</p>
+    <p><b>A function that recompiles on every call.</b> The second row deserves a closer look. <code>run_linear_kf</code> is not jitted; it calls <code>jax.lax.scan</code>, which compiles its loop body before running it. That body is <code>step</code>, a function defined <em>inside</em> <code>run_linear_kf</code>:</p>
+    <pre><code class="language-python">def run_linear_kf(measurements, F, H, Q, R, x0, P0):
+    def step(carry, measurement):          # a new Python function object on every call
+        ...
+    (_, _), estimated_states = jax.lax.scan(step, (x0, P0), measurements)
+    return estimated_states</code></pre>
+    <p>Each call creates a new <code>step</code> object, and the function itself is part of the cache key, so the cache never hits. JAX's compilation log confirms it: one XLA compilation on every call, and each call takes about 94 ms. Wrapping the whole function in <code>jit</code> moves the boundary outwards. The outer function is traced once per signature, the inner <code>step</code> is traced as part of that trace, and later calls find the compiled program in the cache: 1.2 ms.</p>
+    <p>For the repository's scripts this costs nothing that matters, since each runs the filter once. It would matter as soon as the filter ran in a loop, for example to tune <code>Q</code> over a grid of 100 values: 9.4 s instead of 0.24 s. The fix is one line, <code>run_linear_kf = jax.jit(run_linear_kf)</code>, or the decorator <code>@jax.jit</code> on the definition.</p>
+    <p><b>The training loop.</b> Chapters 03 and 04 train a model with the same pattern, in <code>kalman_jax/learned_dynamics.py</code> and <code>kalman_jax/forecasters.py</code>. Here is chapter 04's, from <code>forecasters.py</code>:</p>
+    <pre><code class="language-python">@jax.jit
+def update(current_params, current_opt_state):
+    loss, grads = value_and_grad(forecasting_loss_fn)(current_params, A, B, C, Q, R, x0, P0, us, ys)
+    ...
+    return next_params, next_opt_state, loss
+
+for step in range(num_steps):
+    params, opt_state, loss = update(params, opt_state)
+    losses.append(loss)
+    if log_every is not None and step % log_every == 0:
+        print(f"Step {step}, Forecast Loss: {float(loss):.6f}")</code></pre>
+    <p>Everything in Parts 3 and 4 is visible here. <code>update</code> is pure in what it takes and returns: parameters and optimiser state go in and come out. It reads <code>A</code>, <code>B</code>, the data <code>us</code> and <code>ys</code> and the rest from the enclosing function, so those are captured at trace time as constants of the compiled program. That is correct here, because they do not change during training, and <code>update</code> is created afresh on each call to <code>train_kalman_forecaster</code>. Every iteration has the same signature, so the loop compiles once. <code>losses.append(loss)</code> stores a placeholder without waiting, so Python can queue the next step while the device finishes this one. Only <code>float(loss)</code>, every <code>log_every</code> steps, makes Python wait for a result.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="kT">
+      <thead><tr><th>Line in the repository</th><th>What J2 says about it</th></tr></thead>
+      <tbody>
+        <tr><td><code>"""Pure function for the linear Kalman-filter prediction step."""</code></td><td>State in, state out, nothing stored: the precondition for every JAX transformation (Part 1).</td></tr>
+        <tr><td><code>jnp.eye(P.shape[0], dtype=P.dtype)</code></td><td>A shape and a dtype are static during tracing, so Python may use them freely (Part 5).</td></tr>
+        <tr><td><code>jax.lax.scan(step, (x0, P0), measurements)</code></td><td>The loop as one primitive, compiled. Outside <code>jit</code>, with <code>step</code> defined inside the caller, it compiles on every call (Part 6).</td></tr>
+        <tr><td><code>@jax.jit</code> on <code>update</code></td><td>Traced once; the data and model matrices it reads are captured as constants (Parts 3 and 4).</td></tr>
+        <tr><td><code>float(loss)</code> in the log line</td><td>The one place the training loop waits for the device (Part 3).</td></tr>
+        <tr><td><code>run_ekf(measurements, f, h, F_jacobian, H_jacobian, ...)</code></td><td>Functions as arguments: to jit it, they must be static (Part 5 and exercise 3).</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Next, J3 asks how JAX differentiates a function. It traces it, exactly as here, and then transforms the jaxpr.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What makes a function pure, and why do JAX's transformations need it?</summary><p>Its result depends only on its arguments, and calling it has no other effect. JAX runs the Python function once, on tracers, and from then on uses the recorded program in its place. That substitution is only correct if the function's arguments are its only inputs and its return value its only output, which is what purity means.</p></details>
+    <details class="sol"><summary>2. What happens, in order, on the first call of a jitted function?</summary><p>Each argument is replaced by a tracer carrying its shape and dtype. The Python body runs once on the tracers, and each JAX operation records an equation: the result is a jaxpr. The jaxpr is lowered to StableHLO, compiled by XLA into machine code for the device, stored in the cache under the arguments' signature, and run on the actual arguments.</p></details>
+    <details class="sol"><summary>3. Why does <code>print(x)</code> inside a jitted function show <code>JitTracer(float32[2])</code>, and only on some calls?</summary><p><code>print</code> is plain Python, so it runs while the body runs, which is only during tracing, and at that moment <code>x</code> is a tracer with a shape and a dtype but no values. Later calls with the same signature run the compiled program, which contains no print. Use <code>jax.debug.print</code> to print values on every call.</p></details>
+    <details class="sol"><summary>4. A jitted function reads a global <code>scale</code>. You change <code>scale</code> and call the function again. Why is the result unchanged, and when would it change?</summary><p>The global was read once, during tracing, and its value became a constant in the compiled program. The result changes only if the function is traced again, which happens on a call with a new signature, for example a new shape. Pass <code>scale</code> as an argument to make the dependence explicit.</p></details>
+    <details class="sol"><summary>5. Which of these calls to a jitted <code>f</code> trace again after <code>f(jnp.ones(3))</code>: <code>f(jnp.zeros(3))</code>, <code>f(jnp.ones(4))</code>, <code>f(jnp.ones(3, dtype=jnp.int32))</code>, <code>f(np.ones(3))</code>?</summary><p>The second and third: a new shape and a new dtype. <code>f(jnp.zeros(3))</code> differs only in values, and <code>np.ones(3)</code> is float64 but converted to float32 before the cache is consulted, so both are cache hits.</p></details>
+    <details class="sol"><summary>6. Why does <code>if x > 0:</code> fail inside <code>jit</code> while <code>if x.ndim == 1:</code> works?</summary><p>During tracing <code>x</code>'s values are unknown, so <code>x > 0</code> is a traced boolean that Python cannot turn into <code>True</code> or <code>False</code>. Its number of dimensions is part of its abstract value, so <code>x.ndim == 1</code> is an ordinary Python boolean.</p></details>
+    <details class="sol"><summary>7. What is the difference between <code>jnp.where</code> and <code>lax.cond</code>?</summary><p><code>jnp.where</code> computes both alternatives in full and selects element by element; it works on arrays of any shape. <code>lax.cond</code> takes a single boolean and runs only one branch at run time, though both are traced and compiled and must return the same shapes and dtypes. Choose <code>where</code> for cheap elementwise choices and <code>cond</code> to skip expensive work.</p></details>
+    <details class="sol"><summary>8. The 1000-step filter takes 567 ms as an eager Python loop and 1.2 ms jitted. Where did the 566 ms go?</summary><p>Into overhead on the Python side: 31 000 operations, each dispatched separately. A bare dispatch costs about 13 µs, and in the loop each operation cost about 18 µs once Python's own work between them is counted. The arithmetic on 2 × 2 matrices is negligible. Compiled with <code>lax.scan</code> inside <code>jit</code>, the whole run is one program and one dispatch.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Predict the output.</b> Without running it, say what this prints, what the three calls return, and the final value of <code>counter</code>.</div>
+        <pre><code class="language-python">counter = 0
+offset = 1.0
+
+@jax.jit
+def f(x):
+    global counter
+    counter += 1
+    print("tracing")
+    return x + offset
+
+f(jnp.ones(3))
+offset = 10.0
+f(jnp.zeros(3))
+f(jnp.ones(4))
+print(counter)</code></pre>
+        <details class="sol"><summary>Hint</summary><p>Which calls run the Python body? Each one that does reads <code>offset</code> and increments <code>counter</code>; the others do neither.</p></details>
+        <details class="sol"><summary>Solution</summary><p>"tracing" is printed twice, for the first and third calls, which have new shapes. The results are <code>[2. 2. 2.]</code>, <code>[1. 1. 1.]</code>, because the second call reuses the program traced with <code>offset = 1.0</code>, and <code>[11. 11. 11. 11.]</code>. <code>counter</code> is 2: it counts traces, not calls.</p></details>
+      </li>
+      <li><div><b>Gate an outlier.</b> A filter can reject a measurement whose innovation is implausibly large. Make this jittable, then check it on <code>z = [5.0]</code> and <code>[2.0]</code> with <code>z_pred = [1.0]</code> and a threshold of 3.</div>
+        <pre><code class="language-python">def gate(z, z_pred, threshold):
+    r = z - z_pred
+    if jnp.abs(r) > threshold:     # an outlier: ignore it
+        r = 0.0 * r
+    return r</code></pre>
+        <details class="sol"><summary>Hint</summary><p>Run it under <code>jax.jit</code> first and read the error. The condition depends on data, so it must become an operation.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Under <code>jit</code> it fails with <code>TracerBoolConversionError: Attempted boolean conversion of traced array with shape bool[1].</code> Select instead of branching; it returns <code>[0.]</code> for the outlier and <code>[1.]</code> otherwise.</p>
+          <pre><code class="language-python">@jax.jit
+def gate(z, z_pred, threshold):
+    r = z - z_pred
+    return jnp.where(jnp.abs(r) > threshold, 0.0, r)</code></pre></details>
+      </li>
+      <li><div><b>Jit the EKF.</b> <code>run_ekf(measurements, f, h, F_jacobian, H_jacobian, Q, R, x0, P0)</code> takes four functions. Try <code>jax.jit(run_ekf)</code>, read the error, and fix it. Then call the fixed version twice with the same functions, and once with <code>f</code> rewritten as a fresh <code>lambda</code>. How many times does it trace?</div>
+        <details class="sol"><summary>Hint</summary><p>Positions 1 to 4 are the functions. A <code>lambda</code> expression creates a new object each time it is evaluated, even if its text is the same.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Plain <code>jax.jit(run_ekf)</code> fails with <code>TypeError: Error interpreting argument to &lt;function run_ekf at 0x...&gt; as an abstract array. The problematic value is of type &lt;class 'function'&gt; and was passed to the function at path f.</code> Marking the functions static fixes it. Two calls with the same function objects trace once; the fresh <code>lambda</code> is a new key and traces again, for two traces in all. Static functions are compared by identity, so define them once and reuse them.</p>
+          <pre><code class="language-python">run_ekf_jit = jax.jit(run_ekf, static_argnums=(1, 2, 3, 4))
+f, h = (lambda x: F @ x), (lambda x: H @ x)
+F_jac, H_jac = jax.jacfwd(f), jax.jacfwd(h)      # built once: a new function object would retrace
+estimates = run_ekf_jit(zs, f, h, F_jac, H_jac, Q, R, x0, P0)</code></pre>
+          <p><code>jax.jacfwd(f)</code> also creates a new function each time it is called, which is why the code builds the Jacobians once and reuses them. On this linear model the EKF's estimates equal the linear filter's exactly.</p></details>
+      </li>
+      <li><div><b>A missing measurement.</b> Sensors drop readings. Write a jitted <code>kf_step</code> that takes <code>z = [nan]</code> to mean "no measurement" and then returns the prediction unchanged. Check that a NaN gives exactly <code>linear_kf_predict</code>'s output, and that a real measurement gives the usual step.</div>
+        <details class="sol"><summary>Hint</summary><p>Whether a reading is missing is a value, so it must be selected, not branched on. <code>jnp.where</code> then discards the update's NaN result, so the value comes out right; replacing the NaN first with <code>jnp.nan_to_num</code> also keeps it out of gradients (J3), where <span class="m">0 \times \text{NaN}</span> is still NaN.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Replace the NaN before the update with <code>jnp.nan_to_num</code>, run the update anyway, and select. With <code>[nan]</code> the result equals the prediction exactly; with a real measurement it agrees with the usual step to <span class="m">3 \times 10^{-8}</span>. With no selection at all, a plain <code>kf_step</code> turns the state into <code>[nan nan]</code>. The <code>where</code> alone already gives the right value; the <code>nan_to_num</code> is what keeps the gradient finite, as J3 (Part 7) shows.</p>
+          <pre><code class="language-python">@jax.jit
+def kf_step_missing(x, P, z, F, H, Q, R):
+    x_pred, P_pred = linear_kf_predict(x, P, F, Q)
+    x_upd, P_upd, _, _ = linear_kf_update(x_pred, P_pred, jnp.nan_to_num(z), H, R)
+    seen = ~jnp.any(jnp.isnan(z))
+    return jnp.where(seen, x_upd, x_pred), jnp.where(seen, P_upd, P_pred)</code></pre></details>
+      </li>
+      <li><div><b>Benchmark it properly, and count compilations.</b> Write a function that times another one correctly, and use it on <code>run_linear_kf</code> and <code>jax.jit(run_linear_kf)</code>. Then turn on JAX's compilation log and confirm that the first recompiles on every call.</div>
+        <details class="sol"><summary>Hint</summary><p>Two rules from Part 3: discard the first call, and block until the result is ready. Take the median of several runs. The log is enabled with <code>jax.config.update("jax_log_compiles", True)</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>On the laptop used for this page: about 94 ms per call for <code>run_linear_kf</code> and 1.2 ms for the jitted version. With the log on, every call of the first prints a line beginning <code>Finished XLA compilation of jit(scan)</code>; the jitted version prints nothing after its first call.</p>
+          <pre><code class="language-python">import statistics, time
+
+def benchmark(fn, *args, reps=7):
+    jax.block_until_ready(fn(*args))              # the first call compiles: exclude it
+    times = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        jax.block_until_ready(fn(*args))          # wait for the result, not just the dispatch
+        times.append(time.perf_counter() - t0)
+    return statistics.median(times)
+
+print(benchmark(run_linear_kf, zs, F, H, Q, R, x0, P0))
+print(benchmark(jax.jit(run_linear_kf), zs, F, H, Q, R, x0, P0))</code></pre></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>A pure function</b> depends only on its arguments and has no side effects. JAX's transformations assume it and do not check. The repository's filter steps are pure: state in, state out.</div></li>
+      <li><div><b>Tracing</b>: on the first call, <code>jit</code> runs the Python body once on tracers that carry only shapes and dtypes. Each JAX operation records an equation; the result is a jaxpr, a typed list of primitives in single-assignment form. <code>jax.make_jaxpr</code> shows it.</div></li>
+      <li><div><b>Compiling</b>: the jaxpr is lowered to StableHLO and compiled by XLA, which optimises the whole program, folding transposes and fusing loops. For one filter step: about 0.11 s once, then 13 µs per call.</div></li>
+      <li><div><b>The cache</b> is keyed on the function, the shapes, dtypes and weak types of the arguments, and static arguments, never on values. New shapes or dtypes compile again. Calls return before the result is ready; benchmarks must <code>block_until_ready</code>.</div></li>
+      <li><div><b>Side effects</b> happen once, at trace time: <code>print</code> shows a tracer, globals become constants, stored tracers escape, NumPy random numbers are frozen. Pass what changes as arguments; use <code>jax.debug.print</code> and <code>jax.random</code>.</div></li>
+      <li><div><b>Control flow</b> may depend on static values only. For values, use <code>jnp.where</code> (both computed), <code>lax.cond</code> (one runs) or <code>static_argnums</code> (a compile per value). Shapes cannot depend on data.</div></li>
+      <li><div><b>In the Kalman code</b>: one step is 31 operations, 421 µs eager and 13 µs compiled; 1000 steps take 567 ms eagerly and 1.2 ms as a jitted scan. <code>run_linear_kf</code> without <code>jit</code> recompiles on every call, because its <code>step</code> is a new function each time.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Pure function, side effect</td><td>A function whose result depends only on its arguments and that does nothing else; anything else a call does.</td></tr>
+        <tr><td>Referential transparency</td><td>A call can be replaced by its value without changing the program.</td></tr>
+        <tr><td>Memoization</td><td>Storing a function's results by argument so a repeated call is looked up, not recomputed.</td></tr>
+        <tr><td>Tracer, abstract value</td><td>The stand-in for an argument during tracing; its shape, dtype and weak type, without values.</td></tr>
+        <tr><td>Primitive</td><td>One of JAX's basic operations, from which every <code>jnp</code> function is built.</td></tr>
+        <tr><td>jaxpr</td><td>The program recorded by tracing: typed inputs, primitive equations, outputs.</td></tr>
+        <tr><td>Static single assignment</td><td>A program form in which every variable is assigned once; the form compilers optimise.</td></tr>
+        <tr><td>Lowering, StableHLO</td><td>Translating the jaxpr into StableHLO, a representation of array programs shared by compilers.</td></tr>
+        <tr><td>XLA, fusion</td><td>The compiler JAX uses; merging several operations into one generated loop or kernel.</td></tr>
+        <tr><td>Cache key, signature</td><td>What a compiled program is stored under: the function, the arguments' shapes, dtypes and weak types, and static arguments.</td></tr>
+        <tr><td>Asynchronous dispatch</td><td>A call returns once the work is queued; the result is waited for only when it is needed.</td></tr>
+        <tr><td>Static, traced</td><td>Known while tracing and part of the key; known only when the program runs.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers purity, tracing to jaxprs, the stages of <code>jit</code>, its cache, asynchronous dispatch, side effects under tracing, and control flow with <code>where</code>, <code>cond</code> and static arguments, enough to read every use of <code>jit</code> in the Kalman chapters and to time them correctly. Loops as primitives, <code>lax.scan</code>, <code>fori_loop</code> and <code>while_loop</code>, are J5's subject. Not covered: ahead-of-time export, the persistent compilation cache, donating buffers, sharding across devices, and writing new primitives.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/jit-compilation.html">Just-in-time compilation</a> and <a href="https://docs.jax.dev/en/latest/jaxpr.html">JAX internals: the jaxpr language</a>. How <code>jit</code> traces, what a jaxpr contains, and static arguments. This chapter's outputs were produced with version 0.12.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>R. Frostig, M. J. Johnson and C. Leary. Compiling machine learning programs via high-level tracing. In <em>SysML Conference</em>, 2018. <a href="https://mlsys.org/Conferences/doc/2018/146.pdf">mlsys.org/Conferences/doc/2018/146.pdf</a>. The design of JAX: trace a pure Python function and compile the result with XLA.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>The OpenXLA authors. <a href="https://openxla.org/xla">XLA</a> and <a href="https://openxla.org/stablehlo">StableHLO</a>. The compiler, its optimisations including fusion, and the representation JAX lowers to.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>P. Cousot and R. Cousot. Abstract interpretation: a unified lattice model for static analysis of programs by construction or approximation of fixpoints. In <em>Proceedings of the 4th ACM Symposium on Principles of Programming Languages (POPL)</em>, 1977. <a href="https://doi.org/10.1145/512950.512973">doi:10.1145/512950.512973</a>. Evaluating programs over abstract values, the idea behind tracing with shapes and dtypes.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>R. Cytron, J. Ferrante, B. K. Rosen, M. N. Wegman and F. K. Zadeck. Efficiently computing static single assignment form and the control dependence graph. <em>ACM Transactions on Programming Languages and Systems</em>, 13(4):451–490, 1991. <a href="https://doi.org/10.1145/115372.115320">doi:10.1145/115372.115320</a>. The single-assignment form that jaxprs are written in.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>J. Hughes. Why functional programming matters. <em>The Computer Journal</em>, 32(2):98–107, 1989. <a href="https://doi.org/10.1093/comjnl/32.2.98">doi:10.1093/comjnl/32.2.98</a>. Pure functions, the absence of side effects, and what they buy a programmer.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>D. Michie. "Memo" functions and machine learning. <em>Nature</em>, 218:19–22, 1968. <a href="https://doi.org/10.1038/218019a0">doi:10.1038/218019a0</a>. The original memo function: remember results by argument, which is what the <code>jit</code> cache does with compiled programs.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/notebooks/Common_Gotchas_in_JAX.html">JAX: the sharp bits</a> and <a href="https://docs.jax.dev/en/latest/async_dispatch.html">Asynchronous dispatch</a>. Pure functions, control flow under <code>jit</code>, and how to time JAX code.</div></li>
+    </ul>
+    <p>Next, J3 builds automatic differentiation from scratch: what a derivative of a program is, forward and reverse mode, and how <code>grad</code> transforms a jaxpr into one that computes the gradient of the Kalman filter's loss.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="j1-arrays-and-the-numbers-inside-them.html"><span class="lbl">Part I · J1</span><span class="t">Arrays and the numbers inside them</span></a>
+  <a class="next" rel="next" href="j3-automatic-differentiation-from-scratch.html"><span class="lbl">Part I · J3</span><span class="t">Automatic differentiation from scratch</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter J2 of "Kalman Filters with JAX" by Elie Rouphael. Every jaxpr, error message and timing on this page was produced by <code>code/j2_numbers.py</code> with JAX 0.12.0.1 and NumPy 2.5 on a laptop CPU (Intel, 14 threads); timings differ between machines, ratios much less. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/j2-data.js"></script>
+<script src="interactive/j2.js"></script>
+</body>
+</html>

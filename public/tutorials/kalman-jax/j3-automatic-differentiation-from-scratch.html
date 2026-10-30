@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J3 · Automatic Differentiation from Scratch · Kalman Filters with JAX</title>
+<meta name="description" content="The third chapter of a computer-science course on JAX, before the Kalman filters: why finite differences fail in float32, how a program becomes a graph of elementary operations, forward mode with dual numbers and reverse mode with a tape, both written from scratch in Python, how jax.jvp, jax.grad, jacfwd and jacrev relate, where automatic differentiation surprises, and the gradient of a Kalman filter's likelihood, used live on the page to tune its noise levels. Every number is checked against JAX 0.12.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font: 0.8rem var(--font-mono); color: var(--ink-2); margin: 0.3rem 0 0.2rem; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  .legend i.dash { background: repeating-linear-gradient(90deg, currentColor 0 4px, transparent 4px 7px) !important; }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .numT td.n { font-family: var(--font-mono); font-size: 0.88rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .table-wrap + .prose { margin-top: 0.9rem; }
+  #vocT td, #kT td, #edgeT td, #wayT td { white-space: normal; }
+  /* the graph */
+  .graph-scroll { overflow-x: auto; }
+  #graph { width: 100%; min-width: 560px; height: auto; display: block; font-family: var(--font-mono); }
+  #graph .node rect { fill: var(--surface); stroke: var(--rule); stroke-width: 1.2; }
+  #graph .node.now rect { stroke: var(--accent); stroke-width: 2.4; }
+  #graph .node.done rect { fill: var(--surface-2); }
+  #graph .node .nm { font-size: 11px; fill: var(--muted); }
+  #graph .node .pv { font-size: 14px; font-weight: 600; fill: var(--ink); }
+  #graph .node .dv { font-size: 12px; font-weight: 600; }
+  #graph .node .dv.fwd { fill: var(--accent); }
+  #graph .node .dv.rev { fill: var(--warm); }
+  #graph .edge { stroke: var(--rule); stroke-width: 1.6; fill: none; }
+  #graph .edge.lit-fwd { stroke: var(--accent); stroke-width: 2.6; }
+  #graph .edge.lit-rev { stroke: var(--warm); stroke-width: 2.6; }
+  .trace { font: 0.82rem var(--font-mono); background: var(--surface); border: 1px dashed var(--rule); border-radius: 10px; padding: 0.55rem 0.8rem; min-height: 2.6rem; color: var(--ink); overflow-wrap: anywhere; }
+  .readouts.wide-v { grid-template-columns: minmax(0, 1fr); }
+  .readouts.wide-v .v { text-align: left; margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+  .field .row { display: flex; gap: 0.5rem; align-items: center; }
+  .field input[type="range"] { flex: 1; }
+  @media (max-width: 480px) { #vocT, #kT, #edgeT, #wayT { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Kalman Filters with JAX</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Kalman Filters with JAX · Part I, JAX · Chapter J3 of J6</span>
+  <h1>Automatic differentiation from scratch</h1>
+  <p class="lede">Chapters 03 and 04 train a model by computing the gradient of a loss through every step of a Kalman filter run over the training data (50 steps in chapter 03, 5173 in chapter 04), with one call to <code>jax.grad</code>. This chapter opens that call. A derivative of a program is not computed from a formula, and not by nudging the inputs: the program is broken into elementary operations, and the chain rule is applied to each, in one of two orders. Forward mode carries derivatives along with the values; reverse mode records the computation and sweeps back through it. Both fit in thirty lines of Python, and you will write them. At the end, the page computes the gradient of a Kalman filter's likelihood itself, with forward mode, and uses it to find the filter's noise levels from data.</p>
+  <p class="byline">Elie Rouphael · Needs chapters J1 and J2 and the chain rule · Every derivative, jaxpr and timing is checked against JAX 0.12</p>
+  <div class="downloads">
+    <a class="btn" href="code/j3_numbers.py" download>Reproduce every number (.py)</a>
+    <a class="btn ghost" href="https://docs.jax.dev/en/latest/notebooks/autodiff_cookbook.html">JAX's autodiff cookbook</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <p class="chart-title">The program <span class="keep">f(x₁, x₂) = log x₁ + x₁x₂ − sin x₂</span> as a graph of operations, differentiated one node at a time</p>
+      <div class="graph-scroll"><svg id="graph" viewBox="0 0 660 320" role="img" aria-label="The computational graph of f: inputs x1 and x2, the operations log, multiply, sine, add and subtract, with each node's value and derivative"></svg></div>
+      <div class="trace" id="trace" aria-live="polite"></div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="seg" role="group" aria-label="Mode" id="modeSeg">
+        <button class="btn" type="button" data-mode="fwd1" aria-pressed="true">Forward, seed x₁</button>
+        <button class="btn" type="button" data-mode="fwd2" aria-pressed="false">Forward, seed x₂</button>
+        <button class="btn" type="button" data-mode="rev" aria-pressed="false">Reverse</button>
+      </div>
+      <label class="field"><span>x₁ = <b id="x1v"></b></span><span class="row"><input type="range" id="x1" min="0.2" max="5" step="0.1" value="2"></span></label>
+      <label class="field"><span>x₂ = <b id="x2v"></b></span><span class="row"><input type="range" id="x2" min="-6" max="6" step="0.1" value="5"></span></label>
+      <div class="btn-row">
+        <button class="btn primary" type="button" id="stepBtn">Next operation</button>
+        <button class="btn" type="button" id="allBtn">Run to the end</button>
+        <button class="btn ghost" type="button" id="resetBtn">Reset</button>
+      </div>
+      <div class="readouts wide-v" aria-live="off">
+        <span>f(x₁, x₂)</span><span class="v" id="rF">–</span>
+        <span>∂f/∂x₁</span><span class="v" id="rD1">–</span>
+        <span>∂f/∂x₂</span><span class="v" id="rD2">–</span>
+        <span>sweeps for the full gradient</span><span class="v" id="rSweeps">–</span>
+      </div>
+      <p class="hint">Blue numbers are tangents <span class="m">\dot v</span> (forward mode), orange numbers adjoints <span class="m">\bar v</span>, written "adj" (reverse mode). The example and its notation, <span class="m">v_{-1}</span> to <span class="m">v_5</span>, are from Baydin et al. <a href="#ref-1">[1]</a>. At (2, 5) JAX gives <span class="m">f = 11.652072</span> and the gradient (5.5, 1.7163378), as the page does.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#ways"><span class="n">1</span><span class="t">Three ways to get a derivative</span><span class="d">Symbolic, numerical, automatic, and why finite differences fail in float32</span></a>
+    <a href="#graphs"><span class="n">2</span><span class="t">A program is a graph</span><span class="d">The evaluation trace, and the chain rule on it</span></a>
+    <a href="#forward"><span class="n">3</span><span class="t">Forward mode</span><span class="d">Tangents, dual numbers, and <code>jax.jvp</code></span></a>
+    <a href="#reverse"><span class="n">4</span><span class="t">Reverse mode</span><span class="d">Adjoints, the tape, and <code>jax.grad</code></span></a>
+    <a href="#jacobians"><span class="n">5</span><span class="t">Forward or reverse?</span><span class="d">Jacobians, <code>jacfwd</code> and <code>jacrev</code>, and what each costs</span></a>
+    <a href="#edges"><span class="n">6</span><span class="t">Where autodiff surprises</span><span class="d">Kinks, the <code>where</code> trap, loops, and stopping a gradient</span></a>
+    <a href="#kalman"><span class="n">7</span><span class="t">Back to Kalman</span><span class="d">EKF Jacobians, and the gradient of the filter's likelihood, live</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="ways">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Three ways to get a derivative</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Symbolic differentiation</b> applies the rules of calculus to a formula and returns a formula, as a computer algebra system does. It is exact, but it needs the program as one expression, which a loop of a thousand filter steps is not, and the derivative's expression can grow much faster than the original: differentiating a product of <span class="m">n</span> factors gives <span class="m">n</span> terms of <span class="m">n</span> factors each.</p>
+    <p><b>Numerical differentiation</b> treats the program as a black box and nudges its input:</p>
+    <div class="math-block" data-narrow="\begin{aligned} f'(x) &amp;\approx \frac{f(x + h) - f(x)}{h}, \\ f'(x) &amp;\approx \frac{f(x + h) - f(x - h)}{2h}. \end{aligned}">f'(x) \approx \frac{f(x + h) - f(x)}{h} \quad \text{(forward)}, \qquad f'(x) \approx \frac{f(x + h) - f(x - h)}{2h} \quad \text{(central)}.</div>
+    <p>It needs no access to the code, but it costs one or two evaluations per input, and its accuracy is caught between two errors. The formulas are Taylor approximations, wrong by about <span class="m">h</span> (forward) or <span class="m">h^2</span> (central), so <span class="m">h</span> should be small. But the difference <span class="m">f(x+h) - f(x)</span> is a cancellation (J1, Part 5): each value carries a rounding error of about <span class="m">u\,|f|</span>, and dividing by <span class="m">h</span> magnifies it, so <span class="m">h</span> should be large. The best compromise for forward differences is <span class="m">h \approx \sqrt{u}</span>, which in theory leaves about half the digits, three or four in float32. On the likelihood below, whose curvature is large next to its slope, the float32 forward difference does no better than 3%, and only the central difference reaches three digits.</p>
+    <p>Below, the function is a Kalman filter's average negative log-likelihood on chapter 02's 1000 measurements, as a function of <span class="m">\log \sigma_z</span>, the logarithm of the measurement noise level. Part 7 explains it; here only its derivative matters. The reference is JAX's automatic derivative in float64.</p>
+  </div>
+  <div class="col widget" id="fdW">
+    <label class="field"><span>Step h = <b id="hv"></b></span>
+      <span class="row"><input type="range" id="hExp" min="-12" max="-1" step="1" value="-3" aria-describedby="fdCap"></span>
+    </label>
+    <p class="chart-title">Relative error of the derivative against the step h, both on log scales</p>
+    <canvas id="fdC" aria-label="Relative error of finite-difference derivatives against the step size, in float32 and float64, with the float32 automatic derivative for comparison" aria-describedby="fdCap"></canvas>
+    <div class="legend" id="fdLegend" aria-hidden="true"></div>
+    <div class="readouts wide-v" aria-live="off">
+      <span>float64 autodiff (the reference)</span><span class="v" id="fRef">–</span>
+      <span>float32 autodiff</span><span class="v" id="fAD">–</span>
+      <span>float32 forward difference</span><span class="v" id="f32f">–</span>
+      <span>float32 central difference</span><span class="v" id="f32c">–</span>
+      <span>float64 central difference</span><span class="v" id="f64c">–</span>
+    </div>
+    <p class="status" id="fdCap" role="status" aria-live="polite"></p>
+  </div>
+  <div class="col prose">
+    <p><b>Automatic differentiation</b> is the third way. It applies the chain rule to the operations the program actually performs, as it performs them, with numbers rather than formulas. The result is exact up to the rounding of those operations: JAX's float32 derivative above agrees with float64 to about <span class="m">2 \times 10^{-6}</span>, while the best float32 finite difference is off by <span class="m">9 \times 10^{-4}</span> and most are useless. It costs a small constant multiple of one evaluation, whatever the number of inputs. The rest of the chapter is how.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="graphs">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>A program is a graph</h2>
+  </div>
+  <div class="col prose">
+    <p>However a program is written, running it performs a sequence of elementary operations, each with a known derivative. Write each intermediate result as a variable <span class="m">v_i</span>. For the running example, <span class="m">f(x_1, x_2) = \log x_1 + x_1 x_2 - \sin x_2</span>, the sequence is</p>
+    <div class="math-block" data-narrow="\begin{aligned} v_{-1} &amp;= x_1, \quad v_0 = x_2, \\ v_1 &amp;= \log v_{-1}, \quad v_2 = v_{-1} v_0, \\ v_3 &amp;= \sin v_0, \quad v_4 = v_1 + v_2, \\ v_5 &amp;= v_4 - v_3, \quad y = v_5. \end{aligned}">v_{-1} = x_1, \quad v_0 = x_2, \quad v_1 = \log v_{-1}, \quad v_2 = v_{-1} v_0, \quad v_3 = \sin v_0, \quad v_4 = v_1 + v_2, \quad v_5 = v_4 - v_3, \quad y = v_5.</div>
+    <p>This list is called the <b>evaluation trace</b>, or a Wengert list after the 1964 paper that first differentiated programs this way <a href="#ref-3">[3]</a>. Drawn with an arrow from each variable to the operations that use it, it is the graph in the demo. You have seen it before: it is J2's jaxpr.</p>
+    <pre><code class="language-python">jax.make_jaxpr(f)(2.0, 5.0)</code></pre>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[] b:f32[]. let
+    c:f32[] = log a
+    d:f32[] = mul a b
+    e:f32[] = add c d
+    f:f32[] = sin b
+    g:f32[] = sub e f
+  in (g,) }</code></pre>
+    <p>The jaxpr's <code>c, d, e, f, g</code> are <span class="m">v_1, v_2, v_4, v_3, v_5</span>; the jaxpr follows Python's evaluation order, which reaches <span class="m">v_4</span> before <span class="m">v_3</span>; the order of independent operations does not matter. Each line has a local derivative that a table can supply: <span class="m">\partial v_1 / \partial v_{-1} = 1/v_{-1}</span>, <span class="m">\partial v_2 / \partial v_{-1} = v_0</span>, <span class="m">\partial v_3 / \partial v_0 = \cos v_0</span>, and so on. The chain rule says the derivative of the output with respect to an input is the sum, over all paths from that input to the output, of the products of the local derivatives along the path. From <span class="m">x_1</span> there are two paths, through <span class="m">v_1</span> and through <span class="m">v_2</span>:</p>
+    <div class="math-block">\frac{\partial y}{\partial x_1} = \underbrace{\tfrac{1}{v_{-1}}}_{v_1} \cdot 1 \cdot 1 \;+\; \underbrace{v_0}_{v_2} \cdot 1 \cdot 1 = \frac{1}{2} + 5 = 5.5 .</div>
+    <p>Summing over paths one by one would be exponential in a deep graph. The two modes of automatic differentiation are two ways of organising the sum so that every edge is visited once: from the inputs forward, or from the output backward.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="forward">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Forward mode</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The idea.</b> Choose one input direction, say <span class="m">x_1</span>. Carry, next to every value <span class="m">v_i</span>, its <b>tangent</b> <span class="m">\dot v_i = \partial v_i / \partial x_1</span>. Seed the inputs with <span class="m">\dot v_{-1} = 1</span> and <span class="m">\dot v_0 = 0</span>, then compute each tangent from its operation's local rule as the value is computed: <span class="m">\dot v_1 = \dot v_{-1} / v_{-1}</span>, <span class="m">\dot v_2 = \dot v_{-1} v_0 + v_{-1} \dot v_0</span>, and so on. When the output is reached, <span class="m">\dot y = \partial y / \partial x_1</span>. Step through it in the demo with <b>Forward, seed x₁</b>.</p>
+    <p>One sweep gives the derivative with respect to one input, or more generally along one direction <span class="m">\dot x</span>: the product of the Jacobian with a vector, <span class="m">J \dot x</span>, called a <b>Jacobian-vector product</b> or JVP. For the full gradient of a function of <span class="m">n</span> inputs, forward mode needs <span class="m">n</span> sweeps, one per seed.</p>
+    <p><b>Dual numbers.</b> Pairing each value with its tangent can be done by the number type itself. A dual number <span class="m">a + b\varepsilon</span> with <span class="m">\varepsilon^2 = 0</span> obeys <span class="m">f(a + b\varepsilon) = f(a) + f'(a)\, b\, \varepsilon</span>, so arithmetic on dual numbers is forward mode. In Python, with operator overloading:</p>
+    <pre><code class="language-python">import math
+
+class Dual:
+    """A number with a tangent: forward mode."""
+    def __init__(self, value, tangent=0.0):
+        self.value, self.tangent = value, tangent
+    def __add__(self, other):
+        return Dual(self.value + other.value, self.tangent + other.tangent)
+    def __sub__(self, other):
+        return Dual(self.value - other.value, self.tangent - other.tangent)
+    def __mul__(self, other):          # the product rule
+        return Dual(self.value * other.value,
+                    self.tangent * other.value + self.value * other.tangent)
+
+def d_log(x): return Dual(math.log(x.value), x.tangent / x.value)
+def d_sin(x): return Dual(math.sin(x.value), math.cos(x.value) * x.tangent)
+
+def f(x1, x2):
+    return d_log(x1) + x1 * x2 - d_sin(x2)
+
+f(Dual(2.0, 1.0), Dual(5.0, 0.0)).tangent    # 5.5                 seed x1
+f(Dual(2.0, 0.0), Dual(5.0, 1.0)).tangent    # 1.7163378145367738  seed x2</code></pre>
+    <p>The function <code>f</code> was written for numbers, and runs unchanged on dual numbers. That is forward-mode AD in full; a library adds more operations and makes it fast.</p>
+    <p><b>In JAX</b> the same is <code>jax.jvp</code>, which takes the inputs and a tangent for each:</p>
+    <pre><code class="language-python">jax.jvp(f, (2.0, 5.0), (1.0, 0.0))     # (11.652072, 5.5): the value and the tangent</code></pre>
+    <p>And since a JVP is itself a program, J2's tools show it. The traced JVP of <code>f</code> interleaves the original operations with their tangent rules, just like the dual-number class; <code>c</code> and <code>d</code> are the input tangents:</p>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[] b:f32[] c:f32[] d:f32[]. let
+    e:f32[] = log a
+    f:f32[] = div c a          # tangent of log: c / a
+    g:f32[] = mul a b
+    h:f32[] = mul c b          # product rule, first half
+    i:f32[] = mul a d          # product rule, second half
+    j:f32[] = add_any h i
+    k:f32[] = add e g
+    l:f32[] = add f j
+    m:f32[] = sin b
+    n:f32[] = cos b
+    o:f32[] = mul d n          # tangent of sin: d cos b
+    p:f32[] = sub k m          # the value
+    q:f32[] = sub l o          # the tangent
+  in (p, q) }</code></pre>
+    <p>(The comments are added; the rest is JAX's output.) Forward mode costs about two to three times one evaluation, and it needs no extra memory: each tangent is computed when its value is and can be discarded with it.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="reverse">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Reverse mode</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The idea.</b> Turn the question around. Instead of asking how every variable depends on one input, ask how the one output depends on every variable: the <b>adjoint</b> <span class="m">\bar v_i = \partial y / \partial v_i</span>. The output's adjoint is <span class="m">\bar y = 1</span>. A variable's adjoint is the sum, over the operations that use it, of that operation's adjoint times the local derivative:</p>
+    <div class="math-block">\bar v_i = \sum_{j \,:\, v_j \text{ uses } v_i} \bar v_j \, \frac{\partial v_j}{\partial v_i} .</div>
+    <p>So adjoints are computed from the output backwards, in the reverse of the order the values were computed. That needs two sweeps: a forward sweep that computes and <em>stores</em> every value, because the local derivatives need them, and a backward sweep that propagates adjoints. When the backward sweep reaches the inputs, it has every partial derivative at once: <span class="m">\bar x_1 = 5.5</span> and <span class="m">\bar x_2 = 1.716</span>. Step through it in the demo with <b>Reverse</b>, and notice <span class="m">v_0</span>, used twice, collecting two contributions.</p>
+    <p>One backward sweep gives the derivative of one output with respect to all inputs: more generally, a row vector times the Jacobian, <span class="m">\bar y^\top J</span>, a <b>vector-Jacobian product</b> or VJP. For a scalar loss of a million parameters, that is the whole gradient, for the price of about one extra evaluation, instead of the million sweeps forward mode would need. This is backpropagation <a href="#ref-5">[5]</a>, and it is the reason neural networks can be trained at all. The algorithm itself is older: Linnainmaa described reverse accumulation in 1970 <a href="#ref-4">[4]</a>.</p>
+    <p><b>A tape.</b> Reverse mode needs the graph, so each value must remember how it was made. In Python, each operation records its inputs and its local derivatives; <code>backward</code> visits the nodes in reverse topological order and accumulates:</p>
+    <pre><code class="language-python">class Var:
+    """A number that remembers how it was made: reverse mode."""
+    def __init__(self, value, parents=()):
+        self.value, self.parents, self.adjoint = value, parents, 0.0
+    def __add__(self, other):
+        return Var(self.value + other.value, ((self, 1.0), (other, 1.0)))
+    def __sub__(self, other):
+        return Var(self.value - other.value, ((self, 1.0), (other, -1.0)))
+    def __mul__(self, other):
+        return Var(self.value * other.value, ((self, other.value), (other, self.value)))
+
+def v_log(x): return Var(math.log(x.value), ((x, 1.0 / x.value),))
+def v_sin(x): return Var(math.sin(x.value), ((x, math.cos(x.value)),))
+
+def backward(y):
+    order, seen = [], set()
+    def visit(v):                      # every node after the nodes it was made from
+        if id(v) not in seen:
+            seen.add(id(v))
+            for parent, _ in v.parents:
+                visit(parent)
+            order.append(v)
+    visit(y)
+    y.adjoint = 1.0
+    for v in reversed(order):          # the backward sweep
+        for parent, local in v.parents:
+            parent.adjoint += local * v.adjoint
+
+a, b = Var(2.0), Var(5.0)
+y = v_log(a) + a * b - v_sin(b)        # the forward sweep builds the graph
+backward(y)
+a.adjoint, b.adjoint                   # (5.5, 1.7163378145367738)</code></pre>
+    <p>The <code>+=</code> is where a variable used twice collects its two contributions. This is a complete reverse-mode AD in the style of PyTorch's autograd and of small teaching libraries, and, like the dual numbers, it agrees with JAX to the last digit.</p>
+    <p><b>In JAX</b>, <code>jax.vjp(f, 2.0, 5.0)</code> returns the value and a function that maps an output adjoint to input adjoints, and <code>jax.grad(f)</code> is the special case for a scalar output with <span class="m">\bar y = 1</span>. JAX does not record a tape at run time. It traces, as in J2, and builds the backward sweep as a new program:</p>
+    <pre><code class="language-python">jax.make_jaxpr(jax.grad(f, argnums=(0, 1)))(2.0, 5.0)</code></pre>
+    <pre class="output"><code class="nohl">{ lambda ; a:f32[] b:f32[]. let
+    c:f32[] = log a
+    d:f32[] = mul a b
+    e:f32[] = add c d
+    f:f32[] = sin b
+    g:f32[] = cos b
+    _:f32[] = sub e f
+    h:f32[] = neg 1.0:f32[]
+    i:f32[] = mul h g
+    j:f32[] = mul a 1.0:f32[]
+    k:f32[] = mul 1.0:f32[] b
+    l:f32[] = add_any i j
+    m:f32[] = div 1.0:f32[] a
+    n:f32[] = add_any k m
+  in (n, l) }</code></pre>
+    <p>The first six lines are the forward sweep; <code>_</code> marks <span class="m">y</span> itself, computed but not needed, since <code>grad</code> returns only the derivative. From <code>h</code> on it is the backward sweep with <span class="m">\bar y = 1</span> as a constant: <code>l</code> is <span class="m">\bar x_2 = -\cos x_2 + x_1</span> and <code>n</code> is <span class="m">\bar x_1 = x_2 + 1/x_1</span>. The values the backward sweep needs, <code>a</code>, <code>b</code> and <code>cos b</code>, are what a tape would have stored. JAX derives this program from the forward-mode rules, by linearising the function and transposing the linear part, so each nonlinear primitive needs only its JVP rule, and only the few linear primitives those rules produce need a transpose rule <a href="#ref-6">[6]</a>.</p>
+    <p><b>The price.</b> Reverse mode must keep every intermediate value until the backward sweep uses it. For the Kalman filter's likelihood over 1000 steps, that is every step's state, covariance and gain. Memory grows with the length of the computation; forward mode's does not. When memory runs out, <code>jax.checkpoint</code> trades it back for time by recomputing parts of the forward sweep during the backward one. In time, the cost of a gradient is a small multiple of one evaluation, whatever the number of inputs. Theory bounds the multiple by a small constant that does not depend on the number of inputs <a href="#ref-2">[2]</a>; for the Kalman likelihood below, JAX's <code>value_and_grad</code> took 2.35 ms against 1.08 ms for the value alone, a factor of 2.2.</p>
+    <div class="define">
+      <p class="define-title">Forward and reverse mode</p>
+      <p><b>In plain words:</b> forward mode pushes "how much does this change if the input moves?" from the inputs to the output; reverse mode pulls "how much does the output care about this?" from the output back to the inputs.</p>
+      <p><b>More precisely:</b> for <span class="m">f: \mathbb R^n \to \mathbb R^m</span> with Jacobian <span class="m">J</span>, one forward sweep computes a JVP <span class="m">J\dot x</span> and one reverse sweep a VJP <span class="m">\bar y^\top J</span>, each at a small constant multiple of the cost of <span class="m">f</span>. Reverse mode also stores the forward sweep's intermediate values.</p>
+      <dl>
+        <dt>Tangent, adjoint</dt><dd><span class="m">\dot v = \partial v / \partial x</span> for a chosen input direction; <span class="m">\bar v = \partial y / \partial v</span> for a chosen output weighting. Also called primal–tangent and cotangent.</dd>
+        <dt>Backpropagation</dt><dd>Reverse mode applied to a neural network's loss.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="jacobians">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Forward or reverse?</h2>
+  </div>
+  <div class="col prose">
+    <p>A full Jacobian of <span class="m">f: \mathbb R^n \to \mathbb R^m</span> is <span class="m">m \times n</span> numbers. Forward mode builds it a column at a time, one JVP per input, <span class="m">n</span> sweeps; reverse mode a row at a time, one VJP per output, <span class="m">m</span> sweeps. JAX offers both, as <code>jax.jacfwd</code> and <code>jax.jacrev</code>, and runs the sweeps as one batched computation with <code>vmap</code> (J4). They return the same matrix; the cost differs. For <span class="m">f(x) = \tanh(Wx)</span>, compiled, on a laptop CPU:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="wayT" class="numT">
+      <thead><tr><th>Shape of the Jacobian</th><th><code>jacfwd</code> (<span class="m">n</span> sweeps)</th><th><code>jacrev</code> (<span class="m">m</span> sweeps)</th></tr></thead>
+      <tbody id="modeBody">
+        <tr><td>4 outputs, 1000 inputs: wide</td><td class="n">656 µs</td><td class="n">16 µs</td></tr>
+        <tr><td>1000 outputs, 4 inputs: tall</td><td class="n">21 µs</td><td class="n">658 µs</td></tr>
+        <tr><td>300 × 300: square</td><td class="n">328 µs</td><td class="n">283 µs</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The rule: <b>reverse for few outputs, forward for few inputs</b>. A loss is one output with many parameters, so training always uses reverse mode. The EKF's Jacobians are small and square, where the two cost about the same, and forward mode, which stores nothing, is the natural default. The Hessian, the matrix of second derivatives of a scalar function, is the Jacobian of the gradient: JAX defines <code>jax.hessian(f)</code> as <code>jacfwd(jacrev(f))</code>, reverse mode for the gradient's many inputs and forward mode on top for its square Jacobian.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="edges">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Where autodiff surprises</h2>
+  </div>
+  <div class="col prose">
+    <p>Automatic differentiation differentiates the program as written, operation by operation. Most surprises come from the gap between the program and the mathematical function it stands for.</p>
+    <p><b>Kinks get a convention.</b> <span class="m">|x|</span> and <span class="m">\max(x, 0)</span> have no derivative at 0, but each primitive has a rule, and the rule gives a number: in JAX, <code>jax.grad(jnp.abs)(0.0)</code> is 1.0 and <code>jax.grad(jax.nn.relu)(0.0)</code> is 0.0. <code>jax.grad(jnp.sqrt)(0.0)</code> is <code>inf</code>, and the gradient of <code>jnp.linalg.norm</code> at the zero vector is <code>[nan nan]</code>, because the norm is a square root of a sum of squares.</p>
+    <p><b>The <code>where</code> trap.</b> J2 used <code>jnp.where</code> to keep a computation's value safe. Its gradient is another matter:</p>
+    <pre><code class="language-python">def safe_sqrt(x):
+    return jnp.where(x > 0, jnp.sqrt(x), 0.0)
+
+safe_sqrt(-1.0)              # 0.0: the value is fine
+jax.grad(safe_sqrt)(-1.0)    # nan</code></pre>
+    <p><code>where</code> computes both branches, so <code>jnp.sqrt(-1.0)</code> is computed, NaN, and its local derivative is NaN too. The backward sweep sends an adjoint of 0 into the unused branch, and <span class="m">0 \times \text{NaN}</span> is NaN. The fix is to make the unused branch harmless before it is computed, not after: <code>jnp.sqrt(jnp.where(x > 0, x, 1.0))</code> inside the outer <code>where</code> gives a gradient of 0.0. Part 7 meets this trap in the Kalman filter.</p>
+    <p><b>Gradients need a scalar output and float inputs.</b> <code>jax.grad(lambda x: x * 2)(3)</code> fails: "<code>grad requires real- or complex-valued inputs (input dtype that is a sub-dtype of np.inexact), but got int32</code>". On a vector output, "<code>Gradient only defined for scalar-output functions. Output had shape: (3,)</code>", with the advice to sum it or use <code>jax.jacobian</code>.</p>
+    <p><b>Reverse mode needs to know the loop's length.</b> A <code>lax.while_loop</code> runs until a condition fails, a number of steps unknown when the program is compiled, so there is nowhere to store its intermediate values in advance. Forward mode needs no storage and works; reverse mode refuses: "<code>Reverse-mode differentiation does not work for lax.while_loop or lax.fori_loop with dynamic start/stop values. Try using lax.scan, ...</code>". The Kalman code's <code>lax.scan</code> has a fixed length, which is one reason it is used (J5).</p>
+    <p><b>Stopping a gradient on purpose.</b> <code>lax.stop_gradient(x)</code> is <code>x</code> in value and a constant to the differentiator: <code>jax.grad(lambda x: x * lax.stop_gradient(x))(3.0)</code> is 3.0, not 6.0. It is how a quantity is used in a loss without being trained, such as a target network's output or a filter gain treated as fixed.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="edgeT" class="numT">
+      <thead><tr><th>Expression</th><th>JAX's answer</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td class="n">grad(abs)(0.0)</td><td class="n">1.0</td><td>A convention for the kink.</td></tr>
+        <tr><td class="n">grad(relu)(0.0)</td><td class="n">0.0</td><td>A different convention.</td></tr>
+        <tr><td class="n">grad(sqrt)(0.0)</td><td class="n">inf</td><td><span class="m">1/(2\sqrt 0)</span>.</td></tr>
+        <tr><td class="n">grad(norm)(zeros(2))</td><td class="n">[nan nan]</td><td>A square root at 0, times 0.</td></tr>
+        <tr><td class="n">grad(where(x &gt; 0, sqrt(x), 0))(-1.0)</td><td class="n">nan</td><td><span class="m">0 \times \text{NaN}</span> from the unused branch.</td></tr>
+        <tr><td class="n">grad(x * stop_gradient(x))(3.0)</td><td class="n">3.0</td><td>The second factor is a constant to the differentiator.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="kalman">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Back to Kalman</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The EKF's Jacobians, for free.</b> The repository's extended filter takes its Jacobians as arguments, <code>run_ekf(measurements, f, h, F_jacobian, H_jacobian, ...)</code>, and its script passes hand-written ones for a linear model. For a nonlinear sensor the derivation is where mistakes happen. Suppose the sensor measures the distance to the vehicle from a point 10 m to the side of the road, <span class="m">h(x) = \sqrt{p^2 + 10^2}</span>. By hand, <span class="m">H = (p / \sqrt{p^2 + 100},\ 0)</span>; at <span class="m">p = 24</span> that is <span class="m">24/26</span>. Forward mode gives the same without the derivation:</p>
+    <pre><code class="language-python">def h_range(x):
+    return jnp.array([jnp.sqrt(x[0] ** 2 + 10.0 ** 2)])
+
+jax.jacfwd(h_range)(jnp.array([24.0, 1.0]))     # [[0.923077 0.      ]] = 24/26, 0
+run_ekf(ranges, f, h_range, jax.jacfwd(f), jax.jacfwd(h_range), Q, R, x0, P0)   # f: the motion model; ranges: the readings</code></pre>
+    <p>The Jacobian is exact to rounding, stays correct when <code>h_range</code> changes, and is evaluated inside the compiled filter like any other operation.</p>
+    <p><b>The gradient of the filter's likelihood.</b> A Kalman filter does more than estimate the state: at each step it predicts the next measurement, as a Gaussian with mean <span class="m">H\hat x_{k|k-1}</span> and variance <span class="m">S_k</span>. How surprising each measurement was, summed over the run, is the negative log-likelihood of the data under the model:</p>
+    <div class="math-block" data-narrow="\begin{aligned} \ell(\theta) &amp;= \frac{1}{T} \sum_{k=1}^{T} \tfrac12 \Big( \log 2\pi + \log S_k \\ &amp;\qquad + \frac{v_k^2}{S_k} \Big), \\ v_k &amp;= z_k - H\hat x_{k|k-1}. \end{aligned}">\ell(\theta) = \frac{1}{T} \sum_{k=1}^{T} \tfrac12 \Big( \log 2\pi + \log S_k + \frac{v_k^2}{S_k} \Big), \qquad v_k = z_k - H\hat x_{k|k-1} .</div>
+    <p>This is the prediction-error decomposition of the likelihood <a href="#ref-7">[7]</a>. It depends on the noise levels the filter assumes, the process noise <span class="m">\sigma_a</span> in <span class="m">Q</span> and the measurement noise <span class="m">\sigma_z</span> in <span class="m">R</span>, which chapter 02 simply set to the values that generated the data, 0.1 and 0.5. With real data nobody knows them. Minimising <span class="m">\ell</span> over <span class="m">\theta = (\log \sigma_a, \log \sigma_z)</span> estimates them, and the gradient through 1000 filter steps is one call: <code>jax.grad(nll)(theta)</code>. (The logarithms keep both levels positive and put them on a common scale.)</p>
+    <p>The demo below does this without JAX. The page's own code runs the filter in float64 on chapter 02's measurements, with every number a dual number carrying two tangents, one per parameter: forward mode, as in Part 3, so one sweep gives both partial derivatives. Its gradient is checked against JAX's <code>grad</code> at four points. Click the surface to choose a starting point, then descend.</p>
+  </div>
+  <div class="col widget" id="descW">
+    <p class="chart-title">The filter's negative log-likelihood over the two noise levels (darker is lower), and gradient descent on it</p>
+    <canvas id="descC" aria-label="A map of the negative log-likelihood over the process-noise and measurement-noise levels, on log scales, with the path of gradient descent" aria-describedby="descCap"></canvas>
+    <div class="legend" id="descLegend" aria-hidden="true"></div>
+    <div class="btn-row">
+      <button class="btn primary" type="button" id="descBtn">Descend 400 steps</button>
+      <button class="btn" type="button" id="desc10Btn">10 more steps</button>
+      <button class="btn ghost" type="button" id="descReset">Back to σ = 1, 1</button>
+    </div>
+    <div class="readouts wide-v" aria-live="off">
+      <span>steps taken (step size 0.5)</span><span class="v" id="dK">0</span>
+      <span>process noise σ<sub>a</sub></span><span class="v" id="dA">–</span>
+      <span>measurement noise σ<sub>z</sub></span><span class="v" id="dZ">–</span>
+      <span>negative log-likelihood per step</span><span class="v" id="dL">–</span>
+      <span>gradient (∂/∂log σ<sub>a</sub>, ∂/∂log σ<sub>z</sub>)</span><span class="v" id="dG">–</span>
+      <span>this page's gradient against JAX's</span><span class="v" id="dCheck">–</span>
+    </div>
+    <p class="status" id="descCap" role="status" aria-live="polite"></p>
+  </div>
+  <div class="col prose">
+    <p><b>What the descent finds.</b> From <span class="m">\sigma_a = \sigma_z = 1</span>, 400 steps reach <span class="m">\sigma_a = 0.063</span>, <span class="m">\sigma_z = 0.513</span>, and the minimum, found by Newton's method in JAX, is at <span class="m">\sigma_a = 0.061</span>, <span class="m">\sigma_z = 0.513</span>. The measurement noise is recovered within 3%. The process noise is not, and the surface shows why: it is a long, shallow valley. The Hessian at the minimum has eigenvalues 0.022 and 1.94, a ratio of about 89, so the likelihood is about 89 times more sensitive to <span class="m">\log \sigma_z</span> than to <span class="m">\log \sigma_a</span>. A thousand measurements pin <span class="m">\sigma_z</span> to about 2% and <span class="m">\sigma_a</span> only to about 20% (one standard error, from the same Hessian), and the true 0.1 is 2.3 standard errors above the estimate. Is the method biased, or is this record unusually calm? One dataset cannot say; J4 runs the same estimate on 1000 datasets from the same generator and finds the estimates centred on 0.1, with chapter 02's among the lowest 1%. The valley is also why plain gradient descent crawls along it: a step size small enough for the steep direction is far too small for the shallow one. J6's optimiser, Adam, rescales each direction for that reason.</p>
+    <p><b>Chapter 03's gradient.</b> Chapter 03 trains a neural network inside the filter with <code>value_and_grad(loss_fn)</code>: reverse mode, because the loss is one number and the network has many parameters, through a <code>lax.scan</code> over the sequence. Everything above applies. The backward sweep runs the scan in reverse, from the last step to the first, and the forward sweep's states and covariances are kept for it, so memory grows with the sequence length. And reverse mode differentiates only what the program actually computes: chapter 03 found that the gain sequence does not depend on the trained parameters, so JAX's gradient through it is exactly zero.</p>
+    <p><b>J2's missing measurement, differentiated.</b> J2's exercise 4 replaced a NaN measurement with <code>jnp.nan_to_num(z)</code> before the update, then selected the prediction with <code>where</code>. Without the replacement, the step's <em>value</em> is the same, 2.1 in the test in <code>j3_numbers.py</code>. But its gradient with respect to <span class="m">\log \sigma_z</span> is 0.0 with the replacement and NaN without it: the update's gain depends on <span class="m">\sigma_z</span>, its innovation is NaN, and the unused branch's <span class="m">0 \times \text{NaN}</span> reaches the gradient. Code that will be differentiated must keep NaN out of both branches.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="kT">
+      <thead><tr><th>In the Kalman code</th><th>What J3 says about it</th></tr></thead>
+      <tbody>
+        <tr><td><code>run_ekf(..., F_jacobian, H_jacobian, ...)</code></td><td>Pass <code>jax.jacfwd(f)</code> and <code>jax.jacfwd(h)</code>: forward mode, exact, no derivation (Parts 3 and 5).</td></tr>
+        <tr><td><code>value_and_grad(forecasting_loss_fn)</code></td><td>Reverse mode: one scalar loss, many parameters, one backward sweep at about twice the cost of the loss (Part 4).</td></tr>
+        <tr><td><code>jax.lax.scan(step, ...)</code> inside the loss</td><td>Differentiable in reverse because its length is fixed; its intermediate states are stored for the backward sweep (Parts 4 and 6).</td></tr>
+        <tr><td><code>jnp.where</code> around a computation that can produce NaN</td><td>Safe for the value, not for the gradient: make the unused branch harmless first (Part 6).</td></tr>
+        <tr><td><code>Q</code>, <code>R</code> chosen by hand</td><td>Can be estimated by minimising the filter's negative log-likelihood with its gradient (Part 7).</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Next, J4 is <code>vmap</code>, the transformation <code>jacfwd</code> and <code>jacrev</code> use to run many sweeps at once, and the one the unscented filter uses to push its sigma points through <span class="m">f</span>.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why can a float32 finite difference not be made accurate by choosing a smaller step?</summary><p>Its error has two parts that move in opposite directions. The truncation error of the formula shrinks with <span class="m">h</span>, but the rounding error of <span class="m">f(x+h) - f(x)</span>, about <span class="m">u|f|</span>, is divided by <span class="m">h</span> and grows. In float32 the best compromise leaves three or four digits, and for <span class="m">h \le 10^{-8}</span> even the input <span class="m">\theta + h</span> rounds back to <span class="m">\theta</span>, so the estimate is 0.</p></details>
+    <details class="sol"><summary>2. What is automatic differentiation exact up to?</summary><p>The rounding of the operations it performs. It applies exact derivative rules to each elementary operation, with no truncation error, so its error is of the same order as the error in the function's own value.</p></details>
+    <details class="sol"><summary>3. What does one forward-mode sweep compute, and one reverse-mode sweep?</summary><p>Forward: a Jacobian-vector product <span class="m">J\dot x</span>, the derivative of every output along one input direction. Reverse: a vector-Jacobian product <span class="m">\bar y^\top J</span>, the derivative of one weighted output with respect to every input.</p></details>
+    <details class="sol"><summary>4. Why does a dual number <span class="m">a + b\varepsilon</span> with <span class="m">\varepsilon^2 = 0</span> compute derivatives?</summary><p>Expanding <span class="m">f(a + b\varepsilon)</span> in a Taylor series, every term with <span class="m">\varepsilon^2</span> or higher vanishes, leaving <span class="m">f(a) + f'(a)\,b\,\varepsilon</span>. Arithmetic on dual numbers therefore carries the derivative exactly in the <span class="m">\varepsilon</span> part, which is forward mode.</p></details>
+    <details class="sol"><summary>5. Why must reverse mode store the forward sweep's values, and what does that cost?</summary><p>The local derivatives in the backward sweep, such as <span class="m">1/v_{-1}</span> or <span class="m">\cos v_0</span>, need the values, and the backward sweep visits them in the reverse of the order they were computed. Memory therefore grows with the length of the computation, for example with the number of filter steps; <code>jax.checkpoint</code> recomputes instead of storing when that is too much.</p></details>
+    <details class="sol"><summary>6. Which mode would you use for the Jacobian of a map from 3 inputs to 500 outputs, and for the gradient of a loss of 10 000 parameters?</summary><p>Forward for the first: 3 sweeps instead of 500. Reverse for the second: 1 sweep instead of 10 000.</p></details>
+    <details class="sol"><summary>7. <code>jnp.where(x > 0, jnp.sqrt(x), 0.0)</code> is 0 at <span class="m">x = -1</span>. Why is its gradient NaN there?</summary><p><code>where</code> evaluates both branches, so <span class="m">\sqrt{-1}</span> and its derivative are NaN. The backward sweep multiplies the unused branch's derivative by an adjoint of 0, and <span class="m">0 \times \text{NaN} = \text{NaN}</span>. Replace the input of the dangerous branch with a safe value first.</p></details>
+    <details class="sol"><summary>8. Gradient descent on the filter's likelihood finds <span class="m">\sigma_z</span> quickly and <span class="m">\sigma_a</span> slowly. Why?</summary><p>The likelihood is about 89 times more curved along <span class="m">\log \sigma_z</span> than along <span class="m">\log \sigma_a</span>, the ratio of its Hessian's eigenvalues. A step size stable for the steep direction makes slow progress along the shallow one. The shallowness also means the data determine <span class="m">\sigma_a</span> poorly.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Extend the dual numbers.</b> Add division and <code>d_exp</code> to the <code>Dual</code> class, and use them to differentiate <span class="m">s(x) = x / (1 + e^{-x})</span> at <span class="m">x = 1.5</span>. Compare with <code>jax.grad</code>.</div>
+        <details class="sol"><summary>Hint</summary><p>The quotient rule: the tangent of <span class="m">a/b</span> is <span class="m">(\dot a b - a \dot b)/b^2</span>. A Python number needs to become a <code>Dual</code> with tangent 0 before it meets one.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Both give <span class="m">s'(1.5) = 1.0412941</span>, with <span class="m">s(1.5) = 1.2263617</span> (1.2263616 in JAX's float32).</p>
+          <pre><code class="language-python">def lift(v):
+    return v if isinstance(v, Dual) else Dual(v)
+
+Dual.__truediv__ = lambda a, b: Dual(a.value / lift(b).value,
+    (a.tangent * lift(b).value - a.value * lift(b).tangent) / lift(b).value ** 2)
+Dual.__radd__ = lambda a, b: lift(b) + a
+Dual.__neg__ = lambda a: Dual(-a.value, -a.tangent)
+
+def d_exp(x): return Dual(math.exp(x.value), math.exp(x.value) * x.tangent)
+
+x = Dual(1.5, 1.0)
+(x / (1.0 + d_exp(-x))).tangent                     # 1.0412941...
+jax.grad(lambda x: x / (1 + jnp.exp(-x)))(1.5)      # 1.0412941</code></pre></details>
+      </li>
+      <li><div><b>Reverse by hand.</b> Run the reverse sweep of the running example on paper at <span class="m">(x_1, x_2) = (1, 0)</span>, listing every adjoint. Then check with the demo.</div>
+        <details class="sol"><summary>Hint</summary><p>Start from <span class="m">\bar v_5 = 1</span>. Subtraction passes <span class="m">-1</span> to its second input. <span class="m">v_0</span> receives two contributions.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The values are <span class="m">v_1 = 0</span>, <span class="m">v_2 = 0</span>, <span class="m">v_3 = 0</span>, <span class="m">y = 0</span>. Then <span class="m">\bar v_5 = \bar v_4 = 1</span>, <span class="m">\bar v_3 = -1</span>, <span class="m">\bar v_1 = \bar v_2 = 1</span>; <span class="m">\bar v_0 = \bar v_3 \cos 0 + \bar v_2 v_{-1} = -1 + 1 = 0</span>; <span class="m">\bar v_{-1} = \bar v_2 v_0 + \bar v_1 / v_{-1} = 0 + 1 = 1</span>. So <span class="m">\nabla f(1, 0) = (1, 0)</span>.</p></details>
+      </li>
+      <li><div><b>A gradient checker.</b> Write <code>check_grad(f, theta)</code> that compares <code>jax.grad</code> with central differences, component by component, and use it on the filter's likelihood. Run it in float32 and in float64. What step would you use in each, and what agreement can you expect?</div>
+        <details class="sol"><summary>Hint</summary><p>For central differences the truncation error is about <span class="m">h^2</span> and the rounding error about <span class="m">u/h</span>, so the best <span class="m">h</span> is near <span class="m">u^{1/3}</span>. Compare against the widget in Part 1.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">u^{1/3}</span> is about <span class="m">4 \times 10^{-3}</span> in float32 and <span class="m">5 \times 10^{-6}</span> in float64. In float64 with <span class="m">h = 10^{-6}</span> the agreement on <span class="m">\partial \ell / \partial \log \sigma_z</span> is about <span class="m">10^{-8}</span> relative, which confirms the gradient. In float32 the best is about <span class="m">10^{-3}</span> at <span class="m">h = 10^{-2}</span>: a float32 check can only catch gross errors, so check gradients in float64.</p>
+          <pre><code class="language-python">def check_grad(f, theta, h):
+    g = jax.grad(f)(theta)
+    for i in range(theta.size):
+        e = jnp.zeros_like(theta).at[i].set(h)
+        fd = (f(theta + e) - f(theta - e)) / (2 * h)
+        print(i, float(g[i]), float(fd), float(abs(fd - g[i]) / abs(g[i])))</code></pre></details>
+      </li>
+      <li><div><b>The NaN in the gradient.</b> Take J2's <code>kf_step_missing</code>, make <code>R</code> depend on a parameter <code>log_sigma_z</code>, and differentiate the sum of the returned state with respect to it, for <code>z = jnp.array([jnp.nan])</code>. Do it with and without <code>jnp.nan_to_num</code>. Explain the difference.</div>
+        <details class="sol"><summary>Hint</summary><p>Which branch of the final <code>where</code> is used, and what is the derivative of the other branch with respect to <span class="m">\sigma_z</span>?</p></details>
+        <details class="sol"><summary>Solution</summary><p>Both versions return the same value, the prediction (2.1 for the state <code>[1, 1]</code>). The gradient is 0.0 with <code>nan_to_num</code> and NaN without it. The updated state depends on <span class="m">\sigma_z</span> through the gain, multiplied by the innovation, which is NaN; the backward sweep multiplies that NaN derivative by the unused branch's adjoint of 0. Gradient-based tuning of <span class="m">R</span> on data with gaps would silently turn every parameter into NaN.</p></details>
+      </li>
+      <li><div><b>Find the noise levels with Newton's method.</b> Using <code>jax.grad</code> and <code>jax.hessian</code> of the filter's likelihood in float64, run Newton's method <span class="m">\theta \leftarrow \theta - H^{-1} \nabla \ell</span> from <span class="m">\theta = (0, 0)</span>. How many iterations does it need, compared with gradient descent? Compute the Hessian's eigenvalues at the minimum.</div>
+        <details class="sol"><summary>Hint</summary><p>Enable float64 at startup (J1). <code>jnp.linalg.solve(H, g)</code> is better than forming the inverse.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Newton converges to <span class="m">\sigma_a = 0.0611</span>, <span class="m">\sigma_z = 0.5128</span>, where the gradient is below <span class="m">10^{-14}</span>, in 7 iterations. Gradient descent with step 0.5 needs 713 steps just to bring <span class="m">\sigma_a</span> within 0.1% of it. The Hessian's eigenvalues at the minimum are 0.0219 and 1.936. Newton's step divides by the curvature in each direction, which is exactly what the shallow valley needs.</p>
+          <pre><code class="language-python">grad_nll, hess_nll = jax.jit(jax.grad(nll)), jax.jit(jax.hessian(nll))
+theta = jnp.zeros(2)
+for _ in range(20):
+    theta = theta - jnp.linalg.solve(hess_nll(theta), grad_nll(theta))
+jnp.exp(theta), jnp.linalg.eigvalsh(hess_nll(theta))</code></pre></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Finite differences</b> trade truncation error against rounding error; in float32 they give three or four digits at best and 0 for small steps. Use them only to check gradients, in float64.</div></li>
+      <li><div><b>A program is a graph</b> of elementary operations with known local derivatives: the evaluation trace, which in JAX is the jaxpr. The chain rule sums products of local derivatives over paths.</div></li>
+      <li><div><b>Forward mode</b> carries a tangent with every value: one sweep is a JVP, the derivative along one input direction. Dual numbers implement it; <code>jax.jvp</code> and <code>jax.jacfwd</code> are JAX's.</div></li>
+      <li><div><b>Reverse mode</b> stores the forward sweep and propagates adjoints back from the output: one sweep is a VJP, the gradient of one output with respect to every input, at about twice the cost of the function. A tape implements it; <code>jax.grad</code>, <code>jax.vjp</code> and <code>jax.jacrev</code> are JAX's.</div></li>
+      <li><div><b>Choose by shape</b>: reverse for few outputs, forward for few inputs. <code>jax.hessian</code> is <code>jacfwd(jacrev(f))</code>.</div></li>
+      <li><div><b>Surprises</b>: kinks get conventions, <code>where</code> passes NaN from an unused branch into the gradient, reverse mode needs fixed-length loops, and <code>stop_gradient</code> makes a value a constant.</div></li>
+      <li><div><b>In the Kalman code</b>: <code>jacfwd</code> supplies the EKF's Jacobians; the gradient of the filter's likelihood estimates its noise levels, <span class="m">\sigma_z = 0.513</span> well and <span class="m">\sigma_a = 0.061</span> poorly, from 1000 measurements; chapter 03's training is reverse mode through a scan.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Finite difference</td><td>A derivative estimated from function values at nearby points.</td></tr>
+        <tr><td>Truncation error, rounding error</td><td>The error of the approximation formula; the error of the arithmetic.</td></tr>
+        <tr><td>Evaluation trace, Wengert list</td><td>The sequence of elementary operations a program performs, one variable per result.</td></tr>
+        <tr><td>Tangent, JVP</td><td>The derivative of a value along a chosen input direction; a Jacobian-vector product.</td></tr>
+        <tr><td>Adjoint, cotangent, VJP</td><td>The derivative of the output with respect to a value; a vector-Jacobian product.</td></tr>
+        <tr><td>Dual number</td><td><span class="m">a + b\varepsilon</span> with <span class="m">\varepsilon^2 = 0</span>; arithmetic on them is forward mode.</td></tr>
+        <tr><td>Tape</td><td>The record of a computation that reverse mode replays backwards.</td></tr>
+        <tr><td>Backpropagation</td><td>Reverse mode applied to a neural network's loss.</td></tr>
+        <tr><td>Jacobian, Hessian</td><td>The matrix of first derivatives of a vector function; of second derivatives of a scalar one.</td></tr>
+        <tr><td>Checkpointing</td><td>Recomputing parts of the forward sweep during the backward one to save memory.</td></tr>
+        <tr><td>Negative log-likelihood</td><td>For a Kalman filter, the summed surprise of each measurement given the prediction; minimised to estimate the model's parameters.</td></tr>
+        <tr><td>Condition number</td><td>The ratio of the largest to the smallest curvature; large values make gradient descent slow.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers numerical and automatic differentiation, forward and reverse mode with their costs, JAX's <code>jvp</code>, <code>vjp</code>, <code>grad</code>, <code>jacfwd</code>, <code>jacrev</code> and <code>hessian</code>, the common pitfalls, and gradient-based estimation of a Kalman filter's noise levels. Not covered: custom derivative rules (<code>jax.custom_jvp</code>, <code>custom_vjp</code>), higher-order Taylor methods, differentiating through linear solvers and fixed points implicitly, and the details of checkpointing policies.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>A. G. Baydin, B. A. Pearlmutter, A. A. Radul and J. M. Siskind. Automatic differentiation in machine learning: a survey. <em>Journal of Machine Learning Research</em>, 18(153):1–43, 2018. <a href="https://jmlr.org/papers/v18/17-468.html">jmlr.org/papers/v18/17-468.html</a>. The running example, its notation, and the comparison of the three ways to differentiate.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>A. Griewank and A. Walther. <em>Evaluating Derivatives: Principles and Techniques of Algorithmic Differentiation</em>, 2nd ed. SIAM, 2008. <a href="https://doi.org/10.1137/1.9780898717761">doi:10.1137/1.9780898717761</a>. The reference on both modes, their costs, the bound on the cost of a gradient, and checkpointing.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>R. E. Wengert. A simple automatic derivative evaluation program. <em>Communications of the ACM</em>, 7(8):463–464, 1964. <a href="https://doi.org/10.1145/355586.364791">doi:10.1145/355586.364791</a>. Forward mode on an evaluation trace.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>S. Linnainmaa. Taylor expansion of the accumulated rounding error. <em>BIT Numerical Mathematics</em>, 16(2):146–160, 1976. <a href="https://doi.org/10.1007/BF01931367">doi:10.1007/BF01931367</a>. Reverse accumulation, first set out in the author's 1970 master's thesis.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>D. E. Rumelhart, G. E. Hinton and R. J. Williams. Learning representations by back-propagating errors. <em>Nature</em>, 323:533–536, 1986. <a href="https://doi.org/10.1038/323533a0">doi:10.1038/323533a0</a>. Reverse mode as the training algorithm for neural networks.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>A. Radul, A. Paszke, R. Frostig, M. J. Johnson and D. Maclaurin. You only linearize once: tangents transpose to gradients. <em>Proceedings of the ACM on Programming Languages</em>, 7(POPL):1246–1274, 2023. <a href="https://doi.org/10.1145/3571236">doi:10.1145/3571236</a>. How JAX derives reverse mode from forward mode by linearisation and transposition.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>J. Durbin and S. J. Koopman. <em>Time Series Analysis by State Space Methods</em>, 2nd ed. Oxford University Press, 2012. <a href="https://doi.org/10.1093/acprof:oso/9780199641178.001.0001">doi:10.1093/acprof:oso/9780199641178.001.0001</a>. The prediction-error decomposition of the Kalman likelihood and maximum-likelihood estimation of the noise variances.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>The JAX authors. <a href="https://docs.jax.dev/en/latest/notebooks/autodiff_cookbook.html">The autodiff cookbook</a>. <code>grad</code>, <code>jvp</code>, <code>vjp</code>, <code>jacfwd</code>, <code>jacrev</code> and <code>hessian</code>, and how they compose.</div></li>
+    </ul>
+    <p>Next, J4 takes a function written for one input and runs it on a batch, with <code>vmap</code>.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="j2-pure-functions-tracing-and-jit.html"><span class="lbl">Part I · J2</span><span class="t">Pure functions, tracing and jit</span></a>
+  <a class="next" rel="next" href="j4-vmap-one-function-many-inputs.html"><span class="lbl">Part I · J4</span><span class="t">vmap: one function, many inputs</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter J3 of "Kalman Filters with JAX" by Elie Rouphael. Every derivative, jaxpr, message and timing on this page was produced by <code>code/j3_numbers.py</code> with JAX 0.12.0.1 and NumPy 2.5 on a laptop CPU; the graph and the likelihood demo compute their derivatives in the page, in float64, and the likelihood's gradient is checked against JAX's. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/j3-data.js"></script>
+<script src="interactive/j3.js"></script>
+</body>
+</html>

@@ -143,9 +143,9 @@ export const tutorials: Tutorial[] = [
   {
     title: 'Kalman Filters with JAX',
     description:
-      "A five-chapter interactive tutorial built from four of the author's filtering repositories: a first Kalman filter in twenty lines of NumPy on a simulated vehicle, the linear, extended and unscented filters in JAX, a neural network that learns the unmodelled dynamics from inside the filter by differentiating through it, the same forecaster tested on a year of real air-quality data, and a first-order filter written in C with the language explained from scratch. Every demo runs in the browser, every number is checked against the original code, and the bugs found on the way, including a filter that returns NaN in 32-bit arithmetic, are explained and fixed.",
-    topics: ['Kalman Filtering', 'JAX', 'Learned Dynamics', 'Time Series', 'C', 'Numerics'],
-    prerequisites: 'Python, linear algebra and basic probability',
+      "An eleven-chapter interactive course in two parts, built from four of the author's filtering repositories. Part I teaches JAX as computer science before any filter: what a float32 stores, how jit traces and compiles a pure function, automatic differentiation written from scratch in both modes, vmap's batching rules, loops as compiled scans, and random keys, pytrees and Optax, each idea tied to the line of Kalman code it explains. Part II is five Kalman chapters: a first filter in NumPy on a simulated vehicle, the linear, extended and unscented filters in JAX, a neural network that learns the unmodelled dynamics from inside the filter, the same forecaster on a year of real air-quality data, and a first-order filter in C. Every demo runs in the browser, every number is checked against JAX or the original code, and the pitfalls found on the way, from the unscented filter's float32 failure to a function that recompiles on every call, are explained.",
+    topics: ['Kalman Filtering', 'JAX', 'Automatic Differentiation', 'Compilers', 'Numerics', 'C'],
+    prerequisites: 'Python and a little NumPy for Part I (no JAX assumed); linear algebra and basic probability for Part II',
     level: 'Intermediate',
     added: '2026-10-27T12:00',
     href: '/tutorials/kalman-jax/index.html',
