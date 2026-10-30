@@ -88,9 +88,16 @@ $("#splitBtn").addEventListener("click", () => {
   kt.sel = c0.id;
   drawTree(`<b>split</b>: the two children are <code>threefry(key, (0, 0))</code> and <code>threefry(key, (0, 1))</code>, hashes of the counters 0 and 1. They look unrelated to each other and to the parent, and asking for three children would give these same two first.`);
 });
+$("#foldIn").addEventListener("input", e => e.target.setAttribute("aria-invalid", "false"));
 $("#foldBtn").addEventListener("click", () => {
   const p = sel();
-  const d = Math.max(0, Math.min(2 ** 32 - 1, Math.floor(+$("#foldIn").value || 0)));
+  const raw = $("#foldIn").value.trim();
+  if (!/^\d{1,10}$/.test(raw) || +raw > 2 ** 32 - 1) {             // fold_in takes a uint32 here
+    $("#foldIn").setAttribute("aria-invalid", "true");
+    caption($("#heroStatus"), "<b>fold_in needs a whole number</b> from 0 to 4 294 967 295 (a uint32), such as a step number.");
+    return;
+  }
+  const d = +raw;
   const c = addChild(p, `${p.path} → fold_in(${d})`, foldIn(p.key, d));
   kt.sel = c.id;
   drawTree(`<b>fold_in(key, ${d})</b> hashes the number ${d} under the key: <code>threefry(key, (0, ${d}))</code>. ${d < 16 ? `It is the same key as <code>split(key, n)[${d}]</code> for any [[n > ${d}]]; split the parent and compare.` : "Use it to derive a key for step k of a loop without carrying keys around."}`);
@@ -108,7 +115,10 @@ $("#seedIn").addEventListener("input", e => {
   const ok = /^\d{1,15}$/.test(v) && +v < 2 ** 53;
   e.target.setAttribute("aria-invalid", ok ? "false" : "true");
   if (!ok) return;
-  kt.seed = +v; resetTree(); drawTree();
+  kt.seed = +v; resetTree();
+  drawTree(kt.seed >= 2 ** 32
+    ? `<b>The seed does not fit in 32 bits.</b> In JAX's default 32-bit mode it is converted to 32 bits first, so only the low word survives: <code>PRNGKey(${kt.seed})</code> is the same key as <code>PRNGKey(${kt.seed % 2 ** 32})</code>, <code>[0, ${kt.seed % 2 ** 32}]</code>, and no warning is given.`
+    : undefined);
 });
 resetTree(); drawTree();
 
