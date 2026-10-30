@@ -42,7 +42,7 @@
 <header class="hero col">
   <span class="eyebrow">Kalman Filters with JAX · Part I, JAX · Chapter J6 of J6</span>
   <h1>Keys, trees and a training loop</h1>
-  <p class="lede">Three pieces of JAX remain before the Kalman chapters, and each follows from J2's demand that functions be pure. Random numbers cannot come from a hidden generator, so JAX makes the generator's state an explicit value, a <em>key</em>; the demo below rebuilds JAX's generator in the page and matches it bit for bit. Parameters come in nested containers, so every transformation works on <em>pytrees</em>. And an optimiser cannot update anything in place, so Optax returns new parameters and a new optimiser state from pure functions. Put together, they make the training loop of chapters 03 and 04, and they finish J3's work: Adam finds chapter 02's noise levels in a fifth of the steps gradient descent needed.</p>
+  <p class="lede">Three pieces of JAX remain before the Kalman chapters, and each follows from J2's demand that functions be pure. Random numbers cannot come from a hidden generator, so JAX makes the generator's state an explicit value, a <em>key</em>; the demo below rebuilds JAX's generator in the page and matches it bit for bit. Parameters come in nested containers, so every transformation works on <em>pytrees</em>. And an optimiser cannot update anything in place, so Optax returns new parameters and a new optimiser state from pure functions. Put together, they make the training loop of chapters 03 and 04, and they finish J3's work: Adam finds chapter 02's noise levels in under a quarter of the steps gradient descent needed.</p>
   <p class="byline">Elie Rouphael · Needs chapters J1 to J5 · Every number is produced by JAX 0.12 and Optax 0.2 on a laptop CPU</p>
   <div class="downloads">
     <a class="btn" href="code/j6_numbers.py" download>Reproduce every number (.py)</a>
@@ -106,7 +106,7 @@
     <p><b>The problem.</b> <code>np.random.normal()</code> reads and advances a generator hidden inside NumPy: a side effect. J2 showed what tracing does with it: inside <code>jit</code> the number is drawn once, while tracing, and frozen into the program. Under <code>vmap</code> or on several devices there is a second problem: a single hidden generator advanced from many places at once gives results that depend on the order things happened to run in.</p>
     <p><b>JAX's answer: the state is a value.</b> A <b>key</b> is a small array, and every random function takes one and returns numbers, with no other effect:</p>
     <pre><code class="language-python">key = jax.random.PRNGKey(42)        # Array([ 0, 42], dtype=uint32): two 32-bit words
-jax.random.uniform(key, (4,))        # [0.48870957, 0.67979717, 0.6162715, 0.5610161]
+jax.random.uniform(key, (4,))        # [0.48870957, 0.6797972, 0.6162715, 0.5610161]
 jax.random.uniform(key, (4,))        # the same four numbers: same key, same draw</code></pre>
     <p>The key for seed 42 is literally <code>[0, 42]</code>, the seed's high and low 32 bits. In JAX's default 32-bit mode the seed is converted to 32 bits first, so the high word is always 0 and, silently, <code>PRNGKey(2**32 + 5)</code> is the same key as <code>PRNGKey(5)</code>. A pure function of the key always gives the same result, which is what makes it safe inside <code>jit</code>, <code>vmap</code> and <code>grad</code>, and what makes a run reproducible from its seed.</p>
     <p><b>Counter-based generation.</b> How do two words become a stream of random numbers? JAX's default generator is <b>Threefry-2x32</b> <a href="#ref-1">[1]</a>: a hash function that mixes a 64-bit key with a 64-bit counter through 20 rounds of addition, bit rotation and exclusive-or, and returns 64 bits that pass standard statistical test batteries. The <span class="m">i</span>-th random number drawn from a key is the hash of the counter <span class="m">i</span>. There is no sequence to advance: any number of the stream can be computed directly, in any order, in parallel. Here is the whole algorithm as the page's script implements it:</p>
@@ -179,7 +179,7 @@ key, measurement_key = jax.random.split(key)</code></pre>
     <h2>Pytrees</h2>
   </div>
   <div class="col prose">
-    <p>The network chapters 03 and 04 train has its parameters in a list of <code>(W, b)</code> tuples, built by <code>init_mlp_params(key, [3, 16, 16, 16, 16, 2])</code>. Nobody had to tell <code>jax.grad</code>, <code>jit</code> or Optax how to handle that list. JAX treats any nesting of lists, tuples, dicts and a few other containers as a <b>pytree</b>: a tree whose internal nodes are containers and whose <em>leaves</em> are arrays. Every transformation flattens its arguments into leaves, works on those, and rebuilds the same structure.</p>
+    <p>The networks chapters 03 and 04 train keep their parameters in a list of <code>(W, b)</code> tuples: chapter 03's is built by <code>init_mlp_params(key, [3, 16, 16, 16, 16, 2])</code>, chapter 04's by the same function with sizes <code>[9, 32, 32, 1]</code>. Nobody had to tell <code>jax.grad</code>, <code>jit</code> or Optax how to handle that list. JAX treats any nesting of lists, tuples, dicts and a few other containers as a <b>pytree</b>: a tree whose internal nodes are containers and whose <em>leaves</em> are arrays. Every transformation flattens its arguments into leaves, works on those, and rebuilds the same structure.</p>
     <pre><code class="language-python">leaves, treedef = jax.tree_util.tree_flatten(params)
 treedef            # PyTreeDef([(*, *), (*, *), (*, *), (*, *), (*, *)])
 len(leaves)        # 10 arrays
@@ -257,7 +257,7 @@ for step in range(num_steps):                                     # a Python loo
     <h2>Back to Kalman</h2>
   </div>
   <div class="col prose">
-    <p>J3 estimated chapter 02's two noise levels by minimising the filter's negative log-likelihood with plain gradient descent, and found the likelihood's valley 88 times flatter in one direction than the other: gradient descent crept along it. J4 confirmed the estimate is sound. Now the same problem with Optax. The training function is the repository's loop above with <code>nll</code> as the loss and <span class="m">\theta = (\log\sigma_a, \log\sigma_z)</span> as the parameters, run from <span class="m">\sigma_a = \sigma_z = 1</span>:</p>
+    <p>J3 estimated chapter 02's two noise levels by minimising the filter's negative log-likelihood with plain gradient descent, and found the likelihood's valley 89 times flatter in one direction than the other: gradient descent crept along it. J4 confirmed the method is sound: chapter 02's low estimate of <span class="m">\sigma_a</span> came from an unlucky dataset, not a biased estimator. Now the same problem with Optax. The training function is the repository's loop above with <code>nll</code> as the loss and <span class="m">\theta = (\log\sigma_a, \log\sigma_z)</span> as the parameters, run from <span class="m">\sigma_a = \sigma_z = 1</span>:</p>
   </div>
   <div class="col table-wrap" style="margin-top:0.6rem">
     <table id="optT" class="numT">
@@ -281,14 +281,14 @@ for step in range(num_steps):                                     # a Python loo
     <p class="status" id="raceCap" role="status" aria-live="polite"></p>
   </div>
   <div class="col prose">
-    <p>Chapters 03 and 04 use the same machinery at a larger scale: <code>optax.adam(1e-3)</code> on the 914 parameters of <code>init_mlp_params</code>, with keys split per layer, gradients through a scan of the filter, and the Python training loop of Part 5.</p>
+    <p>Chapters 03 and 04 use the same machinery at a larger scale: <code>optax.adam(1e-3)</code> on the parameters of <code>init_mlp_params</code>, 914 in chapter 03's network and 1409 in chapter 04's, with keys split per layer, gradients through a scan of the filter, and the Python training loop of Part 5.</p>
   </div>
   <div class="col table-wrap" style="margin-top:0.6rem">
     <table id="kT2">
       <thead><tr><th>In the Kalman code</th><th>What J6 says about it</th></tr></thead>
       <tbody>
         <tr><td><code>key, process_key = jax.random.split(key)</code></td><td>Split before use and keep a key to split again; never reuse (Parts 1 and 2).</td></tr>
-        <tr><td><code>init_mlp_params(key, sizes)</code></td><td>One key per weight and bias, from one split; the result is a pytree of 10 arrays, 914 numbers (Part 3).</td></tr>
+        <tr><td><code>init_mlp_params(key, sizes)</code></td><td>One key per weight and bias, from one split; for chapter 03's sizes, a pytree of 10 arrays, 914 numbers (Part 3).</td></tr>
         <tr><td><code>optimizer = optax.adam(1e-3)</code></td><td>A pure gradient transformation with a state that mirrors the parameters (Part 4).</td></tr>
         <tr><td><code>@jax.jit def update(current_params, current_opt_state)</code></td><td>The training step: pytrees in, pytrees out, compiled once (Part 5).</td></tr>
         <tr><td><code>for step in range(num_steps)</code></td><td>A Python loop of compiled steps; a scan would be one program, no faster here (Part 5).</td></tr>
@@ -315,7 +315,7 @@ for step in range(num_steps):                                     # a Python loo
         <tr><td><a href="j3-automatic-differentiation-from-scratch.html">J3</a></td><td>Forward and reverse mode, from scratch</td><td>The gradient of the filter's likelihood estimates its noise levels; a NaN guard is needed for gradients, not only values.</td></tr>
         <tr><td><a href="j4-vmap-one-function-many-inputs.html">J4</a></td><td>Vectorisation by batching rules</td><td>1000 filters in one call; the filter is consistent; chapter 02's noise estimate was an unlucky dataset.</td></tr>
         <tr><td><a href="j5-loops-as-data-scan.html">J5</a></td><td>Loops as compiled primitives</td><td>A Python loop takes minutes to compile; the smoother is a reverse scan and halves the filter's error.</td></tr>
-        <tr><td>J6</td><td>Keys, pytrees, gradient transformations</td><td>Adam finds the noise levels in a fifth of gradient descent's steps.</td></tr>
+        <tr><td>J6</td><td>Keys, pytrees, gradient transformations</td><td>Adam finds the noise levels in under a quarter of gradient descent's steps.</td></tr>
       </tbody>
     </table>
   </div>
@@ -357,7 +357,7 @@ for step in range(num_steps):                                     # a Python loo
     x = jnp.cumsum(w)
     return x, x + v</code></pre>
         <details class="sol"><summary>Hint</summary><p>Compute <code>jnp.corrcoef(w, v)</code>.</p></details>
-        <details class="sol"><summary>Solution</summary><p>Both noises come from the same key, so <code>v</code> is exactly 5 times <code>w</code>: correlation 1 (0.99999994 in float32 for 1000 draws). Split first: <code>kw, kv = jax.random.split(key)</code>, and draw <code>w</code> from <code>kw</code> and <code>v</code> from <code>kv</code>; the correlation becomes <span class="m">-0.003</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Both noises come from the same key, so <code>v</code> is the same draws as <code>w</code>, scaled by 5: correlation 1 (0.99999994 in float32 for 1000 draws). Split first: <code>kw, kv = jax.random.split(key)</code>, and draw <code>w</code> from <code>kw</code> and <code>v</code> from <code>kv</code>; the correlation becomes <span class="m">-0.003</span>.</p></details>
       </li>
       <li><div><b>Per-step keys in a scan.</b> Write a scan whose step <span class="m">k</span> draws its noise with <code>jax.random.fold_in(key, k)</code>, and check that the keys it uses are exactly <code>jax.random.split(key, T)</code>.</div>
         <details class="sol"><summary>Hint</summary><p>Pass <code>jnp.arange(T)</code> as the scan's inputs, so each step knows its <span class="m">k</span>.</p></details>
@@ -372,7 +372,7 @@ for step in range(num_steps):                                     # a Python loo
         <details class="sol"><summary>Solution</summary><p>For the network's gradient at <code>x = (1, 1, 1)</code> in <code>j6_numbers.py</code>, the norm is 0.426; times 100 it is 42.6, and after clipping exactly 1.0, with every leaf scaled by the same factor so the direction is unchanged. Clipping guards training against a single huge gradient, for instance from a filter step whose covariance is nearly singular.</p></details>
       </li>
       <li><div><b>Train with a scan.</b> Rewrite Part 5's loop as a <code>lax.scan</code> over 1000 steps, with <code>(params, opt_state)</code> as the carry and the loss as the output. Check that it ends at the same parameters, and time both versions.</div>
-        <details class="sol"><summary>Hint</summary><p>The scan has no inputs: pass <code>None</code> and <code>length=1000</code>, as J5's generator did.</p></details>
+        <details class="sol"><summary>Hint</summary><p>The scan has no inputs: pass <code>None</code> and <code>length=1000</code>, as J4's batched generator did.</p></details>
         <details class="sol"><summary>Solution</summary><p>Both end at exactly the same parameters. On the laptop the two took 1.8 s and 2.1 s, in an order that changed between runs: each step's 2 ms of work hides the loop's overhead.</p>
           <pre><code class="language-python">@jax.jit
 def train_scanned(theta0):
@@ -398,7 +398,7 @@ def train_scanned(theta0):
     <ol class="steps">
       <li><div><b>Keys</b>: a key is two uint32 words; <code>PRNGKey(42)</code> is <code>[0, 42]</code>. Random bits are Threefry hashes of counters, so draws are pure functions of the key, reproducible and parallel.</div></li>
       <li><div><b><code>split</code> and <code>fold_in</code></b> hash counters into new keys; <code>fold_in(key, i) == split(key, n)[i]</code>. Never reuse a key: two draws from one key correlate at 0.99999994.</div></li>
-      <li><div><b>Pytrees</b> are nested containers with array leaves; every transformation flattens and rebuilds them. The repository's network is a tree of 10 arrays, 914 numbers. Structure is part of the cache key.</div></li>
+      <li><div><b>Pytrees</b> are nested containers with array leaves; every transformation flattens and rebuilds them. Chapter 03's network is a tree of 10 arrays, 914 numbers. Structure is part of the cache key.</div></li>
       <li><div><b>Optax</b> optimisers are pure <code>init</code> and <code>update</code> functions over pytrees; Adam's state holds two more copies of the parameters; transformations chain.</div></li>
       <li><div><b>The training loop</b> is a jitted pure step in a Python loop; a scan over steps is one program, and here no faster.</div></li>
       <li><div><b>In the Kalman code</b>: on chapter 02's noise levels, gradient descent needs 713 steps, momentum 150 and Adam 156 to 163; Part I's six ideas cover every line of JAX in the Kalman chapters.</div></li>

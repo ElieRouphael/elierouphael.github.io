@@ -172,14 +172,15 @@ jax.jit(filter_python_loop)(zs, F, H, Q, R, x0, P0)</code></pre>
     <div class="define">
       <p class="define-title">lax.scan</p>
       <p><b>In plain words:</b> a loop over the leading axis of some arrays, threading a state through and collecting one result per step.</p>
-      <p><b>More precisely:</b> <code>scan</code> is a primitive whose parameters hold the step function as a jaxpr, traced once. It compiles to one loop. Its carry must have the same structure, shapes and dtypes on the way out of each step as on the way in, so that the loop's state has one fixed type. In functional programming the same pattern is a left fold that also returns its intermediate states, <code>mapAccumL</code> in Haskell <a href="#ref-5">[5]</a>.</p>
+      <p><b>More precisely:</b> <code>scan</code> is a primitive whose parameters hold the step function as a jaxpr, traced once. It compiles to one loop. Its carry must have the same structure, shapes and dtypes on the way out of each step as on the way in, so that the loop's state has one fixed type. In functional programming the same pattern is a left fold that also emits one output per step, <code>mapAccumL</code> in Haskell (<code>scanl</code> is the special case where the output is the state itself) <a href="#ref-5">[5]</a>.</p>
       <dl>
         <dt>length</dt><dd>The number of steps; inferred from <code>xs</code>, or given when there are no inputs, as in the data generator.</dd>
         <dt>reverse=True</dt><dd>Run from the last slice to the first. Outputs are still stacked in the original order (Part 7).</dd>
       </dl>
     </div>
     <p><b>What must stay fixed.</b> The carry's type is a contract. Breaking it is an error at trace time, with a message that names the culprit:</p>
-    <pre><code class="language-python">lax.scan(lambda c, x: (c + 0.5, x), jnp.int32(0), xs)              # an int carry becomes a float
+    <pre><code class="language-python">xs = jnp.arange(3.0)
+lax.scan(lambda c, x: (c + 0.5, x), jnp.int32(0), xs)              # an int carry becomes a float
 lax.scan(lambda c, x: (jnp.append(c, x), x), jnp.zeros(1), xs)       # a carry that grows</code></pre>
     <pre class="output"><code class="nohl">TypeError: scan body function carry input and carry output must have equal types, but they differ:
 The input carry c has type int32[] but the corresponding output carry component has type float32[], ...
@@ -266,9 +267,9 @@ dynamic start/stop values. Try using lax.scan, or using fori_loop with static st
     <h2>A loop in log time</h2>
   </div>
   <div class="col prose">
-    <p>A scan is inherently sequential: step <span class="m">k</span> needs the carry from step <span class="m">k-1</span>. Or is it? Chapter 05's first-order filter is</p>
+    <p>A scan is inherently sequential: step <span class="m">k</span> needs the carry from step <span class="m">k-1</span>. Or is it? Take chapter 05's first-order filter, with gain <span class="m">K = 1</span> and the current sample <span class="m">u_k</span> in place of the delayed <span class="m">u_{k-1}</span> (a variant chapter 05 mentions; the delay changes nothing here):</p>
     <div class="math-block">y_k = z_0\, y_{k-1} + (1 - z_0)\, u_k, \qquad z_0 = e^{-0.005} = 0.99501 .</div>
-    <p>Each step is an affine map <span class="m">y \mapsto a y + b</span> with <span class="m">a = z_0</span>, <span class="m">b = (1 - z_0) u_k</span>. Two affine maps compose into another one, <span class="m">(a_2, b_2) \circ (a_1, b_1) = (a_2 a_1,\ a_2 b_1 + b_2)</span>, and composition is <b>associative</b>: the maps of steps 1 to 8 can be combined as <span class="m">((1\,2)(3\,4))((5\,6)(7\,8))</span> instead of left to right. The output <span class="m">y_k</span> is the composition of maps 1 to <span class="m">k</span> applied to <span class="m">y_0 = 0</span>, and computing all those prefix compositions is a <b>parallel prefix</b> problem, solvable in about <span class="m">\log_2 T</span> rounds of independent work <a href="#ref-4">[4]</a>. The demo shows the simplest scheme for 16 steps: in round <span class="m">r</span>, every element combines with the one <span class="m">2^r</span> places to its left.</p>
+    <p>Each step is an affine map <span class="m">y \mapsto a y + b</span> with <span class="m">a = z_0</span>, <span class="m">b = (1 - z_0) u_k</span>. Two affine maps compose into another one, <span class="m">(a_2, b_2) \circ (a_1, b_1) = (a_2 a_1,\ a_2 b_1 + b_2)</span>, and composition is <b>associative</b>: the maps of steps 1 to 8 can be combined as <span class="m">((1\,2)(3\,4))((5\,6)(7\,8))</span> instead of left to right. The output <span class="m">y_k</span> is the composition of maps 1 to <span class="m">k</span> applied to <span class="m">y_0 = 0</span>, and computing all those prefix compositions is a <b>parallel prefix</b> problem, solvable in about <span class="m">\log_2 T</span> rounds of independent work <a href="#ref-4">[4]</a>. The demo shows the simplest scheme for 16 steps: in round <span class="m">r = 1, 2, \dots</span>, every element combines with the one <span class="m">2^{r-1}</span> places to its left.</p>
   </div>
   <div class="col widget" id="treeW">
     <div class="btn-row">
@@ -296,7 +297,7 @@ def lowpass_parallel(u):
     b = (1 - z0) * u
     return lax.associative_scan(combine, (a, b))[1]</code></pre>
     <p>It matches the sequential <code>scan</code> to <span class="m">1.6 \times 10^{-7}</span> in float32 on 1000 random inputs, not exactly: J1's lesson that floating-point addition is not associative returns, since the parallel version adds in a different order. Both are within <span class="m">4 \times 10^{-7}</span> of the exact float64 result. For 1024 steps its jaxpr has 242 equations, a tree of slices, combinations and interleavings, against <code>scan</code>'s one. JAX uses a work-efficient scheme that does about twice the sequential work in about <span class="m">2\log_2 T</span> rounds, rather than the simpler one in the demo.</p>
-    <p>On this laptop's CPU, which has few cores and runs the sequential loop very fast, the parallel version is slower at every size above a thousand:</p>
+    <p>On this laptop's CPU, which has few cores and runs the sequential loop very fast, the parallel version is slower at every size measured, from a thousand steps to a million:</p>
   </div>
   <div class="col table-wrap" style="margin-top:0.6rem">
     <table id="asT" class="numT">
@@ -377,7 +378,7 @@ def lowpass_parallel(u):
   </div>
   <div class="col prose">
     <ol class="exercises">
-      <li><div><b>Chapter 05's filter as a scan.</b> Write <span class="m">y_k = z_0 y_{k-1} + (1 - z_0) u_k</span> with <code>lax.scan</code> and check it against a Python loop in float64.</div>
+      <li><div><b>Chapter 05's filter as a scan.</b> In its current-sample form, write <span class="m">y_k = z_0 y_{k-1} + (1 - z_0) u_k</span> with <code>lax.scan</code> and check it against a Python loop in float64.</div>
         <details class="sol"><summary>Hint</summary><p>The carry is <span class="m">y</span>; the input is <span class="m">u_k</span>; the output is the new <span class="m">y</span>.</p></details>
         <details class="sol"><summary>Solution</summary><p>In float32 the scan is within about <span class="m">2 \times 10^{-7}</span> of the float64 loop on 1000 random inputs, for outputs about 0.1 in size.</p>
           <pre><code class="language-python">def lowpass_scan(u, z0=jnp.exp(-0.005)):

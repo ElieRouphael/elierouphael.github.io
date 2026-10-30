@@ -196,7 +196,7 @@ function drawFD() {
   let msg;
   const c32 = D.k32.fd.cen[i];
   if (fd.k <= 2) msg = `With a step this large the formula itself is the problem: the derivative changes over [[h]], and both precisions agree on the same wrong answer. Central differences, with an error of order [[h^2]], do much better than forward ones, of order [[h]].`;
-  else if (c32 === 0) msg = `<b>Float32 returns exactly 0.</b> [[\\theta = \\log 0.5 \\approx -0.69]], and float32 numbers near 0.69 are [[6 \\times 10^{-8}]] apart, so [[\\theta \\pm 10^{${-fd.k}}]] ${fd.k >= 8 ? "rounds back to [[\\theta]] itself" : "moves by at most one float"}: the two evaluations of the likelihood round to the same number. Float64 still works here, until about [[10^{-10}]].`;
+  else if (c32 === 0) msg = `<b>Float32 returns exactly 0.</b> [[\\theta = \\log 0.5 \\approx -0.69]], and float32 numbers near 0.69 are [[6 \\times 10^{-8}]] apart, so [[\\theta \\pm 10^{${-fd.k}}]] ${fd.k >= 8 ? "rounds back to [[\\theta]] itself" : "moves it by only two floats"}: the two evaluations of the likelihood round to the same number. Float64 still works here, until about [[10^{-10}]].`;
   else if (fd.k <= 6 && rel(c32) > 0.02) msg = `Float32 has collapsed: the two likelihood values differ in their last few bits, and dividing by [[h]] magnifies those rounding errors into the answer. Float64, with 29 more bits, is at its best around here: the central difference agrees with autodiff to ${rel(D.k64.fd.cen[i]).toExponential(0)}.`;
   else msg = `Rounding error is already visible in float32: the central difference is off by ${(100 * rel(c32)).toFixed(2)}%. The best any float32 difference does on this function is about 0.09%, at [[h = 10^{-2}]]. Autodiff in float32 is off by ${rel(AD32).toExponential(1)}.`;
   caption($("#fdCap"), msg);
@@ -352,7 +352,7 @@ function defaultDescMsg() {
   const jaxEnd = D.k64.path[D.k64.path.length - 1];
   let s = `After ${ds.k} steps: [[\\sigma_a = ${num(sa, 3)},\\ \\sigma_z = ${num(sz, 3)}]]. `;
   if (ds.fromOrigin && ds.k === 400) s += `JAX's float64 descent from the same start, with <code>jax.grad</code>, is at [[\\sigma_a = ${num(Math.exp(jaxEnd[0]), 4)},\\ \\sigma_z = ${num(Math.exp(jaxEnd[1]), 4)}]] after 400 steps; this page's dual numbers agree. `;
-  s += `The descent drops quickly to the valley floor, where [[\\sigma_z]] is settled, then creeps along it towards the minimum at [[\\sigma_a = 0.061]]: the valley is 88 times flatter along [[\\sigma_a]] than across it.`;
+  s += `The descent drops quickly to the valley floor, where [[\\sigma_z]] is settled, then creeps along it towards the minimum at [[\\sigma_a = 0.061]]: the valley is about 89 times flatter along [[\\sigma_a]] than across it.`;
   return s;
 }
 function run(n) {

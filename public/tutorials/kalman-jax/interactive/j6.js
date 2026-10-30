@@ -100,7 +100,7 @@ $("#drawBtn").addEventListener("click", () => {
   p.draws++;
   drawTree(p.draws > 1
     ? `<b>The same key again, the same numbers.</b> Nothing in the key changed when it was used, so drawing from it again repeats the draw exactly. In a simulation, two noise sources drawn from one key are one noise source counted twice: split first.`
-    : `<b>uniform(key, (4,))</b>: four counters 0 to 3, hashed; each 32-bit result's top 23 bits become the mantissa of a float32 in [1, 2), minus 1. ${p.path === `PRNGKey(42)` ? "These are JAX's numbers exactly: 0.48870957, 0.67979717, 0.6162715, 0.5610161." : ""}`);
+    : `<b>uniform(key, (4,))</b>: four counters 0 to 3, hashed; each 32-bit result's top 23 bits become the mantissa of a float32 in [1, 2), minus 1. ${p.path === `PRNGKey(42)` ? "These are JAX's numbers exactly: 0.48870957, 0.6797972, 0.6162715, 0.5610161." : ""}`);
 });
 $("#resetBtn").addEventListener("click", () => { resetTree(); drawTree(); });
 $("#seedIn").addEventListener("input", e => {

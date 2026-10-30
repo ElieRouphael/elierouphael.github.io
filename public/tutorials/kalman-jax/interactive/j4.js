@@ -65,11 +65,9 @@ $("#fzBtns").innerHTML = `<span class="hint" style="align-self:center">measureme
 $("#neesLegend").innerHTML = `<span><i style="background:var(--accent)"></i>average NEES</span><span><i class="box" style="background:var(--accent)"></i>its 95% band</span>` +
   `<span><i style="background:var(--warm)"></i>average NIS</span><span><i class="box" style="background:var(--warm)"></i>its 95% band</span>`;
 const fkey = f => (Number.isInteger(f) ? f.toFixed(1) : String(f));
-function verdict(v, lo, hi, name) {
-  if (v > hi) return `${name} too high: the filter is overconfident`;
-  if (v < lo) return `${name} too low: the filter is too cautious`;
-  return `${name} inside its band: consistent`;
-}
+/* For a consistent filter the innovations are independent, so the NIS averaged over all T steps of all runs
+   has mean 1 and standard deviation sqrt(2 / (T * runs)): a 95% band of 1 +/- 1.96 of those. */
+const nisAllBand = n => [1 - 1.96 * Math.sqrt(2 / n), 1 + 1.96 * Math.sqrt(2 / n)];
 function drawNees() {
   $$("#faBtns [data-fa]").forEach(b => b.setAttribute("aria-pressed", +b.dataset.fa === ne.fa));
   $$("#fzBtns [data-fz]").forEach(b => b.setAttribute("aria-pressed", +b.dataset.fz === ne.fz));
@@ -87,15 +85,22 @@ function drawNees() {
   const xs = r.anees.map((_, i) => i + 1);
   plotLine(fr, xs, r.anis.map(L), { color: css("--warm"), width: 1.6 });
   plotLine(fr, xs, r.anees.map(L), { color: css("--accent"), width: 1.8 });
+  const T = r.anees.length;
   const inside = r.anees.filter(v => v >= D.band_nees[0] && v <= D.band_nees[1]).length;
+  const insideI = r.anis.filter(v => v >= D.band_nis[0] && v <= D.band_nis[1]).length;
+  const [alo, ahi] = nisAllBand(T * 1000);
   $("#nE").textContent = `${r.anees_all.toFixed(3)} (expect 2)`;
-  $("#nI").textContent = `${r.anis_all.toFixed(3)} (expect 1)`;
-  $("#nIn").textContent = `${inside} of ${r.anees.length}`;
-  const vE = verdict(r.anees_all, D.band_nees[0], D.band_nees[1], "NEES");
-  const vI = verdict(r.anis_all, D.band_nis[0], D.band_nis[1], "NIS");
-  let msg = `The filter assumes [[\\sigma_a]] ${ne.fa === 1 ? "equal to the true 0.1" : `${ne.fa} times the true value`} and [[\\sigma_z]] ${ne.fz === 1 ? "equal to the true 0.5" : `${ne.fz} times the true value`}. Over all steps: ${vE}; ${vI}. `;
+  $("#nI").textContent = `${r.anis_all.toFixed(3)} (expect 1; for ${grp(T * 1000)} innovations, 95% between ${alo.toFixed(3)} and ${ahi.toFixed(3)})`;
+  $("#nIn").textContent = `${inside} of ${T}`;
+  $("#nInI").textContent = `${insideI} of ${T}`;
+  const vE = inside >= 0.9 * T ? `the NEES is inside its band at ${inside} of ${T} steps: consistent`
+    : `the NEES is ${r.anees_all > 2 ? "too high, so the filter is overconfident" : "too low, so the filter is too cautious"} (inside its band at only ${inside} of ${T} steps)`;
+  const vI = r.anis_all > ahi ? `the NIS averaged over all ${grp(T * 1000)} innovations is too high`
+    : r.anis_all < alo ? `the NIS averaged over all ${grp(T * 1000)} innovations is too low`
+    : `the NIS averaged over all innovations is consistent`;
+  let msg = `The filter assumes [[\\sigma_a]] ${ne.fa === 1 ? "equal to the true 0.1" : `${ne.fa} times the true value`} and [[\\sigma_z]] ${ne.fz === 1 ? "equal to the true 0.5" : `${ne.fz} times the true value`}. Step by step, ${vE}, and the NIS is inside its band at ${insideI} of ${T} steps; overall, ${vI}. `;
   if (ne.fa === 1 && ne.fz === 1) msg += "Both curves stay in their bands apart from the occasional step, about 5% of them, as a 95% band should allow.";
-  else if (ne.fz === 1 && ne.fa > 1) msg += "The NIS barely moves: the innovations are dominated by the measurement noise, so an overstated process noise is invisible to the test that real data allows. Only the NEES, which needs the true state, sees it.";
+  else if (ne.fz === 1 && ne.fa > 1) msg += "Step by step the NIS barely moves: the innovations are dominated by the measurement noise, so an overstated process noise hides inside the per-step band. Only the average over a great many innovations gives it away, while the NEES, which needs the true state, sees it at every step.";
   else if (ne.fz === 1 && ne.fa < 1) msg += "Understating the process noise makes the filter trust its model too much; the NEES sees it at once. The NIS rises only a little.";
   else msg += "A wrong measurement noise moves both tests: the innovations are mostly measurement noise, so the NIS is a good test of [[\\sigma_z]].";
   caption($("#neesCap"), msg);

@@ -130,11 +130,11 @@
     <table id="partT">
       <thead><tr><th>Chapter</th><th>Question</th><th>Where it pays off in the Kalman code</th></tr></thead>
       <tbody>
-        <tr><td><b>J1</b></td><td>What does a JAX array hold, and what can a float32 represent?</td><td><code>.at[0].set</code> and broadcasting in <code>_sigma_points</code>; the unscented filter's float32 failure (02)</td></tr>
+        <tr><td><b>J1</b></td><td>What does a JAX array hold, and what can a float32 represent?</td><td><code>.at[0].set</code> in <code>_unscented_weights</code>, broadcasting in <code>_sigma_points</code> and <code>unscented_kf_predict</code>; the unscented filter's float32 failure (02)</td></tr>
         <tr><td>J2</td><td>What does <code>jit</code> do to a Python function, and why must the function be pure?</td><td><code>@jax.jit</code>; why every filter step is a pure function of <code>(x, P)</code></td></tr>
         <tr><td>J3</td><td>How does a program compute an exact derivative?</td><td>the EKF's Jacobians, which <code>jax.jacfwd</code> can supply (02); the gradient of a loss through the whole filter (03)</td></tr>
         <tr><td>J4</td><td>How do you run a function written for one input on a batch?</td><td><code>jax.vmap(f)(sigma_points)</code> (02)</td></tr>
-        <tr><td>J5</td><td>How is a loop expressed so a compiler can see it?</td><td><code>jax.lax.scan</code> in every <code>run_*</code> function (02 to 04)</td></tr>
+        <tr><td>J5</td><td>How is a loop expressed so a compiler can see it?</td><td><code>jax.lax.scan</code> in every <code>run_*</code> function (02), and in the training losses and forecasters (03, 04)</td></tr>
         <tr><td>J6</td><td>How do random keys, parameter trees and an optimiser fit together?</td><td>the data generator's <code>PRNGKey</code> (02); training with Optax (03, 04)</td></tr>
       </tbody>
     </table>
@@ -172,7 +172,7 @@ x.at[::2].multiply(2.0)    # Array([2., 2., 6.], dtype=float32)</code></pre>
       <p><b>In plain words:</b> once an array is made, its contents never change; "changing" it means making a new one.</p>
       <p><b>More precisely:</b> JAX's transformations trace a function and record every operation on its arrays as a graph of values. An in-place write would make one name stand for two different values at different moments, and the recorded graph would no longer match the program. With immutable arrays, every value is computed once from earlier values, which is what a compiler and a differentiator need. J2 makes this concrete.</p>
       <dl>
-        <dt>Is it slow?</dt><dd>Outside compiled code, <code>.at[...].set</code> does copy. Inside a function compiled with <code>jit</code>, JAX's documentation states that such updates are applied in place, because the compiler can see that the old array is never used again <a href="#ref-4">[4]</a>.</dd>
+        <dt>Is it slow?</dt><dd>Outside compiled code, <code>.at[...].set</code> does copy. Inside a function compiled with <code>jit</code>, JAX's documentation states that such updates are applied in place when the compiler can see that the old array is never used again; an array passed in as an argument is still copied unless its buffer is donated with <code>donate_argnums</code> <a href="#ref-4">[4]</a>.</dd>
         <dt>Functional update</dt><dd>The general name for "return a modified copy". Python's tuples and strings work the same way.</dd>
       </dl>
     </div>
@@ -291,7 +291,7 @@ configuration option or the JAX_ENABLE_X64 shell environment variable. ...</code
     <p><b>Integers wrap around.</b> An int32 holds <span class="m">-2^{31}</span> to <span class="m">2^{31} - 1</span>. Past the top it wraps to the bottom without an error. A Python integer that does not fit is refused when the array is made:</p>
     <pre><code class="language-python">jnp.int32(2**31 - 1) + 1     # Array(-2147483648, dtype=int32)
 jnp.array(2**31)             # OverflowError: Python int 2147483648 too large to convert to int32</code></pre>
-    <p><b>Smaller floats.</b> Machine learning also uses 16-bit floats: <code>float16</code>, with machine epsilon <span class="m">9.8 \times 10^{-4}</span> and a largest value of 65 504, and <code>bfloat16</code>, which keeps float32's exponent range but only 8 significant bits (epsilon <span class="m">7.8 \times 10^{-3}</span>). Neither is used in this course; both make everything in Part 5 a thousand times worse.</p>
+    <p><b>Smaller floats.</b> Machine learning also uses 16-bit floats: <code>float16</code>, with machine epsilon <span class="m">9.8 \times 10^{-4}</span> and a largest value of 65 504, and <code>bfloat16</code>, which keeps float32's exponent range but only 8 significant bits (epsilon <span class="m">7.8 \times 10^{-3}</span>). Neither is used in this course; both make everything in Part 5 thousands of times worse: about 8 000 times for float16 and 65 000 times for bfloat16.</p>
   </div>
 </section>
 
@@ -341,8 +341,8 @@ jnp.array(2**31)             # OverflowError: Python int 2147483648 too large to
         lost = (t - total) - y    # ...and recovered exactly here
         total = t
     return total</code></pre>
-    <p>And float64 simply has 29 more bits to lose: its plain loop ends at 999 999.99984, an error of <span class="m">1.6 \times 10^{-10}</span>.</p>
-    <div class="callout"><p><b>Checked against JAX.</b> The page computes the float32 loop and Kahan's loop itself, rounding after every operation with <code>Math.fround</code>; both match JAX's <code>lax.fori_loop</code> results, listed in <code>code/j1_numbers.py</code>, bit for bit at every N. The <code>jnp.sum</code> values are JAX's own; the page does not reimplement XLA's reduction.</p></div>
+    <p>And float64 simply has 29 more bits to lose: its plain loop ends at 999 999.99984, a relative error of <span class="m">1.6 \times 10^{-10}</span>.</p>
+    <div class="callout"><p><b>Checked against JAX.</b> The page computes the float32 loop and Kahan's loop itself, rounding after every operation with <code>Math.fround</code>; both match JAX's <code>lax.fori_loop</code> results, computed by <code>code/j1_numbers.py</code> and stored in <code>interactive/j1-data.js</code>, bit for bit at every N. The <code>jnp.sum</code> values are JAX's own; the page does not reimplement XLA's reduction.</p></div>
   </div>
 </section>
 
@@ -353,7 +353,7 @@ jnp.array(2**31)             # OverflowError: Python int 2147483648 too large to
     <h2>Back to Kalman</h2>
   </div>
   <div class="col prose">
-    <p>Here is the unscented filter's sigma-point code from <code>kalman_jax/filters.py</code>, with every J1 idea it uses. You can now read each line.</p>
+    <p>Here is the unscented filter's weight, sigma-point and prediction code from <code>kalman_jax/filters.py</code>, with every J1 idea it uses. You can now read each line.</p>
   </div>
   <div class="col table-wrap" style="margin-top:0.6rem">
     <table id="kT">
@@ -382,7 +382,7 @@ jnp.array(2**31)             # OverflowError: Python int 2147483648 too large to
     <h2>Check your understanding</h2>
   </div>
   <div class="col prose qa">
-    <details class="sol"><summary>1. Why does <code>x[0] = 1.0</code> fail on a JAX array, and what do you write instead?</summary><p>JAX arrays are immutable, so that a traced function's values each have one definition and the compiler and differentiator can treat the program as a graph of values. Write <code>x = x.at[0].set(1.0)</code>, which returns a new array; inside <code>jit</code> it is performed in place at no cost.</p></details>
+    <details class="sol"><summary>1. Why does <code>x[0] = 1.0</code> fail on a JAX array, and what do you write instead?</summary><p>JAX arrays are immutable, so that a traced function's values each have one definition and the compiler and differentiator can treat the program as a graph of values. Write <code>x = x.at[0].set(1.0)</code>, which returns a new array; inside <code>jit</code> it is performed in place, without a copy, when the old array is not used again.</p></details>
     <details class="sol"><summary>2. <code>jnp.arange(5)[10]</code> returns 4. Why does JAX not raise an <code>IndexError</code> as NumPy does?</summary><p>Compiled code on an accelerator cannot stop and raise in the middle of a computation, so JAX defines a result instead: out-of-bounds reads are clipped to the last valid index and out-of-bounds writes are dropped. No error is reported, so indices computed from data must be checked by the programmer.</p></details>
     <details class="sol"><summary>3. Why does <code>Wm * points</code> fail for shapes <code>(5,)</code> and <code>(5, 2)</code> while <code>Wm[:, None] * points</code> works?</summary><p>Broadcasting aligns shapes from the right, so the weights' 5 meets the points' 2: neither is 1, error. <code>Wm[:, None]</code> has shape <code>(5, 1)</code>: now 5 meets 5 and 1 meets 2, which stretches, giving <code>(5, 2)</code> with weight <span class="m">i</span> on row <span class="m">i</span>.</p></details>
     <details class="sol"><summary>4. Is float32 more accurate than float64, since <code>0.1 + 0.2 == 0.3</code> is true only in float32?</summary><p>No. Neither format stores 0.1, 0.2 or 0.3 exactly. In float32 the rounded sum happens to land on the same float as the rounded 0.3; in float64 it lands one float above (0.30000000000000004). The lesson is not to compare floats with <code>==</code>.</p></details>
@@ -429,7 +429,7 @@ def kahan(n):
         return t, (t - total) - y
     return lax.fori_loop(0, n, body, (jnp.float32(0.0), jnp.float32(0.0)))[0]
 
-print(plain(10_000_000), kahan(10_000_000))    # 1087937.0 1000000.0</code></pre></details>
+print(float(plain(10_000_000)), float(kahan(10_000_000)))    # 1087937.0 1000000.0</code></pre></details>
       </li>
       <li><div><b>Predict chapter 02's failure.</b> The unscented filter with <span class="m">\alpha = 10^{-3}</span> computes its predicted position as <span class="m">-999\,999\, p_0 + 250\,000\,(p_1 + p_2 + p_3 + p_4)</span>, where the <span class="m">p_i</span> are five float32 positions near 33. Estimate how wrong the result can be, from two sources: the rounding of the terms, and the rounding of the positions themselves.</div>
         <details class="sol"><summary>Hint</summary><p>Use the gap table. How large are the terms, and how far apart are float32s at that size? And how far apart are float32s near 33, multiplied by the weights?</p></details>
@@ -454,7 +454,7 @@ np.float32(0.5) + np.float32(1e-9) == np.float32(0.5)    # True: the repository'
   </div>
   <div class="col" style="margin-top:0.4rem">
     <ol class="steps">
-      <li><div><b>A JAX array</b> has a shape, one dtype and a device. It is immutable: <code>x.at[i].set(v)</code> returns a new array, and inside <code>jit</code> the update is done in place. Out-of-bounds reads are clipped and writes dropped, without an error.</div></li>
+      <li><div><b>A JAX array</b> has a shape, one dtype and a device. It is immutable: <code>x.at[i].set(v)</code> returns a new array, and inside <code>jit</code> the update can be done in place when the old array is not used again. Out-of-bounds reads are clipped and writes dropped, without an error.</div></li>
       <li><div><b>Broadcasting</b>: align shapes from the right, pad with 1s, and stretch length-1 axes; <code>None</code> adds such an axis. <code>Wm[:, None] * points</code> weights each row; <code>Wm * points</code> fails.</div></li>
       <li><div><b>A float</b> is sign × 1.fraction × 2<sup>exponent</sup>: 24 significant bits in float32, 53 in float64. 0.1 is not representable. The gap between neighbours is a fixed fraction of their size: 2 near 33 million in float32.</div></li>
       <li><div><b>JAX defaults to float32 and int32</b>, converts float64 input silently, lets arrays win over Python scalars (weak types), and wraps integers on overflow. <code>jax_enable_x64</code> switches the whole program to 64-bit.</div></li>

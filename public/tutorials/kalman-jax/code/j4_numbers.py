@@ -308,7 +308,8 @@ section("9. J3's maximum-likelihood estimate of the noise levels, repeated on th
 
 
 def generate_linear_synthetic_data(key, n_steps=100, dt=0.1, process_noise_std=0.1, measurement_noise_std=0.5):
-    """kalman_jax/filters.py, verbatim: a Python loop, so it cannot be vmapped efficiently."""
+    """kalman_jax/filters.py's generator with the same keys, splits and draws (its initial_state argument dropped,
+    and only the states and measurements returned): a Python loop, so it cannot be vmapped efficiently."""
     F = jnp.array([[1.0, dt], [0.0, 1.0]])
     H = jnp.array([[1.0, 0.0]])
     Q = jnp.array([[dt**3 / 3.0, dt**2 / 2.0], [dt**2 / 2.0, dt]]) * process_noise_std**2
@@ -387,6 +388,46 @@ fits = {"sa": [round(float(v), 5) for v in sa_hat], "sz": [round(float(v), 5) fo
         "sa_at_or_below_key42": int(np.sum(sa_hat[ok] <= sa_hat[42])),
         "sz_at_or_above_key42": int(np.sum(sz_hat[ok] >= sz_hat[42]))}
 out({k: v for k, v in fits.items() if k not in ("sa", "sz")})
+
+if not DATA:
+    section("10. For the text and the exercises")
+    lo, hi = band_nis
+    for k, v in nees.items():
+        out(f"assumed (sigma_a x, sigma_z x) = {k}: NIS inside its per-step band at "
+            f"{sum(lo <= a <= hi for a in v['anis'])} of {len(v['anis'])} steps, NEES at "
+            f"{sum(band_nees[0] <= a <= band_nees[1] for a in v['anees'])}")
+    n_all = N_RUNS * T_NEES
+    out("95% band for the NIS averaged over all", n_all, "innovations:",
+        [1 - 1.96 * math.sqrt(2 / n_all), 1 + 1.96 * math.sqrt(2 / n_all)])
+    ta = jnp.linspace(jnp.log(0.01), jnp.log(1.5), 40)
+    tz = jnp.linspace(jnp.log(0.2), jnp.log(1.5), 40)
+    grid = jnp.stack(jnp.meshgrid(ta, tz), axis=-1).reshape(-1, 2)
+    values = jax.jit(jax.vmap(lambda t: nll(t, zs_scan)))(grid)
+    out("exercise 2: grid point with the smallest likelihood (sigma_a, sigma_z):", jnp.exp(grid[jnp.argmin(values)]))
+    Fn, Hn, Qu = np.asarray(F, np.float64), np.asarray(H, np.float64), np.asarray(Q_UNIT, np.float64)
+
+    def steady(fa):
+        """Steady-state predicted and updated covariance, innovation variance and gain of the filter assuming fa * sigma_a."""
+        Qf, P = Qu * (SIGMA_A * fa) ** 2, np.eye(2)
+        for _ in range(3000):
+            Pp = Fn @ P @ Fn.T + Qf
+            S = (Hn @ Pp @ Hn.T)[0, 0] + SIGMA_Z**2
+            Kg = Pp @ Hn.T / S
+            A = np.eye(2) - Kg @ Hn
+            P = A @ Pp @ A.T + Kg @ Kg.T * SIGMA_Z**2
+        return Pp, S, Kg, P
+
+    Pp1, S1, K1, P1 = steady(1.0)
+    Pp4, S4, K4, P4 = steady(4.0)
+    E = np.eye(2)                                       # the x4 filter's actual error covariance under the true Q
+    for _ in range(5000):
+        Ep = Fn @ E @ Fn.T + Qu * SIGMA_A**2
+        A = np.eye(2) - K4 @ Hn
+        E = A @ Ep @ A.T + K4 @ K4.T * SIGMA_Z**2
+    true_S4 = (Hn @ Ep @ Hn.T)[0, 0] + SIGMA_Z**2
+    out("exercise 4: predicted position variance", Pp1[0, 0], Pp4[0, 0], " S", S1, S4,
+        " actual innovation variance of the x4 filter", true_S4, " steady NIS", true_S4 / S4)
+    out("exercise 4: updated covariance, x4 over x1, elementwise:", (P4 / P1).round(2).tolist())
 
 if DATA:
     sys.stdout = REAL_STDOUT

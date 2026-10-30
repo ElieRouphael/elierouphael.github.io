@@ -20,9 +20,10 @@ import tempfile
 import time
 
 X64PART = len(sys.argv) > 1 and sys.argv[1] == "x64part"
+X64NEWTON = len(sys.argv) > 1 and sys.argv[1] == "x64newton"
 import jax  # noqa: E402
 
-if X64PART:
+if X64PART or X64NEWTON:
     jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
@@ -30,9 +31,9 @@ from jax import lax  # noqa: E402
 
 DATA = len(sys.argv) > 1 and sys.argv[1] == "data"
 REAL_STDOUT = sys.stdout
-if DATA or X64PART:
+if DATA or X64PART or X64NEWTON:
     sys.stdout = io.StringIO()
-out = (lambda *a, **k: None) if (DATA or X64PART) else print
+out = (lambda *a, **k: None) if (DATA or X64PART or X64NEWTON) else print
 
 
 def section(title):
@@ -164,6 +165,28 @@ def kalman_experiments(zs):
 if X64PART:
     zs64 = np.load(sys.argv[2]).astype(np.float64)
     res = kalman_experiments(zs64)
+    sys.stdout = REAL_STDOUT
+    print(json.dumps(res))
+    sys.exit(0)
+
+if X64NEWTON:
+    # Part 7 and exercise 5: Newton's method on the likelihood in float64, its Hessian, and gradient descent's pace
+    nll64 = make_nll(jnp.asarray(np.load(sys.argv[2]).astype(np.float64)))
+    g64, h64 = jax.jit(jax.grad(nll64)), jax.jit(jax.hessian(nll64))
+    theta, gnorms = jnp.zeros(2), []
+    for _ in range(12):
+        theta = theta - jnp.linalg.solve(h64(theta), g64(theta))
+        gnorms.append(float(jnp.max(jnp.abs(g64(theta)))))
+    n_iter = next(i + 1 for i, v in enumerate(gnorms) if v < 1e-13)
+    Hm = h64(theta)
+    eig = jnp.linalg.eigvalsh(Hm)
+    se = jnp.sqrt(jnp.diag(jnp.linalg.inv(1000 * Hm)))          # nll is a mean over 1000 steps
+    t_gd, k_gd = jnp.zeros(2), 0
+    while abs(float(jnp.exp(t_gd[0] - theta[0])) - 1) >= 1e-3 and k_gd < 10000:
+        t_gd, k_gd = t_gd - 0.5 * g64(t_gd), k_gd + 1
+    res = {"mle": [float(v) for v in jnp.exp(theta)], "iterations": n_iter, "grad_after": gnorms[n_iter - 1],
+           "eig": [float(v) for v in eig], "ratio": float(eig[1] / eig[0]), "se_log": [float(v) for v in se],
+           "truth_in_se": float((np.log(0.1) - theta[0]) / se[0]), "gd_steps_sigma_a_0.1%": k_gd}
     sys.stdout = REAL_STDOUT
     print(json.dumps(res))
     sys.exit(0)
@@ -362,6 +385,24 @@ missing = {"value_guarded": float(step_missing(ls, znan, True)), "value_unguarde
            "grad_guarded": float(jax.grad(step_missing)(ls, znan, True)),
            "grad_unguarded": float(jax.grad(step_missing)(ls, znan, False))}
 out(missing)
+
+if not DATA:
+    section("6. Newton's method and the Hessian on chapter 02's likelihood (float64), and exercise 1")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "zs.npy")
+        np.save(path, zs32)
+        proc = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "x64newton", path],
+                              capture_output=True, text=True, check=True)
+    newton = json.loads(proc.stdout.strip().splitlines()[-1])
+    for k, v in newton.items():
+        out(f"{k}: {v}")
+    swish = lambda x: x / (1 + jnp.exp(-x))  # noqa: E731
+    out("exercise 1, JAX float32: s(1.5) =", swish(1.5), " s'(1.5) =", jax.grad(swish)(1.5))
+    Dual.__truediv__ = lambda a, b: Dual(a.value / b.value, (a.tangent * b.value - a.value * b.tangent) / b.value ** 2)
+    xd = Dual(1.5, 1.0)
+    ed = Dual(math.exp(-xd.value), -math.exp(-xd.value))       # exp(-x) and its tangent
+    sd = xd / (Dual(1.0) + ed)
+    out("exercise 1, dual numbers in float64: s(1.5) =", sd.value, " s'(1.5) =", sd.tangent)
 
 if DATA:
     sys.stdout = REAL_STDOUT
