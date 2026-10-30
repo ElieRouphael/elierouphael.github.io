@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>03 · The Earth Turns Underneath · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="Rotating frames for satellite planning: the inertial and the Earth-fixed frame, sidereal rotation, the latitude and longitude of the sub-satellite point, ground tracks on a map, the westward shift of 23.94° per revolution, the maximum latitude of 82.4°, revisit of the poles, the equator and ten maritime areas, and what the J2 nodal drift that the satplan package leaves out would change. Live ground tracks in the browser; every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  #vocT td, #numT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #numT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .frame-lbl { font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 0.2rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 03 of 10</span>
+  <h1>The Earth turns underneath</h1>
+  <p class="lede">Chapter 02 placed an orbit in a frame fixed among the stars. The targets of the planning problem, though, are ships in the Gulf of Guinea and the North Sea, and they ride on a planet that turns once every 23 hours 56 minutes. This chapter puts the two frames together: how a point on the ground moves in the inertial frame, where the satellite is above the map, why its track slides 23.94° west on every revolution, why it never climbs above 82.4°, and why a polar station sees each satellite on almost every orbit while a target near the equator waits hours. These patterns decide which targets compete for the same satellite, which is what the rest of the course optimises. The chapter ends with the effect the package leaves out, J2, measured in kilometres.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 01–02 (circular orbits, the inertial frame, rotation matrices) · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Ground tracks on an equirectangular map, with the scenario's maritime areas and ground stations</p>
+        <canvas id="heroMap" aria-label="A world map in latitude and longitude with the ground tracks of the satellites, the ten maritime area boxes, the four ground stations and the maximum latitude of the tracks" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><span class="sw" style="background:var(--post)"></span>sat 0</span>
+          <span class="key"><span class="sw" style="background:var(--warm)"></span>sat 1</span>
+          <span class="key"><span class="sw" style="background:var(--c4)"></span>sat 2</span>
+          <span class="key"><span class="sw" style="background:var(--c5)"></span>sat 3</span>
+          <span class="key"><span class="sw" style="background:var(--accent);opacity:0.5"></span>maritime area</span>
+          <span class="key">▲ ground station</span>
+          <span class="key">◯ ascending node of sat 0</span>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Inclination <span class="m">i</span>: <b id="hIncV"></b></span>
+        <span class="row"><input type="range" id="hInc" min="0" max="180" step="0.1" value="97.6"></span>
+      </label>
+      <label class="field"><span>Altitude: <b id="hAltV"></b></span>
+        <span class="row"><input type="range" id="hAlt" min="300" max="2000" step="10" value="550"></span>
+      </label>
+      <label class="field"><span>Time shown, from <span class="m">t = 0</span>: <b id="hHV"></b></span>
+        <span class="row"><input type="range" id="hH" min="0.5" max="24" step="0.5" value="6"></span>
+      </label>
+      <div class="btn-row"><button class="btn" type="button" id="hFour" aria-pressed="true">four satellites</button><button class="btn" type="button" id="hOne" aria-pressed="false">one satellite</button><button class="btn ghost" type="button" id="hReset">reset</button></div>
+      <div class="readouts" aria-live="off">
+        <span>period <span class="m">T</span></span><span class="v" id="rT">–</span>
+        <span>revolutions shown</span><span class="v" id="rRev">–</span>
+        <span>westward shift per revolution <span class="m">\omega_E T</span></span><span class="v" id="rShift">–</span>
+        <span>maximum latitude</span><span class="v" id="rMax">–</span>
+        <span>J2 node drift (not modelled)</span><span class="v" id="rJ2">–</span>
+        <span>J2 drift over the time shown, at the equator</span><span class="v" id="rJ2d">–</span>
+      </div>
+      <p class="hint">The orbits are the small instance's (RAAN and phase of each satellite, chapter 02); the sliders change the inclination and altitude of all of them. Positions come from the page's port of <code>position_eci</code>, longitudes from the Earth's rotation, <span class="m">\theta = \omega_E t</span>. There is no coastline: the boxes are the scenario's ocean areas.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#frames"><span class="n">1</span><span class="t">Two frames, one Earth</span><span class="d">Inertial, Earth-fixed, and the sidereal day</span></a>
+    <a href="#subpoint"><span class="n">2</span><span class="t">The point under the satellite</span><span class="d">Latitude, longitude, and the highest latitude</span></a>
+    <a href="#tracks"><span class="n">3</span><span class="t">Ground tracks and the westward shift</span><span class="d">23.94° per revolution</span></a>
+    <a href="#revisit"><span class="n">4</span><span class="t">Revisit</span><span class="d">Poles every orbit, the equator rarely, the areas in bursts</span></a>
+    <a href="#j2"><span class="n">5</span><span class="t">What the model leaves out</span><span class="d">J2 and sun-synchronism, in kilometres</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">What is left out, and where to read more</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="frames">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Two frames, one Earth</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The picture to hold.</b> Newton's law of chapter 01 holds in a frame that does not rotate: its axes point at fixed directions among the distant stars. In that <em>inertial</em> frame a circular orbit is a circle whose plane keeps its direction, and chapter 02 described it with three angles: the inclination <span class="m">i</span>, the right ascension of the ascending node <span class="m">\Omega</span> (RAAN) and the argument of latitude <span class="m">u</span>. The Earth sits at the centre of that circle and spins inside it. A ship does not move in the inertial frame along a fixed point: it is carried round the Earth's axis once a day. So the satellite's plane stays put, the ground slides underneath it, and every new revolution passes over a different strip of the Earth.</p>
+    <p>Two frames are needed to say this precisely. The <em>inertial frame</em> (ECI, for Earth-centred inertial) has its <span class="m">z</span> axis along the Earth's rotation axis and its <span class="m">x</span> axis toward a fixed direction in the equatorial plane. The <em>Earth-fixed frame</em> (ECEF, Earth-centred Earth-fixed) has the same <span class="m">z</span> axis, but its <span class="m">x</span> axis goes through the Greenwich meridian on the equator and turns with the Earth. Latitude and longitude, the coordinates of the targets, are Earth-fixed.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a rotating frame?</p>
+      <p><b>In plain words:</b> a set of axes glued to something that turns, here the Earth. A point at rest on the ground has constant coordinates in it, and moves on a circle in the inertial frame.</p>
+      <p><b>More precisely:</b> the Earth-fixed frame is the inertial frame rotated about the common <span class="m">z</span> axis by the angle <span class="m">\theta(t)</span>, the angle from the inertial <span class="m">x</span> axis to Greenwich. The package's convention is the simplest possible: Greenwich lies on the inertial <span class="m">x</span> axis at <span class="m">t = 0</span>, and the Earth turns at a constant rate,</p>
+      <div class="math-block">\theta(t) = \omega_E\, t, \qquad \omega_E = 7.2921159 \times 10^{-5}\ \text{rad/s} = 15.0411^\circ/\text{h}.</div>
+      <dl>
+        <dt>Inertial frame (ECI)</dt><dd>Non-rotating; Newton's law holds as written. Orbits and the satellite's position live here (<code>position_eci</code>).</dd>
+        <dt>Earth-fixed frame (ECEF)</dt><dd>Turns with the Earth; targets and stations have constant coordinates. Latitude and longitude are angles in this frame.</dd>
+        <dt>Sidereal rotation</dt><dd>One turn of the Earth relative to the stars: <span class="m">2\pi/\omega_E</span>.</dd>
+      </dl>
+    </div>
+    <p><b>From one frame to the other.</b> A rotation by <span class="m">\theta</span> about <span class="m">z</span> is the matrix of chapter 02,</p>
+    <div class="math-block" data-narrow="\begin{aligned} r_{\mathrm{ECI}} &amp;= R_z(\theta)\, r_{\mathrm{ECEF}}, \\ R_z(\theta) &amp;= \begin{pmatrix} \cos\theta &amp; -\sin\theta &amp; 0 \\ \sin\theta &amp; \cos\theta &amp; 0 \\ 0 &amp; 0 &amp; 1 \end{pmatrix} \end{aligned}">r_{\mathrm{ECI}} = R_z(\theta)\, r_{\mathrm{ECEF}}, \qquad R_z(\theta) = \begin{pmatrix} \cos\theta &amp; -\sin\theta &amp; 0 \\ \sin\theta &amp; \cos\theta &amp; 0 \\ 0 &amp; 0 &amp; 1 \end{pmatrix},</div>
+    <p>and the way back is the transpose, <span class="m">r_{\mathrm{ECEF}} = R_z(-\theta)\, r_{\mathrm{ECI}}</span>. A ground point at latitude <span class="m">\varphi</span> and longitude <span class="m">\lambda</span> on a sphere of radius <span class="m">R</span> has Earth-fixed position <span class="m">R(\cos\varphi\cos\lambda,\ \cos\varphi\sin\lambda,\ \sin\varphi)</span>. Rotating it by <span class="m">\theta</span> only adds <span class="m">\theta</span> to the longitude, because a rotation about <span class="m">z</span> is a shift of the azimuth angle:</p>
+    <div class="math-block">r_{\mathrm{ECI}}(t) = R\,\big(\cos\varphi\cos(\lambda + \omega_E t),\ \cos\varphi\sin(\lambda + \omega_E t),\ \sin\varphi\big).</div>
+    <p>That is exactly the package's <code>ground_points_eci</code> (<code>satplan/geometry.py</code>), written for many points and many times at once:</p>
+    <pre><code class="language-python">OMEGA_EARTH = 7.2921159e-5  # rad / s
+
+def ground_points_eci(lat_deg, lon_deg, t) -> np.ndarray:
+    """Inertial positions (T, J, 3) of ground points (J,) at times t (T,)."""
+    lat = np.radians(np.asarray(lat_deg, dtype=float))[None, :]
+    lon = np.radians(np.asarray(lon_deg, dtype=float))[None, :]
+    theta = lon + OMEGA_EARTH * np.asarray(t, dtype=float)[:, None]
+    return R_EARTH * np.stack(
+        [np.cos(lat) * np.cos(theta), np.cos(lat) * np.sin(theta), np.sin(lat) * np.ones_like(theta)],
+        axis=-1,
+    )</code></pre>
+    <p>Read it as the inverse view of the problem. The package never converts the satellite into Earth-fixed coordinates; it leaves the satellite in the inertial frame, where its motion is a clean circle, and moves the targets instead: <code>theta</code> is the target's inertial longitude, its Earth longitude plus the angle the Earth has turned. The shapes <code>[None, :]</code> and <code>[:, None]</code> make a table of <span class="m">T</span> times by <span class="m">J</span> points. Both views give the same geometry, since the angle between two vectors does not depend on the frame they are written in; chapter 04 needs only such angles.</p>
+    <p><b>Sidereal day and solar day.</b> <span class="m">2\pi/\omega_E = 86\,164.09</span> s, that is 23 h 56 min 4.1 s, is the time for one turn relative to the stars: the <em>sidereal day</em>. The clock's day of 86 400 s, the <em>solar day</em>, is 235.9 s longer, because in one day the Earth also moves about a 365th of its way round the Sun, and must turn a little further, <span class="m">360/365.2422 = 0.9856^\circ</span>, to bring the Sun back to the same meridian. In one solar day the Earth turns 360.9856°. A model of satellite visibility needs the rotation relative to the stars, because the orbit is fixed relative to the stars.</p>
+    <div class="callout"><p><b>Does the difference matter?</b> Using <span class="m">2\pi/86\,400</span> s instead of <span class="m">\omega_E</span> would misplace every target by 0.2464° of longitude after 6 h, 27.4 km at the equator, about 3 % of the 874 km radius of a satellite's footprint (chapter 04), and the error grows linearly with time. The package uses the sidereal rate; so does every chapter of this course.</p></div>
+    <p>The widget shows one satellite of the small instance seen from above the North Pole in both frames at once. Press play and watch the left picture: nothing about the orbit changes, only the Earth turns. Then the right one: the Earth is held still and the orbit fans out.</p>
+  </div>
+  <div class="col widget" id="frW">
+    <div class="two">
+      <div><p class="frame-lbl">Inertial frame (ECI)</p><canvas id="frI" aria-label="The orbit seen from above the North Pole in the inertial frame: a fixed thin ellipse, with Greenwich and a ground station turning with the Earth" aria-describedby="frCap"></canvas></div>
+      <div><p class="frame-lbl">Earth-fixed frame (ECEF)</p><canvas id="frE" aria-label="The same orbit in the Earth-fixed frame: successive revolutions fanning out westward, Greenwich fixed" aria-describedby="frCap"></canvas></div>
+    </div>
+    <label class="field"><span>Time: <b id="fTV"></b></span>
+      <span class="row"><input type="range" id="fT" min="0" max="24" step="0.05" value="3"></span>
+    </label>
+    <div class="btn-row"><button class="btn primary" type="button" id="fPlay" aria-pressed="false">Play 24 h</button></div>
+    <p class="status" id="frCap"></p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="subpoint">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The point under the satellite</h2>
+  </div>
+  <div class="col prose">
+    <p>The <em>sub-satellite point</em> is where the line from the Earth's centre to the satellite meets the ground. A map of where the satellite has been is a curve of sub-satellite points: the <em>ground track</em>. To draw it we need the latitude and the Earth-fixed longitude of the satellite's position <span class="m">r = (x, y, z)</span> at time <span class="m">t</span>.</p>
+    <p><b>Latitude.</b> The angle between <span class="m">r</span> and the equatorial plane: <span class="m">\sin\varphi = z/\lVert r\rVert</span>. The rotation about <span class="m">z</span> does not touch <span class="m">z</span>, so the latitude is the same in both frames.</p>
+    <p><b>Longitude.</b> The inertial azimuth of <span class="m">r</span>, <span class="m">\operatorname{atan2}(y, x)</span>, minus the angle the Earth has turned, brought back into <span class="m">(-180^\circ, 180^\circ]</span>:</p>
+    <div class="math-block">\varphi = \arcsin\frac{z}{\lVert r\rVert}, \qquad \lambda = \operatorname{wrap}\big(\operatorname{atan2}(y, x) - \omega_E t\big).</div>
+    <p>The package has no function for this, because the planner never needs a map; its test of the maximum latitude computes <span class="m">\varphi</span> inline, and the course's port <code>interactive/sat.js</code> adds the longitude for the figures:</p>
+    <pre><code class="language-javascript">function subPoint(r, t) {
+  const lat = Math.asin(r[2] / norm(r)) * DEG;
+  let lon = (Math.atan2(r[1], r[0]) - OMEGA_EARTH * t) * DEG;
+  lon = ((lon + 180) % 360 + 360) % 360 - 180;
+  return { lat, lon };
+}</code></pre>
+    <p>The double modulo is there because JavaScript's <code>%</code> keeps the sign of its left operand: <span class="m">-200 \bmod 360</span> is <span class="m">-200</span> in JavaScript, and adding 360 before the second modulo makes it 160.</p>
+    <p><b>Which latitude?</b> On a sphere, the angle at the centre (the <em>geocentric</em> latitude, above) and the angle of the local vertical (the <em>geodetic</em> latitude, the one on a map or a GPS receiver) are the same thing. On the real, slightly flattened Earth they differ by up to about 0.19° near 45° of latitude, roughly 21 km on the ground. The package uses a sphere of mean radius 6371 km, so its latitudes are geocentric and its targets' latitudes are read the same way; for a synthetic scenario this is consistent, and it is one of the simplifications chapter 05 lists.</p>
+    <p><b>The highest latitude.</b> Chapter 02's <code>position_eci</code> gives <span class="m">z = a \sin u \sin i</span>, so <span class="m">\sin\varphi = \sin u \sin i</span>. Its largest value, at <span class="m">u = 90^\circ</span>, is <span class="m">\sin i</span>, and</p>
+    <div class="math-block">\varphi_{\max} = \arcsin(\sin i) = \begin{cases} i, &amp; i \le 90^\circ, \\ 180^\circ - i, &amp; i > 90^\circ. \end{cases}</div>
+    <p>At <span class="m">i = 97.6^\circ</span> the track turns back at <span class="m">\varphi_{\max} = 82.4^\circ</span>. The orbit is <em>retrograde</em>: an inclination above 90° means the satellite's eastward velocity component points west, against the Earth's rotation, by <span class="m">\cos 97.6^\circ = -0.13</span> of its speed. The package checks this formula with a test (<code>tests/test_planning.py</code>):</p>
+    <pre><code class="language-python">def test_max_latitude_equals_inclination_supplement():
+    orb = CircularOrbit(550e3, 97.6, 30.0, 0.0)
+    p = orb.position_eci(np.linspace(0, orb.period_s, 4000))
+    lat = np.degrees(np.arcsin(p[:, 2] / np.linalg.norm(p, axis=1)))
+    assert lat.max() == pytest.approx(180 - 97.6, abs=0.1)</code></pre>
+    <div class="callout"><p><b>The package's number.</b> On 4000 samples of one revolution the largest latitude is 82.4000°, equal to <span class="m">180^\circ - 97.6^\circ</span> to four decimals; the test allows 0.1°. The latitude does not depend on the Earth's rotation, so the test can stay in the inertial frame.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="tracks">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Ground tracks and the westward shift</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The map.</b> The hero demo draws the ground track on an <em>equirectangular</em> map: longitude along the horizontal axis and latitude along the vertical, both linear, so a degree is the same length everywhere. It is the simplest map and it distorts: a degree of longitude is 111 km on the equator and <span class="m">111 \cos\varphi</span> km at latitude <span class="m">\varphi</span>, yet it is drawn the same width, so everything near the poles is stretched sideways. The grey lines, every 30°, are the <em>graticule</em>. The shaded boxes are the ten generic maritime areas of <code>satplan/scenario.py</code>, the triangles its four ground stations; no coastline is drawn, because the scenario has none.</p>
+    <p><b>One revolution.</b> At 550 km the period is <span class="m">T = 5730.127</span> s, 95.50 min (chapter 01). Over one revolution the track goes from the equator up to 82.4° N, down across the equator to 82.4° S, and back. Seen from the ground it is a wave, not a circle, because the ground moves under it at up to 465 m/s at the equator, while the sub-satellite point moves at 6986 m/s.</p>
+    <p><b>The shift.</b> When the satellite returns to its ascending node after one period, the orbit plane has not moved, but the Earth has turned by <span class="m">\omega_E T</span>. The node is now over a meridian that many degrees further west:</p>
+    <div class="math-block">\Delta\lambda = \omega_E T = 7.2921159 \times 10^{-5} \times 5730.127 = 0.41785\ \text{rad} = 23.94^\circ,</div>
+    <p>or <span class="m">R\,\Delta\lambda = 2662</span> km along the equator. The numbered circles in the hero map are these crossings; sampling the track every second and finding where its latitude changes sign gives successive nodes at <span class="m">-23.94^\circ</span> and <span class="m">-47.88^\circ</span>, as the formula says. The shift does not depend on the inclination at all, only on the period: try the inclination slider and watch the readout stay at 23.94°; then the altitude slider, which changes <span class="m">T</span>.</p>
+    <p>The satellite makes 15.078 revolutions per solar day, and <span class="m">360/23.94 = 15.04</span> shifts fill the full circle of longitude. The two numbers are close but not equal, so after a day the tracks do not repeat: they land a little to the side of the first day's. Orbits whose numbers match exactly (a <em>repeat ground track</em>) exist, but the scenario does not use one, and over the 6 to 12 hours of a planning horizon it would make no difference.</p>
+    <p><b>The track's tilt.</b> On the ascending node the satellite climbs northward at 97.6° from east, that is 7.60° west of north in the inertial frame. The ground moving eastward under it adds an apparent westward drift, and the track crosses the equator 11.34° west of north on the map. Both angles are small: the track is nearly a meridian, which is why polar orbits are said to "scan" the Earth in north–south strips.</p>
+    <div class="big-idea"><p>The orbit is fixed among the stars; the Earth turns inside it. Every pattern on the map, the westward shift, the strips, the revisit, comes from one product: the Earth's rotation rate times the time spent.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="revisit">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Revisit</h2>
+  </div>
+  <div class="col prose">
+    <p>A target can only be listened to when a satellite sees it: chapter 04 turns this into an exact test, with a half-width of the footprint of 7.86° of Earth central angle, 874 km on the ground, for the targets' limits. So a track serves a strip about 1747 km wide. The <em>revisit</em> of a point is how often some strip covers it.</p>
+    <p><b>At the equator, rarely.</b> Neighbouring tracks of one satellite are 2662 km apart at the equator, more than the 1747 km strip: there are gaps between the strips of consecutive revolutions, and they are only filled over several days as the tracks drift. A point on the equator sees a given satellite once or twice a day, sometimes not at all.</p>
+    <p><b>Near the poles, every orbit.</b> The spacing of the tracks along a parallel shrinks like <span class="m">2662 \cos\varphi</span> km, because the meridians converge, while the strip keeps its width. The two are equal near <span class="m">\varphi = 49^\circ</span>; beyond that the strips of consecutive revolutions overlap, and above 75° nearly every revolution passes within reach. A polar ground station is placed there for this reason: in the small instance, GS-Arctic at 78.2° N has 12 contacts in 6 h with the four satellites: two or four per satellite in 3.77 revolutions, so satellites 1 and 3 see it on every revolution. That is against 5 for GS-Europe at 48.1° N and 3 each for GS-South and GS-Indian. (Contacts use a wider limit than targets, a 5° elevation mask and no sensor cone, chapter 04.)</p>
+  </div>
+  <div class="col widget" id="latW">
+    <label class="field"><span>Inclination of the satellite: <b id="lIncV"></b> (the chart recomputes when you release the slider)</span>
+      <span class="row"><input type="range" id="lInc" min="0" max="180" step="0.1" value="97.6" aria-describedby="latCap"></span>
+    </label>
+    <p class="chart-title">Passes per day over a point, against its latitude (one satellite, 550 km, 24 h)</p>
+    <canvas id="latC" aria-label="Bar chart of the number of passes per day over a ground point against the point's latitude, with the maximum latitude of the track as a dashed line" aria-describedby="latCap"></canvas>
+    <p class="status" id="latCap"></p>
+  </div>
+  <div class="col prose">
+    <p>At 97.6° the chart climbs from 1.58 passes per day at the equator (between 0 and 3, depending on the longitude) to 2.00 at 40° and 7.75 from 75° up: the pole is covered on about half of the 15 revolutions, because only the revolutions whose turning point is on the point's side of the pole come close enough. The low-latitude bars wobble, from 1.17 to 1.58, because one day and twelve longitudes are a small sample of a pattern that repeats only after many days. Set the inclination to 53° and the picture flips: points from 65° up are never seen (the track turns at 53°, and the footprint reaches 7.86° beyond), and the passes pile up at 45–50°, near the turning points: 4.50 a day at 45°.</p>
+    <p><b>The maritime areas of the small instance.</b> The planner sees revisit through its opportunities. The widget groups the opportunities of each area's targets into passes (windows of the same satellite less than 20 minutes apart).</p>
+  </div>
+  <div class="col widget" id="revW">
+    <label class="field"><span>Maritime area</span>
+      <span class="row"><select id="rArea" aria-describedby="revCap"></select></span>
+    </label>
+    <p class="chart-title">Opportunities over one maritime area in the small instance (4 satellites, 6 h)</p>
+    <canvas id="revC" aria-label="A timeline with one row per satellite showing the visibility windows of the targets of the chosen maritime area, grouped into passes" aria-describedby="revCap"></canvas>
+    <div class="readouts" aria-live="off">
+      <span>opportunities in the area</span><span class="v" id="rvOpp">–</span>
+      <span>passes</span><span class="v" id="rvPass">–</span>
+      <span>gaps between passes</span><span class="v" id="rvGaps">–</span>
+    </div>
+    <p class="status" id="revCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Every area gets one to three passes in the six hours (three for the Gulf of Guinea, the Bay of Biscay approaches and the North Sea; one for the South China Sea), and the gaps come in two sizes only: eight gaps of 42 to 44 minutes and four of 4.3 to 5.1 hours. Both sizes come from the constellation layout of chapter 02, two planes 90° of RAAN apart with two satellites in each, half a revolution apart.</p>
+    <ul>
+      <li><b>About 43 minutes.</b> While the Earth carries an area through one orbit plane, the area stays within reach of that plane for an hour or so. The two satellites of the plane follow each other at half a period, 47.75 min, so the area sees one, then the other, with about 43 minutes between the end of one pass and the start of the next. In the North Sea, at 56° N, the strips overlap and satellite 3 comes back on its next revolution as well: three passes.</li>
+      <li><b>About five hours.</b> The next plane is 90° of RAAN away, and the Earth needs <span class="m">90/15.04 \approx 6</span> h to turn that far. Six hours minus the length of a burst gives the long gaps.</li>
+    </ul>
+    <div class="callout"><p><b>Why the planner cares.</b> Opportunities on the same satellite that fall in the same pass compete for the same few minutes: they are the conflict pairs of chapter 06. The bursts above are where the planning problem is hard: in the Gulf of Guinea, the third pass carries 15 opportunities in 4.3 minutes, for one satellite that must slew between them. The long gaps are where it is easy, and where a target that misses its pass waits five hours.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="j2">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>What the model leaves out</h2>
+  </div>
+  <div class="col prose">
+    <p>The package's docstring is explicit: "spherical Earth, circular two-body orbits (no J2 drift)". The Earth is not a sphere. It bulges at the equator: its equatorial radius is 6378.137 km, about 21 km more than its polar radius. The extra mass in the bulge pulls an inclined orbit's plane toward the equator, and like a spinning top under gravity, the plane does not fall but <em>precesses</em>: the ascending node slides slowly round the equator. The size of the bulge's effect on gravity is the coefficient <span class="m">J_2 = 1.08263 \times 10^{-3}</span>, the largest correction to a spherical Earth's field.</p>
+    <p><b>Nodal regression.</b> For a circular orbit of radius <span class="m">a</span>, mean motion <span class="m">n = 2\pi/T</span> and inclination <span class="m">i</span>, the node moves at the average rate <a href="#ref-2">[2]</a></p>
+    <div class="math-block">\dot\Omega = -\frac{3}{2}\, J_2 \left(\frac{R_{\mathrm{eq}}}{a}\right)^2 n \cos i .</div>
+    <p>For a prograde orbit (<span class="m">\cos i > 0</span>) the node moves west, the classic "regression"; for a retrograde one it moves east; for an exactly polar orbit it does not move. With the package's <span class="m">a = 6921</span> km (550 km above the mean radius), <span class="m">n = 1.096518 \times 10^{-3}</span> rad/s and <span class="m">i = 97.6^\circ</span>:</p>
+    <div class="math-block">\dot\Omega = 2.0001 \times 10^{-7}\ \text{rad/s} = 0.9901^\circ/\text{day, eastward}.</div>
+    <p><b>Sun-synchronous.</b> The Sun's apparent direction moves east along the ecliptic by <span class="m">360/365.2422 = 0.9856^\circ</span> a day, the same 0.9856° that separates the solar and sidereal days in Part 1. An orbit whose node moves at that rate keeps the same angle to the Sun all year, so it crosses each latitude at the same local solar time every day: a <em>sun-synchronous</em> orbit, prized for constant lighting and for predictable power on solar panels. Solving <span class="m">\dot\Omega = 0.9856^\circ</span>/day for <span class="m">i</span> gives 97.57° at <span class="m">a = 6921</span> km (97.59° if the 550 km are counted above the equatorial radius). The scenario's 97.6° is the sun-synchronous inclination for its altitude, which is why <code>scenario.py</code> comments it "sun-synchronous at 550 km". The package uses the inclination for that reason and then leaves out the drift that gives it the name. The hero demo's J2 readout shows how quickly this changes: at 53° the node would move 4.505° a day westward, at 0° 7.486°.</p>
+    <p><b>Does leaving it out matter?</b> Over the planning horizons of the benchmark:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="numT" class="num">
+      <thead><tr><th>Horizon</th><th>RAAN drift</th><th>Track shift at the equator</th><th>at 45°</th><th>Share of the 874 km footprint radius</th></tr></thead>
+      <tbody>
+        <tr><td>6 h (small instance)</td><td>0.248°</td><td>27.5 km</td><td>19.5 km</td><td>3 %</td></tr>
+        <tr><td>12 h (medium and large)</td><td>0.495°</td><td>55.0 km</td><td>38.9 km</td><td>6 %</td></tr>
+        <tr><td>24 h</td><td>0.990°</td><td>110.1 km</td><td>77.9 km</td><td>13 %</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>At the end of a 12-hour plan, a track the model puts over a target would in reality pass 55 km to the east of it. That changes a window's length by a few seconds and its timing barely, and it shifts every window of a satellite in the same direction; the conflicts between targets, which are what the planner optimises, are almost unchanged. Over a year the drift adds up to 361.6°, a full turn: it is essential for mission design, and negligible for a 6–12 h plan.</p>
+    <p><b>A second J2 effect, larger over a plan.</b> J2 also changes how fast the satellite moves along its orbit. For a circular orbit the argument of latitude advances at <span class="m">n\,\big(1 + \tfrac{3}{4} J_2 (R_{\mathrm{eq}}/a)^2 (8\cos^2 i - 2)\big)</span>, the sum of the first-order perigee and mean-anomaly rates of <a href="#ref-2">[2]</a>. At 97.6° the bracket is <span class="m">1 - 1.283 \times 10^{-3}</span>: for the same mean orbit radius, a real satellite would fall behind the Kepler model by 1.74° of its orbit after 6 h, 210 km along the track, or 27.7 s of timing (55.4 s after 12 h). That is comparable to the shortest tasks (30 s). It is also the easiest thing to fix: an operator plans with the measured period of the orbit, not with Kepler's law, and the package could do the same by using a period of 5737.49 s instead of 5730.13 s.</p>
+    <div class="callout warm"><p><b>The judgement.</b> For a synthetic study of planning algorithms the simplification is sound: it moves windows by tens of kilometres and tens of seconds, nearly uniformly per satellite, while the planning problem is decided by the minutes between neighbouring windows. For planning a real satellite it would not be: real planners use an orbit propagated with J2 and higher terms, updated from tracking data, and real scenarios would need geodetic latitudes too.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why does the package move the targets into the inertial frame instead of moving the satellite into the Earth-fixed frame?</summary><p>Because the satellite's motion is simplest in the inertial frame (a circle of fixed plane), and the visibility test only needs angles between vectors, which are the same in either frame. Rotating a ground point is one added angle, <span class="m">\lambda + \omega_E t</span>, which is all <code>ground_points_eci</code> does.</p></details>
+    <details class="sol"><summary>2. Why is <span class="m">\omega_E</span> based on 23 h 56 min and not on 24 h?</summary><p>The orbit is fixed relative to the stars, so what matters is the Earth's rotation relative to the stars: one sidereal day, 86 164.09 s. The 24-hour solar day includes the extra 0.9856° the Earth turns to catch up with the Sun's apparent motion. Using it would misplace targets by 27.4 km at the equator after 6 h.</p></details>
+    <details class="sol"><summary>3. A satellite crosses the equator northward at longitude 10° E. Where does it cross next time, and where on the following revolution?</summary><p>One period later the Earth has turned <span class="m">\omega_E T = 23.94^\circ</span>, so the next ascending crossing is at <span class="m">10 - 23.94 = -13.94^\circ</span>, that is 13.94° W, and the one after at 37.88° W.</p></details>
+    <details class="sol"><summary>4. What is the highest latitude of the ground track at <span class="m">i = 53^\circ</span>? At <span class="m">i = 97.6^\circ</span>?</summary><p><span class="m">\arcsin(\sin i)</span>: 53° for the first, and <span class="m">180 - 97.6 = 82.4^\circ</span> for the second. A point at 85° is still seen from the second orbit if it is within the footprint, 7.86° of central angle, of the track's turning point.</p></details>
+    <details class="sol"><summary>5. Does the westward shift per revolution depend on the inclination?</summary><p>No. It is <span class="m">\omega_E T</span>, and the period depends only on the orbit radius. The inclination changes the shape of the track and its tilt at the equator, not the spacing of its nodes.</p></details>
+    <details class="sol"><summary>6. Why is a polar ground station contacted on nearly every revolution while an equatorial target can wait a whole day?</summary><p>Every revolution of a near-polar orbit passes within about 7.6° of each pole, and a footprint of 7.86° of central angle reaches the station on most of them. At the equator successive tracks are 2662 km apart and the footprint strip is 1747 km wide, so a point falls between strips on many revolutions. GS-Arctic has 12 contacts in 6 h with four satellites; an equatorial point sees one satellite 1.58 times a day on average.</p></details>
+    <details class="sol"><summary>7. In the small instance, gaps between passes over an area are either about 43 minutes or about 5 hours. Where does each come from?</summary><p>43 minutes: the two satellites of one plane are half a period (47.75 min) apart, and both reach the area while the Earth carries it through that plane. Five hours: the other plane is 90° of RAAN away, and the Earth needs about 6 h to turn 90°.</p></details>
+    <details class="sol"><summary>8. Why can the package call its orbit "sun-synchronous" if it has no J2?</summary><p>Sun-synchronism is a property of the inclination and altitude under J2: at 550 km, 97.6° makes the node drift 0.9901°/day, the Sun's 0.9856°/day. The package keeps the inclination that a real sun-synchronous orbit would have, so its tracks look like a real one's, but does not move the node. Over 6 h the missing drift is 0.248°, 27.5 km at the equator.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Ground track in NumPy.</b> Write <code>sub_point(orbit, t)</code> returning latitude and longitude arrays for a <code>CircularOrbit</code> and an array of times, and plot one revolution of the small instance's satellite 0 with matplotlib. Check that consecutive ascending nodes are 23.94° apart.</div>
+        <details class="sol"><summary>Hint</summary><p>Use <code>orbit.position_eci(t)</code>, then <code>np.arcsin(z / r)</code> and <code>np.arctan2(y, x) - OMEGA_EARTH * t</code>; wrap with <code>(lon + 180) % 360 - 180</code> (NumPy's <code>%</code> already returns a non-negative result for a positive divisor). Find nodes where the latitude changes sign upward.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-python">def sub_point(orbit, t):
+    r = orbit.position_eci(t)
+    lat = np.degrees(np.arcsin(r[:, 2] / np.linalg.norm(r, axis=1)))
+    lon = np.degrees(np.arctan2(r[:, 1], r[:, 0]) - OMEGA_EARTH * t)
+    return lat, (lon + 180) % 360 - 180
+
+t = np.arange(0, 3 * orb.period_s, 1.0)
+lat, lon = sub_point(orb, t)
+k = np.flatnonzero((lat[:-1] &lt; 0) &amp; (lat[1:] &gt;= 0))
+print(np.diff(lon[k]))     # [-23.94] for 550 km</code></pre>
+          <p><code>code/ch03_numbers.py</code> does exactly this and prints <span class="m">-23.94^\circ</span>. Split the plotted line where <code>abs(np.diff(lon)) &gt; 180</code> to avoid a horizontal line across the map at the date line.</p></details>
+      </li>
+      <li><div><b>A repeat ground track.</b> Find the altitude at which a circular orbit makes exactly 15 revolutions per sidereal day, so that its track repeats every day relative to the stars-and-Earth geometry (ignoring J2). How far is it from 550 km?</div>
+        <details class="sol"><summary>Hint</summary><p>Fifteen revolutions in a sidereal day means <span class="m">T = 86\,164.09/15</span> s. Invert Kepler's third law, <span class="m">a = (\mu T^2 / 4\pi^2)^{1/3}</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">T = 5744.27</span> s, <span class="m">a = (3.986 \times 10^{14} \times 5744.27^2/4\pi^2)^{1/3} \approx 6932</span> km, about 561 km above the mean radius: about 11 km higher than the scenario's orbit. Then <span class="m">\omega_E T = 24^\circ</span> exactly and fifteen shifts close the circle. (Strictly, a track repeats when the Earth has turned a whole number of times relative to the orbit plane; with J2 the plane moves too, and real repeat orbits are computed with the nodal period and the node drift.)</p></details>
+      </li>
+      <li><div><b>Sun-synchronous inclination against altitude.</b> Using the nodal regression formula, compute the sun-synchronous inclination for altitudes from 300 to 1200 km. Is it always retrograde?</div>
+        <details class="sol"><summary>Hint</summary><p>Solve <span class="m">\cos i = -\dot\Omega_\odot / \big(\tfrac{3}{2} J_2 (R_{\mathrm{eq}}/a)^2 n\big)</span> with <span class="m">\dot\Omega_\odot = 0.9856^\circ</span>/day converted to rad/s.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The right-hand side is negative, so <span class="m">\cos i &lt; 0</span>: always retrograde. With 550 km counted above the mean radius as in the package, the required inclination grows with altitude: 96.65° at 300 km, 97.57° at 550 km, 98.57° at 800 km, 100.38° at 1200 km, because the J2 effect weakens like <span class="m">a^{-7/2}</span> and a larger <span class="m">|\cos i|</span> has to compensate. Above about 5990 km of altitude even <span class="m">i = 180^\circ</span> is not enough. (<code>code/ch03_numbers.py</code> prints these.)</p></details>
+      </li>
+      <li><div><b>Add J2 to the package, in a copy.</b> Make a subclass of <code>CircularOrbit</code> whose <code>position_eci</code> uses <span class="m">\Omega(t) = \Omega_0 + \dot\Omega t</span>, rebuild the small instance with it, and compare the opportunities: how many windows appear, disappear or move by more than 10 s?</div>
+        <details class="sol"><summary>Hint</summary><p><code>CircularOrbit</code> is a frozen dataclass; override <code>position_eci</code> and compute the RAAN as an array over <code>t</code>. <code>build_instance</code> calls <code>make_constellation</code>, so monkeypatch that function in your script, not in the package.</p></details>
+        <details class="sol"><summary>Solution</summary><p><code>code/ch03_numbers.py</code> does this for the windows. With the node drift, the small instance has 169 opportunities instead of 168: one disappears and two appear (windows close to their task's duration that cross the threshold), 125 keep exactly the same edges on the 10 s grid, and no edge moves by more than 10 s, one grid step. The drift grows linearly from 0 to 27.5 km over the 6 h, so the later windows are the ones that move. Re-solving with chapter 08's CP-SAT tells you whether the optimum moves. If you also add the along-track rate of Part 5, window times move by up to about 28 s, and many more edges change.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Two frames</b>: orbits live in the inertial frame, targets in the Earth-fixed frame; one rotates relative to the other by <span class="m">\theta = \omega_E t</span>, with Greenwich on the inertial <span class="m">x</span> axis at <span class="m">t = 0</span>.</div></li>
+      <li><div><b>Sidereal rate</b>: <span class="m">\omega_E = 7.2921159 \times 10^{-5}</span> rad/s, one turn in 86 164.09 s (23 h 56 min 4.1 s), 235.9 s shorter than the solar day.</div></li>
+      <li><div><b>The package's view</b>: <code>ground_points_eci</code> moves the targets into the inertial frame by adding <span class="m">\omega_E t</span> to their longitude.</div></li>
+      <li><div><b>Sub-satellite point</b>: <span class="m">\varphi = \arcsin(z/r)</span> (geocentric, on a sphere), <span class="m">\lambda = \operatorname{atan2}(y, x) - \omega_E t</span>, wrapped.</div></li>
+      <li><div><b>The track</b>: highest latitude <span class="m">180^\circ - i = 82.4^\circ</span> (tested in the package); shift per revolution <span class="m">\omega_E T = 23.94^\circ</span>, 2662 km at the equator; 15.078 revolutions per day.</div></li>
+      <li><div><b>Revisit</b>: a 1747 km strip against 2662 km between tracks at the equator (1.58 passes a day per satellite), overlapping beyond about 49°; 12 contacts in 6 h at the Arctic station, every revolution for two of the satellites; the maritime areas see bursts 42–44 min apart and gaps of 4.3–5.1 h.</div></li>
+      <li><div><b>Left out</b>: J2 turns the node by 0.9901°/day at 97.6° (the Sun's 0.9856°/day: sun-synchronous), 27.5 km at the equator over 6 h and 55.0 km over 12 h; the along-track effect is 27.7 s over 6 h at fixed mean radius, and is removed by using the measured period.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Inertial frame (ECI)</td><td>Axes fixed among the stars, origin at the Earth's centre; where orbits are simple.</td></tr>
+        <tr><td>Earth-fixed frame (ECEF)</td><td>Axes turning with the Earth; where latitude, longitude and targets are fixed.</td></tr>
+        <tr><td>Sidereal day</td><td>One rotation of the Earth relative to the stars, 86 164.09 s.</td></tr>
+        <tr><td>Solar day</td><td>From noon to noon, 86 400 s; longer because the Earth also moves round the Sun.</td></tr>
+        <tr><td>Sub-satellite point</td><td>The point on the ground directly below the satellite.</td></tr>
+        <tr><td>Ground track</td><td>The curve traced by the sub-satellite point on a map.</td></tr>
+        <tr><td>Geocentric / geodetic latitude</td><td>Angle at the Earth's centre / angle of the local vertical; equal on a sphere.</td></tr>
+        <tr><td>Retrograde orbit</td><td>Inclination above 90°: the satellite's east–west motion is against the Earth's rotation.</td></tr>
+        <tr><td>Equirectangular map</td><td>Longitude and latitude drawn as straight, evenly spaced axes.</td></tr>
+        <tr><td>Revisit</td><td>How often a point on the ground is seen again.</td></tr>
+        <tr><td>J2</td><td>The coefficient of the Earth's equatorial bulge in its gravity field, <span class="m">1.08263 \times 10^{-3}</span>.</td></tr>
+        <tr><td>Nodal regression</td><td>The slow rotation of an orbit's ascending node caused by J2.</td></tr>
+        <tr><td>Sun-synchronous orbit</td><td>An orbit whose node turns at the Sun's apparent rate, 0.9856°/day, so it keeps its angle to the Sun.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter covers only what the package models: a uniform rotation about a fixed axis, a spherical Earth and circular orbits, plus J2's two first-order secular effects as a measured omission. It leaves out the slow motions of the Earth's axis (precession, nutation, polar motion), the difference between UT1 and the clock time, the ellipsoid and geodetic coordinates, the higher terms of the gravity field, air drag (which slowly lowers an orbit at 550 km), and the orbit determination that real operators use to keep their predictions honest. Everything in the scenario is synthetic; nothing here describes a real satellite or operator. Chapter 04 now turns the sub-satellite geometry into the exact visibility test, and chapter 05 turns visibility windows into a planning problem.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>H. D. Curtis. <em>Orbital Mechanics for Engineering Students</em>, 3rd edition. Butterworth-Heinemann, 2014. Reference frames, the sidereal day, ground tracks and the effect of the Earth's oblateness (nodal regression, sun-synchronous orbits), at the level of this course.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>D. A. Vallado. <em>Fundamentals of Astrodynamics and Applications</em>, 4th edition. Microcosm Press, 2013. Coordinate systems and time, geocentric and geodetic latitude, and the secular J2 rates of the node, the perigee and the mean anomaly used in Part 5.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>O. Montenbruck and E. Gill. <em>Satellite Orbits: Models, Methods and Applications</em>. Springer, 2000. The rigorous treatment of Earth rotation, the gravity field and orbit propagation that a real planner would use.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>J. R. Wertz and W. J. Larson (eds.). <em>Space Mission Analysis and Design</em>, 3rd edition. Microcosm Press and Kluwer, 1999. Ground tracks, coverage and revisit from the mission designer's side, with the rules of thumb behind Part 4.</div></li>
+    </ul>
+    <p>Next, chapter 04 builds the triangle between the Earth's centre, the satellite and a target, finds which of the package's limits binds at 550 km, and samples visibility windows on the 10 s grid.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="02-placing-an-orbit-in-space.html"><span class="lbl">Previous · 02</span><span class="t">Placing an orbit in space</span></a>
+  <a class="next" rel="next" href="04-seeing-the-ground.html"><span class="lbl">Next · 04</span><span class="t">Seeing the ground</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 03 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The ground tracks, frames and passes are computed in your browser with a line-for-line port of the satplan package's geometry, on the course's small instance; every number in the text is printed by <code>code/ch03_numbers.py</code>. The scenario is synthetic and describes no real system. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch03.js"></script>
+</body>
+</html>

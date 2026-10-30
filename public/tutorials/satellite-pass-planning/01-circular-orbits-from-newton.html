@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>01 · Circular Orbits from Newton · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="The first chapter of an interactive course on satellite pass planning: Newton's law of gravitation, circular speed and period, Kepler's third law, and a satellite's trajectory built from scratch by numerical integration in the browser with explicit Euler, symplectic Euler and RK4, compared with the closed-form circle that the satplan package uses. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+  #mapT td, #vocT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #mapT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .orbit-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.8rem; align-items: start; }
+  .orbit-grid .errs { display: grid; gap: 0.4rem; }
+  @media (max-width: 640px) { .orbit-grid { grid-template-columns: minmax(0, 1fr); } }
+  #hTab { font-size: 0.86rem; }
+  #hTab td:first-child { white-space: nowrap; }
+  #hTab .sw { vertical-align: -1px; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 01 of 10</span>
+  <h1>Circular orbits from Newton</h1>
+  <p class="lede">Before a planner can decide which target a satellite listens to, it must know where the satellite is, at every second of the day. This chapter builds that knowledge from one law of physics. Newton's gravitation gives the speed and the period of a circular orbit, 7.6 km/s and 95.5 minutes at the course's 550 km. Then we let the computer fly the satellite step by step, with three integration methods, and watch two of them fail in instructive ways. That explains why the course's Python package can skip integration altogether and use a closed-form circle, and why a real flight-dynamics tool cannot.</p>
+  <p class="byline">Elie Rouphael · Needs Python, high-school physics and vectors; no orbital mechanics · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">A satellite flown from scratch: three integrators against the exact orbit</p>
+        <div class="orbit-grid">
+          <canvas id="orbC" aria-label="The orbit plane seen from above the North Pole: the Earth, the exact orbit dashed, and the trajectories computed by explicit Euler, symplectic Euler and RK4" aria-describedby="heroStatus"></canvas>
+          <div class="errs">
+            <canvas id="errE" aria-label="Relative energy error of each integrator against time, on a log scale" aria-describedby="heroStatus"></canvas>
+            <canvas id="errR" aria-label="Radius error of each integrator against time, on a log scale" aria-describedby="heroStatus"></canvas>
+          </div>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--warm)"></i>explicit Euler</span><span><i style="background:var(--c4)"></i>symplectic Euler</span><span><i style="background:var(--post)"></i>RK4</span><span><i style="background:none;border-top:2px dashed var(--ink);height:0"></i>exact orbit</span></div>
+      </div>
+      <div class="table-wrap">
+        <table class="num" id="hTab">
+          <thead><tr><th>Method</th><th>largest <span class="keep">|ΔE/E₀|</span></th><th>largest radius error</th><th>distance from exact position at the end</th><th>gravity evaluations</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Step <span class="m">h</span>: <b id="hHV">60 s</b></span>
+        <span class="row"><input type="range" id="hH" min="0" max="8" step="1" value="6" aria-describedby="heroStatus"></span>
+      </label>
+      <label class="field"><span>Revolutions: <b id="hNV">5</b></span>
+        <span class="row"><input type="range" id="hN" min="1" max="20" step="1" value="5"></span>
+      </label>
+      <label class="field"><span>Start speed, in units of the circular speed <span class="m">v_c</span>: <b id="hKV">1.00</b></span>
+        <span class="row"><input type="range" id="hK" min="0.9" max="1.2" step="0.01" value="1"></span>
+      </label>
+      <div class="btn-row">
+        <button class="btn" type="button" id="show-euler" aria-pressed="true">explicit Euler</button>
+        <button class="btn" type="button" id="show-symplectic" aria-pressed="true">symplectic Euler</button>
+        <button class="btn" type="button" id="show-rk4" aria-pressed="true">RK4</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" type="button" id="hReset">circle, 60 s</button>
+        <button class="btn ghost" type="button" id="hEll">5 % faster</button>
+        <button class="btn ghost" type="button" id="hSlow">5 % slower</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>steps</span><span class="v" id="rSteps">–</span>
+        <span>angle swept per step</span><span class="v" id="rAng">–</span>
+        <span>start speed</span><span class="v" id="rV0">–</span>
+        <span>exact orbit</span><span class="v" id="rRef">–</span>
+        <span>its period</span><span class="v" id="rT">–</span>
+      </div>
+      <p class="hint">The satellite starts 550 km above the surface, moving perpendicular to the radius. All three methods are integrated live from the same start; the buttons hide or show each one. The black dashed curve is the exact solution: the package's closed-form circle when the speed is circular, otherwise the exact ellipse. Part 2 explains each method and Part 3 reads the result.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#course"><span class="n">0</span><span class="t">The course in one table</span><span class="d">Ten chapters, one planning problem</span></a>
+    <a href="#gravity"><span class="n">1</span><span class="t">Gravity and the circular orbit</span><span class="d">Newton, μ, speed, period, Kepler's third law</span></a>
+    <a href="#scratch"><span class="n">2</span><span class="t">A trajectory from scratch</span><span class="d">Three ways to step an equation of motion</span></a>
+    <a href="#reading"><span class="n">3</span><span class="t">What the three methods do</span><span class="d">Spirals, bounded energy, slow drift, order</span></a>
+    <a href="#closed"><span class="n">4</span><span class="t">The closed form, and why tools still integrate</span><span class="d"><code>CircularOrbit</code>, ellipses, perturbations</span></a>
+    <a href="#check"><span class="n">5</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">6</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">7</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">8</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="course">
+  <div class="col part-head">
+    <span class="part-num">Part 0</span>
+    <h2>The course in one table</h2>
+  </div>
+  <div class="col prose">
+    <p>The course is built on one small public project, <code>satellite-pass-planning</code>. A synthetic constellation of radio-listening satellites flies over the oceans, and a planner must decide which maritime targets each satellite listens to, on which pass, and when. Each satellite needs time to re-point between two targets, may listen only so long per orbit (power) and between two ground-station contacts (memory). The project solves this with a greedy rule, with constraint programming (CP-SAT) and with a mixed-integer linear program, and checks every plan with an independent checker. Everything in it is synthetic: circular orbits, a spherical Earth, generic ocean areas, illustrative budgets. It is a modelling exercise and makes no claim about any real satellite or operator.</p>
+    <p>The ten chapters climb from physics to optimisation, one concept each. The first four build the geometry: where the satellite is, and when it can see a target. The last six turn that geometry into a planning problem and solve it.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="mapT">
+      <thead><tr><th>Chapter</th><th>The one concept</th></tr></thead>
+      <tbody>
+        <tr><td><b>01</b></td><td>The two-body problem: gravity, circular speed and period, a trajectory by numerical integration, and why the package can use a closed form</td></tr>
+        <tr><td><a href="02-placing-an-orbit-in-space.html">02</a></td><td>Reference frames and rotations: inclination, right ascension of the ascending node, the constellation layout</td></tr>
+        <tr><td><a href="03-the-earth-turns-underneath.html">03</a></td><td>Rotating frames: the Earth turning under the orbit, ground tracks, and what the package's no-J2 choice costs</td></tr>
+        <tr><td><a href="04-seeing-the-ground.html">04</a></td><td>Visibility geometry: elevation, off-nadir angle, footprints, pass durations, windows on a 10 s grid</td></tr>
+        <tr><td><a href="05-from-geometry-to-a-planning-problem.html">05</a></td><td>Modelling: targets, opportunities, ground contacts, revolutions and memory segments</td></tr>
+        <tr><td><a href="06-constraints-and-an-independent-checker.html">06</a></td><td>Feasibility: reconfiguration times, conflict pairs, budgets, and an independent checker</td></tr>
+        <tr><td><a href="07-a-greedy-plan.html">07</a></td><td>Heuristics: a greedy plan and what it leaves behind</td></tr>
+        <tr><td><a href="08-constraint-programming-with-cp-sat.html">08</a></td><td>Exact search and proofs of optimality with CP-SAT</td></tr>
+        <tr><td><a href="09-the-same-problem-as-a-milp.html">09</a></td><td>Formulation strength: the same problem as a big-M MILP</td></tr>
+        <tr><td><a href="10-rolling-horizons-and-reading-a-benchmark.html">10</a></td><td>Decomposition and experimental method: rolling horizons, reading a benchmark</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="gravity">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Gravity and the circular orbit</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Why a satellite does not fall down.</b> It does fall, all the time. Throw a stone horizontally and it lands some distance away; throw it faster and it lands further. Throw it fast enough and the ground curves away beneath it as quickly as it falls, so it never lands. That is an orbit: free fall with enough sideways speed to keep missing the Earth. To make this precise we need the force that pulls the stone, and Newton's second law to say what the force does.</p>
+    <p><b>Newton's law of gravitation.</b> Two bodies of masses <span class="m">M</span> and <span class="m">m</span> at distance <span class="m">d</span> attract each other with a force of magnitude <span class="m">F = GMm/d^2</span>, where <span class="m">G</span> is the gravitational constant. For a satellite around the Earth, <span class="m">M</span> is the Earth's mass and <span class="m">m</span> the satellite's. Put the Earth's centre at the origin and call <span class="m">\mathbf r</span> the satellite's position vector, so <span class="m">d = |\mathbf r|</span>. The force points from the satellite to the Earth, along <span class="m">-\mathbf r/|\mathbf r|</span>. Newton's second law, <span class="m">m\ddot{\mathbf r} = \mathbf F</span>, then gives the satellite's acceleration (two dots mean the second derivative in time):</p>
+    <div class="math-block">\ddot{\mathbf r} \;=\; -\frac{GM}{|\mathbf r|^2}\,\frac{\mathbf r}{|\mathbf r|} \;=\; -\,\mu\,\frac{\mathbf r}{|\mathbf r|^3}, \qquad \mu = GM.</div>
+    <p>Three things to notice. The satellite's own mass <span class="m">m</span> has cancelled: a 1 kg satellite and a 1000 kg satellite follow the same path. <span class="m">G</span> and <span class="m">M</span> only appear as their product <span class="m">\mu</span>, the <em>gravitational parameter</em>, which is known far more precisely than either factor because it is what satellite tracking measures. And we have treated the Earth as fixed, which is fine since it is more than <span class="m">10^{19}</span> times heavier than even a 420-tonne space station. This is the <em>two-body problem</em>: one attracting point mass (a spherical Earth attracts exactly like a point at its centre) and one body moving around it, nothing else.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is the two-body problem?</p>
+      <p><b>In plain words:</b> a small body moving under the gravity of one big spherical body, and nothing else: no air, no Moon, no Sun, no bulge at the Earth's equator.</p>
+      <p><b>More precisely:</b> the solution of <span class="m">\ddot{\mathbf r} = -\mu\,\mathbf r/|\mathbf r|^3</span> from a given position and velocity. Its solutions are conic sections with the Earth's centre at one focus: circles, ellipses, parabolas, hyperbolas. Satellites that stay up follow circles or ellipses <a href="#ref-1">[1]</a>.</p>
+      <dl>
+        <dt><span class="m">\mu</span></dt><dd>The Earth's gravitational parameter <span class="m">GM</span>. The package uses <span class="m">3.986004418 \times 10^{14}</span> m³/s².</dd>
+        <dt><span class="m">R_E</span></dt><dd>The Earth's radius. The package uses the mean radius, 6,371 km, for a spherical Earth.</dd>
+        <dt>Altitude</dt><dd>Height above the surface, <span class="m">|\mathbf r| - R_E</span>. The course's satellites fly at 550 km.</dd>
+      </dl>
+    </div>
+    <p>These constants are the first three lines of the package's geometry module, <code>satplan/geometry.py</code>:</p>
+    <pre><code class="language-python">MU_EARTH = 3.986004418e14  # m^3 / s^2
+R_EARTH = 6_371_000.0  # m, mean radius
+OMEGA_EARTH = 7.2921159e-5  # rad / s</code></pre>
+    <p>The third, the Earth's rotation rate, waits for <a href="03-the-earth-turns-underneath.html">chapter 03</a>. With the first two, gravity at the surface is <span class="m">\mu/R_E^2 = 9.820</span> m/s², the familiar <span class="m">g</span>. At 550 km it is <span class="m">\mu/a^2 = 8.321</span> m/s², still 84.7 % of the surface value. Astronauts in orbit float because they fall with their spacecraft, not because gravity is gone.</p>
+
+    <h3>The circular orbit: a balance</h3>
+    <p>Look for a solution in which the satellite moves on a circle of radius <span class="m">a</span> at constant speed <span class="m">v</span>. A body moving on a circle is accelerating even at constant speed, because its direction keeps turning. The acceleration points to the centre and has magnitude <span class="m">v^2/a</span> (the <em>centripetal acceleration</em>; one line of proof: the position is <span class="m">a(\cos nt, \sin nt)</span> with angular rate <span class="m">n = v/a</span>, and differentiating twice gives <span class="m">-n^2</span> times the position, of magnitude <span class="m">n^2 a = v^2/a</span>). Gravity points to the centre too, with magnitude <span class="m">\mu/a^2</span>. The circle is a solution exactly when the two agree:</p>
+    <div class="math-block">\frac{v^2}{a} = \frac{\mu}{a^2} \quad\Longrightarrow\quad v = \sqrt{\frac{\mu}{a}}, \qquad T = \frac{2\pi a}{v} = 2\pi\sqrt{\frac{a^3}{\mu}}.</div>
+    <p>The period <span class="m">T</span> is the circumference divided by the speed. Squaring it, <span class="m">T^2 = 4\pi^2 a^3/\mu</span>: the square of the period is proportional to the cube of the radius. This is <b>Kepler's third law</b>, found by Kepler from planetary observations decades before Newton explained it. For an ellipse the same law holds with <span class="m">a</span> the semi-major axis, half the longest diameter, which is why the package calls the radius <code>semi_major_axis</code>.</p>
+    <div class="callout"><p><b>The course's orbit.</b> At 550 km, <span class="m">a = 6371 + 550 = 6921.0</span> km. The circular speed is <span class="m">\sqrt{\mu/a} = 7589.0</span> m/s, about 27,320 km/h. The period is <span class="m">2\pi\sqrt{a^3/\mu} = 5730.1</span> s, or 95.50 minutes, so a satellite goes round 15.08 times a day (86,400 s). Its angle along the orbit advances at <span class="m">n = 2\pi/T = 1.0965 \times 10^{-3}</span> rad/s, 3.770° per minute. These are the package's numbers: <code>CircularOrbit.period_s</code> returns 5730.127 s.</p></div>
+    <pre><code class="language-python">@dataclass(frozen=True)
+class CircularOrbit:
+    altitude_m: float
+    inclination_deg: float
+    raan_deg: float
+    phase_deg: float  # argument of latitude at t = 0
+
+    @property
+    def semi_major_axis(self) -> float:
+        return R_EARTH + self.altitude_m
+
+    @property
+    def period_s(self) -> float:
+        return 2.0 * np.pi * np.sqrt(self.semi_major_axis**3 / MU_EARTH)</code></pre>
+    <p>The other two fields, inclination and right ascension of the ascending node, say how the circle is tilted in space; they are the subject of <a href="02-placing-an-orbit-in-space.html">chapter 02</a>. The phase says where on the circle the satellite is at time zero.</p>
+    <p><b>How speed and period change with height.</b> Higher orbits are slower, since <span class="m">v \propto a^{-1/2}</span>, and they are also longer, so the period grows faster than the radius: doubling <span class="m">a</span> multiplies <span class="m">T</span> by <span class="m">2^{3/2} = 2.828</span>. Move the slider below from a very low orbit to the geostationary one.</p>
+  </div>
+  <div class="col widget" id="altW">
+    <label class="field"><span>Altitude: <b id="altV">550 km</b></span>
+      <span class="row"><input type="range" id="altS" min="2.30103" max="4.55378" step="0.001" value="2.74036" aria-describedby="altCap"></span>
+    </label>
+    <div class="btn-row"><button class="btn ghost" type="button" id="alt550">550 km, the course</button><button class="btn ghost" type="button" id="altGeo">geostationary</button></div>
+    <div class="two">
+      <div><p class="chart-title">Period of a circular orbit</p><canvas id="altTC" aria-label="Period of a circular orbit against altitude from 200 km to geostationary, log altitude axis" aria-describedby="altCap"></canvas></div>
+      <div><p class="chart-title">Speed on a circular orbit</p><canvas id="altVC" aria-label="Speed of a circular orbit against altitude, log altitude axis" aria-describedby="altCap"></canvas></div>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>radius <span class="m">a = R_E + h</span></span><span class="v" id="aA">–</span>
+      <span>speed <span class="m">\sqrt{\mu/a}</span></span><span class="v" id="aSpd">–</span>
+      <span>period <span class="m">2\pi\sqrt{a^3/\mu}</span></span><span class="v" id="aT">–</span>
+      <span>revolutions per day</span><span class="v" id="aRev">–</span>
+      <span>gravity <span class="m">\mu/a^2</span></span><span class="v" id="aG">–</span>
+    </div>
+    <p class="caption" id="altCap"></p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="altT">
+      <thead><tr><th>Altitude</th><th>speed [km/s]</th><th>period</th><th>revolutions per day</th></tr></thead>
+      <tbody>
+        <tr><td>200 km</td><td>7.788</td><td>88.4 min</td><td>16.30</td></tr>
+        <tr><td>550 km (the course)</td><td>7.589</td><td>95.5 min</td><td>15.08</td></tr>
+        <tr><td>1,000 km</td><td>7.354</td><td>105.0 min</td><td>13.72</td></tr>
+        <tr><td>2,000 km</td><td>6.900</td><td>127.0 min</td><td>11.34</td></tr>
+        <tr><td>10,000 km</td><td>4.934</td><td>5.79 h</td><td>4.14</td></tr>
+        <tr><td>20,000 km</td><td>3.888</td><td>11.84 h</td><td>2.03</td></tr>
+        <tr><td>35,793 km (geostationary)</td><td>3.075</td><td>23.93 h</td><td>1 per sidereal day</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p><b>Geostationary, with this Earth.</b> A satellite over the equator whose period equals the Earth's rotation period stays above the same point of the ground. The Earth turns once in a <em>sidereal day</em>, <span class="m">2\pi/\omega_E = 86{,}164.1</span> s or 23.9345 h; this is shorter than the 24 h solar day because the Earth also moves around the Sun (<a href="03-the-earth-turns-underneath.html">chapter 03</a>). Kepler's law solved for the radius gives <span class="m">a = (\mu T^2/4\pi^2)^{1/3} = 42{,}164.2</span> km. Textbooks quote the geostationary altitude as 35,786 km, measured from the equatorial radius of 6,378.137 km. The package's spherical Earth has the mean radius, 7.1 km smaller, so with its constants the same orbit is 35,793 km above the surface. The orbit is the same; only the height is measured from a different ground. Nothing in the course flies there; the point is that a model's constants change the numbers it prints, and a careful reader checks which constants were used.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="scratch">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>A trajectory from scratch</h2>
+  </div>
+  <div class="col prose">
+    <p>The circle solves the equation of motion for one special starting speed. Suppose we did not know that, or the start were not circular, or the force had extra terms that no formula solves. Then we would do what every orbit-propagation program does: start from a position and a velocity and let the computer advance them a small time step <span class="m">h</span> at a time. This is <em>numerical integration</em>, and it is worth doing once by hand because it shows what can go wrong.</p>
+    <p><b>The equation as a first-order system.</b> Integration methods advance a state whose rate of change is known. The acceleration involves a second derivative, so we carry the velocity <span class="m">\mathbf v = \dot{\mathbf r}</span> as part of the state:</p>
+    <div class="math-block">\dot{\mathbf r} = \mathbf v, \qquad \dot{\mathbf v} = \mathbf a(\mathbf r) = -\mu\,\frac{\mathbf r}{|\mathbf r|^3}.</div>
+    <p>The state <span class="m">(\mathbf r, \mathbf v)</span> at time <span class="m">t</span> determines its own rate of change, so knowing it at <span class="m">t = 0</span> determines the whole future. In the hero demo the start is <span class="m">\mathbf r_0 = (a, 0)</span> and <span class="m">\mathbf v_0 = (0, k\,v_c)</span>: 550 km up, moving perpendicular to the radius at <span class="m">k</span> times the circular speed. The motion stays in the plane of <span class="m">\mathbf r_0</span> and <span class="m">\mathbf v_0</span>, because the force always points along <span class="m">\mathbf r</span>, so two coordinates are enough.</p>
+
+    <h3>Method 1: explicit Euler</h3>
+    <p>The simplest idea: over a short step, pretend the rates of change stay what they are at the start of the step.</p>
+    <div class="math-block">\mathbf r_{n+1} = \mathbf r_n + h\,\mathbf v_n, \qquad \mathbf v_{n+1} = \mathbf v_n + h\,\mathbf a(\mathbf r_n).</div>
+    <p>Its error per step is of order <span class="m">h^2</span> (the first neglected term of the Taylor series), and over a fixed time span, <span class="m">1/h</span> steps, the error is of order <span class="m">h</span>. That makes it a <em>first-order</em> method. On an orbit it has a systematic flaw that the order alone does not reveal. Take the first step of the circular start, where <span class="m">\mathbf r_0 \perp \mathbf v_0</span> and <span class="m">\mathbf a_0 \perp \mathbf v_0</span>. Pythagoras gives</p>
+    <div class="math-block">|\mathbf r_1|^2 = |\mathbf r_0|^2 + h^2 |\mathbf v_0|^2, \qquad |\mathbf v_1|^2 = |\mathbf v_0|^2 + h^2 |\mathbf a_0|^2 .</div>
+    <p>Both the radius and the speed <em>grow</em>, whatever the sign of <span class="m">h</span>. Each step moves the satellite along the tangent, and the tangent leaves the circle. With <span class="m">h = 60</span> s the satellite sweeps <span class="m">nh = 0.06579</span> rad per step, the radius grows by the factor <span class="m">\sqrt{1 + (nh)^2} = 1.002162</span>, and the first step alone lifts the satellite by 14.96 km. The next steps do not start perpendicular any more, but the push stays outward. Energy is added at every step, and the orbit spirals out.</p>
+
+    <h3>Method 2: symplectic Euler</h3>
+    <p>Change one thing: update the velocity first, then move with the <em>new</em> velocity.</p>
+    <div class="math-block">\mathbf v_{n+1} = \mathbf v_n + h\,\mathbf a(\mathbf r_n), \qquad \mathbf r_{n+1} = \mathbf r_n + h\,\mathbf v_{n+1}.</div>
+    <p>It costs the same, one evaluation of gravity per step, and it is still first-order. But it has a structural property that explicit Euler lacks: it is <em>symplectic</em>. For mechanics without friction this means that the map from one state to the next preserves areas in the space of positions and velocities, as the true motion does. The consequence, proved in the theory of geometric integration <a href="#ref-4">[4]</a>, is that symplectic Euler exactly conserves a slightly modified energy, one that differs from the true energy by a term of order <span class="m">h</span>. The true energy therefore cannot drift: it oscillates within a band of width proportional to <span class="m">h</span>, for very long times. The orbit is slightly misshapen and the satellite slowly gets ahead of or behind its true position, but it does not spiral away. This "kick, then drift" scheme, and its symmetric cousin leapfrog (Störmer–Verlet), are what long simulations of planets and molecules use.</p>
+
+    <h3>Method 3: the classical Runge–Kutta method (RK4)</h3>
+    <p>Instead of trusting the slope at the start of the step, sample it four times inside the step and average:</p>
+    <div class="math-block" data-narrow="\begin{aligned} k_1 &amp;= f(y_n), \quad k_2 = f(y_n + \tfrac h2 k_1),\\ k_3 &amp;= f(y_n + \tfrac h2 k_2), \quad k_4 = f(y_n + h k_3),\\ y_{n+1} &amp;= y_n + \tfrac h6 (k_1 + 2k_2 + 2k_3 + k_4) \end{aligned}">k_1 = f(y_n),\;\; k_2 = f(y_n + \tfrac h2 k_1),\;\; k_3 = f(y_n + \tfrac h2 k_2),\;\; k_4 = f(y_n + h k_3),\;\; y_{n+1} = y_n + \tfrac h6 (k_1 + 2k_2 + 2k_3 + k_4)</div>
+    <p>Here <span class="m">y = (\mathbf r, \mathbf v)</span> and <span class="m">f(y) = (\mathbf v, \mathbf a(\mathbf r))</span>. The weights are chosen so that the step agrees with the Taylor series of the true solution up to the <span class="m">h^4</span> term: the error per step is of order <span class="m">h^5</span>, the error over a fixed span of order <span class="m">h^4</span>. Halve the step and the error falls about sixteen-fold. It costs four evaluations of gravity per step, and it is not symplectic: its energy error is tiny but drifts steadily in one direction.</p>
+    <div class="define">
+      <p class="define-title">What is a numerical integrator?</p>
+      <p><b>In plain words:</b> a recipe that turns "here is the state now, and here is how fast it changes" into "here is the state a moment later", applied over and over to build a whole trajectory.</p>
+      <p><b>More precisely:</b> a map <span class="m">y_{n+1} = \Phi_h(y_n)</span> approximating the exact flow of <span class="m">\dot y = f(y)</span> over a time <span class="m">h</span>. A method has <em>order</em> <span class="m">p</span> when its error over a fixed time span shrinks like <span class="m">h^p</span>. Order says how fast the error shrinks; structure (symplectic or not) says what kind of error survives over long times.</p>
+      <dl>
+        <dt>Step <span class="m">h</span></dt><dd>The time advanced per update. Smaller is more accurate and costs more steps.</dd>
+        <dt>Local, global error</dt><dd>The error made in one step; the error accumulated at the end of a run. For order <span class="m">p</span>: <span class="m">h^{p+1}</span> and <span class="m">h^p</span>.</dd>
+        <dt>Specific energy</dt><dd><span class="m">E = \tfrac12|\mathbf v|^2 - \mu/|\mathbf r|</span>, kinetic plus potential energy per kilogram. The exact motion conserves it, so its change measures the integrator's error without knowing the true solution. On the 550 km circle, <span class="m">E = -\mu/2a = -28.796</span> MJ/kg.</dd>
+      </dl>
+    </div>
+    <p>Here are the three methods as <code>code/ch01_numbers.py</code> writes them in NumPy; the page's script runs the same updates in JavaScript.</p>
+    <pre><code class="language-python">def accel(r):
+    """Newton's gravity per unit mass: r'' = -mu r / |r|^3."""
+    return -MU_EARTH * r / np.linalg.norm(r) ** 3
+
+
+def step_euler(r, v, h):
+    """Explicit Euler: both updates use the state at the start of the step."""
+    return r + h * v, v + h * accel(r)
+
+
+def step_symplectic(r, v, h):
+    """Symplectic (semi-implicit) Euler: kick the velocity with the old position, then drift with the new velocity."""
+    v = v + h * accel(r)
+    return r + h * v, v
+
+
+def step_rk4(r, v, h):
+    """Classical fourth-order Runge-Kutta on the state (r, v)."""
+    k1r, k1v = v, accel(r)
+    k2r, k2v = v + h / 2 * k1v, accel(r + h / 2 * k1r)
+    k3r, k3v = v + h / 2 * k2v, accel(r + h / 2 * k2r)
+    k4r, k4v = v + h * k3v, accel(r + h * k3r)
+    return r + h / 6 * (k1r + 2 * k2r + 2 * k3r + k4r), v + h / 6 * (k1v + 2 * k2v + 2 * k3v + k4v)</code></pre>
+    <p>The two Euler methods differ by one character's worth of logic: whether the position update uses the old <code>v</code> or the new one. The script runs each method for a whole number of steps, <span class="m">\lceil 5T/h \rceil</span> for five revolutions, and compares the end state with the exact position at the same time.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="reading">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>What the three methods do</h2>
+  </div>
+  <div class="col prose">
+    <p>The hero demo starts on the default: a circular start, a 60 s step and five revolutions. A step of 60 s is 95.5 steps per revolution, each sweeping 3.77° of the orbit; five revolutions take 478 steps. That sounds fine-grained. Here is what each method makes of it.</p>
+    <div class="callout"><p><b>Five revolutions at <span class="m">h = 60</span> s</b>, from <code>code/ch01_numbers.py</code>; the hero demo shows the same numbers.</p>
+      <ul>
+        <li><b>Explicit Euler</b>'s energy rises by 57.8 % of its starting magnitude <span class="m">|E_0|</span> (relative error <span class="m">+5.8 \times 10^{-1}</span>). Its spiral reaches 17,970 km from the Earth's centre, and it ends 8,383 km from where the satellite should be. Already after one revolution its energy error is 35.8 % and its radius has grown by 5,191 km.</li>
+        <li><b>Symplectic Euler</b> keeps the energy error inside a band of <span class="m">4.3 \times 10^{-3}</span>, and returns to almost the starting energy after each revolution (<span class="m">9.9 \times 10^{-7}</span> at the end). Its orbit is not a circle: the radius wanders between 6,708.2 and 7,163.8 km, up to 243 km off. And its satellite runs 666 km away from the true position along the orbit.</li>
+        <li><b>RK4</b>'s energy falls by <span class="m">1.08 \times 10^{-6}</span> of <span class="m">|E_0|</span> (it drifts inwards, by 7 m in radius) and ends 0.269 km from the exact position, after 1,912 evaluations of gravity.</li>
+      </ul>
+    </div>
+    <p><b>Explicit Euler spirals out.</b> The Pythagoras argument of Part 2 applies at every step: the method always steps along the tangent and the tangent always leaves the orbit. Making the step smaller slows the spiral but does not remove it. At <span class="m">h = 1</span> s, 28,651 steps for five revolutions, the energy error still reaches 6.1 %. For a method whose error falls only like <span class="m">h</span> and whose errors all push the same way, an orbit is the worst case. Try the "5 % slower" button: the exact orbit dips below the surface and RK4 crashes after 21 minutes, but explicit Euler's energy gain keeps it flying. A wrong integrator can be wrong in the reassuring direction.</p>
+    <p><b>Symplectic Euler stays bounded.</b> Set the revolutions to 20: the energy band does not widen. The script runs 50 revolutions and finds the same largest error, <span class="m">4.333 \times 10^{-3}</span>, as after five. What does accumulate is the timing error: the satellite slowly gets ahead of or behind the true one, 6,407 km apart after 50 revolutions at 60 s. Bounded energy means the orbit keeps its size and shape on average, not that the satellite is where it should be.</p>
+    <p><b>RK4 is accurate but drifts.</b> Its energy error after 50 revolutions, <span class="m">-1.077 \times 10^{-5}</span>, is ten times the five-revolution value: the drift is linear in time. It is small because RK4 is fourth-order. At <span class="m">h = 10</span> s it ends five revolutions 9.5 cm from the exact position, at a cost of 11,464 evaluations.</p>
+    <p><b>Order shows when the step changes.</b> The widget below repeats the run for nine step sizes and plots the final error on log scales, where a method of order <span class="m">p</span> becomes a line of slope <span class="m">p</span>. Halving the step from 60 s to 30 s divides symplectic Euler's position error by 4.00, from 666.5 to 166.6 km. Its position error is dominated by the drift along the orbit, which falls as <span class="m">h^2</span> here. The same halving divides RK4's error by 23.8, from 0.269 km to 11.3 m, a little more than the sixteen-fold asymptotic rate.</p>
+  </div>
+  <div class="col widget" id="convW">
+    <p class="chart-title">Error at the end of the run against the step, both on log scales</p>
+    <canvas id="convC" aria-label="Final position error or largest energy error of the three integrators against the step size from 1 to 240 seconds, log-log" aria-describedby="convCap"></canvas>
+    <div class="legend" aria-hidden="true"><span><i style="background:var(--warm)"></i>explicit Euler</span><span><i style="background:var(--c4)"></i>symplectic Euler</span><span><i style="background:var(--post)"></i>RK4</span></div>
+    <label class="field"><span>Revolutions: <b id="cvNV">5</b></span>
+      <span class="row"><input type="range" id="cvN" min="1" max="10" step="1" value="5" aria-describedby="convCap"></span>
+    </label>
+    <div class="btn-row"><button class="btn" type="button" id="cvPos" aria-pressed="true">position error</button><button class="btn" type="button" id="cvE" aria-pressed="false">energy error</button></div>
+    <p class="caption" id="convCap"></p>
+  </div>
+  <div class="col prose">
+    <p><b>Equal cost.</b> RK4 needs four evaluations of gravity per step, so a fair comparison gives the Euler methods four times as many steps. With 1,912 evaluations each over five revolutions, RK4 at 60 s ends 0.269 km from the truth, symplectic Euler at 15 s 41.7 km, explicit Euler at 15 s 14,635 km. For short, accurate runs higher order wins. For very long runs where only the orbit's shape matters, as in simulating the solar system over millions of years, symplectic methods win, usually in higher-order versions.</p>
+    <div class="big-idea"><p>An integrator has two kinds of quality: how fast its error shrinks with the step (order), and what kind of error it makes (structure). Explicit Euler is poor at both on an orbit. Symplectic Euler is low-order but keeps the energy bounded. RK4 is accurate but lets the energy drift. Before trusting a simulated trajectory, check a quantity the true motion conserves.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="closed">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The closed form, and why tools still integrate</h2>
+  </div>
+  <div class="col prose">
+    <p>The circle needs no integration at all. Its position at time <span class="m">t</span> is the starting angle plus <span class="m">nt</span>, placed on a circle of radius <span class="m">a</span>. Here is the package's whole propagator, <code>CircularOrbit.position_eci</code>:</p>
+    <pre><code class="language-python">    def position_eci(self, t) -> np.ndarray:
+        """Inertial position (..., 3) in metres at times t (seconds)."""
+        t = np.asarray(t, dtype=float)
+        a = self.semi_major_axis
+        u = np.radians(self.phase_deg) + 2.0 * np.pi * t / self.period_s
+        inc = np.radians(self.inclination_deg)
+        raan = np.radians(self.raan_deg)
+        cu, su = np.cos(u), np.sin(u)
+        x = a * (np.cos(raan) * cu - np.sin(raan) * su * np.cos(inc))
+        y = a * (np.sin(raan) * cu + np.cos(raan) * su * np.cos(inc))
+        z = a * (su * np.sin(inc))
+        return np.stack([x, y, z], axis=-1)</code></pre>
+    <p>The line for <code>u</code> is the whole dynamics: the angle along the orbit grows at the constant rate <span class="m">2\pi/T</span>. The last three lines tilt the circle into space, which <a href="02-placing-an-orbit-in-space.html">chapter 02</a> derives term by term. With zero inclination and zero right ascension they reduce to <span class="m">(a\cos u, a\sin u, 0)</span>, the circle of the hero demo. Within the two-body model it is exact: <code>position_eci(5 * period_s)</code> returns (6921.000, 0.000, 0.000) km, the starting point, to rounding.</p>
+    <p>It is also cheap, and the planner needs that. Chapter 04 checks visibility for every target on a 10-second grid: for the course's small instance that is 2,161 instants over six hours, for four satellites, against 120 targets and four ground stations. With the closed form each satellite position is a cosine and a sine, computed for all instants at once with NumPy, and any instant can be computed without the ones before it. An integrator would have to march through every step in order, and its error would have to be watched.</p>
+    <div class="callout"><p><b>Why the package may skip integration.</b> For the two-body model with a circular start, the closed form is the exact solution, so integrating could only add error and cost. The integrators in this chapter reach the same circle, RK4 to within 0.269 km after five revolutions at 60 s. The planning problem of chapters 05 to 10 only needs the geometry to be realistic in its pass lengths and revisit patterns, not to match any real satellite.</p></div>
+
+    <h3>Not every orbit is a circle</h3>
+    <p>Give the satellite a little more or less than the circular speed and the two-body solution becomes an ellipse. Starting perpendicular to the radius, the start is the lowest point (<em>perigee</em>) if it is faster than circular, the highest (<em>apogee</em>) if slower. The hero demo then compares the integrators with the exact ellipse, computed from Kepler's equation; the script prints its numbers.</p>
+    <ul>
+      <li><b>5 % faster</b> (7,968 m/s): an ellipse from 550 km up to 2,131 km, eccentricity 0.1025, period 112.3 min. RK4 at 60 s ends five of these revolutions 0.192 km from the exact position.</li>
+      <li><b>2 % slower</b>: the lowest point is 23 km up, deep in the atmosphere. Below <span class="m">k = \sqrt{2R_E/(a + R_E)} = 0.9791</span>, 159 m/s slower than circular, the ellipse dips below the surface.</li>
+      <li><b>5 % slower</b>: the ellipse would reach 680 km below the surface; RK4 shows the satellite hitting the ground after 21 minutes.</li>
+      <li><b>Escape</b>: at <span class="m">\sqrt 2\,v_c = 10{,}732</span> m/s the ellipse opens into a parabola and the satellite leaves for good. The hero's slider stops at 1.2.</li>
+    </ul>
+    <p>The course uses circles only. Real satellites keep slightly elliptical orbits, which the full set of six orbital elements describes <a href="#ref-1">[1]</a>; at 550 km a nearly circular orbit is the usual choice, and a circle keeps the geometry of the following chapters simple.</p>
+
+    <h3>Why a flight-dynamics tool still integrates</h3>
+    <p>The two-body problem is a model. The real Earth is not a sphere: it bulges at the equator, and the term that describes this bulge in its gravity field, called <span class="m">J_2</span>, turns the plane of a low orbit slowly around the Earth's axis. Chapter 03 quantifies that effect for the course's orbit and explains why the package's 97.6° inclination is the "sun-synchronous" one; the package itself ignores <span class="m">J_2</span>. At 550 km the thin upper atmosphere also drags on the satellite and slowly lowers its orbit, by an amount that depends on the satellite's shape and on solar activity. The Moon, the Sun and the pressure of sunlight add smaller forces. None of these has a closed-form solution in general. A real tool writes the acceleration as two-body gravity plus all of these terms and integrates, with high-order methods, adaptive steps and the energy-style checks of Part 3 <a href="#ref-3">[3]</a>. The skills of Part 2 are what those tools are made of; the package's closed form is what remains when every force but central gravity is dropped.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why does the satellite's mass not appear in its orbit?</summary><p>Gravity's force is proportional to the satellite's mass, and so is the force needed to accelerate it (Newton's second law). The mass cancels, leaving <span class="m">\ddot{\mathbf r} = -\mu\mathbf r/|\mathbf r|^3</span>, which depends only on the Earth through <span class="m">\mu = GM</span>.</p></details>
+    <details class="sol"><summary>2. Derive the circular speed at 550 km, and say why the period is not simply proportional to the radius.</summary><p>Setting the centripetal acceleration <span class="m">v^2/a</span> equal to gravity <span class="m">\mu/a^2</span> gives <span class="m">v = \sqrt{\mu/a} = 7589.0</span> m/s for <span class="m">a = 6921.0</span> km. The period is circumference over speed, <span class="m">2\pi a/v \propto a \cdot a^{1/2} = a^{3/2}</span>: a higher orbit is both longer and slower.</p></details>
+    <details class="sol"><summary>3. How many times a day does a satellite at 550 km go round, and why does the answer change slightly if "day" means a sidereal day?</summary><p>86,400 s / 5730.1 s = 15.08 revolutions per solar day. A sidereal day, the Earth's rotation period relative to the stars, is 86,164.1 s, about four minutes shorter, so slightly fewer revolutions fit into it.</p></details>
+    <details class="sol"><summary>4. Why does the geostationary altitude come out as 35,793 km with the package's constants, not the textbook 35,786 km?</summary><p>The radius of the orbit, 42,164.2 km, is fixed by <span class="m">\mu</span> and the sidereal day. The altitude is that radius minus the Earth's radius: the package subtracts its mean radius, 6,371 km, textbooks subtract the equatorial radius, 6,378.137 km. The 7.1 km difference is in the ground, not in the orbit.</p></details>
+    <details class="sol"><summary>5. Why does explicit Euler always gain energy on a circular orbit, however small the step?</summary><p>Each step moves along the tangent at the start of the step, and the tangent leaves the circle: on the first step <span class="m">|\mathbf r_1|^2 = |\mathbf r_0|^2 + h^2|\mathbf v_0|^2</span> and <span class="m">|\mathbf v_1|^2 = |\mathbf v_0|^2 + h^2|\mathbf a_0|^2</span>. Both radius and speed grow, so the energy grows, step after step. A smaller step makes each push smaller (an energy error of 6.1 % after five revolutions at 1 s, against 57.8 % at 60 s) but never reverses it.</p></details>
+    <details class="sol"><summary>6. Symplectic Euler's energy error is bounded. Does that mean it predicts where the satellite is?</summary><p>No. The bound keeps the orbit's size and shape close to right on average, but the satellite's position along the orbit drifts: 666 km off after five revolutions at 60 s, 6,407 km after fifty. Energy is a necessary check, not a sufficient one.</p></details>
+    <details class="sol"><summary>7. RK4 makes four gravity evaluations per step. When is it still the better choice than a cheaper method?</summary><p>When accuracy over a limited time matters. At equal cost (1,912 evaluations over five revolutions), RK4 at 60 s ends 0.269 km from the truth against 41.7 km for symplectic Euler at 15 s. Over very long runs its steady energy drift accumulates, and symplectic methods become preferable.</p></details>
+    <details class="sol"><summary>8. If the closed form is exact and free, why would anyone integrate?</summary><p>Because it is exact only for the two-body model with a circular orbit. The Earth's bulge (<span class="m">J_2</span>), atmospheric drag, the Moon and Sun and radiation pressure add accelerations that have no closed-form solution in general, so real tools integrate the full equation of motion numerically. The package deliberately keeps only central gravity.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Circular orbits elsewhere.</b> Using only <span class="m">v = \sqrt{\mu/a}</span> and <span class="m">T = 2\pi\sqrt{a^3/\mu}</span>, find the altitude at which a circular orbit has a period of exactly 90 minutes with the package's constants. Then find how much faster than at 550 km the satellite must fly.</div>
+        <details class="sol"><summary>Hint</summary><p>Invert Kepler's law: <span class="m">a = (\mu T^2 / 4\pi^2)^{1/3}</span>, then subtract <span class="m">R_E</span>.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-python">import numpy as np
+MU, R = 3.986004418e14, 6_371_000.0
+T = 90 * 60
+a = (MU * T**2 / (4 * np.pi**2)) ** (1 / 3)
+print((a - R) / 1e3, np.sqrt(MU / a) - np.sqrt(MU / (R + 550e3)))</code></pre>
+          <p>The altitude is about 282 km and the speed 7,741 m/s, 152 m/s faster than at 550 km. A 90-minute orbit is low enough that drag would bring it down quickly, which is one reason the course's satellites fly higher.</p></details>
+      </li>
+      <li><div><b>Write the integrators yourself.</b> Implement the three steppers of Part 2 in NumPy (do not copy them), run five revolutions at <span class="m">h = 60</span> s from <span class="m">\mathbf r_0 = (a, 0)</span>, <span class="m">\mathbf v_0 = (0, v_c)</span>, and reproduce the page's three relative energy errors.</div>
+        <details class="sol"><summary>Hint</summary><p>Use <span class="m">\lceil 5T/h \rceil = 478</span> steps and compare <span class="m">E = \tfrac12|\mathbf v|^2 - \mu/|\mathbf r|</span> with its starting value <span class="m">-\mu/2a</span>. For symplectic Euler, track the largest error along the way, not only the final one.</p></details>
+        <details class="sol"><summary>Solution</summary><p>You should get <span class="m">+0.578</span> for explicit Euler, a largest error of <span class="m">4.33 \times 10^{-3}</span> for symplectic Euler (and <span class="m">9.9 \times 10^{-7}</span> at the very end, because the oscillation is back near its start after a whole number of revolutions), and <span class="m">-1.08 \times 10^{-6}</span> for RK4. <code>code/ch01_numbers.py</code> in the course archive is a reference implementation. If your symplectic Euler gains energy steadily, you are probably using the old velocity in the position update, which turns it back into explicit Euler.</p></details>
+      </li>
+      <li><div><b>Leapfrog.</b> The Störmer–Verlet (leapfrog) method takes half a kick, a full drift, and another half kick: <span class="m">\mathbf v_{n+1/2} = \mathbf v_n + \tfrac h2 \mathbf a(\mathbf r_n)</span>, <span class="m">\mathbf r_{n+1} = \mathbf r_n + h\mathbf v_{n+1/2}</span>, <span class="m">\mathbf v_{n+1} = \mathbf v_{n+1/2} + \tfrac h2 \mathbf a(\mathbf r_{n+1})</span>. Add it to your code. What is its order, and is its energy error bounded?</div>
+        <details class="sol"><summary>Hint</summary><p>Run it at 60 s and 30 s and take the ratio of the final position errors, as Part 3 does. The last acceleration of one step is the first of the next, so it still costs one gravity evaluation per step.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Leapfrog is second-order: at 60 s it ends five revolutions 313 km from the truth, at 30 s 78.4 km, a factor of four. It is symplectic, so its energy error stays in a band, and the band is a thousand times narrower than symplectic Euler's (<span class="m">4.65 \times 10^{-6}</span> against <span class="m">4.33 \times 10^{-3}</span> at 60 s, unchanged after 50 revolutions) because the method is symmetric in time. For the same single evaluation per step it is strictly better than symplectic Euler, which is why it is the workhorse of molecular dynamics and N-body codes <a href="#ref-4">[4]</a>.</p></details>
+      </li>
+      <li><div><b>A step that adapts.</b> On the 5 %-faster ellipse, the satellite moves fastest at perigee. Make RK4 choose its step so that each step sweeps the same angle, <span class="m">h = \theta\,|\mathbf r|^2/|\mathbf r \times \mathbf v|</span> with <span class="m">\theta = 2\pi/100</span>, and compare its accuracy with a fixed step of the same average length.</div>
+        <details class="sol"><summary>Hint</summary><p><span class="m">|\mathbf r \times \mathbf v|/|\mathbf r|^2</span> is the angular rate of the radius vector; dividing a fixed angle by it gives a time. Count the steps of one revolution to choose the fixed step for a fair comparison.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The adaptive version takes short steps near perigee, where the satellite is fastest, and longer steps near apogee. On this mildly eccentric orbit (eccentricity 0.1025) it does not pay: with 100 steps for one revolution either way, the equal-angle steps end 31.0 m from the exact position and the fixed 67.4 s step 28.3 m. Push the start to 20 % faster (eccentricity 0.44) and the picture reverses: 212 m for equal angles against 2,425 m for a fixed step, eleven times better. Adapting the step pays when the speed along the orbit varies a lot. Production integrators control the step from an error estimate instead (embedded Runge–Kutta pairs such as Dormand–Prince), which is what SciPy's <code>solve_ivp</code> does by default with <code>RK45</code>.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Gravity</b>: <span class="m">\ddot{\mathbf r} = -\mu\mathbf r/|\mathbf r|^3</span> with <span class="m">\mu = GM = 3.986004418 \times 10^{14}</span> m³/s²; the satellite's mass cancels.</div></li>
+      <li><div><b>The circle</b>: <span class="m">v^2/a = \mu/a^2</span> gives <span class="m">v = \sqrt{\mu/a}</span> and <span class="m">T = 2\pi\sqrt{a^3/\mu}</span> (Kepler's third law). At 550 km: 7589.0 m/s, 5730.1 s = 95.50 min, 15.08 revolutions a day.</div></li>
+      <li><div><b>Altitude</b>: higher orbits are slower and longer. Geostationary is 42,164.2 km from the centre, 35,793 km above the package's mean-radius Earth, 35,786 km above the equatorial radius.</div></li>
+      <li><div><b>Integration</b>: write the motion as <span class="m">\dot{\mathbf r} = \mathbf v</span>, <span class="m">\dot{\mathbf v} = \mathbf a(\mathbf r)</span> and step it. At 60 s for five revolutions: explicit Euler's energy error reaches 57.8 % and it spirals out; symplectic Euler keeps the error within <span class="m">4.3 \times 10^{-3}</span> but drifts 666 km along the orbit; RK4's error is <span class="m">-1.08 \times 10^{-6}</span> and it ends 0.269 km from the truth.</div></li>
+      <li><div><b>Order and structure</b>: halving the step divides the error by 4.00 (symplectic Euler) and 23.8 (RK4); symplectic methods bound the energy, non-symplectic ones let it drift.</div></li>
+      <li><div><b>The package</b>: <code>CircularOrbit.position_eci</code> is the exact closed form for the two-body circle, one cosine and one sine per instant. Real tools integrate because <span class="m">J_2</span>, drag and other forces have no closed form; chapter 03 quantifies <span class="m">J_2</span>.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Gravitational parameter <span class="m">\mu</span></td><td><span class="m">GM</span> of the Earth; the only property of the Earth the two-body motion depends on.</td></tr>
+        <tr><td>Two-body problem</td><td>Motion under the gravity of one spherical body and nothing else; solutions are conic sections.</td></tr>
+        <tr><td>Semi-major axis <span class="m">a</span></td><td>Half the longest diameter of an ellipse; the radius, for a circle.</td></tr>
+        <tr><td>Circular speed, period</td><td><span class="m">\sqrt{\mu/a}</span> and <span class="m">2\pi\sqrt{a^3/\mu}</span>.</td></tr>
+        <tr><td>Kepler's third law</td><td><span class="m">T^2 \propto a^3</span>.</td></tr>
+        <tr><td>Sidereal day</td><td>The Earth's rotation period relative to the stars, 86,164.1 s.</td></tr>
+        <tr><td>Perigee, apogee</td><td>The lowest and highest points of an elliptical orbit around the Earth.</td></tr>
+        <tr><td>Specific energy</td><td><span class="m">\tfrac12|\mathbf v|^2 - \mu/|\mathbf r|</span>, conserved by the exact motion; <span class="m">-\mu/2a</span> on a circle.</td></tr>
+        <tr><td>Explicit Euler</td><td>Step with the rates at the start of the step; first order; spirals out on an orbit.</td></tr>
+        <tr><td>Symplectic Euler</td><td>Kick the velocity, then drift with the new velocity; first order; energy error bounded.</td></tr>
+        <tr><td>RK4</td><td>Four slope samples per step; fourth order; energy drifts slowly.</td></tr>
+        <tr><td>Order <span class="m">p</span></td><td>The error over a fixed time span shrinks like <span class="m">h^p</span>.</td></tr>
+        <tr><td>Perturbation</td><td>Any force beyond central gravity: the <span class="m">J_2</span> bulge, drag, Moon and Sun, radiation pressure.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> The chapter stays in one plane, with one attracting body and circular or elliptical orbits started perpendicular to the radius. It does not treat the six classical orbital elements, Kepler's equation beyond its use in the demo, hyperbolic trajectories, or orbit determination from measurements. It names the perturbations real tools model (<span class="m">J_2</span>, drag, third bodies, radiation pressure) without modelling them; chapter 03 quantifies the effect of <span class="m">J_2</span> on the course's orbit. The integrators are fixed-step; adaptive step control appears only in exercise 4.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>H. D. Curtis. <em>Orbital Mechanics for Engineering Students</em>. Butterworth-Heinemann (4th ed., 2020). The two-body problem, circular and elliptical orbits, Kepler's laws and equation, and orbital elements, at the level of this chapter and a little beyond.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>D. A. Vallado. <em>Fundamentals of Astrodynamics and Applications</em>. Microcosm Press (4th ed., 2013). The reference for constants, coordinate systems and propagation methods, analytical and numerical.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>O. Montenbruck and E. Gill. <em>Satellite Orbits: Models, Methods and Applications</em>. Springer, 2000. The force models of real orbit propagation (gravity field, drag, third bodies, radiation pressure) and the numerical integrators used for them.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>E. Hairer, C. Lubich and G. Wanner. <em>Geometric Numerical Integration: Structure-Preserving Algorithms for Ordinary Differential Equations</em>. Springer (2nd ed., 2006). Why symplectic methods conserve a modified energy, with the Kepler problem as a running example.</div></li>
+    </ul>
+    <p>Next, <a href="02-placing-an-orbit-in-space.html">chapter 02</a> takes the circle out of its plane: it sets up the inertial frame, tilts the orbit by its inclination, turns it by its right ascension of the ascending node, derives the three lines of <code>position_eci</code> from two rotation matrices, and lays out the course's constellations.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="index.html"><span class="lbl">Previous</span><span class="t">Course overview</span></a>
+  <a class="next" rel="next" href="02-placing-an-orbit-in-space.html"><span class="lbl">Next · 02</span><span class="t">Placing an orbit in space</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 01 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The three integrators run in your browser with the same updates as <code>code/ch01_numbers.py</code>, against the closed form of the satplan package; every number in the text is printed by that script. The scenario is synthetic and describes no real satellite. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/ch01.js"></script>
+</body>
+</html>

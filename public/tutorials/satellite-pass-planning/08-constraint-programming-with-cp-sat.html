@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>08 · Constraint Programming with CP-SAT · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="Exact search and proofs of optimality for satellite pass planning: the repository's CP-SAT model read line by line (Boolean and integer variables, optional fixed-size intervals, AtMostOne, NoOverlap, half-reified precedences for the three kinds of conflict pairs, budget knapsacks, the objective and the greedy hint), what the solver does (propagation, branching, clause learning, linear relaxations, large neighbourhood search, a parallel portfolio), a branch and bound written from scratch in the page, and the anytime traces of plans and bounds on the small and medium instances. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .widget canvas, .stage canvas { display: block; width: 100%; }
+  canvas + canvas { margin-top: 0.4rem; }
+  #vocT td, #sizeT td, #bbT2 td, #growT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #sizeT, #bbT2, #growT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .legend .sw.dash { height: 0; border-top: 2px dashed var(--ink); background: none; border-radius: 0; opacity: 0.6; }
+  .panel .seg .btn { flex: 1 1 auto; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 08 of 10</span>
+  <h1>Constraint programming with CP-SAT</h1>
+  <p class="lede">Chapter 07's greedy collects 193 on the small instance, and its local search reaches 211, but neither can say how far it is from the best plan. This chapter writes the problem as a <b>constraint program</b> and hands it to Google's CP-SAT solver, which returns 219 in under a second together with a proof that nothing better exists. The concept is <b>exact search</b>: exploring all plans implicitly, discarding whole families of them with bounds, until the best plan found and the best bound proved meet. The page reads the repository's model line by line, builds a branch and bound from scratch that you can step through node by node, and explains, without magic, what the solver adds to it.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 06 and 07 · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">A branch and bound written from scratch: satellite 0's first pass, 21 opportunities</p>
+        <canvas id="bbT" aria-label="The 21 opportunities of the toy, one per row in order of window start, with the current node's decisions: tasks taken in blue, opportunities left greyed and struck through, undecided ones outlined, the next one to branch on in orange, and the best plan so far as green ticks" aria-describedby="bbStatus"></canvas>
+        <canvas id="bbC" aria-label="The best plan found (green) and the best bound over all open nodes (orange) against the number of nodes explored, meeting at the optimum" aria-describedby="bbStatus"></canvas>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><span class="sw" style="background:var(--post)"></span>taken at this node</span>
+          <span class="key"><span class="sw" style="background:var(--c4)"></span>best plan so far</span>
+          <span class="key"><span class="sw" style="background:var(--warm)"></span>branched on next / global bound</span>
+          <span class="key"><span class="sw dash"></span>CP-SAT's optimum</span>
+        </div>
+      </div>
+      <p class="status" id="bbStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div><span class="lbl">Bound at each node</span>
+        <span class="seg" role="group" aria-label="Bound">
+          <button class="btn" type="button" id="bnd-simple" aria-pressed="true">all remaining</button>
+          <button class="btn" type="button" id="bnd-fit" aria-pressed="false">what still fits</button>
+          <button class="btn" type="button" id="bnd-knap" aria-pressed="false">budget relaxation</button>
+        </span></div>
+      <div><span class="lbl">Starting plan</span>
+        <span class="seg" role="group" aria-label="Starting plan">
+          <button class="btn" type="button" id="stZero" aria-pressed="true">none</button>
+          <button class="btn" type="button" id="stGreedy" aria-pressed="false">greedy (25)</button>
+        </span></div>
+      <div><span class="lbl">Try first</span>
+        <span class="seg" role="group" aria-label="Branching order">
+          <button class="btn" type="button" id="brTake" aria-pressed="true">take it</button>
+          <button class="btn" type="button" id="brLeave" aria-pressed="false">leave it</button>
+        </span></div>
+      <div class="btn-row">
+        <button class="btn" type="button" id="bbStep">step</button>
+        <button class="btn ghost" type="button" id="bbRun" aria-pressed="false">run</button>
+        <button class="btn ghost" type="button" id="bbReset">restart</button>
+        <button class="btn ghost" type="button" id="bbEnd">to the end</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>nodes explored</span><span class="v" id="rNodes">–</span>
+        <span>nodes pruned</span><span class="v" id="rPruned">–</span>
+        <span>best plan</span><span class="v" id="rBest">–</span>
+        <span>global bound</span><span class="v" id="rGlob">–</span>
+        <span>Python, same setting</span><span class="v" id="rPy">–</span>
+      </div>
+      <p class="hint">Each node decides the opportunities in order of window start, one level per opportunity: take it (at its earliest start after the last task taken) or leave it. A node is pruned when its bound cannot beat the best plan known. Part 4 explains the three bounds; the search is run to the end at load, so press "restart" then "step" to follow it from the root.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#exact"><span class="n">1</span><span class="t">From a rule to a proof</span><span class="d">Plans, bounds, and when they meet</span></a>
+    <a href="#model"><span class="n">2</span><span class="t">The model, line by line</span><span class="d">Every construct of cpsat.py</span></a>
+    <a href="#solver"><span class="n">3</span><span class="t">What the solver does</span><span class="d">Propagation, clauses, relaxations, LNS</span></a>
+    <a href="#bb"><span class="n">4</span><span class="t">A branch and bound from scratch</span><span class="d">The hero demo, explained</span></a>
+    <a href="#anytime"><span class="n">5</span><span class="t">Plans and bounds over time</span><span class="d">Small, medium, and run-to-run noise</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="exact">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>From a rule to a proof</h2>
+  </div>
+  <div class="col prose">
+    <p><b>What a heuristic cannot say.</b> Chapter 07 ended with a plan worth 211 and no way to tell whether 211 is the best possible. To know that, you need a statement about <em>every</em> plan, including the <span class="m">2^{168}</span> subsets nobody will ever list. Such a statement is an <b>upper bound</b>: a number <span class="m">U</span> with a proof that no feasible plan collects more than <span class="m">U</span>.</p>
+    <p><b>The crudest bound.</b> Every plan collects at most the total priority of the targets some satellite can see: 316 on the small instance (chapter 05). It is a valid bound, and useless: no plan comes close, because reconfiguration times and budgets forbid most combinations. A better bound must use the constraints.</p>
+    <p><b>The certificate.</b> Suppose a solver holds a plan worth 219, checked by the independent checker, and a proof that no plan exceeds 219. Then 219 is optimal, and nothing else needs to be examined. This pair, a <em>lower bound</em> given by a plan and an <em>upper bound</em> given by a proof, is what every exact solver works towards. Their difference is the <b>gap</b>; "OPTIMAL" is the status a solver reports when the gap is zero.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is exact search?</p>
+      <p><b>In plain words:</b> a search that considers every possible plan, most of them without ever writing them down, because it can show that whole families of plans cannot beat the best one already found. When it finishes, its answer comes with a proof.</p>
+      <p><b>More precisely:</b> the set of plans is split recursively by decisions ("task <span class="m">o</span> in or out"), forming a tree. At each node, a bound <span class="m">U(\text{node})</span> on the value of every plan below it is computed. If <span class="m">U(\text{node}) \le</span> the value of the best plan found so far (the <em>incumbent</em>), the node is pruned. The search is complete when no node is left open; at any moment, the largest bound over the open nodes is a global upper bound, and the incumbent a lower bound <a href="#ref-3">[3]</a>.</p>
+      <dl>
+        <dt>Incumbent</dt><dd>The best feasible plan found so far; its value is a lower bound on the optimum.</dd>
+        <dt>Best bound</dt><dd>The smallest proven upper bound so far; no plan collects more.</dd>
+        <dt>Gap</dt><dd><span class="m">(\text{bound} - \text{incumbent})/\text{bound}</span>. Zero means proven optimal.</dd>
+        <dt>Anytime</dt><dd>A solver that can be stopped at any moment and still return its incumbent and its bound. CP-SAT is one.</dd>
+      </dl>
+    </div>
+    <p>The hero demo is such a search on a toy cut from the course's instance: satellite 0 during its first pass, the 21 opportunities whose windows fall in the first 900 s (targets in the Gulf of Guinea and the Bay of Biscay approaches), 1350 s of listening on offer against a power budget of 300 s. With the simplest bound it explores 1311 nodes and proves that 28 is optimal, the same value CP-SAT finds; a complete enumeration would visit <span class="m">2^{21} = 2{,}097{,}152</span> subsets. Part 4 explains every control.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The model, line by line</h2>
+  </div>
+  <div class="col prose">
+    <p>A <b>constraint program</b> is a list of variables, each with a finite set of allowed values (its <em>domain</em>), a list of constraints relating them, and an objective. You state the problem; the solver searches. <code>satplan/cpsat.py</code> builds the model in thirty lines. Each construct is new; take them one at a time.</p>
+
+    <h3>Two variables per opportunity</h3>
+    <pre><code class="language-python">m = cp_model.CpModel()
+opps = inst.opportunities
+x = [m.new_bool_var(f"x{o.idx}") for o in opps]
+s = [m.new_int_var(o.earliest_start, o.latest_start, f"s{o.idx}") for o in opps]</code></pre>
+    <p><span class="m">x_o \in \{0, 1\}</span> says whether opportunity <span class="m">o</span> is used. <span class="m">s_o</span> is its start time in whole seconds, with domain <span class="m">[e_o, \ell_o]</span>, from the window start to the latest start that still fits the task: on the small instance a domain holds 118 values on average. Integer seconds are exact here because every window edge is on the 10 s grid and every duration and reconfiguration time is a whole number of seconds (chapters 04 and 06). The domain already encodes the window constraint; nothing else is needed for it.</p>
+
+    <h3>Optional intervals and <code>NoOverlap</code></h3>
+    <pre><code class="language-python">if use_no_overlap:  # redundant with the pairwise precedences, but propagates globally
+    for ids in inst.by_satellite().values():
+        m.add_no_overlap(
+            m.new_optional_fixed_size_interval_var(s[i], opps[i].duration, x[i], f"iv{i}") for i in ids
+        )</code></pre>
+    <p>An <b>interval variable</b> bundles a start, a size and an end <span class="m">= s_o + d_o</span>. "Fixed size" means the size is the constant <span class="m">d_o</span>. "Optional" means the interval has a <em>presence literal</em>, here <span class="m">x_o</span>: if <span class="m">x_o = 0</span> the interval is absent and every constraint on it is ignored. <code>add_no_overlap</code> over a satellite's intervals says that the present ones do not overlap in time. It knows nothing of reconfiguration times, which the pair constraints below add, so it is <em>redundant</em>: the precedences already forbid every overlap it forbids. It is kept because it is a <b>global constraint</b>. A pairwise precedence looks at two tasks; <code>NoOverlap</code> looks at all tasks of a satellite at once and can deduce, for example, that three tasks whose windows fall in a 100 s stretch cannot all fit there, which no single pair reveals. On the small instance with one worker (deterministic), removing it raises the search from 141,598 to 237,535 branches and from 25,150 to 82,199 conflicts; the repository's README reports that on the medium instance its effect on the value is within run-to-run noise.</p>
+
+    <h3>One collection per target: <code>AtMostOne</code></h3>
+    <pre><code class="language-python">for ids in inst.by_target().values():
+    if len(ids) &gt; 1:
+        m.add_at_most_one(x[i] for i in ids)</code></pre>
+    <div class="math-block">\sum_{o \in \text{opp}(j)} x_o \le 1 \quad \text{for each target } j.</div>
+    <p>47 targets have two or three opportunities and get a constraint; the 67 with a single one need none. <code>AtMostOne</code> is a specialised form the solver handles as a clique of pairwise exclusions: setting one literal to true sets all the others to false at once.</p>
+
+    <h3>The three kinds of conflict pairs</h3>
+    <p>Chapter 06's sweep lists every pair of opportunities on the same satellite whose placements can interfere (876 on the small instance), and classifies them by which orders can fit at all. Write <span class="m">g_{ab} = d_a + s(a,b)</span> for the minimum time between the start of <span class="m">a</span> and the start of <span class="m">b</span> if <span class="m">a</span> goes first.</p>
+    <pre><code class="language-python">for p in inst.pairs:
+    a, b = p.a, p.b
+    gab = opps[a].duration + p.s_ab
+    gba = opps[b].duration + p.s_ba
+    if not p.a_first_ok and not p.b_first_ok:
+        m.add_bool_or([x[a].Not(), x[b].Not()])
+    elif p.a_first_ok and not p.b_first_ok:
+        m.add(s[b] &gt;= s[a] + gab).only_enforce_if([x[a], x[b]])
+    elif p.b_first_ok and not p.a_first_ok:
+        m.add(s[a] &gt;= s[b] + gba).only_enforce_if([x[a], x[b]])
+    else:
+        before = m.new_bool_var(f"o{a}_{b}")
+        m.add(s[b] &gt;= s[a] + gab).only_enforce_if([x[a], x[b], before])
+        m.add(s[a] &gt;= s[b] + gba).only_enforce_if([x[a], x[b], before.Not()])</code></pre>
+    <p><b>Neither order fits</b> (106 pairs): the two cannot both be selected, the <em>clause</em> <span class="m">\lnot x_a \lor \lnot x_b</span>. A clause is an "or" of literals, the basic constraint of SAT solvers.</p>
+    <p><b>Only one order fits</b> (414 pairs): if both are selected, that order holds, <span class="m">s_b \ge s_a + g_{ab}</span> (or the mirror).</p>
+    <p><b>Both orders fit</b> (356 pairs): a new Boolean <span class="m">o_{ab}</span>, the <em>order literal</em>, says which comes first, and each order is enforced under its own condition. That is 356 order literals and 712 precedences.</p>
+    <p><b>Half-reification.</b> The method <code>only_enforce_if(lits)</code> attaches <em>enforcement literals</em> to a constraint: the constraint must hold when all the literals are true, and is switched off otherwise. In logic,</p>
+    <div class="math-block" data-narrow="(x_a \land x_b \land o_{ab}) \\ \Rightarrow\; s_b \ge s_a + g_{ab}">(x_a \land x_b \land o_{ab}) \;\Rightarrow\; s_b \ge s_a + g_{ab}.</div>
+    <p>This is an implication, not an equivalence: it is called <em>half</em>-reification because the reverse direction is not imposed (two tasks may happen to be well separated without being selected). The solver propagates it both ways: when the three literals are true, it tightens the start-time domains; when the inequality cannot hold within the current domains, it deduces that the three literals cannot all be true. The widget in Part 3 does exactly that on a real pair. A MILP has to write the same implication with a big-M, which chapter 09 shows is much weaker.</p>
+
+    <h3>Budgets as knapsacks</h3>
+    <pre><code class="language-python">for _, limit, ids in inst.budget_groups():
+    m.add(sum(opps[i].duration * x[i] for i in ids) &lt;= limit)</code></pre>
+    <div class="math-block">\sum_{o \in G} d_o\, x_o \le B_G \quad \text{for each power or memory group } G.</div>
+    <p>One linear constraint per group whose opportunities could overrun the limit if all were chosen (chapter 06): 19 on the small instance, 10 for power (300 s per revolution) and 9 for memory (600 s between contacts). Each is a knapsack constraint.</p>
+
+    <h3>The objective and the hint</h3>
+    <pre><code class="language-python">m.maximize(sum(o.weight * x[o.idx] for o in opps))
+...
+if hint is not None:
+    for o in inst.opportunities:
+        chosen = o.idx in hint
+        m.add_hint(x[o.idx], chosen)
+        if chosen:
+            m.add_hint(s[o.idx], int(round(hint[o.idx])))</code></pre>
+    <p>The objective is the total priority <span class="m">\sum_o w_o x_o</span>. A <b>hint</b> is a suggested value for some variables: here the greedy plan of chapter 07, every <span class="m">x_o</span> and the chosen start times. It is not a constraint. The solver tries it first; when it is complete and feasible, it becomes the first incumbent, so the solver never reports a plan worse than the greedy's. The rest of <code>solve_cpsat</code> sets a time limit, 8 parallel workers and a random seed, and records every improving plan with a callback.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="sizeT" class="num">
+      <thead><tr><th>Model built by <code>build_cpsat</code></th><th>small</th><th>medium</th></tr></thead>
+      <tbody>
+        <tr><td>Opportunities: Booleans <span class="m">x_o</span>, starts <span class="m">s_o</span>, optional intervals</td><td>168</td><td>1373</td></tr>
+        <tr><td>Conflict pairs</td><td>876</td><td>16,335</td></tr>
+        <tr><td>… neither order: clauses</td><td>106</td><td>3087</td></tr>
+        <tr><td>… one order: enforced precedences</td><td>414</td><td>7751</td></tr>
+        <tr><td>… both orders: order literals (two precedences each)</td><td>356</td><td>5497</td></tr>
+        <tr><td>Budget knapsacks (power and memory)</td><td>19</td><td>83</td></tr>
+        <tr><td><code>AtMostOne</code> (targets with several opportunities)</td><td>47</td><td>250</td></tr>
+        <tr><td><code>NoOverlap</code> (one per satellite)</td><td>4</td><td>8</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="solver">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>What the solver does</h2>
+  </div>
+  <div class="col prose">
+    <p>CP-SAT combines several techniques from different communities: constraint programming, Boolean satisfiability (SAT) and integer programming. The OR-Tools documentation and the authors' talks describe them <a href="#ref-1">[1]</a>; this section explains each idea at the level needed to read the solver's behaviour, not its full implementation.</p>
+    <p><b>Presolve.</b> Before searching, the solver simplifies the model: it fixes variables whose value is forced, removes constraints implied by others, merges and strengthens what it can. The model it searches is not exactly the one written above.</p>
+    <p><b>Propagation: domains shrink.</b> Each constraint has a <em>propagator</em>, a small procedure that removes from the variables' domains the values that the constraint, given the current domains, makes impossible. Take a precedence <span class="m">s_b \ge s_a + g_{ab}</span> that is enforced. Since <span class="m">s_a \ge \min s_a</span>, every value of <span class="m">s_b</span> below <span class="m">\min s_a + g_{ab}</span> is impossible; since <span class="m">s_b \le \max s_b</span>, every value of <span class="m">s_a</span> above <span class="m">\max s_b - g_{ab}</span> is impossible. Propagators run in turn until nothing changes. If a domain becomes empty, the current set of decisions is contradictory: a <em>conflict</em>. Try it on a real pair.</p>
+  </div>
+  <div class="col widget" id="ppW">
+    <div class="controls">
+      <span class="seg" role="group" aria-label="Kind of pair">
+        <button class="btn" type="button" id="pk-both" aria-pressed="true">both orders fit</button>
+        <button class="btn" type="button" id="pk-one" aria-pressed="false">one order fits</button>
+        <button class="btn" type="button" id="pk-none" aria-pressed="false">neither fits</button>
+      </span>
+    </div>
+    <label class="field"><span>Pair of this kind: <b id="ppIdxV"></b></span><span class="row"><input type="range" id="ppIdx" min="0" max="355" step="1" value="0"></span></label>
+    <div class="params">
+      <label class="field"><span><span class="m">x_a</span></span><span class="row"><select id="ppXa"><option value="free" selected>undecided</option><option value="1">1 (selected)</option><option value="0">0</option></select></span></label>
+      <label class="field"><span><span class="m">x_b</span></span><span class="row"><select id="ppXb"><option value="free" selected>undecided</option><option value="1">1 (selected)</option><option value="0">0</option></select></span></label>
+      <label class="field"><span>order literal <span class="m">o_{ab}</span></span><span class="row"><select id="ppOrd"><option value="free" selected>undecided</option><option value="ab">a then b</option><option value="ba">b then a</option></select></span></label>
+      <label class="field"><span>earliest start of a, set by other decisions: <b id="ppLaV"></b></span><span class="row"><input type="range" id="ppLa" min="0" max="1" step="1" value="0"></span></label>
+      <label class="field"><span>earliest start of b, set by other decisions: <b id="ppLbV"></b></span><span class="row"><input type="range" id="ppLb" min="0" max="1" step="1" value="0"></span></label>
+    </div>
+    <canvas id="ppC" aria-label="The start-time domains of the two opportunities of the pair, before and after propagation" aria-describedby="ppCap"></canvas>
+    <div class="readouts" aria-live="off">
+      <span>domain of <span class="m">s_a</span></span><span class="v" id="ppDa">–</span>
+      <span>domain of <span class="m">s_b</span></span><span class="v" id="ppDb">–</span>
+      <span><span class="m">g_{ab}</span> / <span class="m">g_{ba}</span> [s]</span><span class="v" id="ppG">–</span>
+    </div>
+    <p class="caption" id="ppCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Set <span class="m">x_a = x_b = 1</span> on a "both orders" pair, leave the order undecided, and push the earliest start of <span class="m">a</span> to the right with its slider: at some point "a then b" stops fitting, and propagation sets the order literal by itself, with no search. Push both sliders and neither order fits: a conflict, from which the solver learns a clause. The widget isolates one pair; inside the solver, the earliest starts come from other propagators and decisions, and one deduction triggers others along chains of pairs.</p>
+    <p><b>Search: branching.</b> When propagation stops and some variables are still undecided, the solver makes a <em>decision</em>, for example <span class="m">x_o = 1</span> or <span class="m">s_o \le 2350</span>, propagates its consequences, and continues. If a conflict appears, it undoes decisions (backtracks) and tries otherwise. That is the tree of the hero demo, with far stronger reasoning at each node. With one worker, the small instance is solved in 141,598 branches.</p>
+    <p><b>Clause learning: the SAT part.</b> When a conflict occurs, a modern SAT solver does not just backtrack. It analyses which decisions and deductions caused the conflict and records a new clause that rules out that cause everywhere in the search, then jumps back to the decision that made it possible. This is <em>conflict-driven clause learning</em> <a href="#ref-5">[5]</a>. CP-SAT extends it to integer variables by expressing bounds such as <span class="m">[s_a \ge 2350]</span> as Boolean literals, so the reasons produced by propagators become clauses too, an approach called <em>lazy clause generation</em> <a href="#ref-6">[6]</a>. The widget's learned clause is of that form. While a learned clause is kept, the failure it records is never repeated; the small instance's one-worker run learns from 25,150 of them.</p>
+    <p><b>Linear relaxation: the upper bound.</b> Part of the model is linear (the knapsacks, the objective, and linear versions of other constraints). Dropping the requirement that <span class="m">x_o</span> be 0 or 1 gives a linear program whose optimum is an upper bound on every plan, computable by the simplex method. CP-SAT solves such relaxations and adds cuts (inequalities valid for every integer plan that the LP solution violates) to tighten them. The hero demo's third bound is the simplest example: the power budget's linear relaxation, the fractional knapsack of chapter 07, solved exactly by the density rule. Chapter 09 studies relaxations in detail.</p>
+    <p><b>Large neighbourhood search: better plans fast.</b> Some workers do not try to prove anything. They take the incumbent, fix most of its variables, free a neighbourhood (for example all tasks of one satellite in a stretch of time), and solve that small problem exactly with a short limit. It is chapter 07's ruin and recreate with an exact solver in place of the greedy refill <a href="#ref-7">[7]</a>, and it is why incumbents improve quickly even on instances too large to prove.</p>
+    <p><b>A portfolio of workers.</b> With <code>num_workers = 8</code>, CP-SAT runs 8 differently configured searches in parallel: some branch on Booleans, some on start times, some work mostly on the LP bound, some run LNS. They share incumbents and bounds, and some of what they learn. On the small instance this is worth a factor of six or seven in wall time: the 1-worker run takes about 3 s on the author's machine when it is otherwise idle, the 8-worker runs about half a second. The price is <b>non-determinism</b>: the threads' interleaving depends on the machine's timing, so two runs with the same seed can return different plans, and, when stopped at a time limit, different values. Part 5 shows two such runs; chapter 10 measures the noise.</p>
+    <div class="callout"><p><b>Status.</b> When the search ends, <code>solver.status_name(status)</code> is <code>OPTIMAL</code> if the incumbent's value equals the best bound (the search is complete), <code>FEASIBLE</code> if a plan is known but the time limit came first, and <code>INFEASIBLE</code> or <code>UNKNOWN</code> otherwise. The repository returns <code>solver.best_objective_bound</code> along with every plan, so a <code>FEASIBLE</code> result still says how far it can be from the optimum.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="bb">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>A branch and bound from scratch</h2>
+  </div>
+  <div class="col prose">
+    <p>The hero demo is the oldest exact method for integer problems, branch and bound <a href="#ref-4">[4]</a>, in about sixty lines of JavaScript, with nothing borrowed from CP-SAT. It runs on one satellite, so that "can this set of tasks be scheduled?" stays easy to decide.</p>
+    <p><b>Branching.</b> The 21 opportunities are sorted by window start. A node at depth <span class="m">k</span> has decided the first <span class="m">k</span>: for each, taken or left. Its two children decide opportunity <span class="m">k+1</span>. "Take" is possible only if the target is not already served, the power and memory budgets have room, and the task fits after the last task taken: at <span class="m">t = \max(e_o,\ t_{\text{last}} + d_{\text{last}} + s(\text{last}, o))</span>, provided <span class="m">t \le \ell_o</span>. The search is depth first: the most recent node is expanded first, so it reaches complete plans quickly and keeps in memory only the current path and the siblings still to visit.</p>
+    <p><b>A restriction, and its check.</b> Taking tasks in order of window start fixes the order of tasks on the satellite. A real plan might put a task with a later window before one with a long, earlier window, so this search could, in principle, miss the optimum. On this toy it does not: <code>ch08_numbers.py</code> solves the same 21 opportunities with CP-SAT and finds 28, the value every setting of the demo reaches, and the page compares its node counts with the Python ones. The restriction is not harmless in general: on satellite 0's stretch from 17,200 to 17,600 s, the same search finds 16 where CP-SAT finds 20, because the best plan there needs an order that window starts do not give. A real solver keeps the order free, which is why the model has order literals.</p>
+    <p><b>Three bounds.</b> At each node, an optimistic estimate of the best value reachable below it:</p>
+    <ul>
+      <li><b>All remaining</b>: the value so far plus the priority of every target among the undecided opportunities. It ignores every constraint.</li>
+      <li><b>What still fits</b>: the same, counting only the opportunities that could still be taken on their own (budget, window and reconfiguration time after the last task taken).</li>
+      <li><b>Budget relaxation</b>: over those opportunities, the best value the remaining power budget could buy if tasks could be cut into fractions: the fractional knapsack, solved by the density rule. This is a linear relaxation of the knapsack constraint, the same kind of bound CP-SAT and the MILP of chapter 09 compute.</li>
+    </ul>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="bbT2" class="num">
+      <thead><tr><th>Nodes explored (pruned)</th><th>no start, take first</th><th>no start, leave first</th><th>greedy start, take first</th><th>greedy start, leave first</th></tr></thead>
+      <tbody>
+        <tr><td>All remaining</td><td>1311 (428)</td><td>2739 (855)</td><td>1255 (418)</td><td>1819 (591)</td></tr>
+        <tr><td>What still fits</td><td>704 (324)</td><td>1417 (677)</td><td>682 (316)</td><td>933 (442)</td></tr>
+        <tr><td>Budget relaxation</td><td>70 (29)</td><td>431 (200)</td><td>50 (22)</td><td>82 (36)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p><b>Reading the table.</b> Every setting proves the same optimum, 28; they differ only in work. The bound matters most: at the root, the first two bounds say 49 (the total priority of the 21 targets) and the budget relaxation says 28.0, already the optimum. That is partly luck: without the power budget CP-SAT still finds 28 on this pass, so the reconfiguration times alone cap it at the same value, and the relaxation of the budget happens to land exactly on it. With this bound, the search only has to find a plan worth 28 and check a few dozen nodes. The starting plan matters when the search would otherwise take long to find a good one: with "leave first", the first plans found are poor, and starting from the greedy's 25 cuts the work from 431 to 82 nodes with the third bound; with "take first", good plans come early anyway and the greedy start saves little (70 to 50). This is the role of CP-SAT's hint, and it is as modest on the small instance (Part 5).</p>
+    <div class="big-idea"><p>An exact solver is a search made affordable by bounds. Every node pruned removes all the plans below it at once, and the quality of the bound, not the speed of the computer, decides how many nodes are left. Proving optimality means closing the gap from both sides: plans from below, bounds from above.</p></div>
+    <p><b>Why this would die on 168 opportunities.</b> Run the same search on the first <span class="m">n</span> opportunities of satellite 3, starting from the greedy plan, and count nodes (<code>ch08_numbers.py</code>, stopped at 500,000 nodes):</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="growT" class="num">
+      <thead><tr><th>Opportunities <span class="m">n</span></th><th>10</th><th>20</th><th>30</th><th>40</th><th>50</th><th>64</th></tr></thead>
+      <tbody>
+        <tr><td>Nodes, "all remaining" bound</td><td>19</td><td>8665</td><td>172,313</td><td>&gt; 500,000</td><td>&gt; 500,000</td><td>&gt; 500,000</td></tr>
+        <tr><td>Nodes, budget relaxation</td><td>18</td><td>638</td><td>169</td><td>5985</td><td>275</td><td>379</td></tr>
+        <tr><td>Optimum (CP-SAT agrees)</td><td>14</td><td>39</td><td>47</td><td>61</td><td>75</td><td>83</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>With the weak bound, the tree goes from 19 nodes to 8665 and 172,313 as <span class="m">n</span> goes from 10 to 20 and 30, and past the 500,000-node limit from 40 on: a factor of 20 or more for every 10 opportunities, exponential growth that no computer outruns. Extrapolated at that rate from 30 to 168 opportunities, it would need about <span class="m">172{,}313 \times 20^{13.8} \approx 10^{23}</span> nodes. The budget relaxation keeps one satellite tractable, erratically (5985 nodes at 40, 275 at 50), because on a single satellite's passes the relaxation of the power budget turns out to be a tight bound. The whole instance is harder in ways this toy hides: the four satellites are coupled by <code>AtMostOne</code> (a target can be served by any of them), reconfiguration times bind as much as budgets, and the order of tasks must stay free. What CP-SAT adds to the toy is, in order of the paragraphs above: presolve; propagation of every constraint at every node, so that a decision's consequences on all neighbouring tasks are known at once; learned clauses, so that a failure is not repeated; LP bounds with cuts over all the constraints, not one knapsack; LNS workers that supply good incumbents early; and parallel workers sharing all of it. With all that, the 168 opportunities take under a second.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="anytime">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Plans and bounds over time</h2>
+  </div>
+  <div class="col prose">
+    <p>The hero's chart has a twin inside every CP-SAT run: the incumbent rises, the best bound falls, and the solver stops when they meet or when time runs out. <code>ch08_numbers.py</code> records both with two callbacks (<code>on_solution_callback</code> for plans, <code>best_bound_callback</code> for bounds) on the repository's model and parameters.</p>
+  </div>
+  <div class="col widget" id="trW">
+    <div class="controls">
+      <span class="seg" role="group" aria-label="Instance">
+        <button class="btn" type="button" id="tr-small" aria-pressed="true">small instance</button>
+        <button class="btn" type="button" id="tr-medium" aria-pressed="false">medium instance</button>
+      </span>
+    </div>
+    <canvas id="trC" aria-label="CP-SAT's best plan and best bound against wall time" aria-describedby="trCap"></canvas>
+    <p class="caption" id="trCap"></p>
+  </div>
+  <div class="col prose">
+    <p><b>Small instance.</b> In the run recorded on this page, the bound starts at 446, the sum of the priorities of all 168 opportunities (every <span class="m">x_o = 1</span>, the bound that ignores every constraint), drops to 261, 225 and 223 within a tenth of a second, and then creeps down by one or two points at a time while the plans climb to 219 (the first plan reported is worth 137; the hint's 193 follows four milliseconds later). They meet at 0.45 s. The run exported with the shared instance (<code>SAT_SMALL.python.cpsat.trace</code>) has the same shape: ten improving plans from 193 to 219 in 0.28 s, status OPTIMAL. The benchmark proves the three small seeds optimal in 0.6 to 1.8 s (<code>results/results.md</code>).</p>
+    <p><b>The hint, measured.</b> On the small instance it hardly matters. Without it, the 8-worker run finds a first plan worth 134 at once and the optimum just as fast; with one worker, the search takes 141,598 branches with the hint and 128,211 without, about the same time. The hint guarantees that the first incumbent is at least the greedy's; it does not make the proof shorter, because the proof is about the bound. On the medium instance, where the proof is out of reach, a good early incumbent is worth more.</p>
+    <p><b>Medium instance.</b> 1373 opportunities and 16,335 pairs. The bound falls to 575 within a second, and in 60 s it never moves again; the incumbent climbs through dozens of improvements, quickly at first and then by single points. The benchmark's run stops at 557 (gap 3.1 %); the run of <code>ch08_numbers.py</code> recorded on this page, with the same model, parameters and seed, stopped at 559 (gap 2.8 %), and three other runs of the script made while writing this chapter stopped at 549, 556 and 549, all with the bound at 575. Neither is proven optimal. Two lessons. First, the gap is an upper estimate of the distance to the optimum: the true optimum lies somewhere between 559 and 575, and a weak bound makes a good plan look worse than it is. Second, a multi-threaded search stopped at a time limit is a random experiment: comparing two methods by one run each is comparing two samples, which chapter 10 takes seriously.</p>
+    <div class="callout"><p><b>The project's numbers.</b> Small instance: 219, proven OPTIMAL in under a second on all three seeds (the MILP of chapter 09 proves the same optima in 9 to 17 s). Medium: 557, 590 and 534 against bounds of 575, 604 and 551 (gaps 2.3–3.1 %) in 60 s. Large (4,900 opportunities, 140,000 pairs): 1072 and 1066 against bounds of 1138 and 1126 in 120 s, barely above the greedy's 1060 and 1047. Chapter 10 cuts the horizon into blocks to do better there.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What two things must a solver hold to declare a plan optimal?</summary><p>A feasible plan of value <span class="m">v</span> (a lower bound) and a proof that no plan exceeds <span class="m">v</span> (an upper bound equal to <span class="m">v</span>). The search tree's pruned nodes and the bounds at the open nodes are that proof.</p></details>
+    <details class="sol"><summary>2. Why is <code>NoOverlap</code> redundant in this model, and why keep it?</summary><p>Every pair of tasks that could overlap is a conflict pair, and its precedence constraints (or its clause) already forbid overlap, with the reconfiguration time on top. It is kept because, as a global constraint over all the intervals of a satellite, it propagates deductions no pair can make alone. On the small instance with one worker, removing it costs 237,535 branches instead of 141,598.</p></details>
+    <details class="sol"><summary>3. What does <code>only_enforce_if([x[a], x[b], before])</code> mean, and why not an equivalence?</summary><p>The precedence must hold when all three literals are true; otherwise it is ignored. An equivalence would also force the literals to be true whenever the inequality happens to hold, which is wrong: two tasks may be far apart in time and still not be selected. Implication in one direction is all the model needs; hence "half" reification.</p></details>
+    <details class="sol"><summary>4. Why does a "both orders" pair need an extra Boolean, and a "one order" pair not?</summary><p>With both orders possible, the plan has to choose one, and the choice is a decision the model must represent: the order literal. With one order possible, there is nothing to choose: if both tasks are selected, that order holds. With none, the tasks are simply exclusive: a clause.</p></details>
+    <details class="sol"><summary>5. In the hero demo, why does the budget relaxation prune so much more than the other bounds?</summary><p>On satellite 0's first pass, 1350 s of listening compete for 300 s of power budget. The fractional knapsack uses that limit and gives 28.0 at the root, which here equals the optimum (the reconfiguration times happen to cap the pass at the same value), while the other bounds ignore the budget and start at 49. A bound that starts at the optimum leaves the search only the task of finding a plan that reaches it.</p></details>
+    <details class="sol"><summary>6. The hero search fixes the order of tasks by window start. Why is its answer trustworthy on the toy, and why would it not be in general?</summary><p>On the toy, CP-SAT, which keeps the order free, finds the same optimum, 28. In general the best plan may need a task with a later window start to go first; on satellite 0's stretch from 17,200 to 17,600 s the fixed-order search finds 16 against CP-SAT's 20.</p></details>
+    <details class="sol"><summary>7. What does a learned clause such as <span class="m">\lnot x_a \lor \lnot x_b \lor [s_a &lt; 2350]</span> say?</summary><p>That in every feasible plan, at least one of the following holds: <span class="m">a</span> is not selected, <span class="m">b</span> is not selected, or <span class="m">a</span> starts before 2350. It is a consequence of the model, so adding it removes no plan, but it lets propagation cut off, anywhere in the search, every branch that repeats this combination.</p></details>
+    <details class="sol"><summary>8. Two medium runs with the same seed end at 557 and 559. Which is right?</summary><p>Both are feasible plans, checked by the independent checker; neither is proven optimal. The difference is the non-determinism of 8 threads stopped at a time limit. The defensible statement is "557 to 559 in 60 s, with a bound of 575"; a single run is one sample.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Drop NoOverlap and see.</b> Call <code>build_cpsat(inst, use_no_overlap=False)</code> and solve the small instance with <code>num_workers = 1</code>, with and without the greedy hint. Compare <code>solver.num_branches</code> and <code>solver.num_conflicts</code> with the full model.</div>
+        <details class="sol"><summary>Hint</summary><p><code>run_cpsat</code> in <code>code/ch08_numbers.py</code> takes a <code>no_overlap</code> argument and returns both counters. With one worker the counts are reproducible; the times depend on your machine.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With the hint: 141,598 branches and 25,150 conflicts with <code>NoOverlap</code>, 237,535 and 82,199 without; without the hint: 128,211 and 26,254 with it, 199,139 and 65,061 without. The optimum is 219 in every case, and the redundant constraint roughly halves the work.</p></details>
+      </li>
+      <li><div><b>A better bound for the toy.</b> Add the memory budget to the hero's third bound: take the minimum of the power and the memory fractional knapsacks. Is it still a valid bound? Does it prune more?</div>
+        <details class="sol"><summary>Hint</summary><p>Any plan below the node satisfies both budgets, so each knapsack alone bounds it; the minimum of two valid upper bounds is a valid upper bound. On the toy the 21 opportunities fall in two memory segments, so the memory knapsack is a sum over two groups.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Valid, yes. On this toy it can hardly help: the power bound is already 28.0 at the root, the optimum, so only the nodes where the memory budget binds more tightly than the power budget gain anything. On a pass with short gaps between contacts the memory knapsack would matter more. The general point: bounds can be combined, and a solver's LP does it automatically by including all the constraints at once.</p></details>
+      </li>
+      <li><div><b>Write the toy as a CP-SAT model.</b> Build the 21-opportunity sub-instance with <code>sub_instance</code> from <code>ch08_numbers.py</code>, solve it with <code>solve_cpsat</code>, and check that its plan passes <code>check_plan</code>. Then remove the power budget (set <code>duty_budget_s</code> very large) and compare the optimum with the hero search's "all remaining" bound at the root.</div>
+        <details class="sol"><summary>Hint</summary><p>The sub-instance is a <code>PlanningInstance</code> like any other; <code>build_pairs()</code> must be called after changing anything that affects pairs (the budgets do not).</p></details>
+        <details class="sol"><summary>Solution</summary><p>With the budget, the optimum is 28. Without it (memory budget kept), CP-SAT still finds 28: on this pass the reconfiguration times alone allow no more than the budget does, and 49, the "all remaining" bound, is far from both. Measuring the value without each constraint in turn is a quick way to learn which constraint binds, which chapter 10's memory sweep does for the memory budget.</p></details>
+      </li>
+      <li><div><b>Noise.</b> Solve the medium instance five times with 8 workers, a 30 s limit and the same seed, and report the values and bounds. Then five times with one worker.</div>
+        <details class="sol"><summary>Hint</summary><p>The medium instance is <code>ScenarioConfig(seed=0, n_sats=8, n_targets=250, horizon_h=12.0)</code>. Expect each 8-worker run to take the full 30 s.</p></details>
+        <details class="sol"><summary>Solution</summary><p>In the four 60 s runs made for this chapter the 8-worker values were 549, 559, 556 and 549, each with a bound of 575; expect a similar spread at 30 s. The 1-worker runs repeat themselves exactly if the time limit is not what stops them, and with a time limit they can still differ slightly, because how far a search gets in 30 s depends on the machine's speed at that moment. Report a spread, not a single number; chapter 10 does this for the benchmark.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Proof</b>: a plan of value <span class="m">v</span> plus a bound of <span class="m">v</span>; the gap is (bound − plan) / bound, and OPTIMAL means zero.</div></li>
+      <li><div><b>Variables</b>: <span class="m">x_o</span> Boolean, <span class="m">s_o \in [e_o, \ell_o]</span> integer, tied into an optional fixed-size interval with presence <span class="m">x_o</span>.</div></li>
+      <li><div><b>Constraints</b>: <code>AtMostOne</code> per target (47), <code>NoOverlap</code> per satellite (4, redundant but globally propagating), 106 clauses, 414 enforced precedences, 356 order literals with two precedences each, 19 budget knapsacks; maximise <span class="m">\sum w_o x_o</span>; the greedy plan as a hint.</div></li>
+      <li><div><b>Half-reification</b>: <code>only_enforce_if</code> makes a constraint hold when its literals are true, and lets the solver deduce that they cannot all be true when it cannot hold.</div></li>
+      <li><div><b>The solver</b>: presolve, propagation, branching, clause learning with bound literals, LP relaxations with cuts, LNS, 8 workers sharing what they find.</div></li>
+      <li><div><b>Branch and bound from scratch</b>: on 21 opportunities, 1311 nodes with the weakest bound, 70 with the budget's relaxation, 50 with the greedy start too; optimum 28, equal to CP-SAT's.</div></li>
+      <li><div><b>The traces</b>: small, optimal in under a second; medium, bound 575 within a second, plans 557 and 559 in two runs of 60 s, gaps near 3 %; runs differ.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Constraint program</td><td>Variables with finite domains, constraints on them, an objective; the solver searches.</td></tr>
+        <tr><td>Domain</td><td>The set of values a variable may still take; propagation shrinks it.</td></tr>
+        <tr><td>Optional interval</td><td>Start, fixed size and end, with a presence literal; absent intervals are ignored.</td></tr>
+        <tr><td>Global constraint</td><td>One constraint over many variables with its own strong propagator, such as <code>NoOverlap</code>.</td></tr>
+        <tr><td>Clause</td><td>An "or" of literals: <span class="m">\lnot x_a \lor \lnot x_b</span>.</td></tr>
+        <tr><td>Enforcement literal, half-reification</td><td>A literal under which a constraint must hold: literals true implies constraint.</td></tr>
+        <tr><td>Propagation</td><td>Removing values that a constraint makes impossible, repeated until nothing changes.</td></tr>
+        <tr><td>Conflict, learned clause</td><td>A contradiction found by propagation; the clause recording its cause so it is never repeated.</td></tr>
+        <tr><td>Branch and bound</td><td>Split the plans by decisions; prune a branch whose bound cannot beat the incumbent.</td></tr>
+        <tr><td>Relaxation</td><td>The problem with some constraints dropped (here integrality); its optimum bounds the original's.</td></tr>
+        <tr><td>Incumbent, best bound, gap</td><td>Best plan found; smallest proven upper bound; their relative difference.</td></tr>
+        <tr><td>Hint</td><td>A suggested solution the solver tries first; not a constraint.</td></tr>
+        <tr><td>Portfolio, non-determinism</td><td>Several differently configured searches in parallel; their timing makes runs differ.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter explains what CP-SAT's components do and shows their effect on this problem; it does not document the solver's internals, which change between versions (the repository uses OR-Tools 9.15). It leaves out search strategies and solver parameters beyond those the repository sets, the detail of cutting planes (chapter 09 covers LP relaxations), and symmetry. The traces of the small and medium runs and the toy are recorded in <code>interactive/ch08-data.js</code> by <code>code/ch08_numbers.py --write</code>; a rerun with 8 workers will give slightly different traces, as Part 5 explains. The scenario is synthetic and makes no claim about any real satellite system.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>Google OR-Tools, CP-SAT solver documentation. <a href="https://developers.google.com/optimization">developers.google.com/optimization</a>. The Python API used by <code>cpsat.py</code>: Boolean and integer variables, optional interval variables, <code>NoOverlap</code>, enforcement literals, hints, callbacks and parameters.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>F. Rossi, P. van Beek and T. Walsh (eds.). <em>Handbook of Constraint Programming</em>. Elsevier, 2006. Domains, propagation, global constraints, scheduling with intervals, and the search methods of constraint programming.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>L. A. Wolsey. <em>Integer Programming</em>. Wiley, 1998. Branch and bound, relaxations, bounds and the optimality certificate.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>A. H. Land and A. G. Doig. An automatic method of solving discrete programming problems. <em>Econometrica</em>, 28(3), 1960. The original branch and bound.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>J. P. Marques-Silva and K. A. Sakallah. GRASP: a search algorithm for propositional satisfiability. <em>IEEE Transactions on Computers</em>, 48(5), 1999. Conflict analysis and clause learning, the core of modern SAT solvers.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>O. Ohrimenko, P. J. Stuckey and M. Codish. Propagation via lazy clause generation. <em>Constraints</em>, 14(3), 2009. How propagators on integer variables can explain themselves with clauses over bound literals, the idea CP-SAT builds on.</div></li>
+      <li id="ref-7"><span class="rn">[7]</span><div>P. Shaw. Using constraint programming and local search methods to solve vehicle routing problems. In <em>Principles and Practice of Constraint Programming (CP98)</em>, Lecture Notes in Computer Science 1520, Springer, 1998. Large neighbourhood search.</div></li>
+      <li id="ref-8"><span class="rn">[8]</span><div>M. Lemaître, G. Verfaillie, F. Jouhaud, J.-M. Lachiver and N. Bataille. Selecting and scheduling observations of agile satellites. <em>Aerospace Science and Technology</em>, 6(5), 2002. Constraint programming among other methods on a closely related satellite problem.</div></li>
+    </ul>
+    <p>Next, chapter 09 writes the same problem as a mixed-integer linear program for HiGHS, and finds out why its linear relaxation knows so much less about reconfiguration than CP-SAT's propagation.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="07-a-greedy-plan.html"><span class="lbl">Previous · 07</span><span class="t">A greedy plan and what it leaves behind</span></a>
+  <a class="next" rel="next" href="09-the-same-problem-as-a-milp.html"><span class="lbl">Next · 09</span><span class="t">The same problem as a MILP</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 08 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The branch and bound and the propagation widget run in your browser on the course's shared instance with sat.js; the toy, the solver traces and every CP-SAT number come from code/ch08_numbers.py (recorded in interactive/ch08-data.js) and from the repository's results/benchmark.json and results/results.md. The scenario is synthetic and makes no claim about any real satellite system. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch08-data.js"></script>
+<script src="interactive/ch08.js"></script>
+</body>
+</html>

@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>10 · Rolling Horizons and Reading a Benchmark · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="The last chapter of the course: decomposition and experimental method. The repository's rolling-horizon CP-SAT, line by line (blocks, fixed tasks, carried-over budgets, the four cases against a fixed task, the split time limit); what it loses at block borders, measured on the small instance; a block-size sweep on small and medium; and how to read a benchmark: gaps against loose bounds, equal time limits and unequal threads, the run-to-run noise of a search stopped at a time limit, and which constraint binds in the memory sweep. Ends with limitations, capstone exercises and a recap of the ten chapters. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .widget canvas, .stage canvas { display: block; width: 100%; }
+  canvas + canvas { margin-top: 0.4rem; }
+  #vocT td, #benchT td, #mapT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #benchT, #mapT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  #cCode { font-family: var(--font-mono); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 10 of 10</span>
+  <h1>Rolling horizons and reading a benchmark</h1>
+  <p class="lede">On the large instance, CP-SAT given the whole twelve-hour horizon gains only one or two percent over greedy in two minutes. Cutting the horizon into one-hour blocks and solving them one after the other does better, in less time. This last chapter has two concepts. The first is <b>decomposition</b>: the repository's <code>rolling.py</code> line by line, and what it costs, measured, at the borders between blocks. The second is <b>experimental method</b>: what a gap against a bound means, why every method gets the same time limit but not the same threads, how much a second run of the same solver differs from the first, and how a sweep tells which constraint binds. It ends the course with its limitations, four capstone exercises and a recap of the ten chapters.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 06, 08 and 09 · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">Small instance: the rolling-horizon plan block by block, against the whole-horizon optimum</p>
+        <canvas id="heroC" aria-label="Timeline of the four satellites over six hours. For each satellite the upper lane holds the whole-horizon optimal plan and the lower lane the rolling-horizon plan, with block borders dashed; tasks only one plan collects are coloured" aria-describedby="heroStatus"></canvas>
+        <canvas id="heroD" aria-label="Per block, the priority collected by the rolling plan minus the optimum's, as bars, and the running total as a line" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><span class="sw" style="background:var(--ink);opacity:0.55"></span>target in both plans</span>
+          <span class="key"><span class="sw" style="background:var(--warm)"></span>only in the optimum</span>
+          <span class="key"><span class="sw" style="background:var(--c4)"></span>only in the rolling plan</span>
+          <span class="key"><span class="sw" style="background:var(--c4);opacity:0.25"></span>block being solved</span>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <div class="field"><span>Block length: <b id="hBlockV"></b></span>
+        <div class="seg" role="group" aria-label="Block length" id="hBlockSeg">
+          <button class="btn" type="button" aria-pressed="false">30 min</button>
+          <button class="btn" type="button" aria-pressed="true">60 min</button>
+          <button class="btn" type="button" aria-pressed="false">120 min</button>
+          <button class="btn" type="button" aria-pressed="false">180 min</button>
+          <button class="btn" type="button" aria-pressed="false">whole</button>
+        </div>
+      </div>
+      <label class="field"><span>Blocks solved so far: <b id="hStepV"></b></span>
+        <span class="row"><input type="range" id="hStep" min="1" max="6" step="1" value="6"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>blocks × time limit each</span><span class="v" id="rBlocks">–</span>
+        <span>rolling / optimum</span><span class="v" id="rVal">–</span>
+        <span>both runs, same settings</span><span class="v" id="rRep">–</span>
+        <span>so far: rolling / optimum</span><span class="v" id="rSoFar">–</span>
+        <span>wall time (first run)</span><span class="v" id="rTime">–</span>
+        <span>checker (sat.js)</span><span class="v" id="rCheck">–</span>
+      </div>
+      <p class="hint">The plans were computed in Python by code/ch10_numbers.py (CP-SAT cannot run in a browser); the page re-checks each against the course's checker and recomputes its value. Step through the blocks to see the plan grow as rolling.py builds it: earlier blocks fixed, the tinted block being solved, later blocks not yet seen.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#why"><span class="n">1</span><span class="t">Why decompose</span><span class="d">Small problems solve well</span></a>
+    <a href="#code"><span class="n">2</span><span class="t">rolling.py line by line</span><span class="d">Blocks, fixed tasks, carried budgets</span></a>
+    <a href="#myopia"><span class="n">3</span><span class="t">Myopia at block borders</span><span class="d">What the decomposition loses</span></a>
+    <a href="#size"><span class="n">4</span><span class="t">The block-size trade-off</span><span class="d">A sweep on small and medium</span></a>
+    <a href="#gaps"><span class="n">5</span><span class="t">Gaps and bounds</span><span class="d">What "3.1 %" means</span></a>
+    <a href="#noise"><span class="n">6</span><span class="t">Limits, threads and noise</span><span class="d">Running the same thing twice</span></a>
+    <a href="#binds"><span class="n">7</span><span class="t">Which constraint binds</span><span class="d">The memory sweep</span></a>
+    <a href="#limits"><span class="n">8</span><span class="t">Limitations, and the course</span><span class="d">What is left out; ten concepts</span></a>
+    <a href="#check"><span class="n">9</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Capstone exercises</span><span class="d">The repository's next steps</span></a>
+    <a href="#summary"><span class="n">11</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">12</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="why">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Why decompose</h2>
+  </div>
+  <div class="col prose">
+    <p>Chapter 08's CP-SAT model proves the optimum of the small instance in under a second. On the large one (12 satellites, 600 targets, 12 hours, 4,826 opportunities and 145,039 conflict pairs on seed 0) the same model, given 120 s, reaches 1072 against greedy's 1060, and its bound stays at 1138. The search is not stuck because the problem is impossible; it is stuck because the model is large, and an exact search on a large model spends its time everywhere at once.</p>
+    <p>Most of that size is unnecessary for most decisions. A task at 01:00 and a task at 11:00 on the same satellite never interact through reconfiguration: chapter 06's sweep does not even create a pair for them. They interact only through the budgets, and only when they fall in the same revolution or the same memory segment. The idea of a <b>rolling horizon</b> is to exploit this locality: solve the first hour, freeze its decisions, then solve the second hour knowing what the first one did, and so on.</p>
+    <div class="define">
+      <p class="define-title">What is a rolling-horizon decomposition?</p>
+      <p><b>In plain words:</b> cut the time line into blocks, plan each block in turn with an exact solver, and keep what earlier blocks decided as fixed facts for the later ones.</p>
+      <p><b>More precisely:</b> the opportunities are partitioned into blocks <span class="m">B_1, \dots, B_K</span> by the start of their window. For <span class="m">k = 1, \dots, K</span>, the subproblem on <span class="m">B_k</span> is solved with every decision of <span class="m">B_1 \cup \dots \cup B_{k-1}</span> fixed: their targets are no longer available, their budget use is subtracted from the limits, and their tasks occupy their satellites. The union of the block plans is feasible for the whole problem by construction. It is a heuristic: it gives no bound, and its plan can be worse than the optimum because each block ignores what comes after it.</p>
+    </div>
+    <div class="callout"><p><b>The repository's numbers</b> (results.md, cited). On the two large instances, rolling CP-SAT with one-hour blocks reaches 1088 and 1079 in 76.6 and 57.0 s, against 1072 and 1066 for the whole-horizon CP-SAT in 122 s and 1060 and 1047 for greedy: the best plans of the benchmark. On medium the order is reversed: the whole horizon gives 557, 590 and 534 in 60 s, the rolling horizon 540, 570 and 522 in 1.4 to 3.6 s. On small it loses 1 to 4 points against the proven optimum, in under 0.4 s.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2><code>rolling.py</code> line by line</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The outer loop.</b> <code>solve_rolling</code> makes the blocks, solves them in time order and keeps two pieces of state, the plan so far and the budget used so far:</p>
+    <pre><code class="language-python">def solve_rolling(inst: PlanningInstance, block_s: int = 3600, time_limit_s: float = 120.0,
+                  workers: int = 8, seed: int = 0) -&gt; dict:
+    t0 = time.perf_counter()
+    opps = inst.opportunities
+    n_blocks = -(-inst.horizon_s // block_s)
+    blocks = [[] for _ in range(n_blocks)]
+    for o in opps:
+        blocks[min(o.window_start // block_s, n_blocks - 1)].append(o.idx)
+    plan: dict[int, float] = {}
+    used: dict[tuple, int] = {}
+    for ids in blocks:
+        chosen = _solve_block(inst, ids, plan, used, time_limit_s / n_blocks, workers, seed)
+        for i, t in chosen.items():
+            plan[i] = t
+            o = opps[i]
+            for key in (("duty", o.sat, o.revolution), ("memory", o.sat, o.memory_segment)):
+                used[key] = used.get(key, 0) + o.duration</code></pre>
+    <ul>
+      <li><code>-(-a // b)</code> is a ceiling division in integers: a 6-hour horizon in 3600-second blocks gives 6 blocks, a 12-hour one 12.</li>
+      <li>An opportunity belongs to the block in which its <em>window starts</em>; a window that crosses a border stays in the earlier block, and the <code>min</code> keeps the last window inside the last block.</li>
+      <li>After each block, every chosen task adds its duration to two counters: the power budget of its revolution and the memory of its segment, the two keys of chapter 05.</li>
+      <li>The time limit is split evenly, <code>time_limit_s / n_blocks</code> per block. A block that is proved optimal before its share runs out simply stops, and the unused time is not passed on: that is why the benchmark's rolling runs often end far below the limit.</li>
+    </ul>
+    <p><b>One block.</b> <code>_solve_block</code> builds the CP-SAT model of chapter 08 restricted to the block, with three additions for what is already fixed. First, targets already collected are removed, which enforces "each target at most once" across blocks:</p>
+    <pre><code class="language-python">    opps = inst.opportunities
+    taken = {opps[i].target for i in fixed}
+    ids = [i for i in ids if opps[i].target not in taken]
+    if not ids:
+        return {}</code></pre>
+    <p>Then come the variables, <code>AtMostOne</code> per target, <code>NoOverlap</code> per satellite and the pairwise precedences, exactly as in <code>cpsat.py</code> but only for pairs whose two opportunities are both in the block. Second, the budgets are tightened by what earlier blocks used:</p>
+    <pre><code class="language-python">    for kind, limit, group in inst.budget_groups():
+        sub = [i for i in group if i in idset]
+        if not sub:
+            continue
+        key = (kind, opps[sub[0]].sat, opps[sub[0]].revolution if kind == "duty" else opps[sub[0]].memory_segment)
+        m.add(sum(opps[i].duration * x[i] for i in sub) &lt;= limit - used.get(key, 0))</code></pre>
+    <p>A revolution of 95.5 minutes straddles one-hour borders, so its 300 s of listening are shared between two or three blocks; whatever the first block takes is gone for the next. This line is where the decomposition's myopia lives.</p>
+    <p>Third, a new task must keep the reconfiguration time with every fixed task on its satellite. Let the fixed task f start at <span class="m">t_f</span> with duration <span class="m">d_f</span>. A new task i can go after f if it starts at or after <span class="m">\text{after} = t_f + d_f + s(f, i)</span>, and before f if it starts at or before <span class="m">\text{before} = t_f - d_i - s(i, f)</span>. Comparing these two numbers with the window of possible starts <span class="m">[e_i, \ell_i]</span> gives four cases:</p>
+    <pre><code class="language-python">    for i in ids:
+        oi = opps[i]
+        for f in fixed_by_sat.get(oi.sat, []):
+            tf, df = int(round(fixed[f])), opps[f].duration  # block plans have integer starts
+            after = tf + df + inst.transition(f, i)  # earliest start of i if it comes after f
+            before = tf - oi.duration - inst.transition(i, f)  # latest start of i if before f
+            after_ok = after &lt;= oi.latest_start
+            before_ok = before &gt;= oi.earliest_start
+            if after &lt;= oi.earliest_start or before &gt;= oi.latest_start:
+                continue  # no interference whatever the start
+            if not after_ok and not before_ok:
+                m.add(x[i] == 0)
+            elif after_ok and not before_ok:
+                m.add(s[i] &gt;= after).only_enforce_if(x[i])
+            elif before_ok and not after_ok:
+                m.add(s[i] &lt;= before).only_enforce_if(x[i])
+            else:
+                o = m.new_bool_var("")
+                m.add(s[i] &gt;= after).only_enforce_if([x[i], o])
+                m.add(s[i] &lt;= before).only_enforce_if([x[i], o.Not()])</code></pre>
+    <p>It is chapter 06's three-case sweep again, with one side known: no interference (the whole window is clear of f), impossible (the whole window is inside the forbidden interval), one side only, or both sides with a fresh order literal. The widget lets you move the window of i around an illustrative fixed task.</p>
+  </div>
+  <div class="col widget" id="caseW">
+    <canvas id="caseC" aria-label="A timeline with a fixed task, its forbidden interval for the start of a new task, and the window of possible starts of the new task" aria-describedby="caseCap"></canvas>
+    <div class="params">
+      <label class="field"><span>Earliest start of i, <span class="m">e_i</span>: <b id="cEV"></b></span>
+        <span class="row"><input type="range" id="cE" min="300" max="900" step="5" value="450"></span>
+      </label>
+      <label class="field"><span>Start slack, <span class="m">\ell_i - e_i</span>: <b id="cWV"></b></span>
+        <span class="row"><input type="range" id="cW" min="0" max="300" step="5" value="300"></span>
+      </label>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>case</span><span class="v" id="cCase">–</span>
+      <span>what rolling.py adds</span><span class="v" id="cCode">–</span>
+    </div>
+    <p class="status" id="caseCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Two details are worth noticing. The first block is solved with nothing fixed, and the last with nearly everything fixed, so each block's model is smaller than the whole and its precedences only involve its own pairs and the fixed tasks. And the block models carry no hint: unlike the whole-horizon run of the benchmark, they do not start from greedy's plan. The function returns no bound (<code>"bound": None</code>): the optimum of each block says nothing about the optimum of the whole.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="myopia">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Myopia at block borders</h2>
+  </div>
+  <div class="col prose">
+    <p>Each block is solved to optimality for <em>its own</em> objective: the priority collected inside the block. It has no reason to leave anything for later. If a revolution's power budget can be spent on a priority-4 task now or on a priority-8 task in the next hour, the block takes the 4: the 8 is not in its model. The hero widget shows the result on the small instance. With 60-minute blocks (the default view, first run), the rolling plan collects 56 points in the first hour where the optimum collects 49, the same in hours two to four, 50 against 44 in the fifth, and then 54 against 68 in the last: 218 against 219 overall. The optimum of the course is one of possibly several optimal plans, so the per-block comparison is a picture, not a proof; but the shape, ahead early and behind late, appears for every block length shorter than the horizon.</p>
+    <div class="callout"><p><b>The numbers per block</b> (small instance, first run of code/ch10_numbers.py). 30-minute blocks: 53 against 46 in the first block, 34 against 39 in the last; total 213. 120-minute blocks: 76, 38, 103 against 69, 38, 112; total 217. 180-minute blocks: 82, 137 against 75, 144; total 219, so here the second block catches up completely. A whole-horizon block finds 219 as well. Every plan passes the checker, in Python and again in your browser.</p></div>
+    <div class="big-idea"><p>A decomposition is exact inside each piece and blind across pieces. What it loses is decided at the borders: wherever a resource (a budget, a target, satellite time) can be spent on either side, the earlier block spends it.</p></div>
+    <p>Two standard remedies exist, and the repository's README lists both as next steps. <b>Overlapping blocks</b> solve a longer window than they commit: plan hours 1 and 2, keep only hour 1, then plan hours 2 and 3. The second hour is then seen twice, once as a look-ahead. <b>Polishing</b> gives the rolling plan to the whole-horizon CP-SAT as a hint, so the global model starts from a good plan and repairs the borders. Capstone exercise 1 measures the second.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="size">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The block-size trade-off</h2>
+  </div>
+  <div class="col prose">
+    <p>Short blocks are easy to solve and see little; long blocks see more and are harder. At one extreme a single block is the whole-horizon model; at the other, blocks of a few minutes would hold one or two opportunities each and reduce the method to a greedy in time order. The chapter's script runs blocks of 30, 60, 120 and 180 minutes and a single block on seed 0 of the small and medium instances, with the benchmark's time limits (20 s and 60 s in total, split evenly between blocks, CP-SAT with 8 workers), twice each with identical settings.</p>
+  </div>
+  <div class="col widget" id="swW">
+    <div class="two">
+      <canvas id="swV" aria-label="Value of the rolling plan as a percentage of the best bound against the block length, for the small and medium instances" aria-describedby="swCap"></canvas>
+      <canvas id="swT" aria-label="Wall time of the rolling plan against the block length, log scale, with the time limits" aria-describedby="swCap"></canvas>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span class="key"><span class="sw" style="background:var(--post)"></span>small, seed 0</span>
+      <span class="key"><span class="sw" style="background:var(--warm)"></span>medium, seed 0</span>
+    </div>
+    <p class="status" id="swCap"></p>
+  </div>
+  <div class="col prose">
+    <p><b>Reading the sweep.</b> On small, every block length finishes in well under a second (each block is proved optimal at once), and only the value changes: 213 and 217 for 30-minute blocks in the two runs, 218 for 60, 217 and 216 for 120, and the optimum 219 from 180 minutes up. On medium, 30-minute blocks give 535 and 543 in about a second, 120-minute blocks 549 in 8 to 13 s, and the whole horizon 555 and 558 in the full 60 s. Three lessons:</p>
+    <ul>
+      <li><b>The trend is real, the details are noise.</b> Longer blocks are better on average, but 180-minute blocks on medium (545 and 544) do worse than 120-minute ones (549). Their blocks are larger and slower to solve (15.4 and 19.0 s per run, against 8.2 and 12.7 s), and their borders fall at different times.</li>
+      <li><b>The same settings do not give the same plan.</b> The two runs with 30-minute blocks differ by 4 points on small and 8 on medium, although every block is solved by the same solver with the same seed. Among several optimal plans for a block, eight threads racing each other do not always return the same one, and a different choice in block 1 changes what blocks 2 to 12 can do.</li>
+      <li><b>The best block length depends on the instance and the time.</b> On medium in 60 s, the whole horizon wins; on large in 120 s (results.md), one-hour blocks win. A block length is a parameter to tune, against a time budget, on instances like the ones it will meet.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="gaps">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Gaps and bounds</h2>
+  </div>
+  <div class="col prose">
+    <p>The benchmark's table reports a <b>gap</b> for every method on every instance. results.md defines it in one line: "Gap = (upper bound − value) / upper bound, with the best upper bound proven by either exact solver". In symbols, for a plan of value <span class="m">v</span> and the smallest upper bound <span class="m">U</span> proved by CP-SAT or HiGHS on that instance,</p>
+    <div class="math-block">\text{gap}_U(v) = \frac{U - v}{U}.</div>
+    <p>The quantity one would like is the true gap against the optimum <span class="m">v^*</span>, <span class="m">(v^* - v)/v^*</span>, but <span class="m">v^*</span> is unknown except on small. What is known is a bracket. The optimum is at most the bound, <span class="m">v^* \le U</span>, and at least the best plan anyone found, <span class="m">v^* \ge L</span>. The true gap is therefore between two computable numbers:</p>
+    <div class="math-block">\frac{L - v}{L} \;\le\; \frac{v^* - v}{v^*} \;\le\; \frac{U - v}{U}.</div>
+    <p>On small, <span class="m">L = U</span> = the optimum and the bracket closes. On medium seed 0, the benchmark's <span class="m">U = 575</span> and its best plan is CP-SAT's 557, so CP-SAT's gap of 3.1% is an <em>upper estimate</em>: the true gap is anywhere between 0% and 3.1%. This chapter's script narrows the bracket with more runs on the same instance: its best plan is 560 (CP-SAT hinted with a rolling plan, capstone exercise 1) and no run proved a bound below 575, so the optimum lies in [560, 575], and the benchmark's 557 is between 0.5% and 3.1% below it.</p>
+  </div>
+  <div class="col widget" id="gapW">
+    <div class="seg" role="group" aria-label="Gap against" id="gapSeg">
+      <button class="btn" type="button" data-m="range" aria-pressed="true">bracket</button>
+      <button class="btn" type="button" data-m="bound" aria-pressed="false">against the bound (results.md)</button>
+      <button class="btn" type="button" data-m="known" aria-pressed="false">against the best plan</button>
+    </div>
+    <canvas id="gapC" aria-label="For each benchmark instance and method, the range between the gap against the best known plan and the gap against the best proven bound" aria-describedby="gapCap"></canvas>
+    <div class="legend" aria-hidden="true">
+      <span class="key"><span class="sw" style="background:var(--prior)"></span>greedy</span>
+      <span class="key"><span class="sw" style="background:var(--post)"></span>CP-SAT</span>
+      <span class="key"><span class="sw" style="background:var(--c4)"></span>rolling CP-SAT, 1 h</span>
+      <span class="key"><span class="sw" style="background:var(--warm)"></span>MILP (HiGHS)</span>
+    </div>
+    <p class="status" id="gapCap"></p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="benchT" class="num">
+      <thead><tr><th>instance</th><th>limit</th><th>greedy</th><th>CP-SAT</th><th>rolling 1 h</th><th>MILP</th><th>best bound</th></tr></thead>
+      <tbody>
+        <tr><td>small 0</td><td>20 s</td><td>193<span class="sub">11.9 %</span></td><td>219<span class="sub">0.0 %</span></td><td>218<span class="sub">0.5 %</span></td><td>219<span class="sub">0.0 %</span></td><td>219</td></tr>
+        <tr><td>small 1</td><td>20 s</td><td>161<span class="sub">10.1 %</span></td><td>179<span class="sub">0.0 %</span></td><td>178<span class="sub">0.6 %</span></td><td>179<span class="sub">0.0 %</span></td><td>179</td></tr>
+        <tr><td>small 2</td><td>20 s</td><td>175<span class="sub">11.6 %</span></td><td>198<span class="sub">0.0 %</span></td><td>194<span class="sub">2.0 %</span></td><td>198<span class="sub">0.0 %</span></td><td>198</td></tr>
+        <tr><td>medium 0</td><td>60 s</td><td>518<span class="sub">9.9 %</span></td><td>557<span class="sub">3.1 %</span></td><td>540<span class="sub">6.1 %</span></td><td>541<span class="sub">5.9 %</span></td><td>575</td></tr>
+        <tr><td>medium 1</td><td>60 s</td><td>560<span class="sub">7.3 %</span></td><td>590<span class="sub">2.3 %</span></td><td>570<span class="sub">5.6 %</span></td><td>580<span class="sub">4.0 %</span></td><td>604</td></tr>
+        <tr><td>medium 2</td><td>60 s</td><td>506<span class="sub">8.2 %</span></td><td>534<span class="sub">3.1 %</span></td><td>522<span class="sub">5.3 %</span></td><td>505<span class="sub">8.3 %</span></td><td>551</td></tr>
+        <tr><td>large 0</td><td>120 s</td><td>1060<span class="sub">6.9 %</span></td><td>1072<span class="sub">5.8 %</span></td><td>1088<span class="sub">4.4 %</span></td><td>145<span class="sub">87.3 %</span></td><td>1138</td></tr>
+        <tr><td>large 1</td><td>120 s</td><td>1047<span class="sub">7.0 %</span></td><td>1066<span class="sub">5.3 %</span></td><td>1079<span class="sub">4.2 %</span></td><td>894<span class="sub">20.6 %</span></td><td>1126</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The table is results.md's, values with their gap against the best bound underneath. Two remarks change how it reads. First, on one instance every method is measured against the same <span class="m">U</span>, so the bound's looseness shifts all gaps on that row by roughly the same amount: comparisons within a row are fair, absolute gaps on medium and large are pessimistic. Second, a gap of 0% against the best known plan means "nobody found better", not "optimal": the rolling horizon on large is 0% against the best plan and 4.4% against the bound, and nothing in the benchmark says where in between it is. On the large instances the bounds come from the whole-horizon models (the rolling horizon proves nothing), and chapter 09 showed that they stay close to the root LP relaxation, which is blind to reconfiguration: the true gaps there may be much smaller than 4–6%.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="noise">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Same limits, unequal threads, and noise</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Same time limit for all.</b> The benchmark gives every method the same wall-clock limit per size: 20 s on small, 60 s on medium, 120 s on large. That is the right comparison for a planner who has a fixed amount of time before the plan must be uploaded. It is not a comparison of algorithms in the abstract: a different limit can change the ranking, as the medium instance shows (the rolling horizon is far ahead at 3 s, the whole horizon ahead at 60 s).</p>
+    <p><b>Unequal threads.</b> CP-SAT ran with 8 workers on a 14-thread machine, HiGHS through SciPy on one. The README and results.md say so, which is the minimum a benchmark owes its reader. A careful reader then asks whether the conclusion survives the difference. For "CP-SAT beats the MILP" it does (chapter 09: 10 to 17 times faster on small at equal results, and on large the MILP is below greedy). For a close result it would not: a 2% difference between a 1-thread and an 8-thread run says nothing about the algorithms.</p>
+    <p><b>Run-to-run noise.</b> CP-SAT's eight workers run different strategies in parallel and exchange plans and bounds as they go. Which worker finds what first depends on how the operating system schedules the threads, so two runs with the same seed and the same limit can stop with different plans. results.md warns that "CP-SAT is multi-threaded, so values can change slightly between runs". The chapter's script measures how much: five runs of the benchmark's CP-SAT configuration (greedy hint, 8 workers) on medium seed 0 with a 30-second limit, random seeds 0 to 4.</p>
+    <div class="callout"><p><b>Measured.</b> The five runs gave 549, 550, 545, 547 and 550: a spread of 5 points, mean 548.2, every one with the bound 575. The benchmark's memory sweep ran exactly this configuration once (memory 600 s, 30 s, seed 0) and recorded 549; this script's seed-0 run gave 549 too, this time, while seeds 1 to 4 gave values from 545 to 550. Running the script again gives other numbers: that is the point. The rolling horizon is not immune either: the two runs of Part 4 with 30-minute blocks differ by 4 points on small and 8 on medium.</p></div>
+    <p>One more caution about this measurement: the script's runs were made on a laptop that may have been busy with other work, and a busy machine lets a 30-second run explore less. The level of the five values (545 to 550) is therefore not comparable with the benchmark's 549 to 554; their <em>spread</em> is the number to carry away.</p>
+    <p>A single run is one draw from this distribution. A difference between two methods smaller than the spread, such as 553 against 549, cannot be attributed to the methods without repeated runs; a difference much larger than it, such as greedy's 518 against CP-SAT's 557, can. The honest report of a multi-threaded solver stopped at a time limit gives several runs, or at least the spread of a few. The benchmark gives one run per instance, which is enough for its large differences and not for its small ones.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="binds">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Which constraint binds</h2>
+  </div>
+  <div class="col prose">
+    <p>A constraint <b>binds</b> when relaxing it would improve the optimum. The memory budget of chapter 05, 600 s of recording between two ground contacts, is a design choice; the question an engineer asks is whether a bigger memory would buy more collection. The benchmark answers it with a sweep: the medium instance, seed 0, solved by greedy and by CP-SAT (30 s, greedy hint) for memories of 200, 300, 450, 600 and 900 s and for practically no limit (100,000 s).</p>
+  </div>
+  <div class="col widget" id="memW">
+    <canvas id="memC" aria-label="Collected priority against the memory budget for greedy and CP-SAT with the CP-SAT bound, and a band showing the measured run-to-run spread" aria-describedby="memCap"></canvas>
+    <div class="legend" aria-hidden="true">
+      <span class="key"><span class="sw" style="background:var(--post)"></span>CP-SAT, 30 s</span>
+      <span class="key"><span class="sw" style="background:var(--prior)"></span>greedy</span>
+      <span class="key"><span class="sw" style="height:0;border-top:2px dashed var(--ink);background:none;border-radius:0"></span>CP-SAT bound</span>
+      <span class="key"><span class="sw" style="background:var(--warm);opacity:0.4"></span>measured spread, 5 runs at 600 s</span>
+    </div>
+    <p class="status" id="memCap"></p>
+  </div>
+  <div class="col prose">
+    <p>Read the bound first, because it moves only for a reason. At 200 s it equals the value, 489, and CP-SAT proves it optimal: with so little memory the problem is small. At 300 s the bound is 566, still below the unconstrained 575, so memory still limits what <em>any</em> plan can collect. From 450 s on, the bound is 575 whatever the memory, and greedy is stuck at 516 to 518. The values 553, 549, 554 and 554 differ by at most 5 points, the size of the spread measured in Part 6, so they cannot be told apart. The conclusion of the README follows: at 300 s or less memory binds; above 450 s it does not, and what limits collection is the reconfiguration time and the power budget. As far as these runs can tell, a larger onboard memory than 600 s would buy nothing on this instance (the bound does not prove it, since the optimum may sit below 575 differently for each budget); a faster slew or a larger power budget might, and the same sweep would say how much.</p>
+    <p>Note the method: the claim rests on the <b>bound</b>, which is a proof, and on the measured noise, which says how much a change in value means. Values alone (549 at 600 s, 554 at 900 s) would suggest that more memory helps by 5 points, which is noise.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="limits">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Limitations, and the course in ten concepts</h2>
+  </div>
+  <div class="col prose">
+    <p><b>What the model leaves out.</b> The README is explicit, and the course has quantified most of it along the way:</p>
+    <ul>
+      <li>a synthetic, simplified scenario: circular orbits, a spherical Earth, no J2 (chapter 03 measures the effect), generic ocean areas, illustrative ground stations and budgets; it makes no claim about any real system;</li>
+      <li>reconfiguration times computed from the pointing directions at window midpoints, fixed per pair; budget segments assigned from window midpoints; each ground contact assumed long enough to empty the memory (chapter 05);</li>
+      <li>a static plan over a fixed horizon: no new requests, no replanning, no uncertainty on detections or on whether an emitter is active;</li>
+      <li>on medium and large instances the optimum is unknown and every gap is an upper estimate (Part 5).</li>
+    </ul>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="mapT">
+      <thead><tr><th>Chapter</th><th>The concept</th><th>What it gave the planning problem</th></tr></thead>
+      <tbody>
+        <tr><td><a href="01-circular-orbits-from-newton.html">01</a></td><td>The two-body problem and numerical integration</td><td>Circular orbits, their speed and period, and why the closed form is enough</td></tr>
+        <tr><td><a href="02-placing-an-orbit-in-space.html">02</a></td><td>Reference frames and rotations</td><td>Each satellite's position in the inertial frame; the constellation layout</td></tr>
+        <tr><td><a href="03-the-earth-turns-underneath.html">03</a></td><td>Rotating frames</td><td>Ground tracks, revisit, and what ignoring J2 costs</td></tr>
+        <tr><td><a href="04-seeing-the-ground.html">04</a></td><td>Visibility geometry</td><td>Off-nadir and elevation limits, footprints, windows on a 10 s grid</td></tr>
+        <tr><td><a href="05-from-geometry-to-a-planning-problem.html">05</a></td><td>Modelling and abstraction</td><td>Opportunities, priorities, revolutions and memory segments</td></tr>
+        <tr><td><a href="06-constraints-and-an-independent-checker.html">06</a></td><td>Feasibility and verification</td><td>Sequence-dependent reconfiguration, conflict pairs, budgets, the checker</td></tr>
+        <tr><td><a href="07-a-greedy-plan.html">07</a></td><td>Heuristics</td><td>A plan in a hundredth of a second, 10–12% below the optimum</td></tr>
+        <tr><td><a href="08-constraint-programming-with-cp-sat.html">08</a></td><td>Exact search and proofs of optimality</td><td>CP-SAT: the optimum 219 of the small instance, proved in about a second</td></tr>
+        <tr><td><a href="09-the-same-problem-as-a-milp.html">09</a></td><td>Formulation strength</td><td>An independent check of the optimum, and why big-M rows scale badly here</td></tr>
+        <tr><td><b>10</b></td><td>Decomposition and experimental method</td><td>The best large-instance plans, and how far to trust a benchmark</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Read down the middle column and the course is a short tour of applied mathematics: mechanics, geometry, modelling, verification, heuristics, exact optimisation, formulations, decomposition, measurement. Read down the right column and it is one engineering problem taken from Newton's law to a plan that a checker accepts. The two readings are the same course.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why is the union of the block plans always feasible for the whole problem?</summary><p>Each block removes the targets already collected, subtracts the budgets already used, and forces its tasks to keep the reconfiguration times with every fixed task on the same satellite. So every constraint of the whole problem is respected between a new task and everything fixed before it, and inside the block by the block model.</p></details>
+    <details class="sol"><summary>2. Why does the rolling horizon give no bound?</summary><p>Each block's optimum is conditional on what earlier blocks fixed. A different early choice could allow a better total, and nothing in the block models measures how much. The sum of block optima is the value of one plan, not a limit on all plans.</p></details>
+    <details class="sol"><summary>3. Where, in the code, does the myopia come from?</summary><p>From the objective of each block (only its own priority) together with <code>limit - used.get(key, 0)</code>: a block may spend a revolution's or a segment's budget, or a target, that a later block would have used better, because it does not see the later block.</p></details>
+    <details class="sol"><summary>4. A new task's window is <span class="m">[e_i, \ell_i] = [520, 600]</span>, and <span class="m">\text{after} = 700</span>, <span class="m">\text{before} = 515</span>. Which case?</summary><p><span class="m">\text{after} \le \ell_i</span> is false and <span class="m">\text{before} \ge e_i</span> is false, and neither "no interference" test holds, so the task cannot be selected: <code>m.add(x[i] == 0)</code>.</p></details>
+    <details class="sol"><summary>5. CP-SAT's medium seed 0 gap is 3.1%. What is the most you can say about its true gap?</summary><p>That it lies between the gap against the best plan known and the gap against the best bound. With the benchmark alone, between 0% and 3.1%; with this chapter's extra runs, between 0.5% and 3.1%.</p></details>
+    <details class="sol"><summary>6. Why do two CP-SAT runs with the same seed give different plans?</summary><p>Its parallel workers exchange solutions and bounds as they find them, and the timing of those exchanges depends on the operating system's thread scheduling. With a wall-clock time limit, the search also stops at a slightly different point each time.</p></details>
+    <details class="sol"><summary>7. The memory sweep shows 549 at 600 s and 554 at 900 s. Does more memory help?</summary><p>No conclusion can be drawn from the values: the difference is smaller than the measured run-to-run spread. The bound, which is the same 575 at both, says that no plan can use the extra memory to exceed it; the evidence is that memory does not bind above 450 s.</p></details>
+    <details class="sol"><summary>8. Why is "same time limit for all methods" fair, and in what sense is the benchmark still unfair?</summary><p>It compares what each method delivers in the time a planner has. It remains unequal in resources: CP-SAT used 8 threads and HiGHS 1. A conclusion that a factor of eight in compute could reverse should not be drawn from it.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Capstone exercises</h2>
+  </div>
+  <div class="col prose">
+    <p>The four next steps of the repository's README, as projects. Each uses everything the course built; each comes with a hint and the shape of a solution rather than a single answer.</p>
+    <ol class="exercises">
+      <li><div><b>Seed CP-SAT with the rolling plan.</b> Run <code>solve_rolling</code> with one-hour blocks, pass its plan as <code>hint</code> to <code>solve_cpsat</code> on the whole horizon, and compare with the greedy hint at the same total time. Does it help on medium? On large?</div>
+        <details class="sol"><summary>Hint</summary><p><code>solve_cpsat(inst, time_limit_s, hint=rolling["plan"])</code> accepts any feasible plan. Give the combination the same total time as the alternative, and repeat each configuration a few times: Part 6 says why.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The chapter's script does it once on medium seed 0 with 60 s for CP-SAT: hinted with the one-hour rolling plan (544 in that run; the two runs of Part 4 gave 539 and 540), CP-SAT reaches 560 with bound 575, against 557 for the benchmark's greedy-hinted run and 555 and 558 for the two unhinted whole-horizon runs of Part 4. Those differences are of the size of the spread of Part 6, so one run does not show an effect. The case where seeding should matter is large, where the rolling plan (1088) is far ahead of what CP-SAT reaches from greedy (1072) in 120 s: start the whole-horizon search there and it can only improve on 1088. Measure it with several runs.</p></details>
+      </li>
+      <li><div><b>Large neighbourhood search by satellite or area.</b> Instead of blocks in time, repeatedly fix the current plan everywhere except on one satellite (or one maritime area, or one satellite over a few hours) and re-solve that part with CP-SAT. Accept the result if it is better.</div>
+        <details class="sol"><summary>Hint</summary><p>The fixed-task machinery of <code>_solve_block</code> already handles "everything else is fixed" for one satellite's neighbours; budgets of the freed part are its limits minus the fixed tasks' use. For an area, the coupling is through the targets, which are freed together.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Each re-solve is small and exact, and the plan's value can only increase, so the method is anytime. Unlike the rolling horizon it can revisit the first hour after the last, which repairs border effects. The design questions are the neighbourhood's size (small enough to solve in a second, large enough to contain an improvement) and the order of neighbourhoods; CP-SAT's own LNS workers (chapter 08) do a generic version of this, and a problem-specific neighbourhood often does better.</p></details>
+      </li>
+      <li><div><b>A Lagrangian bound.</b> The only constraint that couples satellites is "each target at most once". Move it into the objective with a multiplier <span class="m">\lambda_j \ge 0</span> per target and show that the problem then splits into one independent problem per satellite. Use it to compute a bound.</div>
+        <details class="sol"><summary>Hint</summary><p>Replace <span class="m">\max \sum_o w_o x_o</span> s.t. <span class="m">\sum_{o \in j} x_o \le 1</span> by <span class="m">\max \sum_o (w_o - \lambda_{j(o)}) x_o + \sum_j \lambda_j</span> with that constraint removed. Precedences and budgets are all per satellite.</p></details>
+        <details class="sol"><summary>Solution</summary><p>For any <span class="m">\lambda \ge 0</span> the relaxed optimum</p><div class="math-block" data-narrow="\begin{aligned} L(\lambda) = {} &amp;\textstyle\sum_j \lambda_j + \sum_{\text{sat}} \max \big(\text{that} \\ &amp;\text{satellite's problem with} \\ &amp;\text{weights } w_o - \lambda_{j(o)}\big) \end{aligned}">L(\lambda) = \sum_j \lambda_j + \sum_{\text{sat}} \max \big(\text{that satellite's problem with weights } w_o - \lambda_{j(o)}\big)</div><p>is an upper bound, since every plan satisfying the target rows scores at least as much in the relaxed objective. Each satellite's problem is small and keeps the reconfiguration times, which is exactly what chapter 09's LP throws away; solve each with CP-SAT. Minimise <span class="m">L</span> by subgradient steps: raise <span class="m">\lambda_j</span> for targets collected by several satellites, lower it (not below 0) for targets nobody collects. The open question for the project is whether this bound beats 575 on medium.</p></details>
+      </li>
+      <li><div><b>Replanning.</b> Halfway through the horizon an urgent target appears. Insert it into the running plan, keeping everything already executed and changing as few future tasks as possible.</div>
+        <details class="sol"><summary>Hint</summary><p>Everything before "now" is fixed: that is <code>_solve_block</code>'s <code>fixed</code> argument with its carried budgets. For "as few changes as possible", add a penalty for each future task of the old plan that is dropped or moved.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Build the model on the opportunities after "now", with the executed tasks fixed and the budgets they used carried over, exactly as in rolling.py. Give the urgent target a large weight, and subtract from the objective a cost <span class="m">c</span> for every task of the old plan whose <span class="m">x</span> becomes 0 (and optionally for moved starts, with <span class="m">|s - s_{\text{old}}|</span> linearised by two inequalities). The weight of <span class="m">c</span> against the priorities states how much stability is worth, which is an operational choice, not a mathematical one. Check the new plan with the checker before anything else.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Rolling horizon</b>: opportunities in blocks by window start; each block solved by CP-SAT with earlier tasks fixed, their targets removed, their budget use carried, reconfiguration against fixed tasks in four cases; the time limit split evenly.</div></li>
+      <li><div><b>Myopia</b>: each block takes what it can; on small with one-hour blocks the rolling plan is 7 points ahead of the optimum after the first hour and 1 behind at the end (218 against 219).</div></li>
+      <li><div><b>Block size</b>: small 213–219, optimal from 180-minute blocks; medium 535–549 in 1 to 19 s, the whole horizon best in 60 s; on large (results.md) one-hour blocks win.</div></li>
+      <li><div><b>Gaps</b>: against the best proved bound, an upper estimate of the true gap; against the best known plan, a lower one. Medium seed 0's optimum is in [560, 575].</div></li>
+      <li><div><b>Method</b>: same limits, stated threads (8 against 1), and run-to-run noise measured: 5 points over five CP-SAT runs on medium, 8 between two rolling runs. Differences below the noise mean nothing.</div></li>
+      <li><div><b>Which constraint binds</b>: memory at 300 s or less (489 proved optimal at 200 s); above 450 s the bound stays at 575 and the values are noise.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Decomposition</td><td>Solving a large problem as a sequence or set of smaller ones.</td></tr>
+        <tr><td>Rolling horizon</td><td>Blocks in time order, each solved with earlier decisions fixed.</td></tr>
+        <tr><td>Fixed task</td><td>A task chosen by an earlier block, treated as a fact by later ones.</td></tr>
+        <tr><td>Myopia</td><td>A block's preference for value it can see over value after its border.</td></tr>
+        <tr><td>Gap against a bound</td><td><span class="m">(U - v)/U</span>; an upper estimate of the true gap.</td></tr>
+        <tr><td>Gap against the best known plan</td><td><span class="m">(L - v)/L</span>; a lower estimate of the true gap.</td></tr>
+        <tr><td>Run-to-run noise</td><td>The spread of results of repeated runs with the same settings.</td></tr>
+        <tr><td>Binding constraint</td><td>One whose relaxation would improve the optimum; shown by a moving bound in a sweep.</td></tr>
+        <tr><td>Overlapping blocks</td><td>Solving a longer window than is committed, as a look-ahead.</td></tr>
+        <tr><td>Lagrangian relaxation</td><td>Moving a coupling constraint into the objective with a price, so the problem splits.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> The chapter measures the rolling horizon only on seed 0 of the small and medium instances, twice per block length, with the benchmark's limits; the large-instance numbers are the benchmark's, cited. It does not implement overlapping blocks, LNS or the Lagrangian bound: those are the capstones. The noise measurement is five runs at one time limit on one instance, enough to show its size, not to describe its distribution. All runs used the author's 14-thread laptop, possibly with other work running, which is part of what makes wall-clock limits noisy.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>M. Lemaître, G. Verfaillie, F. Jouhaud, J.-M. Lachiver and N. Bataille. Selecting and scheduling observations of agile satellites. <em>Aerospace Science and Technology</em>, 6(5):367–381, 2002. A classic study of the same kind of problem for imaging satellites, comparing greedy, dynamic programming, constraint programming and local search.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>. Springer, fifth edition, 2016. Decomposition and rolling-horizon heuristics for scheduling, and how to evaluate them.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>L. A. Wolsey. <em>Integer Programming</em>. Wiley, 1998; second edition 2020. Lagrangian relaxation and duality, for capstone exercise 3.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>Google OR-Tools, CP-SAT solver documentation. <a href="https://developers.google.com/optimization">developers.google.com/optimization</a>. Solution hints, workers, random seeds and time limits, the parameters this chapter varies.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>J. R. Wertz and W. J. Larson (eds.). <em>Space Mission Analysis and Design</em>. Microcosm Press and Kluwer, third edition, 1999. Where the operational questions behind the limitations (onboard memory, power, ground contacts, replanning) are treated as a whole.</div></li>
+    </ul>
+    <p>This is the end of the course. The landing page lists the ten chapters again, and the repository holds the code, the tests and the benchmark that every number here was checked against.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="09-the-same-problem-as-a-milp.html"><span class="lbl">Previous · 09</span><span class="t">The same problem as a MILP</span></a>
+  <a class="next" rel="next" href="index.html"><span class="lbl">Back to the start</span><span class="t">Course overview</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 10 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The rolling-horizon plans, block-size sweeps and noise runs come from code/ch10_numbers.py; the plans are re-checked in your browser with sat.js against the course's shared instance; the benchmark table and the memory sweep are the repository's results/results.md and results/benchmark.json. The scenario is synthetic and makes no claim about any real satellite system. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch10-data.js"></script>
+<script src="interactive/ch10.js"></script>
+</body>
+</html>

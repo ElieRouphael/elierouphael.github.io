@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>04 · Seeing the Ground · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="Visibility geometry for satellite planning: the triangle between the Earth's centre, the satellite and a target, elevation, off-nadir angle and Earth central angle, the law of sines, the satplan visibility test read line by line, which limit binds at 550 km (the 55° sensor cone, not the 10° elevation mask), footprints and slant ranges, pass durations against cross-track offset, and visibility windows sampled on a 10 s grid with their error measured. A live pass in the browser; every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .stage canvas, .widget canvas { display: block; width: 100%; }
+  #vocT td, #limT td, #durT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #limT, #durT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  canvas + canvas { margin-top: 0.4rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 04 of 10</span>
+  <h1>Seeing the ground</h1>
+  <p class="lede">A satellite can listen to a ship only while the ship is inside its sensor's cone and the satellite is high enough above the ship's horizon. This chapter turns those two sentences into geometry: one triangle between the Earth's centre, the satellite and the target, three angles that always add up to 90°, and the two dot products of the package's visibility test. From them follow the size of the footprint, which of the package's two limits actually decides visibility at 550 km, how long a pass lasts and why it gets shorter off the track, and what is lost when visibility is checked only every 10 seconds. The windows computed here are the raw material of every opportunity the planner chooses from.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 02–03 (the inertial frame, ground points, ground tracks) and a little trigonometry · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">One pass: elevation and off-nadir angle over time, the exact window and the 10 s grid</p>
+        <canvas id="heroC" aria-label="Elevation of the satellite and off-nadir angle of the target against time during one pass, with the limits, the exact visibility window shaded and the samples of the 10 s grid" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><span class="sw" style="background:var(--post)"></span>elevation (limit dashed)</span>
+          <span class="key"><span class="sw" style="background:var(--warm)"></span>off-nadir angle (cone dashed)</span>
+          <span class="key"><span class="sw" style="background:var(--post);opacity:0.25"></span>exact window</span>
+          <span class="key">● visible sample · ○ not visible · ⊢⊣ recorded window</span>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Cross-track offset of the target: <b id="hOffV"></b></span>
+        <span class="row"><input type="range" id="hOff" min="-900" max="900" step="10" value="300"></span>
+      </label>
+      <label class="field"><span>Sensor cone, max off-nadir <span class="m">\eta_{\max}</span>: <b id="hConeV"></b></span>
+        <span class="row"><input type="range" id="hCone" min="10" max="70" step="1" value="55"></span>
+      </label>
+      <label class="check"><input type="checkbox" id="hNoCone"> no sensor cone</label>
+      <label class="field"><span>Elevation mask <span class="m">\varepsilon_{\min}</span>: <b id="hElV"></b></span>
+        <span class="row"><input type="range" id="hEl" min="0" max="40" step="1" value="10"></span>
+      </label>
+      <label class="field"><span>Shift of the 10 s grid: <b id="hGV"></b></span>
+        <span class="row"><input type="range" id="hG" min="0" max="9" step="1" value="0"></span>
+      </label>
+      <div class="btn-row"><button class="btn ghost" type="button" id="hTarget">target limits</button><button class="btn ghost" type="button" id="hStation">station limits</button></div>
+      <div class="readouts" aria-live="off">
+        <span>highest elevation</span><span class="v" id="rEl">–</span>
+        <span>smallest off-nadir</span><span class="v" id="rOn">–</span>
+        <span>exact window</span><span class="v" id="rExact">–</span>
+        <span>recorded on the grid</span><span class="v" id="rSamp">–</span>
+        <span>lost at start + end</span><span class="v" id="rLost">–</span>
+        <span>limit that closes the window</span><span class="v" id="rBind">–</span>
+      </div>
+      <p class="hint">The satellite is at 550 km and 97.6°; the target is placed perpendicular to the ground track, near 40° N. Angles from the page's port of <code>visibility_mask</code> (<code>Sat.lookAngles</code>); exact edges by bisection to a microsecond. "Target limits" are the scenario's 55° and 10°; "station limits" no cone and 5°.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#triangle"><span class="n">1</span><span class="t">One triangle</span><span class="d">Elevation, off-nadir, central angle, and the law of sines</span></a>
+    <a href="#code"><span class="n">2</span><span class="t">The visibility test, line by line</span><span class="d">Two dot products</span></a>
+    <a href="#binds"><span class="n">3</span><span class="t">Which limit binds</span><span class="d">55° cone against 10° mask; footprints and ranges</span></a>
+    <a href="#duration"><span class="n">4</span><span class="t">How long a pass lasts</span><span class="d">Overhead, off the track, and the windows the scenario drops</span></a>
+    <a href="#grid"><span class="n">5</span><span class="t">Windows on a 10 s grid</span><span class="d">What sampling costs, measured</span></a>
+    <a href="#check"><span class="n">6</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">7</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">8</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">9</span><span class="t">Scope and further reading</span><span class="d">What is left out, and where to read more</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="triangle">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>One triangle</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Two points of view.</b> Stand on the deck of a ship and look for the satellite: it is somewhere above your horizon, at an angle called its <em>elevation</em>. Near the horizon the line of sight crosses a lot of atmosphere, and hills or the ship's own superstructure may be in the way, so a receiver usually ignores satellites below some minimum elevation, the <em>elevation mask</em>. Now sit on the satellite and look down: straight down is <em>nadir</em>, and the ship is at some angle from it, the <em>off-nadir angle</em>. An antenna or a sensor covers a cone around nadir; a ship outside the cone cannot be heard, however high the satellite is in its sky. The scenario uses both limits for targets, a 55° cone and a 10° mask; for ground stations it uses no cone and a 5° mask, as suits a steerable station antenna.</p>
+    <p>Both angles live in one plane: the plane through the Earth's centre <span class="m">O</span>, the satellite <span class="m">S</span> and the target <span class="m">P</span>. The three points make a triangle, and everything in this chapter is read off it.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What are the angles of visibility?</p>
+      <p><b>In plain words:</b> how high the satellite stands in the target's sky (elevation), how far from straight down the satellite must look (off-nadir), and how far apart the two are over the Earth's surface, as an angle at the centre (central angle).</p>
+      <p><b>More precisely:</b> with <span class="m">R</span> the Earth's radius, <span class="m">h</span> the altitude and <span class="m">\rho = \lVert P - S\rVert</span> the slant range,</p>
+      <dl>
+        <dt>Elevation <span class="m">\varepsilon</span></dt><dd>The angle at <span class="m">P</span> between the line of sight to <span class="m">S</span> and the local horizontal plane: <span class="m">\sin\varepsilon = \hat u_P \cdot (S - P)/\rho</span>, with <span class="m">\hat u_P = P/R</span> the local up.</dd>
+        <dt>Off-nadir angle <span class="m">\eta</span></dt><dd>The angle at <span class="m">S</span> between nadir <span class="m">-S/\lVert S\rVert</span> and the line of sight to <span class="m">P</span>: <span class="m">\cos\eta = \hat n_S \cdot (P - S)/\rho</span>.</dd>
+        <dt>Earth central angle <span class="m">\lambda</span></dt><dd>The angle at <span class="m">O</span> between <span class="m">S</span> and <span class="m">P</span>; the ground distance from the sub-satellite point to the target is <span class="m">R\lambda</span>.</dd>
+        <dt>Footprint</dt><dd>The set of ground points visible from the satellite at one instant: a circle of central angle <span class="m">\lambda_{\max}</span> around the sub-satellite point.</dd>
+      </dl>
+    </div>
+    <p><b>The angles add up to 90°.</b> Look at the interior angles of the triangle <span class="m">OSP</span>. At <span class="m">O</span> it is <span class="m">\lambda</span>. At <span class="m">S</span> the side <span class="m">SO</span> points to nadir, so the angle is <span class="m">\eta</span>. At <span class="m">P</span>, the side <span class="m">PO</span> points straight down and the side <span class="m">PS</span> points <span class="m">\varepsilon</span> above the horizontal; from straight down to the horizontal is 90°, so the interior angle is <span class="m">90^\circ + \varepsilon</span>. The angles of a triangle add up to 180°:</p>
+    <div class="math-block">\lambda + \eta + (90^\circ + \varepsilon) = 180^\circ \quad\Longrightarrow\quad \eta + \varepsilon + \lambda = 90^\circ .</div>
+    <p><b>The law of sines.</b> In any triangle each side is proportional to the sine of the opposite angle. The side <span class="m">OP = R</span> is opposite the angle <span class="m">\eta</span> at <span class="m">S</span>; the side <span class="m">OS = R + h</span> is opposite the angle <span class="m">90^\circ + \varepsilon</span> at <span class="m">P</span>, whose sine is <span class="m">\cos\varepsilon</span>; the side <span class="m">SP = \rho</span> is opposite <span class="m">\lambda</span>. So</p>
+    <div class="math-block" data-narrow="\begin{aligned} \frac{\sin\eta}{R} &amp;= \frac{\cos\varepsilon}{R + h} = \frac{\sin\lambda}{\rho}, \\ \sin\eta &amp;= \frac{R}{R + h}\cos\varepsilon, \ \rho &amp;= \frac{R\sin\lambda}{\sin\eta}. \end{aligned}">\frac{\sin\eta}{R} = \frac{\cos\varepsilon}{R + h} = \frac{\sin\lambda}{\rho} \qquad\Longrightarrow\qquad \sin\eta = \frac{R}{R + h}\,\cos\varepsilon, \quad \rho = \frac{R\sin\lambda}{\sin\eta}.</div>
+    <p>Two equations, three angles: fix any one and the other two follow. At 550 km, <span class="m">R/(R+h) = 6371/6921 = 0.92053</span>. On the horizon (<span class="m">\varepsilon = 0</span>) it gives <span class="m">\eta = \arcsin 0.92053 = 67.00^\circ</span> and <span class="m">\lambda = 23.00^\circ</span>: from 550 km the whole visible Earth fits in a cone of half-angle 67°, and its edge is 23.00° of arc, 2557 km, away. Drag the target in the widget and check that the readout of the sum never leaves 90°.</p>
+  </div>
+  <div class="col widget" id="triW">
+    <div class="two">
+      <label class="field"><span>Earth central angle <span class="m">\lambda</span>: <b id="tLamV"></b></span>
+        <span class="row"><input type="range" id="tLamS" min="0" max="24" step="0.02" value="6" aria-describedby="triCap"></span>
+      </label>
+      <label class="field"><span>Altitude: <b id="tAltV"></b></span>
+        <span class="row"><input type="range" id="tAltS" min="300" max="2000" step="10" value="550" aria-describedby="triCap"></span>
+      </label>
+    </div>
+    <p class="chart-title">The triangle Earth centre – satellite – target, to scale</p>
+    <canvas id="triC" aria-label="A to-scale drawing of the Earth's centre, the satellite and a target, with the elevation, off-nadir and central angles marked and the footprint edges of the 55 degree cone and of the 5 degree mask" aria-describedby="triCap"></canvas>
+    <div class="readouts" aria-live="off">
+      <span>elevation <span class="m">\varepsilon</span></span><span class="v" id="tEps">–</span>
+      <span>off-nadir <span class="m">\eta</span></span><span class="v" id="tEta">–</span>
+      <span>central angle <span class="m">\lambda</span></span><span class="v" id="tLam">–</span>
+      <span><span class="m">\varepsilon + \eta + \lambda</span></span><span class="v" id="tSum">–</span>
+      <span><span class="m">\sin\eta</span> and <span class="m">\tfrac{R}{R+h}\cos\varepsilon</span></span><span class="v" id="tSines">–</span>
+      <span>slant range <span class="m">\rho</span></span><span class="v" id="tRng">–</span>
+      <span>ground distance <span class="m">R\lambda</span></span><span class="v" id="tGround">–</span>
+    </div>
+    <p class="status" id="triCap"></p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The visibility test, line by line</h2>
+  </div>
+  <div class="col prose">
+    <p>The package never computes <span class="m">\lambda</span> or uses the law of sines. It works with vectors, which is simpler and has no special cases. Here is the whole test (<code>satplan/geometry.py</code>):</p>
+    <pre><code class="language-python">def visibility_mask(sat_pos, ground_pos, max_off_nadir_deg, min_elevation_deg) -> np.ndarray:
+    """Boolean (T, J): the ground point is within the sensor cone and above the elevation mask.
+
+    sat_pos: (T, 3); ground_pos: (T, J, 3).
+    max_off_nadir_deg = None disables the sensor-cone test (used for ground-station contacts).
+    """
+    los = ground_pos - sat_pos[:, None, :]  # satellite -> ground
+    rng = np.linalg.norm(los, axis=-1)
+    up = ground_pos / np.linalg.norm(ground_pos, axis=-1, keepdims=True)
+    sin_elev = -np.einsum("tjk,tjk->tj", los, up) / rng
+    ok = sin_elev >= np.sin(np.radians(min_elevation_deg))
+    if max_off_nadir_deg is not None:
+        nadir = -sat_pos / np.linalg.norm(sat_pos, axis=-1, keepdims=True)
+        cos_off = np.einsum("tjk,tk->tj", los, nadir) / rng
+        ok &amp;= cos_off >= np.cos(np.radians(max_off_nadir_deg))
+    return ok</code></pre>
+    <p>Both positions are inertial: the satellite's from <code>position_eci</code> (chapter 02), the targets' from <code>ground_points_eci</code> (chapter 03). Line by line:</p>
+    <ul>
+      <li><b>Line of sight.</b> <code>los = ground_pos - sat_pos[:, None, :]</code> is the vector from the satellite to each target, <span class="m">P - S</span>, for every time <span class="m">t</span> and target <span class="m">j</span>; <code>[:, None, :]</code> lets one satellite position serve all <span class="m">J</span> targets. Its length <code>rng</code> is the slant range <span class="m">\rho</span>.</li>
+      <li><b>Local up.</b> On a sphere centred at the origin, the vertical at a point is the point's own direction: <code>up</code> <span class="m">= P/\lVert P\rVert</span>.</li>
+      <li><b>Elevation.</b> The sine of the elevation is the component of the unit vector from target to satellite along the local up. That vector is <code>-los / rng</code>, hence the minus sign: <code>sin_elev</code> <span class="m">= -(P - S)\cdot\hat u_P/\rho</span>. The <code>einsum("tjk,tjk->tj", ...)</code> is a dot product over the last axis for every pair <span class="m">(t, j)</span>.</li>
+      <li><b>First test.</b> <span class="m">\sin</span> is increasing on <span class="m">[-90^\circ, 90^\circ]</span>, so <span class="m">\varepsilon \ge \varepsilon_{\min}</span> is the same as <span class="m">\sin\varepsilon \ge \sin\varepsilon_{\min}</span>, and no arcsine is needed.</li>
+      <li><b>Nadir.</b> <code>nadir</code> <span class="m">= -S/\lVert S\rVert</span>, the unit vector from the satellite toward the Earth's centre.</li>
+      <li><b>Off-nadir.</b> <code>cos_off</code> is the cosine of the angle between the line of sight and nadir; the subscripts <code>"tjk,tk->tj"</code> pair each target's line of sight with the satellite's one nadir at that time. Cosine is decreasing on <span class="m">[0^\circ, 180^\circ]</span>, so <span class="m">\eta \le \eta_{\max}</span> becomes <span class="m">\cos\eta \ge \cos\eta_{\max}</span>.</li>
+      <li><b>Both.</b> <code>ok &amp;= ...</code> keeps a point only if it passes both tests; with <code>max_off_nadir_deg=None</code> only the elevation test runs, the rule for stations.</li>
+    </ul>
+    <p>The elevation test alone also removes everything behind the Earth, since a point that cannot see the satellite has it below its horizon, <span class="m">\varepsilon &lt; 0</span>. The package's test <code>test_point_below_satellite_is_visible_and_antipode_is_not</code> checks exactly that: a point under an equatorial satellite is visible, its antipode is not. The page's port does the same computation for one pair, returning the angles instead of a Boolean (<code>Sat.lookAngles</code>, which the hero demo and the triangle widget call).</p>
+    <div class="callout"><p><b>Checking the triangle against the code.</b> Put an equatorial satellite above longitude 0 at <span class="m">t = 0</span> and run <code>visibility_mask</code> on points along the equator every 0.001°. The last visible longitude is 7.856° with the targets' limits, 14.967° with the 10° mask alone, 18.504° with the stations' 5° mask: the central angles the law of sines gives in the next part, 7.86°, 14.97° and 18.50°.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="binds">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Which limit binds</h2>
+  </div>
+  <div class="col prose">
+    <p>A target must pass both tests, so its footprint is the smaller of two circles: the one the cone allows and the one the mask allows. Put each limit into the law of sines, at 550 km.</p>
+    <p><b>The 55° cone.</b> At its edge <span class="m">\eta = 55^\circ</span>, so <span class="m">\cos\varepsilon = \sin 55^\circ / 0.92053 = 0.81915/0.92053 = 0.88987</span>, <span class="m">\varepsilon = 27.14^\circ</span>, and <span class="m">\lambda = 90 - 55 - 27.14 = 7.86^\circ</span>. A target at the edge of the cone sees the satellite 27.14° above its horizon, far above the 10° mask.</p>
+    <p><b>The 10° mask.</b> Alone, it would allow <span class="m">\sin\eta = 0.92053 \cos 10^\circ</span>, <span class="m">\eta = 65.03^\circ</span>, <span class="m">\lambda = 14.97^\circ</span>: a footprint almost twice as wide. But that wider circle is outside the cone. So for targets the cone binds, and the 10° mask never does: whenever a target is inside the cone, its elevation is at least 27.14°.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="limT" class="num">
+      <thead><tr><th>Limit at 550 km</th><th>Elevation at the edge</th><th>Off-nadir at the edge</th><th>Central angle</th><th>Footprint radius</th><th>Slant range at the edge</th></tr></thead>
+      <tbody>
+        <tr><td class="words">Nadir (the sub-satellite point)</td><td>90°</td><td>0°</td><td>0°</td><td>0 km</td><td>550 km</td></tr>
+        <tr><td class="words">Targets: 55° cone (binding)</td><td>27.14°</td><td>55.00°</td><td>7.86°</td><td>874 km</td><td>1063 km</td></tr>
+        <tr><td class="words">10° mask alone (never binding for targets)</td><td>10.00°</td><td>65.03°</td><td>14.97°</td><td>1664 km</td><td>1815 km</td></tr>
+        <tr><td class="words">Stations: 5° mask, no cone</td><td>5.00°</td><td>66.50°</td><td>18.50°</td><td>2058 km</td><td>2205 km</td></tr>
+        <tr><td class="words">Geometric horizon</td><td>0°</td><td>67.00°</td><td>23.00°</td><td>2557 km</td><td>&ndash;</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The footprint radii are ground distances <span class="m">R\lambda</span> from the sub-satellite point. The targets' footprint covers 2.39 million km² at a time; a station's 13.19 million km², more than five times as much. That is why contacts are long and frequent compared with target windows: a station is reached from a wider circle. In the small instance, the 19 contacts (merged over the four stations, per satellite) last from 200 to 1000 s, median 560 s, while no target window exceeds 240 s.</p>
+    <p><b>When would the mask bind?</b> The elevation at the cone's edge falls as the satellite climbs, because the Earth looks smaller from further away. Setting <span class="m">\varepsilon = 10^\circ</span> at <span class="m">\eta = 55^\circ</span> gives <span class="m">(R+h)/R = \cos 10^\circ/\sin 55^\circ</span>, so <span class="m">h = 1288</span> km. Below that the cone binds; above it the mask. At 400 km the elevation at the cone's edge is 29.5° (footprint 615 km), at 800 km 22.8° (1359 km), at 1200 km 13.2° (2420 km). Try it with the altitude slider of the triangle widget: the caption says which limit closes the window.</p>
+    <div class="callout"><p><b>What this means for the model.</b> At the scenario's altitude, the 10° elevation mask for targets is redundant: removing it would not change a single window. It is not wrong to keep it, since it states a physical requirement and would matter for a higher orbit or a wider cone; but whoever tunes the scenario should know that the cone, not the mask, sets the footprint. The hero demo shows it: drag the elevation mask from 0° up to 27° and the window does not change; the readout "limit that closes the window" stays "sensor cone".</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="duration">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>How long a pass lasts</h2>
+  </div>
+  <div class="col prose">
+    <p>A target is visible while the sub-satellite point is within the central angle <span class="m">\lambda_{\max} = 7.86^\circ</span> of it. The footprint slides along the ground track with the satellite, so the window is the time the target spends inside a moving circle.</p>
+    <p><b>Overhead.</b> If the track passes right over the target, the circle's whole diameter crosses it: an arc of <span class="m">2\lambda_{\max}</span> at the orbital rate <span class="m">n = 2\pi/T</span>,</p>
+    <div class="math-block">\Delta t_{\max} \approx \frac{2\lambda_{\max}}{n} = \frac{2 \times 7.86^\circ}{360^\circ} \times 5730.1\ \text{s} = 250.1\ \text{s}.</div>
+    <p><b>Off the track.</b> If the target is at a cross-track central angle <span class="m">\beta</span> from the track, it meets only a chord of the circle. In the spherical right triangle formed by the target, its closest point on the track and the sub-satellite point at an along-track angle <span class="m">\Delta u</span>, the spherical Pythagoras theorem says <span class="m">\cos\lambda = \cos\beta\cos\Delta u</span>. The target is visible while <span class="m">\lambda \le \lambda_{\max}</span>, so</p>
+    <div class="math-block">\Delta t(\beta) \approx \frac{2}{n}\,\arccos\frac{\cos\lambda_{\max}}{\cos\beta}, \qquad \beta &lt; \lambda_{\max}.</div>
+    <p>The duration falls slowly at first (a chord near the centre is almost a diameter) and steeply near the edge. The table compares the formula with the exact window of the hero demo's geometry, which includes the Earth's rotation, and with the window recorded on the 10 s grid.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="durT" class="num">
+      <thead><tr><th>Cross-track offset</th><th>Formula</th><th>Exact (simulated)</th><th>Recorded on the 10 s grid</th><th>Highest elevation</th><th>Smallest off-nadir</th></tr></thead>
+      <tbody>
+        <tr><td>0 km</td><td>250.1 s</td><td>247.6 s</td><td>240 s</td><td>90.0°</td><td>0.0°</td></tr>
+        <tr><td>200 km</td><td>243.5 s</td><td>240.8 s</td><td>230 s</td><td>68.3°</td><td>19.9°</td></tr>
+        <tr><td>300 km</td><td>235.0 s</td><td>232.2 s</td><td>220 s</td><td>59.0°</td><td>28.3°</td></tr>
+        <tr><td>400 km</td><td>222.5 s</td><td>219.7 s</td><td>210 s</td><td>51.0°</td><td>35.4°</td></tr>
+        <tr><td>600 km</td><td>182.1 s</td><td>179.5 s</td><td>170 s</td><td>38.6°</td><td>46.0°</td></tr>
+        <tr><td>800 km</td><td>100.8 s</td><td>99.2 s</td><td>90 s</td><td>29.8°</td><td>53.1°</td></tr>
+        <tr><td>850 km</td><td>57.9 s</td><td>57.0 s</td><td>50 s</td><td>28.0°</td><td>54.4°</td></tr>
+        <tr><td>870 km</td><td>22.8 s</td><td>22.5 s</td><td>10 s</td><td>27.3°</td><td>54.9°</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The formula is about 1 % long: it ignores the Earth turning under the orbit, which for a retrograde orbit adds about 1 % to the speed of the footprint over the ground and makes passes slightly shorter. The Earth's rotation also makes a pass depend on the side of the track: at 300 km to the left the exact window is 232.2 s, at 300 km to the right 233.1 s. A target within 600 km of the track, more than two thirds of the footprint's 874 km half-width, still gets about three minutes (179.5 s at 600 km); at the very edge a window of 22.5 s is worth nothing to a task of 30 s.</p>
+    <p><b>Stations.</b> With no cone and a 5° mask, the station's footprint is 18.50° of central angle, and a station directly under the track sees the satellite for 583.2 s, 9.7 minutes; at 300 km from the track, 576.1 s. Press "station limits" in the hero demo to see it.</p>
+    <p><b>The windows of the small instance.</b> The scenario generator keeps a window only if the target's listening task fits in it (<code>satplan/scenario.py</code>, <code>build_instance</code>):</p>
+    <pre><code class="language-python">        for j, ws, we, u in _windows(orbit, lat, lon, times, cfg.max_off_nadir_deg, cfg.min_elevation_deg):
+            if we - ws &lt; duration[j]:
+                continue  # window too short for the required listening time</code></pre>
+    <p>Redoing <code>_windows</code> without that filter (<code>code/ch04_numbers.py</code>) gives 193 visibility windows of the 120 targets by the 4 satellites in 6 h. The filter keeps 168, the instance's opportunities, and drops 25. The dropped ones are mostly windows of long tasks: 9 of the 34 windows of 120 s targets and 9 of the 60 windows of 90 s targets, against 4 of 51 for 30 s targets and 3 of 48 for 60 s. Four targets lose their only windows this way: 118 targets are seen at least once, 114 are reachable by the planner. The recorded lengths of all windows range from 10 s to 240 s with a median of 190 s; those of the opportunities from 40 s to 240 s, with quartiles 157.5, 200 and 230 s and a mean of 186.7 s.</p>
+  </div>
+  <div class="col widget" id="winW">
+    <div class="btn-row"><button class="btn" type="button" id="wExact" aria-pressed="false">exact lengths</button></div>
+    <p class="chart-title">The small instance's 193 visibility windows by length: kept (blue) and dropped by the duration filter (orange)</p>
+    <canvas id="winC" aria-label="Histogram of the lengths of all visibility windows of the small instance, stacked into windows kept as opportunities and windows dropped as too short, with the four required task durations marked" aria-describedby="winCap"></canvas>
+    <canvas id="errC" aria-label="Histogram of the difference between the exact and the recorded length of each window, in seconds" aria-describedby="winCap"></canvas>
+    <div class="readouts" aria-live="off">
+      <span>windows before the filter</span><span class="v" id="wAll">–</span>
+      <span>kept (opportunities)</span><span class="v" id="wKept">–</span>
+      <span>dropped as too short</span><span class="v" id="wDrop">–</span>
+      <span>dropped, but long enough in truth</span><span class="v" id="wMarg">–</span>
+      <span>grid error per window, mean</span><span class="v" id="wErr">–</span>
+    </div>
+    <p class="status" id="winCap"></p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="grid">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Windows on a 10 s grid</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Discretisation.</b> The exact edges of a window are the roots of <span class="m">\varepsilon(t) = \varepsilon_{\min}</span> or <span class="m">\eta(t) = \eta_{\max}</span>; the package does not solve for them. It evaluates the mask on a grid of times <span class="m">t_i = 10\,i</span> s, <code>times = np.arange(0, horizon + 1, cfg.time_step_s)</code> with <code>time_step_s = 10</code>, and reads windows off the Boolean sequence: a window is a maximal run of consecutive <code>True</code> samples.</p>
+    <pre><code class="language-python">def boolean_runs(mask) -> list[tuple[int, int]]:
+    """Index ranges [i0, i1] (inclusive) of consecutive True values in a 1-D mask."""
+    m = np.concatenate([[False], np.asarray(mask, dtype=bool), [False]])
+    d = np.diff(m.astype(np.int8))
+    starts = np.flatnonzero(d == 1)
+    ends = np.flatnonzero(d == -1) - 1
+    return list(zip(starts.tolist(), ends.tolist()))</code></pre>
+    <p>Padding with <code>False</code> at both ends guarantees that every run has a rise and a fall. The difference of consecutive values is <span class="m">+1</span> where a run starts and <span class="m">-1</span> just after it ends. Because of the padding, position <span class="m">k</span> of <code>d</code> compares padded samples <span class="m">k</span> and <span class="m">k+1</span>, that is original samples <span class="m">k-1</span> and <span class="m">k</span>: a rise at <span class="m">k</span> means sample <span class="m">k</span> is the first <code>True</code>, a fall at <span class="m">k</span> means sample <span class="m">k-1</span> was the last. Hence <code>starts</code> as is and <code>ends</code> minus one. The test <code>boolean_runs([0, 1, 1, 0, 1, 0, 1, 1, 1]) == [(1, 2), (4, 4), (6, 8)]</code> covers a run at the end and a run of one sample. <code>_windows</code> then records each run as the window <span class="m">[t_{i_0}, t_{i_1}]</span>.</p>
+    <p><b>What the grid loses.</b> The true window starts somewhere between the last invisible sample <span class="m">t_{i_0 - 1}</span> and the first visible one <span class="m">t_{i_0}</span>, and ends between <span class="m">t_{i_1}</span> and <span class="m">t_{i_1+1}</span>. The recorded window <span class="m">[t_{i_0}, t_{i_1}]</span> is inside the true one, and shorter by between 0 and 10 s at each end, between 0 and 20 s in total. Shift the grid in the hero demo and watch the two losses trade off: at the default the recorded window is 220 s against 232.2 s, 3.1 s lost at the start and 9.1 s at the end.</p>
+    <div class="callout"><p><b>Measured on the small instance.</b> <code>code/ch04_numbers.py</code> bisects the true edges of every window to a fraction of a microsecond. For the 169 windows not cut by the ends of the horizon (24 windows start at <span class="m">t = 0</span> or end at 21 600 s), the grid loses 5.20 s at the start and 5.39 s at the end on average, at most 9.97 s and 9.94 s. The total underestimate has mean 10.58 s, median 10.42 s, and ranges from 0.86 s to 18.91 s: a median of 5.4 % of the window. Every recorded window lies inside its exact window, as the argument above says.</p></div>
+    <p><b>Why 10 s is acceptable.</b> Three reasons, in order of importance.</p>
+    <ul>
+      <li><b>It is conservative.</b> A task placed inside the recorded window is inside the true window. The grid can lose opportunities, never invent infeasible ones. A plan that the checker of chapter 06 accepts on the grid is feasible in continuous time as far as visibility goes.</li>
+      <li><b>It is small against the tasks and windows.</b> Tasks last 30 to 120 s and a typical window about 200 s; an error of about 10 s shifts what fits by a fraction of a task. Of the 193 windows, only 2 are wrongly dropped: target 89 (110 s recorded, 124.9 s in truth, needs 120 s) and target 30 (110 s recorded, 120.4 s, needs 120 s).</li>
+      <li><b>A finer grid buys little.</b> Rebuilding the small instance with <code>time_step_s = 1</code> gives 169 opportunities instead of 168, 115 reachable targets instead of 114, and a mean window of 195.3 s instead of 186.7 s; 5 s gives 169 and 191.6 s. The mask is ten times larger for ten times less error, cheap at this size but a real cost on the large instance (12 satellites, 600 targets).</li>
+    </ul>
+    <p>An alternative that keeps the grid's speed and loses nothing is to refine only the edges: bisect between <span class="m">t_{i_0 - 1}</span> and <span class="m">t_{i_0}</span>, as the script does. The package does not, and the grid has a second merit: integer window edges, with transition times rounded up to whole seconds (chapter 06), keep every start time and every precedence of chapters 06–09 in integers, which CP-SAT requires. Refined edges would have to be rounded inward to keep that property.</p>
+    <div class="big-idea"><p>Visibility is one triangle and two dot products. At 550 km the 55° cone decides it, the 10° mask never does, and passes last at most about four minutes; sampling them every 10 s costs about 10 s per window, always on the safe side.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why is the interior angle of the triangle at the target <span class="m">90^\circ + \varepsilon</span> and not <span class="m">90^\circ - \varepsilon</span>?</summary><p>The two sides at the target are <span class="m">PO</span>, straight down, and <span class="m">PS</span>, <span class="m">\varepsilon</span> above the horizontal. From straight down to the horizontal is 90°, and from there up to the line of sight another <span class="m">\varepsilon</span>.</p></details>
+    <details class="sol"><summary>2. At 550 km, what elevation does a target at the edge of the 55° cone have, and what follows for the 10° mask?</summary><p><span class="m">\cos\varepsilon = \sin 55^\circ/0.92053</span>, <span class="m">\varepsilon = 27.14^\circ</span>. Every target inside the cone sees the satellite at least 27.14° high, so the 10° mask never removes a target the cone keeps: it does not bind.</p></details>
+    <details class="sol"><summary>3. Why does the code compare <span class="m">\sin\varepsilon</span> and <span class="m">\cos\eta</span> instead of the angles?</summary><p>It saves an arcsine and an arccosine per pair, and it is exact because sine is increasing on <span class="m">[-90^\circ, 90^\circ]</span> and cosine decreasing on <span class="m">[0^\circ, 180^\circ]</span>. Note the reversed inequality for the cosine.</p></details>
+    <details class="sol"><summary>4. Why do ground stations have much longer contacts than targets have windows?</summary><p>No cone and a 5° mask give a footprint of 18.50° of central angle (2058 km) against 7.86° (874 km) for targets: the satellite crosses a circle more than twice as wide, 583.2 s overhead against 247.6 s.</p></details>
+    <details class="sol"><summary>5. A target is 700 km from the ground track. Roughly how long is its window, and which tasks fit?</summary><p>The formula gives <span class="m">\tfrac{2}{n}\arccos(\cos 7.86^\circ/\cos 6.30^\circ) \approx 150</span> s (the exact window in the hero geometry is 147.8 s, recorded as 140 s): any of the 30–120 s tasks fits, but a 120 s task has little room to move.</p></details>
+    <details class="sol"><summary>6. What does <code>boolean_runs([1, 1, 0, 1])</code> return, and why does it need the padding?</summary><p><code>[(0, 1), (3, 3)]</code>. Without the leading <code>False</code> the first run would have no rise in the difference; without the trailing one the last run would have no fall.</p></details>
+    <details class="sol"><summary>7. Can a window recorded on the 10 s grid be longer than the true window?</summary><p>No. Its first and last samples are visible, so they lie inside the true window, and the recorded window is between them. It is shorter by up to 10 s at each end; measured on the small instance, 10.58 s on average.</p></details>
+    <details class="sol"><summary>8. Two windows of the small instance were dropped although their task would have fitted. Is the planner's optimum wrong?</summary><p>It is the optimum of the discretised problem, which is slightly more restrictive than the continuous one. Two windows out of 193, both for 120 s tasks with 0.4 s and 4.9 s to spare, could only increase the value if they were the best choice for their targets. A 1 s grid recovers the second (target 89 on satellite 0: 169 opportunities, 115 reachable targets); the first still records less than 120 s.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>The footprint from scratch.</b> Write a function <code>footprint(h, max_off_nadir, min_elev)</code> returning the central angle and ground radius of the footprint, taking the smaller of the two limits. Check it against the table of Part 3 and against <code>visibility_mask</code> along the equator.</div>
+        <details class="sol"><summary>Hint</summary><p>Each limit gives a <span class="m">\lambda</span> through <span class="m">\sin\eta = \tfrac{R}{R+h}\cos\varepsilon</span> and <span class="m">\eta + \varepsilon + \lambda = 90^\circ</span>. If <span class="m">\sin\eta_{\max} > R/(R+h)</span>, the cone is wider than the Earth and only the mask counts.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-python">def footprint(h, max_off_nadir=None, min_elev=0.0):
+    k = R_EARTH / (R_EARTH + h)
+    lam_mask = 90 - min_elev - np.degrees(np.arcsin(k * np.cos(np.radians(min_elev))))
+    lam = lam_mask
+    if max_off_nadir is not None and np.sin(np.radians(max_off_nadir)) &lt;= k:
+        eps = np.degrees(np.arccos(np.sin(np.radians(max_off_nadir)) / k))
+        lam = min(lam, 90 - max_off_nadir - eps)
+    return lam, np.radians(lam) * R_EARTH
+
+footprint(550e3, 55, 10)    # (7.86, 874 km)
+footprint(550e3, None, 5)   # (18.50, 2058 km)</code></pre>
+          <p>The equatorial check of Part 2 gives the last visible longitudes 7.856° and 18.504°.</p></details>
+      </li>
+      <li><div><b>The altitude where the mask takes over.</b> Find the altitude above which the 10° mask, rather than the 55° cone, limits target visibility. What would the footprint be there?</div>
+        <details class="sol"><summary>Hint</summary><p>At the crossover, both limits hold at the same edge: <span class="m">\eta = 55^\circ</span> and <span class="m">\varepsilon = 10^\circ</span> together in the law of sines.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">\sin 55^\circ = \tfrac{R}{R+h}\cos 10^\circ</span> gives <span class="m">h = R(\cos 10^\circ/\sin 55^\circ - 1) = 1288</span> km. There <span class="m">\lambda = 90 - 55 - 10 = 25^\circ</span>, 2780 km. The satellites of the scenario are far below it.</p></details>
+      </li>
+      <li><div><b>Exact window edges.</b> Write <code>exact_window(orbit, lat, lon, ws, we)</code> that refines a recorded window <span class="m">[w_s, w_e]</span> by bisection, and reproduce the mean grid error of 10.58 s on the small instance.</div>
+        <details class="sol"><summary>Hint</summary><p>The true start is in <span class="m">(w_s - 10, w_s]</span> and the true end in <span class="m">[w_e, w_e + 10)</span>. Evaluate <code>visibility_mask</code> at a single time; fifty halvings of 10 s reach <span class="m">10^{-14}</span> s. Skip windows that touch <span class="m">t = 0</span> or the end of the horizon.</p></details>
+        <details class="sol"><summary>Solution</summary><p><code>code/ch04_numbers.py</code> has the function <code>edge</code> that does it; over the 169 inner windows it prints a mean loss of 5.20 s at the start and 5.39 s at the end, 10.58 s in total. If the edges were uniformly distributed between grid points, each loss would average 5 s; the measured values are close.</p></details>
+      </li>
+      <li><div><b>A finer grid.</b> Rebuild the small instance with <code>ScenarioConfig(n_sats=4, n_targets=120, horizon_h=6, seed=0, time_step_s=1)</code>. How many opportunities, reachable targets and conflict pairs does it have, and how long does <code>build_instance</code> take compared with 10 s?</div>
+        <details class="sol"><summary>Hint</summary><p><code>dataclasses.replace(cfg, time_step_s=1)</code> changes one field of the frozen configuration. Time the call with <code>time.perf_counter()</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>169 opportunities (168 at 10 s), 115 reachable targets (114), 884 conflict pairs (876), and a mean window of 195.3 s (186.7 s). The one new opportunity is target 89 on satellite 0, one of the two wrongly dropped windows of Part 5. On the author's machine <code>build_instance</code> takes 2.70 s instead of 0.28 s, about ten times, as the number of samples. The planning problem barely changes, which is the empirical case for 10 s.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>One triangle</b>: Earth's centre, satellite, target; angles <span class="m">\lambda</span>, <span class="m">\eta</span> and <span class="m">90^\circ + \varepsilon</span>, so <span class="m">\eta + \varepsilon + \lambda = 90^\circ</span>; law of sines <span class="m">\sin\eta = \tfrac{R}{R+h}\cos\varepsilon</span>, with <span class="m">R/(R+h) = 0.92053</span> at 550 km.</div></li>
+      <li><div><b>The code</b>: line of sight, local up, nadir; <span class="m">\sin\varepsilon \ge \sin\varepsilon_{\min}</span> and <span class="m">\cos\eta \ge \cos\eta_{\max}</span> by two dot products; no cone for stations.</div></li>
+      <li><div><b>Which limit binds</b>: at the 55° cone the elevation is 27.14°, so the 10° mask never binds for targets (it would above 1288 km); footprints 7.86° = 874 km for targets, 18.50° = 2058 km for stations; slant ranges 550 to 1063 km and up to 2205 km.</div></li>
+      <li><div><b>Pass duration</b>: at most about <span class="m">2\lambda_{\max}/n = 250.1</span> s (247.6 s exact), shorter off the track as <span class="m">\arccos(\cos\lambda_{\max}/\cos\beta)</span>; stations up to 583.2 s.</div></li>
+      <li><div><b>The instance</b>: 193 windows, 168 kept as opportunities, 25 dropped as too short for their task; 118 targets seen, 114 reachable.</div></li>
+      <li><div><b>The grid</b>: <code>boolean_runs</code> turns the 10 s mask into windows that are always inside the true ones, shorter by 10.58 s on average (at most 18.91 s); 2 windows wrongly dropped; a 1 s grid adds 1 opportunity.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Elevation</td><td>Angle of the satellite above the target's horizontal plane.</td></tr>
+        <tr><td>Elevation mask</td><td>The smallest elevation accepted: 10° for targets, 5° for stations.</td></tr>
+        <tr><td>Nadir</td><td>Straight down from the satellite, toward the Earth's centre.</td></tr>
+        <tr><td>Off-nadir angle</td><td>Angle between nadir and the line of sight to the target.</td></tr>
+        <tr><td>Sensor cone</td><td>The cone around nadir the sensor can listen in: 55° half-angle for targets.</td></tr>
+        <tr><td>Earth central angle</td><td>Angle at the Earth's centre between the satellite and the target.</td></tr>
+        <tr><td>Slant range</td><td>Straight-line distance from the satellite to the target.</td></tr>
+        <tr><td>Footprint</td><td>The circle of ground points visible at one instant.</td></tr>
+        <tr><td>Binding limit</td><td>The constraint that actually decides the outcome; the other is redundant.</td></tr>
+        <tr><td>Cross-track offset</td><td>Distance from the target to the ground track, measured perpendicular to it.</td></tr>
+        <tr><td>Visibility window</td><td>A time interval during which a target is visible from a satellite.</td></tr>
+        <tr><td>Discretisation</td><td>Replacing a continuous quantity by samples on a grid; here time, every 10 s.</td></tr>
+        <tr><td>Conservative approximation</td><td>One that can only lose feasible options, never add infeasible ones.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> The chapter covers the package's visibility model exactly: a spherical Earth, a point target, a sensor that is a perfect cone around nadir, and a binary visible/not visible. It leaves out the Earth's flattening and terrain, atmospheric refraction near the horizon, antenna gain patterns (a real receiver hears better near the centre of its beam than at its edge), the link budget that decides whether a signal at 1063 km of slant range is strong enough, and the satellite's own pointing limits beyond the cone. Its reconfiguration between targets is chapter 06's subject. The scenario is synthetic: the 55° cone, the masks and the targets describe no real sensor or system. Next, chapter 05 turns the windows of this chapter into the planning problem's opportunities, with their revolutions and memory segments.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>J. R. Wertz and W. J. Larson (eds.). <em>Space Mission Analysis and Design</em>, 3rd edition. Microcosm Press and Kluwer, 1999. Its chapter on space mission geometry relates elevation, nadir angle, Earth central angle and slant range through the same triangle, and gives the pass-duration formulas of Part 4.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>H. D. Curtis. <em>Orbital Mechanics for Engineering Students</em>, 3rd edition. Butterworth-Heinemann, 2014. Topocentric coordinates, elevation and azimuth of a satellite seen from the ground.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>D. A. Vallado. <em>Fundamentals of Astrodynamics and Applications</em>, 4th edition. Microcosm Press, 2013. Look angles and visibility, including the ellipsoidal Earth and refraction left out here.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>M. Lemaître, G. Verfaillie, F. Jouhaud, J.-M. Lachiver and N. Bataille. Selecting and scheduling observations of agile satellites. <em>Aerospace Science and Technology</em>, 6(5), 2002. A classic formulation of the selection-and-scheduling problem that the later chapters of this course solve, with visibility windows as its input.</div></li>
+    </ul>
+    <p>Next, chapter 05 turns these windows into opportunities, assigns them to revolutions and memory segments, and looks at what the model keeps and what it drops.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="03-the-earth-turns-underneath.html"><span class="lbl">Previous · 03</span><span class="t">The Earth turns underneath</span></a>
+  <a class="next" rel="next" href="05-from-geometry-to-a-planning-problem.html"><span class="lbl">Next · 05</span><span class="t">From geometry to a planning problem</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 04 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The pass, the triangle and the window check run in your browser with a line-for-line port of the satplan package's geometry; the windows of the small instance and their exact edges are written by <code>code/ch04_numbers.py</code>, which also prints every number in the text. The scenario is synthetic and describes no real system. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch04-data.js"></script>
+<script src="interactive/ch04.js"></script>
+</body>
+</html>

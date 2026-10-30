@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>06 · Constraints and an Independent Checker · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="Feasibility for satellite pass planning: the decision (a subset of opportunities and a start time for each), the constraints one by one with the satplan code (time windows, one collection per target, no overlap with sequence-dependent reconfiguration times, power and memory budgets as knapsacks), the pointing-at-midpoint approximation measured, the triangle inequality, the conflict-pair sweep and its three cases, and the independent checker every plan goes through. A live timeline where the plan can be edited and is checked at every change. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  #tlC { touch-action: pan-y; cursor: pointer; }
+  #hTrans { white-space: pre-wrap; margin: 0; }
+  #hViol { margin: 0; padding-left: 1.1rem; font-family: var(--font-mono); font-size: 0.76rem; color: var(--ink-2); display: grid; gap: 0.2rem; }
+  .panel select { max-width: 100%; }
+  #vocT td, #consT td, #pairT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #consT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 06 of 10</span>
+  <h1>Constraints and an independent checker</h1>
+  <p class="lede">Chapter 05 turned the geometry into a list of 168 opportunities. A plan picks some of them and gives each a start time; this chapter says exactly when a plan is allowed. Four rules, each a few lines of satplan: stay inside the window, collect a target at most once, leave each satellite time to turn between tasks, and respect the power and memory budgets. We write each one down, measure the approximations behind it, see how satplan prepares the rules for a solver (the conflict-pair sweep), and build the piece of code that every plan of every method must pass: the independent checker.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 05's opportunities and some Python; no optimisation yet · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">One pass of one satellite, checked live: switch tasks on and off, drag them, and read what the checker says</p>
+        <canvas id="tlC" aria-label="Timeline of one satellite pass: a summary lane with the planned tasks and the reconfiguration time each needs before the next, and one row per opportunity with its window, its allowed start range and its task if planned; press a task to drag it, click an empty window to add a task" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true"><span class="key"><i class="sw" style="background:var(--post);opacity:0.3"></i>window</span><span class="key"><i class="sw" style="background:var(--post)"></i>task (row labels: opportunity · weight)</span><span class="key"><i class="sw" style="background:var(--ink);opacity:0.25"></i>reconfiguration <span class="m">s(a,b)</span></span><span class="key"><i class="sw" style="background:var(--warm)"></i>violation</span></div>
+      </div>
+      <div>
+        <p class="chart-title">This satellite's budgets: listening seconds used per revolution (power) and per memory segment; the black tick is the limit, a dot marks a group that can never exceed it</p>
+        <canvas id="budC" aria-label="Horizontal bars of the satellite's power budget per revolution and memory budget per segment, used against the limit" aria-describedby="heroStatus"></canvas>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Satellite</span>
+        <select id="hSat"><option value="0">satellite 0</option><option value="1">satellite 1</option><option value="2">satellite 2</option><option value="3">satellite 3</option></select>
+      </label>
+      <label class="field"><span>Pass</span><select id="hPass"></select></label>
+      <div class="btn-row"><button class="btn" type="button" id="hCp" aria-pressed="true">CP-SAT plan</button><button class="btn" type="button" id="hGr" aria-pressed="false">greedy plan</button><button class="btn ghost" type="button" id="hClear">empty this pass</button></div>
+      <label class="field"><span>Opportunity</span><select id="hTask"></select></label>
+      <label class="check"><input type="checkbox" id="hOn"> in the plan</label>
+      <label class="field"><span>Start: <b id="hStartV"></b></span>
+        <span class="row"><input type="range" id="hStart" min="0" max="100" step="1" value="0"></span>
+      </label>
+      <div class="readouts" aria-live="off">
+        <span>plan value</span><span class="v" id="rVal">–</span>
+        <span>tasks on this satellite</span><span class="v" id="rTasks">–</span>
+        <span>violations</span><span class="v" id="rErr">–</span>
+      </div>
+      <p class="lbl">Transitions in this pass</p>
+      <p class="readout-line" id="hTrans"></p>
+      <p class="lbl">The checker says</p>
+      <ul id="hViol" aria-live="polite"></ul>
+      <p class="hint">The checker runs on the whole plan, all four satellites, at every change. The start slider goes 30 s beyond each window on both sides so that you can watch the window rule fail.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#decision"><span class="n">1</span><span class="t">The decision</span><span class="d">A subset and a start time for each</span></a>
+    <a href="#constraints"><span class="n">2</span><span class="t">The rules, one by one</span><span class="d">Windows, targets, reconfiguration, budgets</span></a>
+    <a href="#approx"><span class="n">3</span><span class="t">Two properties of s(a, b)</span><span class="d">Midpoint pointing, triangle inequality</span></a>
+    <a href="#pairs"><span class="n">4</span><span class="t">The conflict-pair sweep</span><span class="d">Which pairs a solver must see, and three cases</span></a>
+    <a href="#budgets"><span class="n">5</span><span class="t">Budgets as knapsacks</span><span class="d">26 segments, 19 that can bind</span></a>
+    <a href="#checker"><span class="n">6</span><span class="t">The independent checker</span><span class="d">Why and what it catches</span></a>
+    <a href="#check"><span class="n">7</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Scope and further reading</span><span class="d">What is left out</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="decision">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The decision</h2>
+  </div>
+  <div class="col prose">
+    <p>A plan answers two questions for every opportunity <span class="m">o</span> of chapter 05: do we use it, and if so, when does the listening start? In symbols, a binary <span class="m">x_o \in \{0, 1\}</span> and, when <span class="m">x_o = 1</span>, a start time <span class="m">t_o</span>. In satplan a plan is simply a dictionary from opportunity id to start time; the opportunities not in the dictionary are not used.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a feasible plan?</p>
+      <p><b>In plain words:</b> a choice of tasks and start times that a satellite could actually carry out under the model's rules.</p>
+      <p><b>More precisely:</b> a map <code>plan: {opportunity id: start}</code> such that every start lies in its window, no target appears twice, any two tasks on the same satellite are separated by the reconfiguration time, and no power or memory segment exceeds its budget. Its value is the sum of the weights of the chosen opportunities. Planning means finding a feasible plan of maximum value.</p>
+      <dl>
+        <dt>Constraint</dt><dd>A rule that a plan must satisfy; a plan that breaks one is infeasible, whatever its value.</dd>
+        <dt>Feasibility</dt><dd>Satisfying all the constraints. Checking it for a given plan is easy; finding the best feasible plan is the hard part (chapters 07 to 10).</dd>
+        <dt>Checker</dt><dd>A function that takes a plan and lists every violated constraint.</dd>
+      </dl>
+    </div>
+    <p>How many plans are there? Each of the 168 opportunities is in or out, <span class="m">2^{168} \approx 3.7 \times 10^{50}</span> subsets, and each selected one has a start time on top. Almost all of them are infeasible. The greedy plan of chapter 07 has 54 tasks and value 193; the optimal plan of chapter 08 has 55 tasks and value 219. The difference is not in how many tasks fit but in which ones and in what order. The hero demo opens on the optimal plan.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="constraints">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The rules, one by one</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Rule 1: the task fits in its window.</b> A task of length <span class="m">d_o</span> must be entirely inside the window <span class="m">[a_o, b_o]</span> where the target is visible:</p>
+    <div class="math-block">a_o \;\le\; t_o \;\le\; b_o - d_o .</div>
+    <p>This is the earliest and latest start of chapter 05. In the hero demo, drag a task beyond the end of its start range and the checker reports it as outside.</p>
+    <p><b>Rule 2: each target at most once.</b> A target seen on two passes has two opportunities, but collecting it twice brings nothing (and the weight would count twice). If <span class="m">O_j</span> is the set of opportunities of target <span class="m">j</span>,</p>
+    <div class="math-block">\sum_{o \in O_j} x_o \;\le\; 1 \qquad \text{for every target } j.</div>
+    <p><b>Rule 3: one thing at a time, and time to turn.</b> A satellite points its antenna at one target at a time. Between two tasks it must slew from one direction to the other and let the structure settle. satplan models the time this takes as</p>
+    <div class="math-block">s(a, b) \;=\; \left\lceil\, \sigma + \frac{\theta(a, b)}{\omega} \,\right\rceil, \qquad \theta(a, b) = \arccos(u_a \cdot u_b),</div>
+    <p>with a settle time <span class="m">\sigma = 10</span> s, a slew rate <span class="m">\omega = 2</span>°/s, and <span class="m">u_a, u_b</span> the unit pointing vectors stored in the opportunities (chapter 05). The ceiling keeps everything in integer seconds, which CP-SAT needs. The code is a direct transcription:</p>
+    <pre><code class="language-python">def transition(self, a: int, b: int) -> int:
+    """Reconfiguration time (integer seconds) from opportunity a to opportunity b."""
+    oa, ob = self.opportunities[a], self.opportunities[b]
+    angle = pointing_angle_deg(np.asarray(oa.pointing), np.asarray(ob.pointing))
+    return int(math.ceil(self.settle_s + angle / self.slew_rate_deg_s))
+
+def max_transition(self) -> int:
+    return int(math.ceil(self.settle_s + 180.0 / self.slew_rate_deg_s))</code></pre>
+    <p>The longest possible turn, 180°, takes <span class="m">10 + 90 = 100</span> s. If tasks <span class="m">a</span> and <span class="m">b</span> are on the same satellite and both selected, one must finish and the satellite must turn before the other starts:</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;t_b \ge t_a + d_a + s(a, b) \\ &amp;\quad \text{or} \\ &amp;t_a \ge t_b + d_b + s(b, a). \end{aligned}">t_b \;\ge\; t_a + d_a + s(a, b) \quad \text{or} \quad t_a \;\ge\; t_b + d_b + s(b, a).</div>
+    <p>The "or" is what makes the problem hard: it is a disjunction, and the solver must decide which side holds. This is a <em>sequence-dependent setup time</em> in scheduling vocabulary <a href="#ref-2">[2]</a>: the gap needed after a task depends on which task comes next. Here <span class="m">s(a, b) = s(b, a)</span> for every pair (the angle is symmetric), but the total time a sequence takes still depends on the order, because the angles along the sequence change with it. Over the 3,832 pairs of opportunities that share a satellite, <span class="m">s</span> ranges from 11 to 100 s, median 39 s.</p>
+    <p>In the hero demo, the grey bar after each task in the top lane is the reconfiguration time it needs before the next one. In the optimal plan of satellite 3's third pass, four of the five gaps between consecutive tasks are <em>exactly</em> the reconfiguration time: 19, 22, 13 and 14 s, no slack at all. The solver packs the pass as tightly as the rule allows. Drag any of those tasks one second earlier and the checker objects.</p>
+    <p><b>Rule 4: budgets.</b> Per satellite and revolution, at most 300 s of listening (power); per satellite and memory segment, at most 600 s (memory). With the segment labels <span class="m">r_o</span> and <span class="m">m_o</span> of chapter 05,</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;\textstyle\sum_{o:\,\mathrm{sat}(o)=s,\ r_o = r} d_o x_o \le 300 \\ &amp;\textstyle\sum_{o:\,\mathrm{sat}(o)=s,\ m_o = k} d_o x_o \le 600 \end{aligned}">\sum_{o:\,\mathrm{sat}(o)=s,\ r_o = r} d_o\, x_o \;\le\; 300, \qquad \sum_{o:\,\mathrm{sat}(o)=s,\ m_o = k} d_o\, x_o \;\le\; 600.</div>
+    <p>Part 5 returns to these. The objective, finally, is <span class="m">\max \sum_o w_o x_o</span>.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="consT">
+      <thead><tr><th>Rule</th><th>Mathematically</th><th>Where in satplan</th></tr></thead>
+      <tbody>
+        <tr><td>Window</td><td><span class="m">a_o \le t_o \le b_o - d_o</span></td><td><code>earliest_start</code>, <code>latest_start</code></td></tr>
+        <tr><td>Once per target</td><td><span class="m">\sum_{o \in O_j} x_o \le 1</span></td><td><code>by_target()</code></td></tr>
+        <tr><td>Reconfiguration</td><td>for each pair on a satellite: one order, gap <span class="m">\ge d + s</span></td><td><code>transition()</code>, <code>build_pairs()</code></td></tr>
+        <tr><td>Power, memory</td><td><span class="m">\sum d_o x_o \le</span> 300 or 600 per segment</td><td><code>budget_groups()</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="approx">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Two properties of <span class="m">s(a, b)</span></h2>
+  </div>
+  <div class="col prose">
+    <p><b>Pointing at the midpoint.</b> The pointing vector <span class="m">u_o</span> is taken at the middle of the window, and <span class="m">s(a, b)</span> is therefore one fixed number per pair. In reality the direction from the satellite to the target changes all through the pass: the satellite moves at 7.6 km/s, and the target goes from ahead of it to behind it. The widget below follows that direction for one opportunity. For the first one in the list (the default), a 230 s window of satellite 0, the direction is 58.4° away from the midpoint direction when the window opens, 57.3° when it closes, and it turns 115.7° from start to end.</p>
+  </div>
+  <div class="col widget" id="pointW">
+    <canvas id="ptC" aria-label="Angle between the direction to the target and the midpoint direction across one window, with the target's off-nadir angle" aria-describedby="ptCap"></canvas>
+    <div class="controls">
+      <label class="field" style="flex:1 1 16rem"><span>Opportunity: <b id="ptV"></b></span>
+        <span class="row"><input type="range" id="ptK" min="0" max="167" step="1" value="0"></span>
+      </label>
+    </div>
+    <p class="caption" id="ptCap"></p>
+  </div>
+  <div class="col prose">
+    <p>The script <code>code/ch06_numbers.py</code> does the same for all 168 opportunities. Between the start and the end of a window the direction turns by 14.2° to 123.7°, median 96.1°. The largest angle between the true direction and the midpoint direction, within a window, has a median of 49.0° and a maximum of 64.2°: at 2°/s, up to 32 s of slewing.</p>
+    <p>Does it matter for the plans? Take the optimal plan, and for each pair of consecutive tasks on a satellite recompute the reconfiguration time with the directions at the moments that count: where the first task ends and where the second begins. The true-time transition differs from the midpoint one by −30 to +59 s (median +4 s), and <b>21 of the 51 gaps</b> in the optimal plan would be too short under the model's own slew rule (23 of 50 for the greedy plan). Two tasks of one pass turn together with the pass, which is why the error goes both ways.</p>
+    <div class="callout warm"><p><b>A strong simplification.</b> With fixed per-pair transitions, the plans of this course are feasible for the model, not for a satellite slewing between true directions. The README lists this among the limitations. The literature on agile satellites uses time-dependent transition times, which depend on both start times <a href="#ref-1">[1]</a>; the problem keeps its structure (choose, order, separate), but the separation becomes a function of the two start times instead of a constant, and each solver has to be adapted. Everything in the following chapters is about the model as it stands.</p></div>
+    <p><b>The triangle inequality.</b> Angles between directions obey <span class="m">\theta(a, c) \le \theta(a, b) + \theta(b, c)</span>: turning from <span class="m">a</span> to <span class="m">c</span> directly is never longer than going via <span class="m">b</span>. Does <span class="m">s</span> inherit it? The settle time appears once on the left and twice on the right, and the ceiling satisfies <span class="m">\lceil x + y \rceil \le \lceil x \rceil + \lceil y \rceil</span>, so</p>
+    <div class="math-block" data-narrow="\begin{aligned} s(a,c) &amp;= 10 + \lceil \theta_{ac}/2 \rceil \\ &amp;\le 10 + \lceil \theta_{ab}/2 \rceil + \lceil \theta_{bc}/2 \rceil \\ &amp;= s(a,b) + s(b,c) - 10. \end{aligned}">s(a, c) = 10 + \lceil \theta_{ac}/2 \rceil \;\le\; 10 + \lceil \theta_{ab}/2 \rceil + \lceil \theta_{bc}/2 \rceil \;=\; s(a, b) + s(b, c) - 10.</div>
+    <p>(The settle time is an integer, so it comes out of the ceiling.) The ceiling does not break the inequality and the double settle time strengthens it, by at least 10 s. The script checks all 377,304 ordered triples of distinct opportunities on a common satellite: the smallest slack <span class="m">s(a,b) + s(b,c) - s(a,c)</span> is exactly 10 s, and the angles themselves satisfy the inequality up to rounding (smallest slack <span class="m">1.25 \times 10^{-8}</span> degrees).</p>
+    <p>The consequence: if a plan respects the rule between <em>consecutive</em> tasks <span class="m">a, b, c</span>, then</p>
+    <div class="math-block">t_c - t_a \;\ge\; d_a + s(a, b) + d_b + s(b, c) \;\ge\; d_a + s(a, c) + 10 + d_b,</div>
+    <p>and the rule holds between <span class="m">a</span> and <span class="m">c</span> too, with room to spare. Checking consecutive tasks would be enough. The checker of Part 6 nevertheless checks every pair on a satellite. A checker must not rely on a property of the function it checks: the time-dependent transitions above, or any other slew model, need not satisfy the triangle inequality, and a checker that silently assumed it would then pass infeasible plans. Checking every pair costs <span class="m">22 \cdot 21 / 2 = 231</span> comparisons on the busiest satellite of the optimal plan (22 tasks).</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="pairs">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The conflict-pair sweep</h2>
+  </div>
+  <div class="col prose">
+    <p>Rule 3 is a statement about pairs. A solver model needs one constraint (or more) per pair that can actually interfere, and most pairs cannot: a task in the first pass of a satellite and a task in its last pass are hours apart. <code>build_pairs</code> finds the pairs that matter with a sweep over each satellite's windows, sorted by start:</p>
+    <pre><code class="language-python">def build_pairs(self) -> None:
+    """Enumerate interfering pairs with a sweep over each satellite's windows."""
+    s_max = self.max_transition()
+    pairs = []
+    for ids in self.by_satellite().values():
+        ids = sorted(ids, key=lambda i: self.opportunities[i].window_start)
+        for p, a in enumerate(ids):
+            oa = self.opportunities[a]
+            for b in ids[p + 1 :]:
+                ob = self.opportunities[b]
+                if ob.window_start >= oa.window_end + s_max:
+                    break  # b is always after a, with any transition
+                if oa.target == ob.target:
+                    continue  # at most one per target already forbids both
+                s_ab, s_ba = self.transition(a, b), self.transition(b, a)
+                # 'a then b' always satisfied: latest end of a + s_ab &lt;= earliest start of b
+                if oa.window_end + s_ab &lt;= ob.earliest_start:
+                    continue
+                if ob.window_end + s_ba &lt;= oa.earliest_start:
+                    continue
+                a_first = oa.earliest_start + oa.duration + s_ab &lt;= ob.latest_start
+                b_first = ob.earliest_start + ob.duration + s_ba &lt;= oa.latest_start
+                pairs.append(ConflictPair(a, b, s_ab, s_ba, a_first, b_first))
+    self.pairs = pairs</code></pre>
+    <p><b>When a pair can be skipped.</b> A task on <span class="m">a</span> ends by <span class="m">b_a</span> at the latest, and a task on <span class="m">b</span> starts at <span class="m">a_b</span> at the earliest. If <span class="m">b_a + s(a, b) \le a_b</span>, every placement of the two puts <span class="m">b</span> after <span class="m">a</span> with enough time to turn: the pair can never violate rule 3 and needs no constraint. The <code>break</code> is the same test with the largest possible transition, <span class="m">s_{\max} = 100</span> s, in place of <span class="m">s(a, b)</span>: since the windows are sorted by start, once one <span class="m">b</span> is that far away, all the following ones are too, and the inner loop can stop. That is what makes the sweep fast: it never looks at pairs further apart than one window plus 100 s. Pairs of the same target are skipped as well, because rule 2 already forbids selecting both. (The second <code>continue</code>, "<span class="m">b</span> then <span class="m">a</span> always satisfied", can never fire: <span class="m">b</span> starts no earlier than <span class="m">a</span>, so <span class="m">b</span>'s window cannot end before <span class="m">a</span>'s starts. It is there for symmetry.)</p>
+    <p><b>The three cases.</b> For a pair that is kept, two flags say which orders are possible at all, by placing the first task at its earliest start and asking whether the second can still start by its latest:</p>
+    <div class="math-block" data-narrow="\begin{aligned} &amp;a\text{ first ok} \iff a_a + d_a + s(a,b) \le b_b - d_b \\ &amp;b\text{ first ok} \iff a_b + d_b + s(b,a) \le b_a - d_a \end{aligned}">a \text{ first possible} \iff a_a + d_a + s(a, b) \le b_b - d_b, \qquad b \text{ first possible} \iff a_b + d_b + s(b, a) \le b_a - d_a.</div>
+    <ul>
+      <li><b>both orders possible</b>: the model must choose an order when both are selected (an order variable and two conditional precedences);</li>
+      <li><b>one order possible</b>: if both are selected, that order is forced (one conditional precedence);</li>
+      <li><b>neither</b>: the two cannot both be selected, <span class="m">x_a + x_b \le 1</span>. The pair is <em>mutually exclusive</em>.</li>
+    </ul>
+    <p>Chapters 08 and 09 turn each case into solver constraints. The widget shows one pair at a time, both orders placed as early as possible.</p>
+  </div>
+  <div class="col widget" id="pairW">
+    <canvas id="pairC" aria-label="Two lanes, one per order of the pair: the two windows with their allowed start ranges, the first task at its earliest start, the reconfiguration time, and the second task as early as possible, in orange where it overruns its latest start" aria-describedby="pairCap"></canvas>
+    <div class="controls">
+      <label class="field"><span>Case</span>
+        <select id="pKind"><option value="both">both orders possible (356)</option><option value="one">one order possible (414)</option><option value="neither">neither: mutually exclusive (106)</option></select>
+      </label>
+      <label class="field" style="flex:1 1 14rem"><span>Pair: <b id="pkV"></b></span>
+        <span class="row"><input type="range" id="pk" min="0" max="355" step="1" value="0"></span>
+      </label>
+    </div>
+    <p class="caption" id="pairCap"></p>
+  </div>
+  <div class="col prose">
+    <p>The default pair is the first "both" pair of the list: opportunities 15 and 7 on satellite 0, windows [580, 820] and [590, 810] s, 30 and 60 s long, 20 s apart in reconfiguration. Either can go first: 580 + 30 + 20 = 630 is before 7's latest start of 750, and 590 + 60 + 20 = 670 is before 15's latest start of 790. Switch to "neither" and the first pair is 2 and 10, windows [0, 100] and [0, 120] s, 30 and 90 s long, 18 s apart: 30 + 18 = 48 is after 10's latest start of 30, and 90 + 18 = 108 after 2's latest start of 70. Too much work for the time available.</p>
+    <p><b>The small instance's counts.</b> The four satellites have 36, 42, 26 and 64 opportunities, so there are 630 + 861 + 325 + 2,016 = 3,832 pairs on a common satellite. The sweep's <code>break</code> disposes of 2,922 of them without computing a transition, the "always <span class="m">a</span> then <span class="m">b</span>" test of 34 more, and 876 are kept:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="pairT">
+      <thead><tr><th>Kept pairs, small instance</th><th>count</th><th>what a model adds</th></tr></thead>
+      <tbody>
+        <tr><td>both orders possible</td><td>356</td><td class="words">an order choice and two conditional precedences</td></tr>
+        <tr><td>one order possible (<span class="m">a</span> first: 389, <span class="m">b</span> first: 25)</td><td>414</td><td class="words">one conditional precedence</td></tr>
+        <tr><td>neither (mutually exclusive)</td><td>106</td><td class="words"><span class="m">x_a + x_b \le 1</span></td></tr>
+        <tr class="total"><td>total</td><td>876</td><td class="words"><code>stats()["conflict_pairs"]</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Of the 876, 849 have overlapping windows; the other 27 are windows that do not overlap but are closer than one reconfiguration time. Over the kept pairs, <span class="m">s</span> ranges from 11 to 59 s, median 20 s: pairs that interfere are targets close together in the sky.</p>
+    <p><b>Testing the sweep by brute force.</b> A sweep with a <code>break</code> is the kind of code where an off-by-one loses pairs silently, and a lost pair is a missing constraint: the solver could then return a plan that breaks rule 3. The test suite compares it with the obvious quadratic loop:</p>
+    <pre><code class="language-python">def test_pair_sweep_skips_only_free_pairs(small):
+    listed = {(p.a, p.b) for p in small.pairs} | {(p.b, p.a) for p in small.pairs}
+    opps = small.opportunities
+    for ids in small.by_satellite().values():
+        for a, b in itertools.combinations(ids, 2):
+            if (a, b) in listed or opps[a].target == opps[b].target:
+                continue
+            free_ab = opps[a].window_end + small.transition(a, b) &lt;= opps[b].earliest_start
+            free_ba = opps[b].window_end + small.transition(b, a) &lt;= opps[a].earliest_start
+            assert free_ab or free_ba</code></pre>
+    <p>Every pair the sweep did not list must be free in one direction. The test runs on a 3-satellite, 40-target instance; <code>ch06_numbers.py</code> repeats it on the course's instance, where all 2,951 unlisted pairs of different targets are free.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="budgets">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Budgets as knapsacks</h2>
+  </div>
+  <div class="col prose">
+    <p>Each budget inequality of rule 4 has the form "sum of the sizes of the chosen items <span class="m">\le</span> a capacity": a <em>knapsack constraint</em>, the constraint of the classic problem of filling a bag of limited capacity with items of given sizes <a href="#ref-3">[3]</a>. The items are the opportunities of one segment, their sizes the listening times. Because chapter 05 assigned each opportunity to exactly one segment of each kind, the groups are fixed sets, built once:</p>
+    <pre><code class="language-python">def budget_groups(self) -> list[tuple[str, int, list[int]]]:
+    """(kind, limit, opportunity ids) for every duty-cycle and memory segment."""
+    duty: dict[tuple, list[int]] = {}
+    mem: dict[tuple, list[int]] = {}
+    for o in self.opportunities:
+        duty.setdefault((o.sat, o.revolution), []).append(o.idx)
+        mem.setdefault((o.sat, o.memory_segment), []).append(o.idx)
+    groups = [("duty", self.duty_budget_s, ids) for ids in duty.values()]
+    groups += [("memory", self.memory_budget_s, ids) for ids in mem.values()]
+    # A group whose opportunities cannot exceed the limit even if all are chosen is dropped.
+    return [
+        (k, lim, ids)
+        for (k, lim, ids) in groups
+        if sum(self.opportunities[i].duration for i in ids) > lim
+    ]</code></pre>
+    <p><b>Why drop groups.</b> If all the opportunities of a segment together ask for no more than the limit, then every plan, even one that selects all of them, respects the budget. The constraint is <em>redundant</em>: it can never cut off a plan, so it only costs the solver time. The small instance has 12 non-empty power segments and 14 memory segments, 26 in all; 7 can never be exceeded, and <b>19 remain</b>, 10 for power and 9 for memory. The ones that remain are heavily oversubscribed: their opportunities ask for 1.45 to 7.1 times the limit. The worst is satellite 3's last revolution, 33 opportunities asking for 2,130 s against 300.</p>
+    <p>In the optimal plan, six power groups are exactly full (300 of 300 s), and no memory group is: the largest memory use is 420 of 600 s. In the small instance, power and reconfiguration limit the plan and memory does not: solved again with the memory budget removed, CP-SAT proves the same optimum, 219. Chapter 10's memory sweep on the medium instance finds the same: memory binds only when it is cut to 300 s or less. In the hero demo, satellite 3's revolutions 2 and 3 are full; switch on any other task of the default pass and the power bar turns orange.</p>
+    <div class="callout"><p><b>The small instance's constraints.</b> 168 windows (rule 1), 114 targets with at least one opportunity (rule 2, which binds only for the 47 targets with two or three), 876 conflict pairs: 356 two-way, 414 one-way, 106 exclusive (rule 3), 19 knapsacks: 10 power, 9 memory (rule 4).</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="checker">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The independent checker</h2>
+  </div>
+  <div class="col prose">
+    <p>Four methods produce plans in this course: a greedy heuristic, a CP-SAT model, a rolling-horizon CP-SAT and a MILP. Each one encodes the rules in its own way: precedences on the conflict pairs, order literals, big-M inequalities. Each encoding can be wrong: a sign, a missing pair, a big-M too small, a fixed task forgotten between blocks. A wrong encoding does not crash; it returns a plan, with a good value, that breaks a rule. The only defence is to check every plan against the rules themselves, with code that does not reuse the encodings:</p>
+    <pre><code class="language-python">def check_plan(inst: PlanningInstance, plan: dict[int, float]) -> list[str]:
+    """Return a list of violations (empty list = feasible). plan maps opportunity id -> start time."""
+    errors = []
+    opps = inst.opportunities
+    seen_targets: dict[int, int] = {}
+    per_sat: dict[int, list[int]] = {}
+    for i, t in plan.items():
+        o = opps[i]
+        if t &lt; o.earliest_start - TOL or t &gt; o.latest_start + TOL:
+            errors.append(f"opp {i}: start {t} outside [{o.earliest_start}, {o.latest_start}]")
+        if o.target in seen_targets:
+            errors.append(f"target {o.target} collected twice (opps {seen_targets[o.target]}, {i})")
+        seen_targets[o.target] = i
+        per_sat.setdefault(o.sat, []).append(i)
+
+    for s, ids in per_sat.items():
+        ids.sort(key=lambda i: plan[i])
+        for p, a in enumerate(ids):
+            for b in ids[p + 1 :]:
+                gap_needed = opps[a].duration + inst.transition(a, b)
+                if plan[b] - plan[a] &lt; gap_needed - TOL:
+                    errors.append(...)
+
+    for kind, limit, ids in inst.budget_groups():
+        used = sum(opps[i].duration for i in ids if i in plan)
+        if used &gt; limit + TOL:
+            errors.append(f"{kind} budget exceeded: {used}s &gt; {limit}s")
+    # groups dropped by budget_groups() cannot be exceeded by construction
+    return errors</code></pre>
+    <p>Read it rule by rule: one loop for windows and targets, one double loop over every pair of tasks on a satellite (sorted by start, so the earlier one must be followed by the gap), one loop over the budgets. <code>TOL</code> is <span class="m">10^{-6}</span>, because the MILP of chapter 09 returns real-valued start times.</p>
+    <p><b>What "independent" means here.</b> The checker does not use the conflict pairs, the order flags or any solver variable. It recomputes <code>transition</code> for every pair of scheduled tasks, including pairs the sweep skipped, so a bug in <code>build_pairs</code> or in a model shows up as a violation. What it does share with the solvers is the problem's definition: the opportunities, <code>transition()</code>, and <code>budget_groups()</code> (which is safe to share, because the groups it drops can never be exceeded). A mistake in those would be invisible to it, which is why they are tested separately and kept short. The rule of thumb is to share the specification and nothing of the method.</p>
+    <p><b>What it catches.</b> The tests in <code>tests/test_planning.py</code>:</p>
+    <ul>
+      <li><code>test_checker_catches_violations</code>: on a hand-made two-task instance, a plan over the power budget ("budget"), two tasks without the reconfiguration gap ("need") and a start after the latest start ("outside");</li>
+      <li><code>test_checker_catches_double_collection</code>: one target collected by two satellites ("twice");</li>
+      <li><code>test_cpsat_and_milp_agree_and_beat_greedy</code>: on three generated instances of about 170 opportunities, the greedy, CP-SAT and MILP plans all pass the checker and their values match <code>plan_value</code>;</li>
+      <li><code>test_rolling_horizon_is_feasible_and_beats_greedy</code>: the rolling-horizon plan passes it too.</li>
+    </ul>
+    <p>The benchmark script goes further: it calls the checker on every plan and stops with an error if one is infeasible, so no number in the results table comes from a plan that was not checked. On the course's instance, the greedy and optimal plans both return an empty list. Break the optimal plan on purpose and it speaks: start one task 10 s past its latest start and it reports the start outside its window and, as a consequence, a reconfiguration gap of 20 s where 75 s are needed; add a second opportunity of a target already collected and it reports the double collection, a gap of 0 s where 117 s are needed and a power budget of 330 s over 300. Adding every unused opportunity at its earliest start yields 646 violations.</p>
+    <p>The hero demo runs the same checker (<code>Sat.checkPlan</code>, a line-by-line port) on the whole plan at every change. Try three things on the default pass: drag the task of opportunity 130 one second to the left (reconfiguration); switch on opportunity 164 (reconfiguration and power); load the greedy plan, which is feasible too, and compare the gaps.</p>
+    <div class="big-idea"><p>A solver is a search procedure; a checker is the definition. Keep them apart, and let no plan reach a table, a figure or a satellite without passing the definition.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What exactly does a plan decide?</summary><p>Which opportunities are used (a subset) and, for each used one, a start time. In satplan, a dictionary from opportunity id to start time.</p></details>
+    <details class="sol"><summary>2. Two tasks point 40° apart. What is the reconfiguration time, and how long can it be at most?</summary><p><span class="m">\lceil 10 + 40/2 \rceil = 30</span> s. At most <span class="m">10 + 180/2 = 100</span> s, for opposite directions.</p></details>
+    <details class="sol"><summary>3. Why is rule 3 harder for a solver than rules 1, 2 and 4?</summary><p>Rules 1, 2 and 4 are single linear inequalities. Rule 3 is a disjunction: <span class="m">a</span> before <span class="m">b</span> with a gap, or <span class="m">b</span> before <span class="m">a</span> with a gap. The solver must choose the side, and with many pairs the choices interact.</p></details>
+    <details class="sol"><summary>4. When can <code>build_pairs</code> skip a pair, and why does its <code>break</code> use <span class="m">s_{\max}</span>?</summary><p>When even the latest end of <span class="m">a</span> plus the transition is before the earliest start of <span class="m">b</span>: every placement is then fine. The <code>break</code> must hold for all the following windows, whose transitions are not computed, so it uses the largest possible transition, 100 s.</p></details>
+    <details class="sol"><summary>5. What do the three cases of a kept pair mean for a model?</summary><p>Both orders possible: choose an order, enforce the matching precedence if both are selected. One order: enforce it if both are selected. Neither: forbid selecting both. Small instance: 356, 414 and 106.</p></details>
+    <details class="sol"><summary>6. The transition satisfies the triangle inequality. Why does the checker still compare every pair of tasks on a satellite?</summary><p>Because a checker must not depend on a property of the thing it checks. Consecutive checks suffice only for transitions that satisfy the inequality; a different slew model, such as time-dependent transitions, might not. Checking all pairs costs a few hundred comparisons.</p></details>
+    <details class="sol"><summary>7. Why are 7 of the 26 budget segments dropped, and is that safe for the checker?</summary><p>All their opportunities together ask for no more than the limit, so no plan can exceed it: the constraint is redundant. It is safe for the checker for the same reason, as its closing comment says.</p></details>
+    <details class="sol"><summary>8. How large is the error of taking pointing directions at window midpoints?</summary><p>Large. The direction turns a median 96° across a window, and recomputing the optimal plan's 51 consecutive transitions with true directions makes 21 of the gaps too short. The model's plans are feasible for the model; time-dependent transitions would be needed for a real satellite.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Break the sweep.</b> Change the <code>break</code> in <code>build_pairs</code> to use <code>s_ab</code> of the current pair instead of <code>s_max</code>. Run the brute-force test. What happens, and why?</div>
+        <details class="sol"><summary>Hint</summary><p>After the <code>break</code>, the loop never looks at later windows of the same satellite. Is a later window always free just because the current one is?</p></details>
+        <details class="sol"><summary>Solution</summary><p>The code is now wrong, and the test still passes. With <code>s_ab</code> the break says "this <span class="m">b</span> is free of <span class="m">a</span>", but a later window <span class="m">b'</span> may start a little later and need a longer transition (a target in a very different direction): <span class="m">b_a + s(a, b') &gt; a_{b'}</span>. The sweep would stop before it and lose the pair, and a solver could then schedule <span class="m">a</span> and <span class="m">b'</span> too close. Yet <code>ch06_numbers.py</code> runs the faulty sweep on the test's instance and on the course's: it finds all 22 and all 876 pairs. The situation simply never arises in them. A passing test is evidence, not proof; the argument "<span class="m">s_{\max}</span> bounds every transition" is what makes the original <code>break</code> correct. And if a lost pair ever did let a solver return a bad plan, the checker would still catch it.</p></details>
+      </li>
+      <li><div><b>A consecutive-only checker.</b> Write a checker that compares only consecutive tasks on each satellite. Show that it returns the same verdict as <code>check_plan</code> on the greedy and CP-SAT plans and on 1,000 random plans. Then replace <code>transition</code> by a function that violates the triangle inequality and find a plan where the verdicts differ.</div>
+        <details class="sol"><summary>Hint</summary><p>A function that breaks the inequality: a large time between two particular directions and small times through a third, for example <span class="m">s(a, c) = 100</span> and <span class="m">s(a, b) = s(b, c) = 11</span>, with short tasks.</p></details>
+        <details class="sol"><summary>Solution</summary><p>With satplan's <span class="m">s</span>, the verdicts agree on every plan (Part 3 proves it). With the made-up function, schedule <span class="m">a</span>, then <span class="m">b</span> right after its 11 s, then <span class="m">c</span> right after its 11 s: consecutive checks pass, but <span class="m">t_c - t_a = d_a + 11 + d_b + 11</span>, which is less than <span class="m">d_a + 100</span> for short tasks. Only the all-pairs checker sees it.</p></details>
+      </li>
+      <li><div><b>Time-dependent transitions.</b> Using <code>ground_points_eci</code> and <code>position_eci</code>, write <code>true_transition(a, t_a, b, t_b)</code> that takes the direction to <span class="m">a</span>'s target at <span class="m">t_a + d_a</span> and to <span class="m">b</span>'s at <span class="m">t_b</span>. Reproduce "21 of 51" for the CP-SAT plan.</div>
+        <details class="sol"><summary>Hint</summary><p>The direction is <span class="m">(g - r)/\lVert g - r \rVert</span> with <span class="m">g</span> the target and <span class="m">r</span> the satellite in the inertial frame, at the same time. The CP-SAT plan is in <code>interactive/instance-small.js</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><code>code/ch06_numbers.py</code> does it in the section "pointing inside a window": for each satellite, sort the plan by start, and for each consecutive pair compare <code>t_b - (t_a + d_a)</code> with <code>ceil(10 + angle / 2)</code> at the true times. It finds 51 consecutive pairs and 21 that are too short (greedy: 23 of 50), with differences from −30 to +59 s against the midpoint transitions.</p></details>
+      </li>
+      <li><div><b>A plan by hand.</b> In the hero demo, empty satellite 3's third pass and build your own plan for it. What value can you reach for the pass without a violation? Compare with the optimal plan's 30.</div>
+        <details class="sol"><summary>Hint</summary><p>Revolution 2 of satellite 3 is shared with the next pass, where the optimal plan spends 60 s; the pass can use at most 240 s of the power budget if that task is kept. Start with the two weight-8 targets (opportunities 130 and 156).</p></details>
+        <details class="sol"><summary>Solution</summary><p>30 is the best possible for this pass alone: <code>ch06_numbers.py</code> solves the 15 opportunities of the pass on their own with CP-SAT and proves 30 optimal, with 240 s or with the full 300 s of power. The optimal plan takes 153, 130, 166, 152, 165 and 156 (weights 4, 8, 2, 4, 4, 8), 240 s of listening, with four of the five gaps at zero slack; other sets reach 30 too, for example with 164 in place of 153. Whatever you reach by hand, the checker tells you at each step whether you are still allowed.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The decision</b>: a subset of the 168 opportunities and a start for each; <span class="m">2^{168} \approx 3.7 \times 10^{50}</span> subsets.</div></li>
+      <li><div><b>The rules</b>: start in <span class="m">[a_o, b_o - d_o]</span>; at most one opportunity per target; on a satellite, a gap of <span class="m">d + s(a, b)</span> in one order or the other, with <span class="m">s = \lceil 10 + \theta/2 \rceil</span> (11 to 100 s); 300 s per revolution, 600 s per memory segment.</div></li>
+      <li><div><b>Approximations</b>: pointing at window midpoints is a strong simplification (the direction turns a median 96° in a window; 21 of 51 gaps of the optimal plan too short with true directions); <span class="m">s</span> satisfies the triangle inequality with at least 10 s to spare.</div></li>
+      <li><div><b>Conflict pairs</b>: a sorted sweep with a <code>break</code> at <span class="m">s_{\max}</span>; of 3,832 same-satellite pairs, 876 kept: 356 both orders, 414 one, 106 neither; tested by brute force.</div></li>
+      <li><div><b>Budgets</b>: knapsacks over fixed groups; 26 segments, 19 can bind (10 power, 9 memory); in the optimal plan 6 power groups are full, no memory group.</div></li>
+      <li><div><b>The checker</b>: recomputes every rule for every pair of tasks, shares the problem definition but no solver encoding, and every plan of every method goes through it.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Feasible plan</td><td>A plan that satisfies every constraint.</td></tr>
+        <tr><td>Reconfiguration time</td><td><span class="m">s(a, b)</span>: settle plus slew between the two pointing directions, rounded up.</td></tr>
+        <tr><td>Sequence-dependent setup</td><td>A gap between two jobs that depends on which job follows which.</td></tr>
+        <tr><td>Disjunction</td><td>A constraint of the form "this or that"; here, the two orders of a pair.</td></tr>
+        <tr><td>Triangle inequality</td><td><span class="m">s(a, c) \le s(a, b) + s(b, c)</span>: a detour is never faster.</td></tr>
+        <tr><td>Conflict pair</td><td>Two opportunities on one satellite whose tasks can interfere.</td></tr>
+        <tr><td>Mutually exclusive</td><td>A pair with no feasible order: at most one of the two can be selected.</td></tr>
+        <tr><td>Knapsack constraint</td><td>A sum of fixed sizes of chosen items below a capacity.</td></tr>
+        <tr><td>Redundant constraint</td><td>One that no plan can violate; dropping it changes nothing but the model size.</td></tr>
+        <tr><td>Independent checker</td><td>Code that verifies a plan against the rules without reusing any solver's encoding of them.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter states the rules and checks plans; it does not find good plans. Chapter 07 builds one greedily, chapter 08 encodes the rules for CP-SAT (optional intervals, <code>AddNoOverlap</code>, enforced precedences), chapter 09 as a MILP with big-M disjunctions, and chapter 10 splits the horizon into blocks. The physical slew model (a constant rate, no acceleration limits, no attitude constraints) is the simplest one that gives sequence-dependent times.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>M. Lemaître, G. Verfaillie, F. Jouhaud, J.-M. Lachiver and N. Bataille. Selecting and scheduling observations of agile satellites. <em>Aerospace Science and Technology</em>, 6(5), 2002. Agile satellites, where the transition between two observations depends on when each one is made.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>. Springer. Time windows, sequence-dependent setup times, and why such problems are hard.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>L. A. Wolsey. <em>Integer Programming</em>. Wiley. Knapsack constraints, disjunctions, and the formulations of chapter 09.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>F. Rossi, P. van Beek and T. Walsh (eds.). <em>Handbook of Constraint Programming</em>. Elsevier, 2006. Scheduling constraints and how a constraint solver reasons about them (chapter 08).</div></li>
+    </ul>
+    <p>Next, chapter 07 builds a plan the simplest way, one target at a time, and measures how much it leaves behind.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="05-from-geometry-to-a-planning-problem.html"><span class="lbl">Previous · 05</span><span class="t">From geometry to a planning problem</span></a>
+  <a class="next" rel="next" href="07-a-greedy-plan.html"><span class="lbl">Next · 07</span><span class="t">A greedy plan and what it leaves behind</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 06 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The plan is checked in your browser by a line-by-line port of satplan's checker on the instance exported from the package; the numbers in the text come from <code>code/ch06_numbers.py</code>. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch06.js"></script>
+</body>
+</html>

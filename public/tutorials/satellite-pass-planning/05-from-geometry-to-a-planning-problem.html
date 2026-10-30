@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>05 · From Geometry to a Planning Problem · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="Modelling and abstraction: how the satplan package turns orbits and visibility windows into a combinatorial object a solver can read. Synthetic maritime targets with priorities and listening times, opportunities (one satellite, one target, one window) with their earliest and latest starts, ground contacts and memory segments found with bisect_right, revolutions from the window midpoint, the instance statistics, the unreachable targets, and what the model keeps and drops. A live map and Gantt chart of the course's small instance. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  #mapC { cursor: crosshair; }
+  #oppList { white-space: pre-wrap; margin: 0; }
+  .legend .dot { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 50%; flex: none; }
+  .legend .tri { display: inline-block; width: 0; height: 0; border-left: 0.38rem solid transparent; border-right: 0.38rem solid transparent; border-bottom: 0.66rem solid var(--ink); flex: none; }
+  #vocT td, #keepT td, #statT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #keepT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  canvas + canvas { margin-top: 0.4rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 05 of 10</span>
+  <h1>From geometry to a planning problem</h1>
+  <p class="lede">Chapters 01 to 04 built orbits, ground tracks and visibility windows. A solver can read none of that: it needs a finite list of choices, each with a value, a duration and a few labels that say which constraints it takes part in. This chapter makes that list. It is the step where most of the modelling decisions of a planning project are taken, and where most of its approximations enter, so we go through it line by line in <code>satplan/scenario.py</code> and <code>satplan/instance.py</code>, and measure each approximation on the course's small instance.</p>
+  <p class="byline">Elie Rouphael · Needs chapter 04's visibility windows and some Python; no optimisation yet · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The small instance as a planner sees it: 120 targets in 10 maritime boxes, 4 ground stations, 6 h of ground tracks</p>
+        <canvas id="mapC" aria-label="World map in equirectangular projection with a 30 degree graticule, the ten maritime area boxes, the ground stations as triangles, the satellites' ground tracks, and the 120 targets coloured by priority and sized by listening time; click a target to select it" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true"><span class="key"><i class="dot" style="background:var(--prior)"></i>priority 1</span><span class="key"><i class="dot" style="background:var(--c4)"></i>2</span><span class="key"><i class="dot" style="background:var(--post)"></i>4</span><span class="key"><i class="dot" style="background:var(--warm)"></i>8</span><span class="key"><i class="dot" style="border:1.5px solid var(--ink-2)"></i>no opportunity</span><span class="key"><i class="tri"></i>ground station</span><span>size: 30 to 120 s of listening</span></div>
+      </div>
+      <div>
+        <p class="chart-title">Every opportunity of the four satellites over the 6 h horizon</p>
+        <canvas id="ganttC" aria-label="Gantt chart with one row per satellite: all opportunity windows as blue bars, ground contacts as green bands, revolution boundaries as dashed lines, and the selected target's opportunities in orange" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true"><span class="key"><i class="sw" style="background:var(--post);opacity:0.45"></i>opportunity windows</span><span class="key"><i class="sw" style="background:var(--warm)"></i>selected target</span><span class="key"><i class="sw" style="background:var(--c4);opacity:0.45"></i>ground contact</span><span>dashed: revolution boundary</span></div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Target</span>
+        <select id="tSel" aria-label="Choose a target"></select>
+      </label>
+      <label class="field"><span>Or slide through the targets: <b id="tSlideV"></b></span>
+        <span class="row"><input type="range" id="tSlide" min="0" max="119" step="1" value="11"></span>
+      </label>
+      <div class="btn-row"><button class="btn ghost" type="button" id="tMost">next target with 3 opportunities</button><button class="btn ghost" type="button" id="tUnreach">next unreachable target</button></div>
+      <label class="check"><input type="checkbox" id="tTracks" checked> ground tracks</label>
+      <div class="readouts" aria-live="off">
+        <span>area</span><span class="v" id="rArea">–</span>
+        <span>position</span><span class="v" id="rPos">–</span>
+        <span>priority · listening time</span><span class="v" id="rPrio">–</span>
+        <span>opportunities</span><span class="v" id="rN">–</span>
+      </div>
+      <p class="readout-line" id="oppList"></p>
+      <p class="hint">Click a target on the map, or use the list or the slider. Everything is drawn from the exported instance; the page checks on load that every revolution and memory segment follows the rules of <code>instance.py</code>.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#abstraction"><span class="n">1</span><span class="t">What a solver can read</span><span class="d">From trajectories to a list of choices</span></a>
+    <a href="#targets"><span class="n">2</span><span class="t">Targets, priorities, listening times</span><span class="d">How the synthetic requests are drawn</span></a>
+    <a href="#opportunities"><span class="n">3</span><span class="t">Opportunities</span><span class="d">One satellite, one target, one window</span></a>
+    <a href="#segments"><span class="n">4</span><span class="t">Contacts, memory and revolutions</span><span class="d">Labels from the window midpoint</span></a>
+    <a href="#stats"><span class="n">5</span><span class="t">The instance in numbers</span><span class="d">Sizes, unreachable targets, reachable weight</span></a>
+    <a href="#keeps"><span class="n">6</span><span class="t">What the model keeps and drops</span><span class="d">The abstraction, audited</span></a>
+    <a href="#check"><span class="n">7</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Scope and further reading</span><span class="d">What is left out</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="abstraction">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>What a solver can read</h2>
+  </div>
+  <div class="col prose">
+    <p>At the end of <a href="04-seeing-the-ground.html">chapter 04</a> we could answer the question "when does satellite 3 see the point at 12°N, 72°W?" with a list of time intervals. A planning solver asks a different question: "which of these things should I do, and when?". To ask it, the things have to be written down as a finite list, and every rule the plan must respect has to be expressed in terms of that list.</p>
+    <p>The move from the first question to the second is called <em>modelling</em>, or abstraction: we decide what the solver is allowed to see, and everything else is thrown away. The orbit itself disappears; what remains of it is a set of intervals, one number per interval for its value, one for the time it needs, and two small integers that say which budget it draws on. If the abstraction is good, a plan that is optimal for the list is close to a plan that is good in the world. If it is bad, the solver optimises the wrong thing with great precision.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a planning instance?</p>
+      <p><b>In plain words:</b> the complete description of one planning problem, in the solver's language: a list of opportunities to do something, what each is worth and how long it takes, and the data needed to state the rules (reconfiguration times, budgets).</p>
+      <p><b>More precisely:</b> in satplan it is the <code>PlanningInstance</code> dataclass. Its <code>opportunities</code> list is the set of possible decisions; each <code>Opportunity</code> carries a satellite, a target, a time window, a duration, a weight, a pointing direction and two segment labels. The solvers of chapters 07 to 10 read nothing else: they never see an orbit.</p>
+      <dl>
+        <dt>Target</dt><dd>A point on the sea surface to listen to, with a priority (its weight) and a required listening time.</dd>
+        <dt>Opportunity</dt><dd>One satellite, one target and one visibility window long enough for the listening time.</dd>
+        <dt>Task</dt><dd>An opportunity that a plan selects, together with the start time chosen for it.</dd>
+        <dt>Segment</dt><dd>A stretch of time on one satellite over which a budget is counted: a revolution (power) or the time between two ground contacts (memory).</dd>
+      </dl>
+    </div>
+    <p>The whole instance is produced by one function, <code>build_instance</code> in <code>satplan/scenario.py</code>. The hero demo above shows its output for the course's small instance (4 satellites, 120 targets, 6 h, seed 0): the targets on the map and the opportunities on the Gantt chart. The rest of this chapter takes it apart.</p>
+    <div class="callout warm"><p><b>Everything is synthetic.</b> The areas are generic ocean boxes, the stations are illustrative positions, the priorities and durations are drawn at random, and the orbits are circular. Nothing here describes a real operator, satellite or tasking. The point is to have a problem with the right structure and realistic orders of magnitude, so that the planning methods can be compared honestly on it.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="targets">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Targets, priorities, listening times</h2>
+  </div>
+  <div class="col prose">
+    <p>The satellites listen for radio emissions from ships. In the model, an emitter is a fixed point on the sea, a <em>target</em>. Targets are scattered in ten rectangular boxes in latitude and longitude, named after sea areas so that the map is readable: the Gulf of Guinea, the Western Mediterranean, the Arabian Sea, the Bay of Bengal, the South China Sea, the approaches to the Bay of Biscay, the Caribbean, the Mozambique Channel, the Eastern Pacific and the North Sea. They are the dashed boxes on the map. The generator is short:</p>
+    <pre><code class="language-python">PRIORITY_WEIGHTS = np.array([1, 2, 4, 8])
+PRIORITY_PROBS = np.array([0.4, 0.3, 0.2, 0.1])
+DURATIONS_S = np.array([30, 60, 90, 120])
+...
+def make_targets(cfg: ScenarioConfig):
+    rng = np.random.default_rng(cfg.seed)
+    area = rng.integers(0, len(MARITIME_AREAS), size=cfg.n_targets)
+    lat = np.empty(cfg.n_targets)
+    lon = np.empty(cfg.n_targets)
+    for j, a in enumerate(area):
+        _, la0, la1, lo0, lo1 = MARITIME_AREAS[a]
+        lat[j] = rng.uniform(la0, la1)
+        lon[j] = rng.uniform(lo0, lo1)
+    weight = rng.choice(PRIORITY_WEIGHTS, size=cfg.n_targets, p=PRIORITY_PROBS)
+    duration = rng.choice(DURATIONS_S, size=cfg.n_targets)
+    return lat, lon, area, weight.astype(int), duration.astype(int)</code></pre>
+    <p>Read it as three independent draws per target.</p>
+    <p><b>Where.</b> An area is chosen uniformly among the ten, then a point uniformly in its latitude and longitude ranges. "Uniformly among the areas" is not "uniformly over the sea": the North Sea box covers about 111 thousand km² and the Gulf of Guinea box about 1,211 thousand, yet both receive one tenth of the targets on average. Small boxes are therefore crowded, and crowded boxes are where satellites must choose. In the small instance the counts per box range from 5 (Western Mediterranean) to 17 (Gulf of Guinea). (A box spanning <span class="m">\Delta\lambda</span> in longitude between latitudes <span class="m">\varphi_0</span> and <span class="m">\varphi_1</span> has area <span class="m">R^2\,\Delta\lambda\,(\sin\varphi_1 - \sin\varphi_0)</span> on a sphere of radius <span class="m">R</span>, with <span class="m">\Delta\lambda</span> in radians.)</p>
+    <p><b>How important.</b> A priority, used directly as the objective weight: 1, 2, 4 or 8, with probabilities 0.4, 0.3, 0.2 and 0.1. Doubling the weight at each level is a common way to make one high-priority target worth more than several low-priority ones without making it worth everything: one priority-8 target is worth eight priority-1 targets. The expected weight per target is</p>
+    <div class="math-block">\mathbb{E}[w] = 0.4 \cdot 1 + 0.3 \cdot 2 + 0.2 \cdot 4 + 0.1 \cdot 8 = 2.6,</div>
+    <p>so 120 targets should total about 312. The small instance drew 48, 31, 28 and 13 targets of priority 1, 2, 4 and 8, for a total weight of <b>326</b>.</p>
+    <p><b>How long.</b> A required listening time of 30, 60, 90 or 120 s, equally likely, independent of the priority. The small instance has 32, 27, 37 and 24 targets of each, 8,790 s of listening requested in all. A target is collected only if the satellite listens for the whole duration in one go: no partial credit, no splitting across passes.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="opportunities">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Opportunities</h2>
+  </div>
+  <div class="col prose">
+    <p>Chapter 04 computes, for each satellite and each target, the visibility windows on a 10 s grid: the runs of grid times where the target is inside the 55° off-nadir cone and above 10° elevation. Over the 6 h of the small instance this gives 193 windows. A window is of use only if the listening time fits inside it, so the generator drops the 25 that are too short and keeps 168. Each survivor becomes an <em>opportunity</em>:</p>
+    <pre><code class="language-python">@dataclass(frozen=True)
+class Opportunity:
+    idx: int
+    sat: int
+    target: int
+    window_start: int  # s
+    window_end: int  # s
+    duration: int  # s, listening time required by the target
+    weight: int
+    pointing: tuple  # unit vector satellite -> target at window midpoint (inertial frame)
+    revolution: int
+    memory_segment: int
+
+    @property
+    def earliest_start(self) -> int:
+        return self.window_start
+
+    @property
+    def latest_start(self) -> int:
+        return self.window_end - self.duration</code></pre>
+    <div class="define">
+      <p class="define-title">What is an opportunity?</p>
+      <p><b>In plain words:</b> one chance to collect one target: this satellite, during this window, for this long.</p>
+      <p><b>More precisely:</b> a tuple <span class="m">o = (\mathrm{sat}, j, [a_o, b_o], d_o, w_o, u_o, r_o, m_o)</span>: satellite, target <span class="m">j</span>, window, the target's duration and weight, the pointing direction <span class="m">u_o</span> at the window midpoint, and the revolution and memory segment. A task on <span class="m">o</span> occupies <span class="m">[t, t + d_o]</span> and must fit in the window, so its start <span class="m">t</span> ranges over</p>
+      <div class="math-block">\underbrace{a_o}_{\text{earliest start}} \;\le\; t \;\le\; \underbrace{b_o - d_o}_{\text{latest start}}.</div>
+    </div>
+    <p>A target seen on two passes has two opportunities, possibly on two satellites. In the small instance, 67 targets have one opportunity, 40 have two and 7 have three; the hero demo starts on one of the seven, target 11 in the North Sea, with one window on satellite 1 and two on satellite 3. The first opportunity in the list looks like this (Python's <code>repr</code>, pointing rounded):</p>
+    <pre><code class="language-python">Opportunity(idx=0, sat=0, target=1, window_start=17260, window_end=17490,
+            duration=90, weight=2, pointing=(-0.9031, 0.4092, -0.1301),
+            revolution=3, memory_segment=3)
+# earliest_start 17260, latest_start 17400</code></pre>
+    <p>The window is 230 s long, the task 90 s, so the task can start anywhere in a 140 s range. Over the instance, windows last from 40 to 240 s (median 200 s) and the freedom on the start, <span class="m">b_o - d_o - a_o</span>, ranges from 0 (the task fills the window exactly) to 210 s, median 120 s. That freedom is what makes the problem a scheduling problem and not only a selection problem: two tasks whose windows overlap can often both be done, one after the other, if their starts are chosen well. Chapter 06 is about exactly that.</p>
+    <p>Look at the Gantt chart in the hero. The opportunities come in tight clusters: a satellite crossing a crowded box sees a dozen targets at once, for a few minutes, then nothing for an hour. Satellite 3 has 64 opportunities, satellite 2 only 26, because their ground tracks cross the boxes differently. Satellite 3's busiest stretch, from 5:08 to 5:27, holds 33 windows in two bursts, and within each burst nearly all of them overlap: those are the minutes where the plan is decided.</p>
+    <p>Two more fields are filled from geometry while the window is at hand. <code>pointing</code> is the unit vector from the satellite to the target at the window midpoint, in the inertial frame of <a href="02-placing-an-orbit-in-space.html">chapter 02</a>; chapter 06 uses it for reconfiguration times. <code>revolution</code> and <code>memory_segment</code> are labels that say which power and memory budgets the opportunity draws on. They are the subject of Part 4.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="segments">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Contacts, memory and revolutions</h2>
+  </div>
+  <div class="col prose">
+    <p>The satellites record what they hear and keep it until they can send it down. A satellite can download only while a ground station sees it above 5° elevation: a <em>ground contact</em>. There are four illustrative stations, one in the Arctic, one in Western Europe, one in southern Patagonia and one in the Indian Ocean. For the memory rule it does not matter which station is in view, only whether one is, so the generator merges the stations into one sorted list of contacts per satellite:</p>
+    <pre><code class="language-python">for s, orbit in enumerate(orbits):
+    # ground contacts (any station), merged into one sorted list of start times
+    gs_mask = visibility_mask(
+        orbit.position_eci(times),
+        ground_points_eci(gs_lat, gs_lon, times),
+        None,
+        cfg.station_min_elevation_deg,
+    ).any(axis=1)
+    contacts = [(int(times[i0]), int(times[i1])) for i0, i1 in boolean_runs(gs_mask)]
+    contacts_per_sat.append(contacts)
+    contact_starts = [c[0] for c in contacts]</code></pre>
+    <p>The <code>.any(axis=1)</code> is the merge: at each grid time, "some station sees the satellite". Two stations whose visibility overlaps give a single contact. In the small instance the satellites have 3, 5, 5 and 6 contacts, 19 in all; 8 are seen from the Arctic station alone and 4 from the Arctic and European stations together, which is why a high-latitude station is the usual first choice for polar orbits. Satellite 1 is already in contact at <span class="m">t = 0</span>.</p>
+    <p><b>The memory rule.</b> The model assumes that every contact is long enough to empty the memory (they last 200 to 1,000 s here). Then the data on board at any moment is what was recorded since the last contact started, and the constraint "the memory never overflows" becomes "on each satellite, the listening time recorded between two consecutive contact starts is at most 600 s". The stretches between contact starts are the <em>memory segments</em>. Segment <span class="m">k</span> is everything recorded before contact <span class="m">k</span> starts and after contact <span class="m">k-1</span> started, and contact <span class="m">k</span> dumps it.</p>
+    <p>Which segment does an opportunity belong to? Its window has a start and an end, which may in principle fall in different segments. satplan takes one point, the window midpoint <span class="m">\bar t_o = (a_o + b_o)/2</span>, and asks how many contacts start at or before it:</p>
+    <pre><code class="language-python">def memory_segment_index(midpoint: float, contact_starts: list[int]) -> int:
+    """Data recorded before contact k starts is dumped during contact k."""
+    return bisect.bisect_right(contact_starts, midpoint)</code></pre>
+    <p><code>bisect_right(a, x)</code> returns the position at which <code>x</code> would be inserted into the sorted list <code>a</code> to keep it sorted, after any equal elements: the number of elements <span class="m">\le x</span>. With contact starts [480, 6860, 16080] (satellite 0), a midpoint at 3,000 s gives 1 (one contact has started: the task is dumped by the second contact, index 1), and a midpoint at 17,375 s gives 3 (dumped by a contact after the horizon). The binary search costs <span class="m">O(\log n)</span>; with six contacts a loop would do as well, but the call says exactly what is meant.</p>
+    <p><b>The power rule</b> is counted per revolution: at most 300 s of listening per satellite and per orbit. The revolution of an opportunity comes from the same midpoint:</p>
+    <pre><code class="language-python">def segment_index(midpoint: float, period_s: float) -> int:
+    return int(midpoint // period_s)</code></pre>
+    <p>with the period <span class="m">T = 2\pi\sqrt{a^3/\mu} = 5730.13</span> s, 95.5 minutes, of <a href="01-circular-orbits-from-newton.html">chapter 01</a>. Six hours are 3.77 revolutions, so the revolution labels run from 0 to 3, and the boundaries are at 5,730, 11,460 and 17,190 s, the dashed lines on the Gantt chart. Note that these "revolutions" are slices of length <span class="m">T</span> counted from <span class="m">t = 0</span>, the same for every satellite, not orbits counted from a node crossing. For a power budget, which stands for "the battery recharges once per orbit", any slicing of length <span class="m">T</span> serves.</p>
+  </div>
+  <div class="col widget" id="segW">
+    <p class="chart-title">One satellite's 6 h: contacts (green), contact starts (green lines), revolution boundaries (dashed), all its windows (blue) and the chosen one (orange), with its midpoint</p>
+    <canvas id="segC1" aria-label="Timeline of one satellite over 6 hours with its ground contacts, memory segment labels m0, m1 and so on between contact starts, revolution boundaries, and the selected opportunity window with its midpoint" aria-describedby="segCap"></canvas>
+    <canvas id="segC2" aria-label="Zoom on 15 minutes either side of the selected window" aria-describedby="segCap"></canvas>
+    <div class="controls">
+      <label class="field"><span>Satellite</span>
+        <select id="sgSat"><option value="0">satellite 0</option><option value="1">satellite 1</option><option value="2">satellite 2</option><option value="3">satellite 3</option></select>
+      </label>
+      <label class="field" style="flex:1 1 14rem"><span>Opportunity, in time order: <b id="sgV"></b></span>
+        <span class="row"><input type="range" id="sgK" min="0" max="63" step="1" value="0"></span>
+      </label>
+      <button class="btn ghost" type="button" id="sgNext">next window that straddles a boundary</button>
+    </div>
+    <p class="caption" id="segCap"></p>
+  </div>
+  <div class="col prose">
+    <p><b>Why one point?</b> Because it makes every opportunity belong to <em>exactly one</em> segment of each kind. A budget then reads as a sum over a fixed set: if <span class="m">x_o \in \{0, 1\}</span> says whether opportunity <span class="m">o</span> is selected,</p>
+    <div class="math-block">\sum_{o \,:\, \mathrm{sat}(o) = s,\ r_o = r} d_o\, x_o \;\le\; 300 \qquad \text{and} \qquad \sum_{o \,:\, \mathrm{sat}(o) = s,\ m_o = k} d_o\, x_o \;\le\; 600,</div>
+    <p>one linear inequality per segment, with constant coefficients. Chapter 06 calls these knapsack constraints. If a task could straddle a boundary, the seconds it charges to each side would depend on its start time, a variable, and the constraint would no longer be a fixed linear sum.</p>
+    <p><b>What it costs.</b> A window that contains a boundary is charged entirely to one side. If a task in such a window is placed wholly on the other side, the budget is counted in the wrong segment. How often can that happen? The script <code>code/ch05_numbers.py</code> counts it:</p>
+    <ul>
+      <li>in the small instance, <b>no</b> window contains a revolution boundary, and <b>3</b> of the 168 contain the start of a contact. In all three the contact starts 10 s after the window opens, and the task (30 or 90 s) cannot end before it: no task can lie wholly on the wrong side. The rule only charges the first 10 s of such a task to the next dump instead of the current one. Press "next window that straddles a boundary" above to see them;</li>
+      <li>in the medium instance (8 satellites, 12 h, seed 0), 37 of 1,373 windows contain a revolution boundary, and in 19 of them a task could lie wholly on the other side; 15 contain a contact start, and in 2 a task could lie wholly on the other side. About 1.5 % of the opportunities can have their budget counted in the neighbouring segment.</li>
+    </ul>
+    <p>A second, larger simplification hides in the memory rule: 71 of the 168 windows overlap a ground contact in time. The model lets a satellite listen while it downloads, and counts what it records during a contact toward the next dump. Whether a real payload can do both at once is a design question the model does not ask.</p>
+    <div class="callout"><p><b>The small instance's segments.</b> Period 5,730.13 s, revolutions 0 to 3, revolution boundaries at 5,730, 11,460 and 17,190 s. Contacts per satellite 3, 5, 5, 6 (19 in all). Windows straddling a revolution boundary: 0; a contact start: 3, none of them with a task that could lie wholly on the other side. Medium instance, seed 0: 37 and 15 straddling windows, 19 and 2 of them with a task that could.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="stats">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The instance in numbers</h2>
+  </div>
+  <div class="col prose">
+    <p><code>PlanningInstance.stats()</code> summarises an instance in a dictionary. For the course's small instance it returns:</p>
+    <pre><code class="language-python">{'satellites': 4, 'targets': 120, 'targets_with_opportunity': 114, 'horizon_h': 6.0,
+ 'opportunities': 168, 'conflict_pairs': 876, 'pairs_both_orders': 356,
+ 'pairs_mutually_exclusive': 106, 'budget_constraints': 19,
+ 'total_weight': 326, 'reachable_weight': 316}</code></pre>
+    <p>The conflict pairs and the budget constraints are chapter 06's business. Here, look at the first line and the last one.</p>
+    <p><b>Six targets have no opportunity.</b> All six are in the Bay of Bengal box. In the six hours, two of them (targets 24 and 79) are never inside any satellite's cone above 10° elevation. The other four are seen once each, for 10, 80, 110 and 110 s, shorter than the 90 or 120 s they require. Press "next unreachable target" in the hero demo with the ground tracks on: in this short horizon no track passes close enough to that part of the box, and the four targets seen at all are seen only near the edge of a footprint, briefly. Over 12 h with 8 satellites (the medium size) every target is reachable.</p>
+    <p><b>Reachable weight against total weight.</b> The six unreachable targets carry weight 10, so no plan of any method can score more than</p>
+    <div class="math-block">\sum_{j \text{ reachable}} w_j = 326 - 10 = 316.</div>
+    <p>This is the first, crudest upper bound on the optimum, and it is far from tight: the optimal plan of chapter 08 collects 219, because reconfiguration times and budgets forbid most combinations. Reporting a plan's value as a percentage of 326 would mix two different losses, the targets no satellite can see and the ones the plan chose not to collect; the benchmark of chapter 10 compares methods against proven bounds instead.</p>
+    <p><b>The three sizes.</b> The benchmark uses three sizes, with several seeds each. The figures below come from <code>results/results.md</code> and <code>results/benchmark.json</code> of the repository (the 20-minute benchmark, not rerun for this page):</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table class="num" id="statT">
+      <thead><tr><th>size, seed</th><th>satellites</th><th>targets</th><th>horizon</th><th>reachable targets</th><th>opportunities</th><th>conflict pairs</th><th>budget constraints</th></tr></thead>
+      <tbody>
+        <tr><td>small, 0 (this course)</td><td>4</td><td>120</td><td>6 h</td><td>114</td><td>168</td><td>876</td><td>19</td></tr>
+        <tr><td>small, 1</td><td>4</td><td>120</td><td>6 h</td><td>116</td><td>170</td><td>953</td><td>21</td></tr>
+        <tr><td>small, 2</td><td>4</td><td>120</td><td>6 h</td><td>114</td><td>171</td><td>1,015</td><td>20</td></tr>
+        <tr><td>medium, 0</td><td>8</td><td>250</td><td>12 h</td><td>250</td><td>1,373</td><td>16,335</td><td>83</td></tr>
+        <tr><td>medium, 1</td><td>8</td><td>250</td><td>12 h</td><td>250</td><td>1,333</td><td>15,606</td><td>84</td></tr>
+        <tr><td>medium, 2</td><td>8</td><td>250</td><td>12 h</td><td>250</td><td>1,319</td><td>14,625</td><td>88</td></tr>
+        <tr><td>large, 0</td><td>12</td><td>600</td><td>12 h</td><td>600</td><td>4,826</td><td>145,039</td><td>144</td></tr>
+        <tr><td>large, 1</td><td>12</td><td>600</td><td>12 h</td><td>600</td><td>4,893</td><td>137,137</td><td>137</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>From small to large (seed 0) the opportunities grow by a factor of about 29 and the conflict pairs by about 166. Opportunities grow roughly with satellites times targets times hours; pairs grow with the square of the number of windows that overlap on one satellite, and more targets per box means more overlap. This quadratic growth is what decides, in chapters 08 to 10, which method still works at which size.</p>
+    <div class="big-idea"><p>A solver optimises the model, not the world. Every label in the instance (which window, which segment, how long, how much) is a modelling decision, and the honest thing to do with each one is to count how often it can be wrong.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="keeps">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>What the model keeps and drops</h2>
+  </div>
+  <div class="col prose">
+    <p>The repository's README lists its limitations. Put side by side with what the model keeps, they describe the abstraction completely:</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="keepT">
+      <thead><tr><th>Aspect</th><th>Kept</th><th>Dropped or simplified</th></tr></thead>
+      <tbody>
+        <tr><td>Orbits</td><td>Circular two-body orbits at 550 km, 97.6°, several planes, Earth rotation (chapters 01 to 03)</td><td>Eccentricity, J2 drift, drag, manoeuvres; a spherical Earth</td></tr>
+        <tr><td>Visibility</td><td>55° off-nadir cone, 10° elevation for targets, 5° for stations, on a 10 s grid (chapter 04)</td><td>Terrain, atmosphere, the antenna pattern; times between grid points</td></tr>
+        <tr><td>Targets</td><td>Fixed points with a priority and a listening time; one collection each, all or nothing</td><td>Moving ships, emitters that are silent at times, partial or repeated collections, detection probability</td></tr>
+        <tr><td>Reconfiguration</td><td>A sequence-dependent time between tasks, settle plus angle over slew rate (chapter 06)</td><td>The pointing angle is taken at window midpoints, fixed per pair; the true direction changes during a pass</td></tr>
+        <tr><td>Power</td><td>At most 300 s of listening per satellite and revolution</td><td>Battery state, eclipses, other consumers; revolutions are slices of length <span class="m">T</span> from <span class="m">t = 0</span>; the segment comes from the window midpoint</td></tr>
+        <tr><td>Memory</td><td>At most 600 s recorded between two contact starts</td><td>Each contact is assumed to empty the memory; listening during a contact is allowed; the segment comes from the window midpoint</td></tr>
+        <tr><td>Time</td><td>A static plan over a fixed horizon</td><td>New requests, replanning, uncertainty</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <p>Two remarks. First, most simplifications err on the generous side (contacts always empty the memory, listening during contacts is free), so plans from this model are, if anything, optimistic about what a real system could collect. Second, none of them changes the <em>structure</em> of the problem: selection with one choice per target, sequencing with setup times, and knapsack budgets. That structure, not the exact numbers, is what the solvers of the next chapters exploit, and it is common to the agile Earth-observation planning problems of the literature <a href="#ref-1">[1]</a>.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. What is the difference between a visibility window, an opportunity and a task?</summary><p>A visibility window is a time interval in which a satellite sees a target (chapter 04). An opportunity is a window long enough for the target's listening time, packaged with the target's weight, duration, pointing and segment labels. A task is an opportunity a plan selects, with a start time.</p></details>
+    <details class="sol"><summary>2. An opportunity has the window [17260, 17490] s and a 90 s duration. What are its earliest and latest starts?</summary><p>17,260 s and 17,490 − 90 = 17,400 s. Any start in that 140 s range keeps the whole task inside the window.</p></details>
+    <details class="sol"><summary>3. Why are 25 of the 193 visibility windows dropped?</summary><p>They are shorter than the listening time of their target, and a target is collected only by listening for its whole duration in one window. They could never be part of a feasible plan, so keeping them would only enlarge the problem.</p></details>
+    <details class="sol"><summary>4. The contact starts of a satellite are [480, 6860, 16080]. Which memory segment does a window with midpoint 6,860 s belong to, and why?</summary><p><code>bisect_right</code> counts the starts <span class="m">\le 6860</span>: two, so segment 2. A midpoint exactly at a contact start counts as recorded after that contact started, and is dumped by the next one.</p></details>
+    <details class="sol"><summary>5. Why assign a segment from one point of the window rather than split the task's seconds between segments?</summary><p>So that each opportunity belongs to exactly one segment, and each budget is a sum of fixed durations over a fixed set of opportunities: a linear knapsack constraint. Splitting would make the charge depend on the start time, a decision variable.</p></details>
+    <details class="sol"><summary>6. Is the midpoint rule ever wrong in the small instance?</summary><p>Only marginally. No window contains a revolution boundary; three contain a contact start, 10 s after the window opens, and in none can a task lie wholly on the other side. The first 10 s of such a task are charged to the wrong dump. In the medium instance about 1.5 % of opportunities could be charged to the wrong segment.</p></details>
+    <details class="sol"><summary>7. Why is the reachable weight 316 and not 326?</summary><p>Six targets in the Bay of Bengal have no opportunity: two are never seen within the sensor cone above 10° elevation in 6 h, four are seen only for 10 to 110 s, shorter than their 90 or 120 s. Their weights total 10.</p></details>
+    <details class="sol"><summary>8. Why does the number of conflict pairs grow much faster than the number of opportunities?</summary><p>Pairs are counted among opportunities on the same satellite whose windows are close in time. Within one pass over a crowded box, <span class="m">n</span> overlapping windows give about <span class="m">n^2/2</span> pairs, and larger instances put more targets in the same boxes. Small to large: 29 times more opportunities, 166 times more pairs.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>Targets proportional to sea area.</b> Change <code>make_targets</code> so that a target falls in a box with probability proportional to the box's area. Which boxes gain targets? What do you expect for the number of conflict pairs?</div>
+        <details class="sol"><summary>Hint</summary><p>The area of a box is <span class="m">R^2\,\Delta\lambda\,(\sin\varphi_1 - \sin\varphi_0)</span>. Pass <code>p=areas / areas.sum()</code> to <code>rng.choice</code>.</p></details>
+        <details class="sol"><summary>Solution</summary>
+          <pre><code class="language-python">box = np.array([[la0, la1, lo0, lo1] for _, la0, la1, lo0, lo1 in MARITIME_AREAS])
+areas = np.radians(box[:, 3] - box[:, 2]) * (np.sin(np.radians(box[:, 1])) - np.sin(np.radians(box[:, 0])))
+area = rng.choice(len(MARITIME_AREAS), size=cfg.n_targets, p=areas / areas.sum())</code></pre>
+          <p>The large tropical boxes (Gulf of Guinea, Arabian Sea, Eastern Pacific, about 1.2 million km² each) gain; the North Sea (0.11 million) and the Western Mediterranean (0.26 million) lose most of their targets. Targets become more evenly spread over the sea, so fewer windows overlap on one pass and the number of conflict pairs should fall, even with the same number of opportunities. Note that the random stream changes, so the whole instance changes, not only the boxes.</p></details>
+      </li>
+      <li><div><b>Count the straddlers yourself.</b> Write a function that, for an instance and its <code>meta</code>, counts the windows that contain a revolution boundary and those where a task could be placed wholly on the side the midpoint did not choose. Check the counts of Part 4.</div>
+        <details class="sol"><summary>Hint</summary><p>The boundaries are <code>k * meta["period_s"]</code>. If the midpoint is after a boundary <span class="m">B</span>, a task can lie wholly before it when <span class="m">a_o + d_o \le B</span>; if it is before, when <span class="m">b_o - d_o \ge B</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>This is <code>straddles()</code> in <code>code/ch05_numbers.py</code>:</p>
+          <pre><code class="language-python">for o in inst.opportunities:
+    d, mid = o.duration, 0.5 * (o.window_start + o.window_end)
+    for B in rev_b:
+        if o.window_start &lt; B &lt; o.window_end:
+            n += 1
+            after = mid &gt;= B
+            if (after and o.window_start + d &lt;= B) or (not after and o.latest_start &gt;= B):
+                n_wrong += 1</code></pre>
+          <p>Small instance: 0 and 0 for revolutions, 3 and 0 for contact starts. Medium, seed 0: 37 and 19, 15 and 2.</p></details>
+      </li>
+      <li><div><b>A longer horizon.</b> Build the small configuration with <code>horizon_h=12</code>. How many targets are unreachable now, and what is the reachable weight?</div>
+        <details class="sol"><summary>Hint</summary><p><code>build_instance(ScenarioConfig(n_sats=4, n_targets=120, horizon_h=12.0, seed=0))[0].stats()</code>. The targets and their weights do not depend on the horizon (the target generator uses only the seed), so the total weight stays 326.</p></details>
+        <details class="sol"><summary>Solution</summary><p>All 120 targets become reachable and the reachable weight is the full 326: the Earth turns about 180° under the orbits in 12 h, so the ground tracks reach longitudes they do not cross in 6 h. The opportunities go from 168 to 324 and the conflict pairs from 876 to 1,667, both a factor of about 1.9: more time adds more passes, not more overlap within a pass, so pairs grow linearly with the horizon, not quadratically.</p></details>
+      </li>
+      <li><div><b>A true revolution.</b> Replace <code>segment_index(mid, period)</code> by a count of ascending-node crossings of the satellite before the midpoint. Does any opportunity change revolution? Would the optimum change?</div>
+        <details class="sol"><summary>Hint</summary><p>With the circular orbit of chapter 02, the argument of latitude is <span class="m">u(t) = u_0 + 2\pi t / T</span>, and the satellite crosses the ascending node when <span class="m">u</span> passes a multiple of <span class="m">2\pi</span>: the revolution index is <span class="m">\lfloor (u_0 + 2\pi \bar t / T) / 2\pi \rfloor</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The labels shift by a phase that differs per satellite (<span class="m">u_0</span> is 0.6°, 88°, 178° and 272° here), so the revolution boundaries move: 85 of the 168 opportunities change revolution (still 19 budget groups that can bind). Solved to optimality with CP-SAT, the optimum goes from 219 to 223. Neither choice is more correct for a budget that stands for "once per orbit"; the point of the exercise is that the label is a modelling choice, and the optimum moves by about 2 % with it.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>Targets</b>: 120 points in 10 boxes (box chosen uniformly, so small boxes are crowded); priority 1, 2, 4, 8 with probabilities 0.4, 0.3, 0.2, 0.1 (expected 2.6 per target, 326 in all here); listening time 30 to 120 s.</div></li>
+      <li><div><b>Opportunities</b>: 193 visibility windows, 25 too short, 168 opportunities; start between <span class="m">a_o</span> and <span class="m">b_o - d_o</span>; 67, 40 and 7 targets with one, two and three.</div></li>
+      <li><div><b>Contacts and memory</b>: stations merged per satellite (19 contacts); memory segment = <code>bisect_right(contact_starts, midpoint)</code>, each contact empties the memory.</div></li>
+      <li><div><b>Revolutions</b>: <span class="m">\lfloor \bar t / T \rfloor</span> with <span class="m">T = 5730.13</span> s; the midpoint puts each opportunity in exactly one segment of each kind, which makes the budgets linear knapsacks. Cost: 0 and 3 straddling windows here, none movable; about 1.5 % of opportunities in the medium instance.</div></li>
+      <li><div><b>Statistics</b>: 114 of 120 targets reachable (6 in the Bay of Bengal are not), reachable weight 316 of 326; from small to large, opportunities × 29, pairs × 166.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Modelling, abstraction</td><td>Deciding what the solver sees and what is left out.</td></tr>
+        <tr><td>Planning instance</td><td>One complete problem in the solver's terms: <code>PlanningInstance</code>.</td></tr>
+        <tr><td>Target</td><td>A fixed point to listen to, with a weight (priority) and a listening time.</td></tr>
+        <tr><td>Opportunity</td><td>One satellite, one target, one window that fits the listening time.</td></tr>
+        <tr><td>Earliest, latest start</td><td>The window start, and the window end minus the duration.</td></tr>
+        <tr><td>Task</td><td>A selected opportunity with its start time.</td></tr>
+        <tr><td>Ground contact</td><td>An interval in which some station sees the satellite above 5°.</td></tr>
+        <tr><td>Memory segment</td><td>The time between two contact starts on one satellite; its recordings are dumped by the second contact.</td></tr>
+        <tr><td>Revolution</td><td>Here, a slice of length <span class="m">T</span> counted from <span class="m">t = 0</span>.</td></tr>
+        <tr><td>Midpoint rule</td><td>Labelling an opportunity by the segment of its window midpoint.</td></tr>
+        <tr><td>Reachable weight</td><td>The total weight of targets with at least one opportunity: a first upper bound on any plan.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter builds the instance and reads it; it states no constraint precisely and solves nothing. The reconfiguration times, the conflict pairs and the budgets as constraints are in chapter 06, along with the checker that every plan of the course must pass. The modelling choices discussed here are those of satplan; real mission planning systems model power, memory, downlink scheduling and request priorities in far more detail <a href="#ref-2">[2]</a>.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>M. Lemaître, G. Verfaillie, F. Jouhaud, J.-M. Lachiver and N. Bataille. Selecting and scheduling observations of agile satellites. <em>Aerospace Science and Technology</em>, 6(5), 2002. The reference formulation of agile Earth-observation planning: one window per candidate observation, sequence-dependent transitions, a selection problem and a scheduling problem at once.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>J. R. Wertz and W. J. Larson (eds.). <em>Space Mission Analysis and Design</em>. Microcosm Press and Springer. The systems view: coverage, ground stations, power and data budgets, and how a mission turns them into operations.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>. Springer. The vocabulary of jobs, time windows, release dates and setup times that the next chapters use.</div></li>
+    </ul>
+    <p>Next, chapter 06 states every rule a plan must satisfy, one at a time, and builds the independent checker.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="04-seeing-the-ground.html"><span class="lbl">Previous · 04</span><span class="t">Seeing the ground</span></a>
+  <a class="next" rel="next" href="06-constraints-and-an-independent-checker.html"><span class="lbl">Next · 06</span><span class="t">Constraints and an independent checker</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 05 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The map and the charts are drawn in your browser from the instance exported by the satplan package; the numbers in the text come from <code>code/ch05_numbers.py</code> and, for the medium and large sizes, from the repository's benchmark results. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch05.js"></script>
+</body>
+</html>

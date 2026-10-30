@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>07 · A Greedy Plan and What It Leaves Behind · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="Heuristics for satellite pass planning, from scratch: the repository's greedy read line by line (targets by priority per second, earliest opportunity first, earliest feasible start, budget bookkeeping), stepped through decision by decision on the course's small instance, where it collects 193 against a proven optimum of 219. Hand-made counterexamples show why a greedy loses; other target orders, random restarts, drop-and-refill and ruin-and-recreate local search are run live and checked by the independent checker. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .widget canvas, .stage canvas { display: block; width: 100%; }
+  canvas + canvas { margin-top: 0.4rem; }
+  #vocT td, #numT td, #ordT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #numT, #ordT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .legend .sw.dash { height: 0; border-top: 2px dashed var(--c4); background: none; border-radius: 0; }
+  .widget .field input[type="number"] { width: 5rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 07 of 10</span>
+  <h1>A greedy plan and what it leaves behind</h1>
+  <p class="lede">Chapter 06 can tell whether a plan is feasible. This chapter builds a first plan, with the simplest method that works: take the targets one at a time, best first, and give each one the first slot that still fits. The concept is the <b>heuristic</b>, a rule that produces a good answer fast without proving it is the best. The repository's greedy fills the course's small instance in a hundredth of a second and collects 193 points of priority; chapter 08 proves that 219 is possible. Stepping through its 114 decisions, building the small examples where it must go wrong, and trying to repair it by local search shows what a heuristic is worth and where its limits come from.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 05 and 06 · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">The greedy on the small instance, one decision at a time: four satellites over 6 h</p>
+        <canvas id="gantt" aria-label="Gantt chart of the four satellites over six hours: the listening tasks the greedy has placed so far as blue bars, ground contacts shaded green, revolution boundaries dashed, the windows of the current target outlined in orange, and an optimal plan as green ticks" aria-describedby="heroStatus"></canvas>
+        <canvas id="zoom" aria-label="Close-up of the current decision: the window of the current target, the tasks already on that satellite with their reconfiguration time, and the start times they rule out" aria-describedby="heroStatus"></canvas>
+        <canvas id="val" aria-label="Collected priority against the number of decisions taken, rising to 193, with the proven optimum of 219 dashed" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><span class="sw" style="background:var(--post)"></span>placed (darker = higher priority)</span>
+          <span class="key"><span class="sw" style="background:var(--warm)"></span>current target: windows, placement, starts ruled out</span>
+          <span class="key"><span class="sw" style="background:var(--c4)"></span>optimal plan (CP-SAT) / contacts (light)</span>
+          <span class="key"><span class="sw dash"></span>proven optimum</span>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Decisions taken: <b id="stepV"></b></span>
+        <span class="row"><input type="range" id="step" min="0" max="114" step="1" value="114"></span>
+      </label>
+      <div class="btn-row">
+        <button class="btn ghost" type="button" id="back">&larr; back</button>
+        <button class="btn" type="button" id="fwd">step &rarr;</button>
+        <button class="btn ghost" type="button" id="play" aria-pressed="false">play</button>
+        <button class="btn ghost" type="button" id="reset">empty plan</button>
+        <button class="btn ghost" type="button" id="end">to the end</button>
+      </div>
+      <label class="check"><input type="checkbox" id="showOpt" checked> show an optimal plan (green ticks)</label>
+      <div class="readouts" aria-live="off">
+        <span>decision</span><span class="v" id="rStep">–</span>
+        <span>target (priority, duration)</span><span class="v" id="rTarget">–</span>
+        <span>outcome</span><span class="v" id="rDec">–</span>
+        <span>collected so far</span><span class="v" id="rVal">–</span>
+        <span>placed / budget / blocked / mixed</span><span class="v" id="rTally">–</span>
+      </div>
+      <p class="hint">The greedy is the repository's <code>greedy.py</code> run in your browser; at load the page checks that it reproduces the Python plan task for task. "Budget" means every opportunity of the target would overrun a power or memory budget; "blocked", that no start in its window keeps the reconfiguration times; "mixed", one of each. The close-up shows the opportunity that was placed or, failing that, the first one blocked.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#heuristic"><span class="n">1</span><span class="t">A rule instead of a search</span><span class="d">What a heuristic is, and value density</span></a>
+    <a href="#code"><span class="n">2</span><span class="t">greedy.py, line by line</span><span class="d">Order, opportunity, start time, budgets</span></a>
+    <a href="#run"><span class="n">3</span><span class="t">114 decisions on the small instance</span><span class="d">193 against 219, and where the 26 go</span></a>
+    <a href="#lose"><span class="n">4</span><span class="t">Why a greedy loses</span><span class="d">Three counterexamples you can break</span></a>
+    <a href="#orders"><span class="n">5</span><span class="t">Other orders, random restarts</span><span class="d">The order carries the intelligence</span></a>
+    <a href="#local"><span class="n">6</span><span class="t">Local improvement</span><span class="d">Drop and refill, ruin and recreate</span></a>
+    <a href="#merit"><span class="n">7</span><span class="t">What greedy is good for</span><span class="d">Fast, always feasible, a starting point</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">11</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="heuristic">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>A rule instead of a search</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The problem, again.</b> Chapter 05 turned the geometry into a list of 168 <em>opportunities</em> on the small instance: a satellite, a target, and a visibility window in which that satellite can listen to that target. Chapter 06 wrote the rules a plan must obey: each target collected at most once, each task of length <span class="m">d_j</span> inside its window, a reconfiguration time between consecutive tasks on a satellite, at most 300 s of listening per satellite and revolution (power), at most 600 s of recording between two ground contacts (memory). The goal is the largest total priority.</p>
+    <p><b>Why not try everything?</b> Each opportunity is either used or not, so there are <span class="m">2^{168} \approx 3.7 \times 10^{50}</span> subsets to consider, before choosing any start times. Even at a billion subsets a second, enumerating them would take <span class="m">10^{34}</span> years. Chapter 08 shows how an exact solver avoids most of that work; this chapter takes the opposite road and gives up on proving anything.</p>
+    <p><b>What a sensible person would do.</b> Imagine planning by hand. You would look at the targets worth the most and serve them first, and when a target can be heard on several passes you would take the first one that works and move on. When two targets have the same priority you would rather take the shorter one, because it leaves more time and more budget for the others. That intuition, made precise, is the greedy.</p>
+    <div class="define" id="definition">
+      <p class="define-title">What is a heuristic, and what is a greedy?</p>
+      <p><b>In plain words:</b> a heuristic is a rule of thumb that builds a good answer quickly, without any guarantee that it is the best one. A greedy heuristic builds the answer one piece at a time, takes at each step the piece that looks best right now, and never goes back on a choice.</p>
+      <p><b>More precisely:</b> a constructive greedy for a selection problem fixes an order of the candidates (here, targets), then for each candidate in turn adds it to the partial solution if it can be added without breaking a constraint, choosing among the ways of adding it by a second rule (here, the earliest opportunity and the earliest start). It runs in polynomial time and returns a feasible solution, but its value can be arbitrarily far from the optimum on badly chosen instances <a href="#ref-3">[3]</a>.</p>
+      <dl>
+        <dt>Value density</dt><dd>Priority per second of listening, <span class="m">\rho_j = w_j / d_j</span>. A 30 s task of priority 8 has density 0.267 per second; a 120 s task of priority 1, 0.0083.</dd>
+        <dt>Myopic</dt><dd>Deciding on the information available now, without looking at what the decision will forbid later. Every greedy is myopic.</dd>
+        <dt>Gap</dt><dd>How far a plan's value is below the best upper bound known, as a share of the bound: <span class="m">(219 - 193)/219 = 11.9\,\%</span> here, where the bound is the proven optimum.</dd>
+      </dl>
+    </div>
+    <p><b>Why density?</b> Listening time is the scarce resource. A satellite has at most 300 s per revolution to spend, and every second spent on one target is a second plus a reconfiguration time not spent on another. If time were the only constraint and tasks could be cut into pieces, filling the budget with the densest tasks first would be exactly optimal: it is the solution of the <em>fractional knapsack</em>, a fact that goes back to Dantzig <a href="#ref-4">[4]</a> and that chapter 09 meets again as the linear relaxation of the budgets. Tasks cannot be cut, windows and reconfiguration times interfere, and density becomes a heuristic rather than a theorem. Part 4 builds examples where it fails.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2><code>greedy.py</code>, line by line</h2>
+  </div>
+  <div class="col prose">
+    <p>The whole heuristic is one function of about forty lines in <code>satplan/greedy.py</code>. Read it in four pieces.</p>
+    <p><b>1. The order of the targets.</b></p>
+    <pre><code class="language-python">order = sorted(
+    by_target,
+    key=lambda j: (-inst.target_weights[j] / inst.target_durations[j], len(by_target[j])),
+)</code></pre>
+    <p><code>by_target</code> maps each target to the list of its opportunities, so the loop runs over the 114 targets that at least one satellite can see (6 of the 120 targets have no window at all, chapter 05). The sort key is a tuple, compared left to right: first the density <span class="m">w_j/d_j</span>, negated so that the largest comes first, then the number of opportunities, fewest first. The tie-break is a second piece of intuition: a target that can be heard only once must be served now or never, while one with three passes can afford to wait. Python's <code>sorted</code> is stable, so targets that tie on both keys keep the order in which they first appear among the opportunities; the page's port reproduces that too. Durations are 30, 60, 90 or 120 s and priorities 1, 2, 4 or 8 (chapter 05), so there are only 10 distinct densities, from 8/30 = 0.267 down to 1/120 = 0.0083, and the tie-break decides a great deal.</p>
+    <p><b>2. The first opportunity that passes the budgets.</b></p>
+    <pre><code class="language-python">for j in order:
+    for i in sorted(by_target[j], key=lambda i: opps[i].window_start):
+        o = opps[i]
+        if any(used.get(g, 0) + o.duration &gt; limits[g[0]] for g in groups(o)):
+            continue
+        ...</code></pre>
+    <p>For one target, its opportunities are tried in order of their window start: earliest pass first. Each opportunity belongs to two budget groups, <code>("duty", sat, revolution)</code> and <code>("memory", sat, memory_segment)</code>, assigned from the window midpoint as chapter 05 explains. The dictionary <code>used</code> holds the seconds already spent in each group. If adding <span class="m">d_j</span> would overrun either limit, 300 s or 600 s, the opportunity is skipped and the next one is tried.</p>
+    <p><b>3. The earliest start that fits.</b> This is the heart of the heuristic.</p>
+    <pre><code class="language-python">        candidates = [o.earliest_start] + [
+            t_p + opps[p].duration + inst.transition(p, i) for t_p, p in schedule[o.sat]
+        ]
+        candidates = sorted(c for c in candidates if o.earliest_start &lt;= c &lt;= o.latest_start)
+        t_ok = next((c for c in candidates if fits(o, c)), None)
+        if t_ok is None:
+            continue</code></pre>
+    <p>A task may start anywhere in <span class="m">[e_o, \ell_o]</span>, its window start and its latest start (window end minus duration). Each task <span class="m">p</span> already on the satellite, placed at <span class="m">t_p</span>, forbids an interval of start times for the new task <span class="m">o</span>: starting too soon after <span class="m">p</span> leaves no time to reconfigure, starting too soon before it leaves no time to finish and reconfigure towards <span class="m">p</span>. With <span class="m">s(p, o)</span> the reconfiguration time of chapter 06, the forbidden starts are the open interval</p>
+    <div class="math-block" data-narrow="t_p - d_o - s(o,p) \;<\; t \\ t \;<\; t_p + d_p + s(p,o)">t_p - d_o - s(o, p) \;<\; t \;<\; t_p + d_p + s(p, o).</div>
+    <p>The feasible starts are <span class="m">[e_o, \ell_o]</span> minus a union of such open intervals. Where is the earliest feasible start? Either <span class="m">e_o</span> itself, if no interval covers it, or the right end of some forbidden interval, because a point just to the right of an open interval's end is the first point outside it. The right ends are exactly <span class="m">t_p + d_p + s(p, o)</span>, the second part of <code>candidates</code>. So this short list always contains the earliest feasible start, if there is one, and testing the candidates in increasing order finds it. The test is <code>fits</code>:</p>
+    <pre><code class="language-python">def fits(o, t) -&gt; bool:
+    for t_p, p in schedule[o.sat]:
+        if t &gt;= t_p:
+            if t &lt; t_p + opps[p].duration + inst.transition(p, o.idx):
+                return False
+        elif t + o.duration + inst.transition(o.idx, p) &gt; t_p:
+            return False
+    return True</code></pre>
+    <p>which is the forbidden interval above split in two cases: <span class="m">o</span> after <span class="m">p</span> (<span class="m">t \ge t_p</span>) must start after <span class="m">p</span> ends and the satellite has turned; <span class="m">o</span> before <span class="m">p</span> must end and turn before <span class="m">p</span> starts. It is checked against every task on the satellite, not only the neighbours, as the independent checker of chapter 06 does.</p>
+    <p><b>4. Commit and move on.</b></p>
+    <pre><code class="language-python">        plan[i] = float(t_ok)
+        schedule[o.sat].append((float(t_ok), i))
+        for g in groups(o):
+            used[g] = used.get(g, 0) + o.duration
+        break</code></pre>
+    <p>The task is written into the plan and the satellite's schedule, its seconds are added to both budget groups, and <code>break</code> leaves the loop over opportunities: the target is served, the next target is considered. If no opportunity passes both tests, the target is simply not collected. Nothing is ever removed.</p>
+    <div class="callout"><p><b>Why the plan is always feasible.</b> Every task enters the plan only after <code>fits</code> has checked it against every task already on its satellite and the budgets have been checked against everything already spent, and later tasks are checked against it in turn. The windows hold because only candidates in <span class="m">[e_o, \ell_o]</span> are tried, and each target is served at most once because of the <code>break</code>. Feasibility is an invariant of the loop; the repository still passes the result through <code>check_plan</code>, and so does this page.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="run">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>114 decisions on the small instance</h2>
+  </div>
+  <div class="col prose">
+    <p>The hero demo replays the greedy on the course's instance: 4 satellites, 120 targets, 6 hours. Drag the slider back to zero and step forward to watch the plan fill up. Four phases appear.</p>
+    <p><b>Decisions 1 to 20: everything fits.</b> The densest targets come first: the 5 targets of priority 8 needing 30 s, then the 11 of density 0.133 (priority 4 for 30 s, or priority 8 for 60 s), then the 4 of priority 8 needing 90 s. The plan is empty, the budgets are untouched, and each task goes at its window start or right after a neighbour. After 20 decisions the plan holds 124 points, almost two thirds of the final value.</p>
+    <p><b>Decision 21: the first refusal.</b> Target 22 (priority 4, 60 s, one opportunity) is blocked: the tasks already placed on its satellite rule out every start in its window. The optimal plan of chapter 08 does collect target 22. A greedy cannot know that one of its earlier choices was worth less than what it now excludes.</p>
+    <p><b>The middle: blocks and budgets.</b> From then on refusals accumulate. A target is "blocked" when its window is covered by the forbidden intervals of tasks already placed, and "budget" when the revolution's 300 s of listening or the 600 s of memory are already spent. Both targets of priority 8 that need 120 s are refused, one blocked and one over budget: with a density of 0.067 they come after the 20 strictly denser targets and among 18 of equal density, when the satellites' best passes are already full. The optimum collects one of them.</p>
+    <p><b>The tail: the budgets are spent.</b> The long low-priority targets come last, and almost all of them are refused: of the 39 targets of priority 1 or 2 that need 90 s or 120 s, only one is placed, and 22 of the others are refused for budget alone (<code>ch07_numbers.py</code> prints the tally for each class of priority and duration).</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="numT" class="num">
+      <thead><tr><th>Small instance, seed 0</th><th>targets</th><th>priority</th></tr></thead>
+      <tbody>
+        <tr><td>Considered by the greedy (reachable)</td><td>114</td><td>316</td></tr>
+        <tr><td>Placed</td><td>54</td><td>193</td></tr>
+        <tr><td>Refused: every opportunity over budget</td><td>27</td><td>45</td></tr>
+        <tr><td>Refused: every opportunity blocked</td><td>25</td><td>65</td></tr>
+        <tr><td>Refused: one over budget, one blocked</td><td>8</td><td>13</td></tr>
+        <tr><td>Proven optimum (chapter 08)</td><td>55</td><td>219</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <div class="callout"><p><b>The project's numbers.</b> The greedy collects <b>193</b>, the optimum is <b>219</b>, proven by CP-SAT and by the MILP of chapter 09 independently: the greedy is <b>11.9 %</b> below. On the benchmark's other two small seeds it collects 161 against 179 (10.1 %) and 175 against 198 (11.6 %) (<code>results/results.md</code>). The two plans differ by more than the 26 points suggest: they share 45 targets; the optimal plan drawn in the hero has 10 targets the greedy lacks (worth 40) and gives up 9 the greedy took (worth 14). To do better, the optimum must <em>refuse</em> some of the greedy's choices.</p></div>
+    <p>That last observation is the key to everything that follows. The greedy's mistakes are not missing tasks that would have fitted; once the plan is complete, no refused target can be added without removing something (otherwise the greedy would have placed it). The mistakes are earlier choices, each reasonable alone, that together exclude a better combination.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="lose">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Why a greedy loses</h2>
+  </div>
+  <div class="col prose">
+    <p>On 168 opportunities the reasons are tangled. On three tasks they are clear. Each example below is a one-satellite instance in exactly the format the shared code takes, solved by <code>Sat.greedy</code> and by brute force over every subset and every order (each candidate validated with <code>Sat.checkPlan</code>); <code>ch07_numbers.py</code> solves the same instances in Python with the repository's greedy and with CP-SAT and finds the same values. All pointing directions are equal, so every reconfiguration time is the 10 s settle.</p>
+  </div>
+  <div class="col widget" id="cxW">
+    <div class="controls">
+      <span class="seg" role="group" aria-label="Counterexample">
+        <button class="btn" type="button" id="cx-block" aria-pressed="true">dense task blocks two</button>
+        <button class="btn" type="button" id="cx-early" aria-pressed="false">budget spent too early</button>
+        <button class="btn" type="button" id="cx-knap" aria-pressed="false">density misleads a knapsack</button>
+      </span>
+    </div>
+    <label class="field"><span><span id="cxPL">priority of task A</span>: <b id="cxPV">4</b></span>
+      <span class="row"><input type="range" id="cxP" min="1" max="8" step="1" value="4"></span>
+    </label>
+    <canvas id="cxC" aria-label="Timeline of the small counterexample: the windows of its tasks, the greedy plan and the optimal plan" aria-describedby="cxCap"></canvas>
+    <p class="caption" id="cxCap"></p>
+  </div>
+  <div class="col prose">
+    <p><b>A dense task blocks two.</b> Task A (priority 4, 30 s) has a window that allows a single start, at 25 s; tasks B and C (priority 3 each, 30 s) sit on either side and are compatible with each other. A has the best density, so the greedy takes it and both neighbours become impossible: value 4 against 6. Move the slider: with priority 1 or 2, A is no longer densest and the greedy finds the optimum; at 6 or more, A alone is worth as much as the pair. The greedy is wrong only for priorities 3 to 5, where A is denser than each neighbour but worth less than both together. Density compares a task with each competitor <em>one at a time</em>; the loss comes from competitors that only matter together.</p>
+    <p><b>A budget spent too early.</b> Target X (priority 4, 60 s) can be heard on two passes, one in revolution 0 and one in revolution 1. Target Y (priority 3, 60 s) only in revolution 0. With 100 s of listening per revolution, the greedy handles the denser X first, gives it its earliest opportunity, and leaves 40 s in revolution 0: Y no longer fits. Value 4 against 7 for X on its second pass and Y on the first. The rule "earliest opportunity first" spends a shared resource on a target that did not need it. From a budget of 120 s, both fit and the problem disappears.</p>
+    <p><b>Density misleads a knapsack.</b> Task S (priority 2, 20 s, density 0.1) and task L (priority 9, 95 s, density 0.095) compete for a 100 s budget. The greedy takes S, the densest, and then L does not fit: 2 against 9. This is the textbook failure of density on a 0/1 knapsack. Between 95 and 110 s of budget the greedy loses 7 of the 9 available points; the ratio can be made as bad as you like by stretching L.</p>
+    <div class="big-idea"><p>A greedy decides each piece on its own and never revisits a decision. It loses whenever the value of a choice depends on <em>combinations</em> of other choices: two small tasks that together beat one dense task, a budget that a later target needs more, a long valuable task that a short dense one squeezes out. Exact methods win by considering such combinations; local search tries to by undoing a few choices at a time.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="orders">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Other orders, random restarts</h2>
+  </div>
+  <div class="col prose">
+    <p>If the order is the weak point, try another order. The widget runs the same greedy (same opportunity rule, same earliest feasible start, same budgets) with four deterministic orders and with random orders drawn by the page's seeded generator <code>Sat.rng</code>. <code>ch07_numbers.py</code> ports that generator bit for bit, so the Python numbers below are the ones the widget shows for seed 7.</p>
+  </div>
+  <div class="col widget" id="ordW">
+    <canvas id="ordC" aria-label="Bar chart of the value collected by the greedy with different target orders, with the proven optimum dashed" aria-describedby="ordCap"></canvas>
+    <canvas id="histC" aria-label="Histogram of the values of the plans built from random target orders, with the density order's 193 and the optimum's 219 marked" aria-describedby="ordCap"></canvas>
+    <div class="controls">
+      <label class="field"><span>Seed of the random orders</span><span class="row"><input type="number" id="rndSeed" min="1" step="1" value="7"></span></label>
+      <button class="btn" type="button" id="rndRun">1000 new random orders</button>
+    </div>
+    <p class="caption" id="ordCap"></p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="ordT" class="num">
+      <thead><tr><th>Target order</th><th>small (optimum 219)</th><th>medium (CP-SAT 557, bound 575)</th></tr></thead>
+      <tbody>
+        <tr><td>Priority per second, ties: fewest opportunities (the package)</td><td>193</td><td>518</td></tr>
+        <tr><td>Priority alone, ties: fewest opportunities</td><td>188</td><td>520</td></tr>
+        <tr><td>Fewest opportunities first, ties: density</td><td>184</td><td>408</td></tr>
+        <tr><td>Shortest task first, ties: priority</td><td>172</td><td>453</td></tr>
+        <tr><td>Best of random orders (<code>Sat.rng(7)</code>)</td><td>171 (of 1000)</td><td>414 (of 100)</td></tr>
+        <tr><td>Mean of random orders</td><td>129.7</td><td>383.4</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>Three lessons. First, density is a good order: it wins on the small instance, and on the medium instance (8 satellites, 250 targets, 12 h; Python only, in <code>ch07_numbers.py</code>) priority alone is better by just 2 points, 520 against 518. Second, a random order is a bad one: on the small instance the mean random plan collects 129.7, two thirds of the density plan, and none of 1000 random orders reaches 193; the best reaches 171. Third, restarts help little. The number of target orders is <span class="m">114! \approx 10^{186}</span>; a thousand samples of that space find nothing the one well-chosen order does not beat. Almost all of the greedy's intelligence is in its sort key.</p>
+    <p>The medium CP-SAT value of 557 and bound of 575 are those of the benchmark run in <code>results/results.md</code>; this chapter cites them rather than rerunning the 20-minute benchmark.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="local">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Local improvement</h2>
+  </div>
+  <div class="col prose">
+    <p>Part 3 showed that improving the greedy plan requires removing some of its tasks. That is what <em>local search</em> does: start from a plan, look at plans that differ from it by a small change, move to a better one, repeat.</p>
+    <div class="define">
+      <p class="define-title">What is a neighbourhood?</p>
+      <p><b>In plain words:</b> the set of plans you can reach from the current one by one small, well-defined change, such as "remove one task and fill the gap again".</p>
+      <p><b>More precisely:</b> a neighbourhood is a map <span class="m">N</span> from each feasible plan <span class="m">P</span> to a set <span class="m">N(P)</span> of feasible plans. A plan is a <em>local optimum</em> for <span class="m">N</span> if no plan in <span class="m">N(P)</span> is better. Local search stops at local optima; the larger the neighbourhood, the fewer local optima there are, and the more each step costs.</p>
+    </div>
+    <p><b>Drop one and refill.</b> The smallest repair: remove one task of the plan, run the greedy again on the remaining targets with the package's order, starting from the plan minus that task, and keep the result if it collects more. Tried for every task, on the small instance (54 tasks) and on the medium one (152), it never improves anything. The greedy plan is a local optimum for that move. This is not bad luck: the refill uses the same density order, so the freed space goes to the same kind of task the greedy preferred in the first place, and often to the removed task itself.</p>
+    <p><b>Ruin and recreate.</b> A larger move breaks that symmetry <a href="#ref-6">[6]</a>. Draw a satellite and a stretch of time at random, remove every task that starts in it (on a 60 min stretch, typically a whole pass, a handful of tasks), and refill with the greedy in a <em>random</em> target order, so that the refill tries combinations the density order would never try. Keep the new plan if it collects at least as much (accepting equal values lets the search drift across plateaus). This is a <em>large neighbourhood search</em>, the idea Shaw introduced for vehicle routing <a href="#ref-5">[5]</a>, and one of the components of CP-SAT itself (chapter 08), where the refill is done by the exact solver instead of a greedy.</p>
+  </div>
+  <div class="col widget" id="lsW">
+    <canvas id="lsC" aria-label="Value of the ruin-and-recreate plan against the iteration, starting at the greedy's 193, with the optimum dashed" aria-describedby="lsCap"></canvas>
+    <div class="controls">
+      <label class="field"><span>Stretch removed</span><span class="row"><select id="lsWin"><option value="10">10 min</option><option value="30">30 min</option><option value="60" selected>60 min</option><option value="90">90 min</option></select></span></label>
+      <label class="field"><span>Seed</span><span class="row"><input type="number" id="lsSeed" min="1" step="1" value="1"></span></label>
+      <button class="btn" type="button" id="lsRun">run with the next seed</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>value after iterations</span><span class="v" id="lsVal">–</span>
+      <span>improvements</span><span class="v" id="lsImp">–</span>
+      <span>independent checker</span><span class="v" id="lsChk">–</span>
+      <span>drop one and refill</span><span class="v" id="lsDrop">–</span>
+    </div>
+    <p class="caption" id="lsCap"></p>
+  </div>
+  <div class="col prose">
+    <p>With a 60 min stretch and seed 1, 2000 iterations take the plan from 193 to <b>211</b> (3.7 % below the optimum), with the last improvement at iteration 550; 10 000 iterations find nothing more. The stretch matters: 10 min gives 201, 30 min 207, 90 min 210. Over seeds 1 to 10 with a 60 min stretch the result ranges from 207 to 211. On the medium instance (Python, 2000 iterations, a few seconds), it goes from 518 to 542, against 557 for CP-SAT in 60 s.</p>
+    <div class="callout"><p><b>What local search buys, and what it does not.</b> About two thirds of the gap closes in a fraction of a second, every plan along the way passes the checker, and the code is twenty lines on top of the greedy. But the search stalls, and nothing in it says how far the last plan is from the best. It cannot tell 211 on a problem whose optimum is 211 from 211 on a problem whose optimum is 219. Only an upper bound can, and producing one is what chapter 08 is about.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="merit">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>What greedy is good for</h2>
+  </div>
+  <div class="col prose">
+    <p>Losing 10 to 12 % sounds bad. Three properties keep the greedy in every serious planning tool.</p>
+    <p><b>It is fast.</b> The benchmark measures 0.01 to 0.03 s on the small instances, 0.04 to 0.13 s on the medium ones and 0.14 to 0.17 s on the large ones with 4,900 opportunities (<code>results/results.md</code>). Each opportunity tried costs a few candidate starts, each checked against the tasks on its satellite, so the work grows with the number of opportunities times the square of the number of tasks per satellite: small enough to stay interactive on any instance this course meets.</p>
+    <p><b>It is always feasible.</b> By the invariant of Part 2, whatever the instance, the greedy returns a plan that obeys every rule, without a time limit and without a solver. An exact solver stopped early may return a worse plan or none.</p>
+    <p><b>It is a starting point.</b> Chapter 08 hands the greedy plan to CP-SAT as a <em>hint</em>: the solver starts its search from it, so its very first plan is already worth 193. On the large instances of the benchmark, CP-SAT on the whole horizon improves on the greedy by only 1 to 2 % in 120 s (1060 to 1072 and 1047 to 1066), and the greedy is 6.9 to 7.0 % below the best proven bound. When the exact solver struggles, the greedy is the plan to beat.</p>
+    <div class="callout"><p><b>Where the course goes next.</b> Chapter 08 replaces the rule by a search that considers combinations and, crucially, proves bounds, so that 219 comes with a certificate that nothing better exists. Chapter 09 does the same with a MILP; chapter 10 decomposes the horizon to make the search affordable on large instances and reads the benchmark against the bounds.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why does the greedy sort targets by priority per second rather than by priority?</summary><p>Because listening time is the scarce resource: the power budget limits seconds of listening per revolution, and every second spent also costs reconfiguration time. Per second of a shared resource, a 30 s task of priority 4 is worth more than a 120 s task of priority 8. On a fractional knapsack the density order is exactly optimal. Here it wins on the small instance (193 against 188 for priority alone), but not on the medium one (518 against 520).</p></details>
+    <details class="sol"><summary>2. Why is it enough to test the window start and the "end plus transition" of each task already placed?</summary><p>The feasible starts are the window <span class="m">[e_o, \ell_o]</span> minus open forbidden intervals, one per task already on the satellite. The earliest feasible point is either <span class="m">e_o</span> or the right end of one of these intervals, and the right ends are exactly <span class="m">t_p + d_p + s(p, o)</span>. So the list contains the earliest feasible start whenever one exists.</p></details>
+    <details class="sol"><summary>3. Can the greedy return an infeasible plan?</summary><p>No. Each task is added only after it has been checked against every task on its satellite (<code>fits</code>) and against the budgets already spent, inside its window, and only once per target. Feasibility is a loop invariant. The checker is still run, as for every method, because an invariant in the programmer's head is not a test.</p></details>
+    <details class="sol"><summary>4. After the greedy finishes, can a refused target be added to the final plan without removing anything?</summary><p>No. When the target was considered, the plan was a subset of the final plan; if it did not fit then, it does not fit with more tasks. Improving the plan therefore always means removing something, which is why the drop-and-refill and ruin-and-recreate moves both start by removing tasks.</p></details>
+    <details class="sol"><summary>5. In the "dense task blocks two" example, for which priorities of A does the greedy lose, and why exactly those?</summary><p>For 3, 4 and 5. Below 3, A is less dense than B and C and is considered after them; from 6, A alone is worth at least B plus C. In between, A wins every one-to-one comparison of density and loses the comparison with the pair, which a greedy never makes. (At 3 the densities tie, and the tie-break puts A first.)</p></details>
+    <details class="sol"><summary>6. Why do random orders do so much worse than the density order, and why do 1000 of them not help?</summary><p>A random order puts long low-priority tasks early as often as short high-priority ones, and they spend the budgets and the satellite time. The space of orders has about <span class="m">10^{186}</span> elements; 1000 random samples are a vanishing fraction, and the good orders are not common enough to be hit by chance (none of the 1000 reaches 193).</p></details>
+    <details class="sol"><summary>7. Why does "drop one task and refill" never improve the greedy plan here?</summary><p>The refill runs the same density order on a plan that differs by one task. The freed space is offered first to the densest refused targets that fit it, which are the same kind of choice the greedy already made, and often the removed task itself returns. A move that changes only one decision cannot undo a mistake that consists of several decisions together.</p></details>
+    <details class="sol"><summary>8. Ruin and recreate reaches 211. Is 211 close to optimal?</summary><p>It is 3.7 % below 219, but only because chapter 08 proves 219. The local search itself has no way of knowing: it reports the best plan it found, never how good that plan is. A proof needs an upper bound, which local search does not produce.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>A smarter opportunity rule.</b> The greedy takes the earliest opportunity of each target. Change it to take the opportunity whose budget groups have the most room left (the largest remaining power budget of its revolution). Does the small instance improve? Explain with the "budget spent too early" example.</div>
+        <details class="sol"><summary>Hint</summary><p>Copy the <code>Greedy</code> class of <code>code/ch07_numbers.py</code> and replace <code>sorted(self.by_target[j], key=lambda i: opps[i].window_start)</code> by a key computed from <code>used</code> at the moment the target is considered. Check every plan with <code>check_plan</code>.</p></details>
+        <details class="sol"><summary>Solution</summary><p>It is worse on all three small seeds: 191, 155 and 173 against 193, 161 and 175 (<code>ch07_numbers.py</code> runs this variant). In the toy it does not help either: when X is considered, both revolutions are empty, the tie goes to the earliest window, and X still takes revolution 0 (value 4). The rule knows how much room is left, not which later target will need it. Any rule that looks only at the present can be fooled this way; that is the myopia of Part 4.</p></details>
+      </li>
+      <li><div><b>A 1-for-2 swap.</b> Write a local search move that removes one task and tries to insert <em>two</em> refused targets in the freed space (any pair, each at its earliest feasible start), and accepts the move if the two are worth more than the one removed. Run it to a local optimum from the greedy plan.</div>
+        <details class="sol"><summary>Hint</summary><p>For each task <span class="m">r</span> of the plan, list the refused targets whose opportunities are on <span class="m">r</span>'s satellite and overlap <span class="m">r</span>'s window plus a few minutes: only those can use the space. Try pairs of them with <code>Greedy.run([j1, j2], plan_without_r)</code> and accept only if both were placed. <code>one_for_two</code> in <code>ch07_numbers.py</code> is one solution, with a margin of 600 s around the removed task's window.</p></details>
+        <details class="sol"><summary>Solution</summary><p>This is the move the "dense task blocks two" example calls for, and it finds what drop-and-refill cannot: from the greedy plan, one swap raises the value from 193 to 195, and then no further 1-for-2 swap helps. It repairs a mistake involving one task and two others, not a pass planned badly as a whole, which is why ruin and recreate, with its larger moves, goes on to 211.</p></details>
+      </li>
+      <li><div><b>How much does the tie-break matter?</b> Remove the second sort key (<code>len(by_target[j])</code>) and run the greedy on the three small seeds. Then reverse it (most opportunities first).</div>
+        <details class="sol"><summary>Hint</summary><p>With only 10 distinct densities over 114 targets, almost every target ties with others; without the second key, Python's stable sort keeps the order of first appearance.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Without the second key: 194, 161 and 175 on seeds 0, 1 and 2, against the package's 193, 161 and 175. Most opportunities first: 192, 161 and 180. So on seed 0 the "obvious" tie-break is slightly worse than none, and on seed 2 its exact opposite gains 5 points. Ties are the rule here, not the exception, and the tie-break moves the result by a few points in no consistent direction. "Greedy" names a family of algorithms, and which member wins is an empirical question for each instance.</p></details>
+      </li>
+      <li><div><b>The worst case of density.</b> Build a two-task instance in the format of <code>toy()</code> in <code>ch07_numbers.py</code> where the greedy collects 1 and the optimum collects 100. Then prove that, on a single knapsack with no windows, "the better of the greedy and the single most valuable task that fits" is never below half the optimum.</div>
+        <details class="sol"><summary>Hint</summary><p>Stretch the knapsack example: a short task of priority 1 and a long task of priority 100 whose density is just below. For the proof, compare both with the fractional knapsack's optimum, which is the greedy's set plus a fraction of the first task that did not fit.</p></details>
+        <details class="sol"><summary>Solution</summary><p>Task S: priority 1, 10 s; task L: priority 100, 1001 s; budget 1001 s. S has density 0.1, L 0.0999; the greedy takes S and L no longer fits. For the bound: the fractional optimum <span class="m">F</span> is at least the integer optimum <span class="m">OPT</span>, and <span class="m">F \le G + w_k</span>, where <span class="m">G</span> is the greedy's value and <span class="m">w_k</span> the value of the first task that did not fit. So <span class="m">OPT \le G + w_k \le 2\max(G, w_{\max})</span>. The windows and reconfiguration times of the satellite problem break this argument, which is why no such guarantee is claimed for <code>greedy.py</code>.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>The rule</b>: targets by priority per second (ties: fewest opportunities), each on its earliest opportunity that passes the power and memory budgets and has a feasible start, at the earliest such start; never undo.</div></li>
+      <li><div><b>The start time</b>: the earliest feasible start is the window start or the end of a task already placed plus its reconfiguration time, so a short list of candidates suffices.</div></li>
+      <li><div><b>The result</b>: on the small instance 54 tasks, 193 against the proven 219 (11.9 %); 10–12 % on the three small seeds; first refusal at decision 21; 27 targets refused for budget, 25 blocked, 8 both.</div></li>
+      <li><div><b>Why it loses</b>: it compares candidates one at a time and never revisits a choice; combinations (two tasks against one, a budget a later target needs, a long valuable task) defeat it.</div></li>
+      <li><div><b>Other orders</b>: density 193, priority 188, fewest opportunities 184, shortest 172, best of 1000 random orders 171. The sort key carries the intelligence.</div></li>
+      <li><div><b>Local search</b>: drop-one-and-refill never helps; ruin and recreate reaches 211 in 2000 iterations (60 min stretch, seed 1), 542 against 518 on medium, and then stalls, with no bound to say how far it is.</div></li>
+      <li><div><b>The merit</b>: hundredths of a second, always feasible, and the hint that chapter 08's CP-SAT starts from.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Heuristic</td><td>A rule that builds a good solution quickly, with no guarantee of optimality.</td></tr>
+        <tr><td>Greedy</td><td>A heuristic that adds one piece at a time, the best-looking first, and never removes one.</td></tr>
+        <tr><td>Value density</td><td>Priority per second of listening, <span class="m">w_j/d_j</span>.</td></tr>
+        <tr><td>Earliest feasible insertion</td><td>Placing a task at the first start time that keeps every rule with the tasks already placed.</td></tr>
+        <tr><td>Myopia</td><td>Deciding without looking at what the decision forbids later.</td></tr>
+        <tr><td>Gap</td><td>(bound − value) / bound; against a proven optimum, the share of the best value a plan misses.</td></tr>
+        <tr><td>Random restart</td><td>Running a randomised heuristic many times and keeping the best result.</td></tr>
+        <tr><td>Neighbourhood, local optimum</td><td>The plans one move away; a plan with no better neighbour.</td></tr>
+        <tr><td>Ruin and recreate, large neighbourhood search</td><td>Remove a large part of the plan, rebuild it, keep the result if it is not worse.</td></tr>
+        <tr><td>Hint</td><td>A solution given to an exact solver as a starting point (chapter 08).</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> This chapter studies one constructive heuristic and two simple local searches on a synthetic scenario that makes no claim about any real satellite system. It leaves out metaheuristics with memory or temperature (tabu search, simulated annealing, genetic algorithms), approximation guarantees beyond the knapsack exercise, and heuristics that reason about future demand on a budget, all standard in the scheduling literature below. The numbers on the medium instance come from <code>code/ch07_numbers.py</code> (greedy variants and local search) and from <code>results/results.md</code> (CP-SAT and the bound).</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>M. Lemaître, G. Verfaillie, F. Jouhaud, J.-M. Lachiver and N. Bataille. Selecting and scheduling observations of agile satellites. <em>Aerospace Science and Technology</em>, 6(5), 2002. The closest published problem to this course's: an agile satellite choosing observations with sequence-dependent transitions, solved by greedy, dynamic programming, constraint programming and local search.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>. Springer. Dispatching rules, sequence-dependent setup times and the local search methods that improve on them.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>L. A. Wolsey. <em>Integer Programming</em>. Wiley, 1998. Greedy heuristics and their worst cases, the knapsack problem and its relaxation.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>G. B. Dantzig. Discrete-variable extremum problems. <em>Operations Research</em>, 5(2), 1957. The density rule and why it solves the knapsack when items can be divided.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>P. Shaw. Using constraint programming and local search methods to solve vehicle routing problems. In <em>Principles and Practice of Constraint Programming (CP98)</em>, Lecture Notes in Computer Science 1520, Springer, 1998. Large neighbourhood search: remove part of a solution, re-solve it.</div></li>
+      <li id="ref-6"><span class="rn">[6]</span><div>G. Schrimpf, J. Schneider, H. Stamm-Wilbrandt and G. Dueck. Record breaking optimization results using the ruin and recreate principle. <em>Journal of Computational Physics</em>, 159(2), 2000. The ruin-and-recreate scheme of Part 6.</div></li>
+    </ul>
+    <p>Next, chapter 08 writes the problem as a constraint program, lets CP-SAT search the combinations the greedy never considers, and shows how it proves that 219 cannot be beaten.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="06-constraints-and-an-independent-checker.html"><span class="lbl">Previous · 06</span><span class="t">Constraints and an independent checker</span></a>
+  <a class="next" rel="next" href="08-constraint-programming-with-cp-sat.html"><span class="lbl">Next · 08</span><span class="t">Constraint programming with CP-SAT</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 07 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The greedy, its variants and the local searches run in your browser on the course's shared instance with sat.js, and every plan is validated by its port of the independent checker; code/ch07_numbers.py reproduces every number in Python, and the benchmark numbers come from the repository's results/results.md. The scenario is synthetic and makes no claim about any real satellite system. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch07.js"></script>
+</body>
+</html>

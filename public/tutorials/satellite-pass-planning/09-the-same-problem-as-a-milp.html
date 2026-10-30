@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>09 · The Same Problem as a MILP · Satellite Pass Planning from Scratch</title>
+<meta name="description" content="The satellite planning problem written as a mixed-integer linear program, from scratch: what a linear program is, what integrality adds, branch and bound on the LP relaxation, big-M disjunctions for sequence-dependent reconfiguration times and the smallest valid M, and why the LP relaxation is blind to reconfiguration (its bound is the same with the precedence rows deleted). A live widget moves the big-M rows of one real pair; HiGHS is compared with CP-SAT on the benchmark's small, medium and large instances. Every number is checked against the Python code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<style>
+  .widget canvas, .stage canvas { display: block; width: 100%; }
+  #vocT td, #sizeT td, #relT td { white-space: normal; }
+  @media (max-width: 480px) { #vocT, #sizeT, #relT { font-size: 0.82rem; } }
+  .qa details.sol summary { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-size: 0.98rem; color: var(--ink); }
+  .qa details.sol { margin-top: 0.6rem; }
+  .legend .sw.line { height: 3px; border-radius: 2px; }
+  .legend .sw.dash { height: 0; border-top: 2px dashed var(--ink); background: none; border-radius: 0; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Satellite Pass Planning from Scratch</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Satellite Pass Planning from Scratch · Chapter 09 of 10</span>
+  <h1>The same problem as a MILP</h1>
+  <p class="lede">Chapter 08 solved the planning problem with CP-SAT, a solver that reasons about intervals and precedences directly. The most common tool in operations research is a different one: a mixed-integer linear program, where every constraint is a linear inequality and a solver such as HiGHS explores a tree of linear relaxations. This chapter writes the same problem in that language, line by line from the repository's <code>milp.py</code>. The concept is <b>formulation strength</b>: two models with exactly the same integer solutions can be very different for a solver, depending on what their linear relaxation knows. Here the relaxation knows the budgets and nothing at all about reconfiguration times, and that one fact explains most of the benchmark.</p>
+  <p class="byline">Elie Rouphael · Needs chapters 06 and 08, and the idea of a linear inequality · Every number is checked against the Python code</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/satellite-pass-planning">The repository on GitHub</a>
+    <a class="btn ghost" href="satellite-pass-planning-course.zip" download>Download the code (.zip)</a>
+  </div>
+</header>
+
+<!-- ============ LIVE DEMO ============ -->
+<div class="wide">
+  <div class="demo" id="demo">
+    <div class="stage">
+      <div>
+        <p class="chart-title">One real pair of the small instance: the start times the big-M rows allow</p>
+        <canvas id="heroC" aria-label="The plane of the two start times. A grey box holds all start pairs, two dashed strips the pairs a real plan can use, an orange band the forbidden pairs, and a blue region the pairs the two big-M rows allow for the chosen values of x_a, x_b and y" aria-describedby="heroStatus"></canvas>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><span class="sw" style="background:var(--post);opacity:0.45"></span>allowed by the two rows</span>
+          <span class="key"><span class="sw" style="background:var(--warm);opacity:0.6"></span>forbidden band (overlap or too little reconfiguration time)</span>
+          <span class="key"><span class="sw dash"></span>real plans: a first (above), b first (below)</span>
+          <span class="key"><span class="sw line" style="background:var(--post)"></span>row "a first"</span>
+          <span class="key"><span class="sw line" style="background:var(--c5)"></span>row "b first"</span>
+        </div>
+      </div>
+      <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <label class="field"><span>Selection of task a, <span class="m">x_a</span>: <b id="hXaV"></b></span>
+        <span class="row"><input type="range" id="hXa" min="0" max="1" step="0.05" value="0.5"></span>
+      </label>
+      <label class="field"><span>Selection of task b, <span class="m">x_b</span>: <b id="hXbV"></b></span>
+        <span class="row"><input type="range" id="hXb" min="0" max="1" step="0.05" value="0.5"></span>
+      </label>
+      <label class="field"><span>Order, <span class="m">y</span> (1 = a first): <b id="hYV"></b></span>
+        <span class="row"><input type="range" id="hY" min="0" max="1" step="0.05" value="0.5"></span>
+      </label>
+      <div class="btn-row">
+        <button class="btn ghost" type="button" id="pA">a first (1, 1, 1)</button>
+        <button class="btn ghost" type="button" id="pB">b first (1, 1, 0)</button>
+        <button class="btn ghost" type="button" id="pOff">a not chosen</button>
+        <button class="btn ghost" type="button" id="pHalf">all ½</button>
+        <button class="btn ghost" type="button" id="pY">x = 1, y = ½</button>
+        <button class="btn" type="button" id="hNaive" aria-pressed="false">M = horizon</button>
+      </div>
+      <div class="readouts" aria-live="off">
+        <span>row "a first": <span class="m">t_b - t_a \ge</span></span><span class="v" id="rR1">–</span>
+        <span>row "b first": <span class="m">t_a - t_b \ge</span></span><span class="v" id="rR2">–</span>
+        <span>big-M of the two rows</span><span class="v" id="rM">–</span>
+        <span>share of the box allowed</span><span class="v" id="rArea">–</span>
+        <span>share of the forbidden band allowed</span><span class="v" id="rBand">–</span>
+      </div>
+      <p class="hint">A row is "off" when every pair of starts in the box satisfies it. With integer values the blue region is always exactly right; drag a slider between 0 and 1 to see what the LP relaxation, which allows such values, makes of the pair. "M = horizon" replaces the smallest valid big-M of the repository by the length of the horizon, a common first choice.</p>
+    </div>
+  </div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#lp"><span class="n">1</span><span class="t">Linear programs, and integers</span><span class="d">Rows, vertices and the LP bound</span></a>
+    <a href="#bb"><span class="n">2</span><span class="t">Branch and bound on the relaxation</span><span class="d">How a MILP solver closes the gap</span></a>
+    <a href="#model"><span class="n">3</span><span class="t">The plan in linear rows</span><span class="d">Variables, objective, budgets</span></a>
+    <a href="#bigm"><span class="n">4</span><span class="t">Big-M and the smallest valid M</span><span class="d">Switching a precedence on and off</span></a>
+    <a href="#weak"><span class="n">5</span><span class="t">Why the relaxation is weak</span><span class="d">It does not see reconfiguration</span></a>
+    <a href="#bench"><span class="n">6</span><span class="t">HiGHS against CP-SAT</span><span class="d">Small, medium, large</span></a>
+    <a href="#check"><span class="n">7</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">8</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">9</span><span class="t">The chapter on one page</span><span class="d">Summary and vocabulary</span></a>
+    <a href="#references"><span class="n">10</span><span class="t">Scope and further reading</span><span class="d">Where each idea comes from</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="lp">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Linear programs, and what integers add</h2>
+  </div>
+  <div class="col prose">
+    <p><b>The smallest example.</b> A satellite has two listening tasks in one revolution. Task 1 lasts 120 s and has priority 8; task 2 lasts 90 s and has priority 4. The power budget of chapter 05 allows a certain number of seconds of listening per revolution; call it <span class="m">B</span>. Write <span class="m">x_1 = 1</span> if task 1 is chosen and 0 otherwise, the same for <span class="m">x_2</span>. The problem is</p>
+    <div class="math-block">\max\; 8x_1 + 4x_2 \quad\text{subject to}\quad 120x_1 + 90x_2 \le B,\qquad x_1, x_2 \in \{0, 1\}.</div>
+    <p>Everything in it is <em>linear</em>: the objective is a weighted sum of the variables, and the constraint says that another weighted sum is at most a number. Only the last part, "<span class="m">x \in \{0,1\}</span>", is not linear. Drop it, allow any value between 0 and 1, and the problem becomes a <b>linear program</b>, an LP.</p>
+    <div class="define">
+      <p class="define-title">What is a linear program, and what is a MILP?</p>
+      <p><b>In plain words:</b> a linear program chooses real numbers to maximise a weighted sum, subject to weighted sums being at most (or at least) some numbers. A mixed-integer linear program (MILP) is the same with some variables forced to be integers.</p>
+      <p><b>More precisely:</b> an LP is <span class="m">\max\{c^\top x : Ax \le b,\ \ell \le x \le u\}</span>. Each row of <span class="m">Ax \le b</span> is a half-space, so the feasible set is a convex polyhedron, and a linear objective is maximised at one of its corners (a <em>vertex</em>). The simplex method walks from vertex to vertex; interior-point methods cut through the middle; both solve LPs with hundreds of thousands of rows in seconds. A MILP adds <span class="m">x_j \in \mathbb{Z}</span> for some <span class="m">j</span>, and that one addition makes the problem NP-hard in general.</p>
+      <dl>
+        <dt>Row</dt><dd>One linear constraint, one line of the matrix <span class="m">A</span>.</dd>
+        <dt>LP relaxation</dt><dd>The MILP with its integrality dropped. Every integer solution is still feasible, so its optimum is at least as good as the MILP's.</dd>
+        <dt>LP bound</dt><dd>The optimum of the LP relaxation: for a maximisation, an upper bound on the best integer plan.</dd>
+      </dl>
+    </div>
+    <p>The widget draws the example. The unit square holds every value of <span class="m">(x_1, x_2)</span> the relaxation allows; the budget row cuts it with a straight line; what remains is the LP's feasible set. Move the budget and watch where the best point goes.</p>
+  </div>
+  <div class="col widget" id="knapW">
+    <canvas id="knapC" aria-label="The unit square of x1 and x2, the budget line cutting it, the LP's feasible polygon, the four integer corners, the LP optimum and the integer optimum" aria-describedby="knapCap"></canvas>
+    <label class="field"><span>Power budget per revolution, <span class="m">B</span>: <b id="kBV"></b></span>
+      <span class="row"><input type="range" id="kB" min="30" max="300" step="10" value="180"></span>
+    </label>
+    <p class="status" id="knapCap"></p>
+  </div>
+  <div class="col prose">
+    <p>At <span class="m">B = 180</span> s the LP takes all of task 1 (the better priority per second, the density of chapter 07) and two thirds of task 2: value <span class="m">8 + \tfrac{2}{3}\cdot 4 = 10.67</span>. No satellite can listen to two thirds of a task, so 10.67 is not a plan. It is a <b>bound</b>: no integer plan can do better, because every integer plan is one of the points the LP was allowed to choose from. The best integer plan is task 1 alone, value 8. The difference, 2.67, is the <em>integrality gap</em> of this little instance.</p>
+    <p>One cheap improvement is always available here: priorities are integers, so the collected priority of any plan is an integer, and a bound of 10.67 can be rounded down to 10. The page uses this rounding when it compares bounds with values.</p>
+    <div class="callout"><p><b>Why bother with a relaxation that gives the wrong answer?</b> Because it gives a <em>certificate</em>. A plan of value 8 and a bound of 8 together prove that 8 is optimal, without looking at any other plan. Every exact solver in this course, HiGHS and CP-SAT alike, stops for that reason and no other: chapter 08's "OPTIMAL" status means that the best plan found and the best bound proved have met.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="bb">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Branch and bound on the LP relaxation</h2>
+  </div>
+  <div class="col prose">
+    <p>Chapter 08 wrote a tiny branch and bound in the page: pick an undecided task, try "take it" and "leave it", and abandon a branch as soon as an optimistic estimate of what it can still reach falls below the best plan found so far. A MILP solver does exactly this, with the LP relaxation as the optimistic estimate.</p>
+    <ol>
+      <li><b>Solve the LP relaxation</b> of the current node. If it is infeasible, or its bound is not better than the best plan found (the <em>incumbent</em>), discard the node: nothing below it can help. This is the "bound" in branch and bound.</li>
+      <li><b>If the LP solution is integer</b>, it is a plan: it becomes the incumbent if it is better.</li>
+      <li><b>Otherwise branch</b>: pick a variable with a fractional value, say <span class="m">x_1 = 0.67</span>, and create two children, one with <span class="m">x_1 = 0</span> and one with <span class="m">x_1 = 1</span>. Each child's LP is smaller and its bound no larger.</li>
+    </ol>
+    <p>The global bound at any time is the largest LP bound among the open nodes. The search ends when it meets the incumbent, or when the time limit stops it, and then the solver reports both numbers: the best plan and the best bound. Modern solvers add a great deal around this skeleton (presolve that removes and tightens rows, cutting planes that slice fractional vertices off the LP, heuristics that look for plans), but the skeleton decides one thing that no addition changes: <b>a node is pruned only when its LP bound says so</b>. If the LP relaxation is optimistic, few nodes are pruned and the tree is large.</p>
+    <div class="define">
+      <p class="define-title">What is formulation strength?</p>
+      <p><b>In plain words:</b> two MILPs can have exactly the same integer solutions and different LP relaxations. The one whose relaxation is closer to the integer problem is the stronger formulation, and branch and bound on it prunes more and finishes sooner.</p>
+      <p><b>More precisely:</b> if <span class="m">P_1</span> and <span class="m">P_2</span> are the feasible sets of two relaxations with the same integer points and <span class="m">P_1 \subseteq P_2</span>, the first formulation is at least as strong: its bound is never worse at any node. The ideal formulation's relaxation is the convex hull of the integer points, where every vertex is integer and the LP alone solves the problem <a href="#ref-1">[1]</a>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The plan in linear rows</h2>
+  </div>
+  <div class="col prose">
+    <p>The decision of chapter 06 is a subset of opportunities and a start time for each. <code>milp.py</code> gives every opportunity <span class="m">o</span> two variables, and every pair of chapter 06 that can go in both orders a third:</p>
+    <ul>
+      <li><span class="m">x_o \in \{0, 1\}</span>: opportunity <span class="m">o</span> is selected;</li>
+      <li><span class="m">t_o \in [e_o, \ell_o]</span>, continuous: its start time, between the earliest start <span class="m">e_o</span> (the window start) and the latest <span class="m">\ell_o</span> (window end minus duration);</li>
+      <li><span class="m">y_{ab} \in \{0, 1\}</span>, only for two-way pairs: 1 if <span class="m">a</span> goes before <span class="m">b</span>.</li>
+    </ul>
+    <pre><code class="language-python">def build_milp(inst: PlanningInstance):
+    opps = inst.opportunities
+    n = len(opps)
+    both = [p for p in inst.pairs if p.a_first_ok and p.b_first_ok]
+    y_index = {(p.a, p.b): 2 * n + k for k, p in enumerate(both)}
+    nv = 2 * n + len(both)
+    X = lambda i: i  # noqa: E731
+    T = lambda i: n + i  # noqa: E731</code></pre>
+    <p>The variables sit in one vector: the <span class="m">n</span> selections first, then the <span class="m">n</span> starts, then one order variable per two-way pair. <code>X(i)</code> and <code>T(i)</code> are only index arithmetic. The rows are collected as (row, column, value) triples and assembled into a sparse matrix at the end, because almost every entry of <span class="m">A</span> is zero.</p>
+    <p><b>The objective</b> is the collected priority, <span class="m">\max \sum_o w_o x_o</span>. SciPy's <code>milp</code> minimises, so the code negates it:</p>
+    <pre><code class="language-python">    c = np.zeros(nv)
+    c[:n] = -np.array([o.weight for o in opps], dtype=float)
+    lb = np.zeros(nv)
+    ub = np.ones(nv)
+    lb[n : 2 * n] = [o.earliest_start for o in opps]
+    ub[n : 2 * n] = [o.latest_start for o in opps]
+    integrality = np.ones(nv)
+    integrality[n : 2 * n] = 0</code></pre>
+    <p>The bounds do two jobs: <span class="m">0 \le x, y \le 1</span> for the binaries, and the start window <span class="m">e_o \le t_o \le \ell_o</span> for the starts, which already encodes "the task fits inside its window". <code>integrality</code> marks which variables must be integers: all but the starts. Setting every entry to 0 gives the LP relaxation, which is how the chapter's script computes it.</p>
+    <p><b>At most once per target</b> is one row per target with several opportunities, <span class="m">\sum_{o \in \text{target}} x_o \le 1</span>, and <b>the budgets</b> of chapter 06 are knapsack rows, <span class="m">\sum_{o \in \text{group}} d_o x_o \le \text{limit}</span>, for every revolution and memory segment that could overflow:</p>
+    <pre><code class="language-python">    for ids in inst.by_target().values():
+        if len(ids) &gt; 1:
+            add_row([(X(i), 1.0) for i in ids], -np.inf, 1.0)
+    ...
+    for _, limit, ids in inst.budget_groups():
+        add_row([(X(i), float(opps[i].duration)) for i in ids], -np.inf, float(limit))</code></pre>
+    <p>These rows are linear already; nothing is lost in translation. The difficulty is the reconfiguration time, which chapter 06 sorted into three cases per conflicting pair. The first case is linear too: when neither order fits, the two cannot both be chosen, <span class="m">x_a + x_b \le 1</span>:</p>
+    <pre><code class="language-python">        if not p.a_first_ok and not p.b_first_ok:
+            add_row([(X(a), 1.0), (X(b), 1.0)], -np.inf, 1.0)</code></pre>
+    <p>The other two cases are conditional, "if both are chosen, then one starts late enough after the other", and an LP has no "if". That is what the next part is about.</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="bigm">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Big-M disjunctions and the smallest valid M</h2>
+  </div>
+  <div class="col prose">
+    <p><b>One order possible.</b> Suppose only "a then b" fits. Write <span class="m">g_{ab} = d_a + s(a, b)</span>, the duration of a plus the reconfiguration time from a to b: the least time between the two starts. What we want is</p>
+    <div class="math-block">x_a = x_b = 1 \;\Longrightarrow\; t_b - t_a \ge g_{ab}.</div>
+    <p>The trick is to subtract from the right-hand side a large number whenever one of the tasks is not chosen:</p>
+    <div class="math-block">t_b - t_a \;\ge\; g_{ab} - M\,(2 - x_a - x_b).</div>
+    <p>Read it case by case. If both are chosen, <span class="m">2 - x_a - x_b = 0</span> and the row is the precedence itself. If one is not, the bracket is 1 (or 2), the right-hand side drops by <span class="m">M</span> (or <span class="m">2M</span>), and we want the row to say nothing at all: to hold for every pair of starts the bounds allow. The smallest value <span class="m">t_b - t_a</span> can take inside the bounds is <span class="m">e_b - \ell_a</span> (b as early as possible, a as late as possible). So the row is harmless exactly when</p>
+    <div class="math-block">g_{ab} - M \le e_b - \ell_a \quad\Longleftrightarrow\quad M \ge g_{ab} - e_b + \ell_a .</div>
+    <p>The <b>smallest valid M</b> is therefore <span class="m">M = g_{ab} - e_b + \ell_a</span>: the largest amount by which any pair of starts in the windows can violate the precedence. Any smaller M would forbid some start pairs even when a task is not chosen, which would be wrong; any larger M is valid but, as Part 5 discusses, gives the LP more room. The value is always positive: chapter 06's sweep keeps a pair only if "a then b" is not automatically satisfied, that is only if <span class="m">\ell_a + g_{ab} > e_b</span>. The code is word for word this derivation:</p>
+    <pre><code class="language-python">        elif p.a_first_ok and not p.b_first_ok:
+            M = gab - ob.earliest_start + oa.latest_start
+            # t_b - t_a &gt;= gab - M (2 - x_a - x_b)
+            add_row([(T(b), 1.0), (T(a), -1.0), (X(a), -M), (X(b), -M)], gab - 2 * M, np.inf)</code></pre>
+    <p>Moving the <span class="m">x</span> terms to the left gives <span class="m">t_b - t_a - Mx_a - Mx_b \ge g_{ab} - 2M</span>, which is the row's coefficient list and its lower bound. The case "only b then a" is the mirror image, with <span class="m">M = g_{ba} - e_a + \ell_b</span>.</p>
+    <p><b>Both orders possible.</b> Now the plan must choose an order, and that choice is the binary <span class="m">y</span>. Each order gets its own row, switched off when the other order is chosen or either task is not selected:</p>
+    <div class="math-block">\begin{aligned} t_b - t_a &amp;\ge g_{ab} - M_1\,(3 - x_a - x_b - y) &amp;&amp; (y = 1:\ \text{a first}),\\ t_a - t_b &amp;\ge g_{ba} - M_2\,(2 - x_a - x_b + y) &amp;&amp; (y = 0:\ \text{b first}). \end{aligned}</div>
+    <p>With both tasks chosen and <span class="m">y = 1</span>, the first bracket is 0 and the second is 1: the first row is the precedence and the second is switched off. With <span class="m">y = 0</span> it is the other way round. If a task is not chosen, both brackets are at least 1 and both rows are off. The same argument as before gives the smallest valid constants, <span class="m">M_1 = g_{ab} - e_b + \ell_a</span> and <span class="m">M_2 = g_{ba} - e_a + \ell_b</span>:</p>
+    <pre><code class="language-python">        else:
+            y = y_index[(a, b)]
+            M1 = gab - ob.earliest_start + oa.latest_start
+            M2 = gba - oa.earliest_start + ob.latest_start
+            # y = 1: a before b.  t_b - t_a &gt;= gab - M1 (3 - x_a - x_b - y)
+            add_row([(T(b), 1.0), (T(a), -1.0), (X(a), -M1), (X(b), -M1), (y, -M1)], gab - 3 * M1, np.inf)
+            # y = 0: b before a.  t_a - t_b &gt;= gba - M2 (2 - x_a - x_b + y)
+            add_row([(T(a), 1.0), (T(b), -1.0), (X(a), -M2), (X(b), -M2), (y, M2)], gba - 2 * M2, np.inf)</code></pre>
+    <p>This is a <em>disjunction</em>, "a before b <b>or</b> b before a", written as two linear rows and one binary. The hero widget draws it for a real pair of the small instance: opportunities 4 and 27 on satellite 0, two 30-second tasks whose starts may lie in [610, 810] s and [620, 820] s, with a 13-second reconfiguration both ways, so <span class="m">g_{ab} = g_{ba} = 43</span> s, <span class="m">M_1 = 43 - 620 + 810 = 233</span> and <span class="m">M_2 = 43 - 610 + 820 = 253</span>. Press "a first (1, 1, 1)": the blue region is the upper dashed strip, and the switched-off "b first" line passes exactly through the corner (610, 820). Press "a not chosen": the blue region is the whole box, and now the "a first" line passes exactly through the opposite corner (810, 620), while the "b first" line, whose bracket is 2, lies far outside. That is what "smallest valid" means geometrically: a line switched off with a bracket of 1 just touches the box.</p>
+    <div class="callout"><p><b>The project's numbers.</b> On the small instance the MILP has 692 variables (168 selections, 168 starts and 356 order binaries, one per two-way pair), 1,298 rows and 5,835 nonzero coefficients. Its 1,126 precedence rows have a smallest big-M of 204 s at the median (from 1 to 364 s), about a hundredth of the 21,600-second horizon a careless model would use. The 414 one-way pairs get one row each, the 356 two-way pairs two rows and a binary, and the 106 exclusive pairs one row <span class="m">x_a + x_b \le 1</span>.</p></div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="weak">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Why the relaxation is weak</h2>
+  </div>
+  <div class="col prose">
+    <p><b>What a fractional value does to a big-M row.</b> In the LP relaxation, <span class="m">x_a</span> and <span class="m">x_b</span> may be any numbers between 0 and 1. Take <span class="m">x_a = x_b = \tfrac12</span>. The one-way row becomes <span class="m">t_b - t_a \ge g_{ab} - M</span>, which with the smallest M is <span class="m">t_b - t_a \ge e_b - \ell_a</span>: exactly the switched-off row. Half-selecting both tasks costs the LP nothing in precedences; it gets half the priority of each and no reconfiguration at all. The hero widget starts in this state, all values at ½: the blue region is the whole box, and 100% of the forbidden band is allowed.</p>
+    <p>Fractional order variables do the same with both tasks fully selected. Press "x = 1, y = ½": the two rows become <span class="m">t_b - t_a \ge 43 - 233/2 = -73.5</span> and <span class="m">t_a - t_b \ge 43 - 253/2 = -83.5</span>. They cut two corners off the box, start pairs where b is more than 73.5 s before a or more than 83.5 s after it, which no plan needed to forbid, and leave the whole forbidden band, <span class="m">|t_b - t_a| &lt; 43</span>, allowed. The LP can schedule both tasks at the same second. With "M = horizon" pressed, even <span class="m">y = 0.95</span> switches both rows off, since <span class="m">0.05 \times 21{,}600</span> is far more than the box: a big M makes the relaxation weaker still, at least in principle.</p>
+    <div class="big-idea"><p>A big-M row only bites when every binary in its bracket is exactly at its "on" value. An LP that may choose halves never has to put them there, so it plans as if reconfiguration took no time. The relaxation of this formulation sees the budgets and the one-per-target rule, and nothing of the sequencing.</p></div>
+    <p><b>In numbers.</b> The chapter's script builds four relaxations of the small instance and solves them with HiGHS's LP solver (SciPy's <code>milp</code> with every integrality set to 0):</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="relT" class="num">
+      <thead><tr><th>Relaxation</th><th>small</th><th>medium</th><th>large</th></tr></thead>
+      <tbody>
+        <tr><td>every reachable target collected (no LP)</td><td>316</td><td>655</td><td>1477</td></tr>
+        <tr><td>LP: one per target and budgets only</td><td>231.67</td><td>580.75</td><td>1158.08</td></tr>
+        <tr><td>LP: + exclusive pairs, precedence rows deleted</td><td>229.33</td><td>578.50</td><td>1154.46</td></tr>
+        <tr><td>LP of <code>milp.py</code>, smallest big-M</td><td>229.33</td><td>578.50</td><td>1154.46</td></tr>
+        <tr><td>LP of <code>milp.py</code>, every M = horizon</td><td>229.33</td><td>578.50</td><td>1154.46</td></tr>
+        <tr><td>best plan known (benchmark, any method)</td><td>219 (optimal)</td><td>557</td><td>1088</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col prose">
+    <p>The two middle rows of the table are the lesson. Deleting every one of the 1,126 precedence rows of the small instance leaves the LP bound unchanged to the last digit, 229.33, and so does inflating every big-M to the horizon; the same holds on medium (578.50) and large (1154.46). The rows are there, they are valid, and the LP does not notice them. At its optimum, 34 of the 168 selection variables are fractional, and on 637 of the 770 pairs with a precedence row the LP has <span class="m">x_a + x_b \le 1</span>, so those rows are switched off completely; on the rest there is still enough room in the start windows to satisfy the weakened rows. On large it is 128,638 pairs out of 129,822.</p>
+    <p>The bound itself, 229.33 against the optimum 219, is only 4.7% too high, because the budgets are real constraints the LP does see. So "weak" here does not mean "a hopeless number"; it means that <b>the 10.33 points between the LP and the optimum are all due to reconfiguration, and the LP gives branch and bound no information about them</b>. Every node of the tree has the same blindness until enough <span class="m">x</span> and <span class="m">y</span> are fixed to 0 or 1 to switch the precedences on, one pair at a time.</p>
+  </div>
+  <div class="col widget" id="ladW">
+    <div class="seg" role="group" aria-label="Instance" id="ladSeg">
+      <button class="btn" type="button" data-size="small" aria-pressed="true">small</button>
+      <button class="btn" type="button" data-size="medium" aria-pressed="false">medium</button>
+      <button class="btn" type="button" data-size="large" aria-pressed="false">large</button>
+    </div>
+    <canvas id="ladC" aria-label="Upper bounds on the collected priority for one instance: the trivial bound, three LP relaxations, the LP with clique rows, the final HiGHS and CP-SAT bounds, and the best plan known" aria-describedby="ladCap"></canvas>
+    <p class="status" id="ladCap"></p>
+  </div>
+  <div class="col prose">
+    <p>The widget adds the final bounds of the benchmark run (seed 0 of each size, read from <code>results/benchmark.json</code>). On medium the root LP says 578.50; after 60 s of branching HiGHS had reached 576 and CP-SAT 575. On large, 1154.46 at the root against 1147 and 1138 after 120 s. Neither solver gets far below the LP bound in its time limit, which is why chapter 10 insists that the "gaps" of the benchmark are measured against bounds that are themselves loose.</p>
+    <p><b>Can the formulation be made stronger?</b> Yes, by adding valid rows that cut fractional points off. One family is easy: if three opportunities are pairwise incompatible (same target, or no order fits), then not only is each pair at most 1 but so is the sum of all three, <span class="m">x_a + x_b + x_c \le 1</span>. Such a <em>clique</em> row is implied by the integer problem, not by its relaxation (<span class="m">x = \tfrac12</span> on all three satisfies the pairs and violates the clique). The script adds 26 greedy cliques to the small instance and the bound moves from 229.33 to 229.00; 487 cliques on medium move it from 578.50 to 577.25. The bound is pinned by the budgets and the reconfiguration, and the reconfiguration needs stronger tools (exercise 3 and chapter 10's next steps).</p>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="bench">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>HiGHS against CP-SAT</h2>
+  </div>
+  <div class="col prose">
+    <p><code>solve_milp</code> hands the model to HiGHS <a href="#ref-3">[3]</a>, an open-source LP and MILP solver, through SciPy:</p>
+    <pre><code class="language-python">    res = milp(c, constraints=cons, bounds=bounds, integrality=integrality,
+               options={"time_limit": time_limit_s, "disp": False})
+    n = len(inst.opportunities)
+    plan = {}
+    if res.x is not None:
+        plan = {i: float(res.x[n + i]) for i in range(n) if res.x[i] &gt; 0.5}
+    bound = getattr(res, "mip_dual_bound", None)</code></pre>
+    <p>The plan is read off the selections (<span class="m">x_i > 0.5</span>, to absorb floating-point noise around 1) with their start times, and goes through the same independent checker as every other plan. <code>mip_dual_bound</code> is HiGHS's best bound when it stops. The benchmark of the repository ran every method on eight instances with the same time limit per size; the numbers below are cited from <code>results/results.md</code> and <code>results/benchmark.json</code>, a 20-minute run that this page does not repeat.</p>
+  </div>
+  <div class="col widget" id="benchW">
+    <div class="seg" role="group" aria-label="Measure" id="benchSeg">
+      <button class="btn" type="button" data-m="value" aria-pressed="true">value / best bound</button>
+      <button class="btn" type="button" data-m="time" aria-pressed="false">solve time</button>
+    </div>
+    <canvas id="benchC" aria-label="Bars per instance and method: greedy, CP-SAT, rolling CP-SAT and the MILP with HiGHS, either as the collected priority over the best bound or as solve time on a log scale" aria-describedby="benchCap"></canvas>
+    <div class="legend" aria-hidden="true">
+      <span class="key"><span class="sw" style="background:var(--prior)"></span>greedy</span>
+      <span class="key"><span class="sw" style="background:var(--post)"></span>CP-SAT</span>
+      <span class="key"><span class="sw" style="background:var(--c4)"></span>rolling CP-SAT, 1 h blocks</span>
+      <span class="key"><span class="sw" style="background:var(--warm)"></span>MILP (HiGHS)</span>
+    </div>
+    <p class="status" id="benchCap"></p>
+  </div>
+  <div class="col prose">
+    <p><b>Small: the same optimum, ten to seventeen times slower.</b> On the three small instances HiGHS proves the same optimum as CP-SAT: 219, 179 and 198. This is worth more than it looks. The two models were written independently (intervals and enforced precedences for CP-SAT, big-M rows for the MILP), solved by unrelated algorithms, and checked by a third piece of code; if either model had a bug that admitted an infeasible plan or forbade a feasible one, the optima would very likely differ. HiGHS needs 8.8, 17.3 and 9.7 s, against 0.7, 1.8 and 0.6 s for CP-SAT: ratios of 13.2, 9.6 and 16.7. The chapter's script solves the small instance once more and finds 219 again; the MILP with every big-M set to the horizon also finds 219 in about the same time, so on this instance the size of M does not matter in practice.</p>
+    <p><b>Medium: worse than CP-SAT, sometimes worse than greedy.</b> At 60 s HiGHS stops with 541, 580 and 505, against 557, 590 and 534 for CP-SAT and 518, 560 and 506 for greedy. On seed 2 the MILP's plan is one point below greedy's. Its bounds (576, 605, 554) are close to CP-SAT's (575, 604, 551): the MILP's trouble is less the bound than finding plans, because the LP solutions that guide its search are schedules with no reconfiguration.</p>
+    <p><b>Large: collapse.</b> The large instances have about 140,000 conflict pairs (145,039 on seed 0). The MILP of seed 0 has 69,313 variables, 205,444 rows and 922,138 nonzeros; each LP of the tree costs seconds rather than milliseconds, and most of its precedence rows are invisible to it. After 120 s HiGHS holds plans of 145 and 894, where greedy finds 1060 and 1047 in a fifth of a second. Yet its bound on seed 1 equals CP-SAT's, 1126: it is searching, just not finding.</p>
+    <div class="callout warm"><p><b>A fairness caveat.</b> CP-SAT ran with 8 worker threads and HiGHS, through SciPy, on one. On wall-clock time that favours CP-SAT, and a fair statement is "CP-SAT with 8 threads against HiGHS with 1". It does not change the conclusion: on the small instances the ratio is between 9.6 and 16.7 at equal results, and on large no factor of eight turns 145 into 1060. The benchmark also uses one run per instance; chapter 10 measures how much a second run would differ.</p></div>
+    <p><b>Does CP-SAT not use LPs?</b> It does. Chapter 08 lists linear relaxations among its components, and its bound of 575 on medium comes partly from them. The difference is what happens around the LP. CP-SAT represents each task as an optional interval and each satellite as a <code>NoOverlap</code> constraint; as soon as the search decides <span class="m">x_a = 1</span>, propagation tightens the start bounds of everything near task a on that satellite, detects contradictions without solving anything, and learns a clause from each one, while its large-neighbourhood search improves plans by re-solving small parts of the schedule. It reasons about time directly, where the MILP has to wait for the binaries in a bracket to reach their "on" values before a precedence exists at all.</p>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="sizeT" class="num">
+      <thead><tr><th>Seed 0</th><th>small</th><th>medium</th><th>large</th></tr></thead>
+      <tbody>
+        <tr><td>opportunities</td><td>168</td><td>1,373</td><td>4,826</td></tr>
+        <tr><td>conflict pairs (two-way / one-way / exclusive)</td><td>876<span class="sub">356 / 414 / 106</span></td><td>16,335<span class="sub">5,497 / 7,751 / 3,087</span></td><td>145,039<span class="sub">59,661 / 70,161 / 15,217</span></td></tr>
+        <tr><td>MILP variables (binary)</td><td>692<span class="sub">524</span></td><td>8,243<span class="sub">6,870</span></td><td>69,313<span class="sub">64,487</span></td></tr>
+        <tr><td>MILP rows</td><td>1,298</td><td>22,165</td><td>205,444</td></tr>
+        <tr><td>nonzero coefficients</td><td>5,835</td><td>96,212</td><td>922,138</td></tr>
+        <tr><td>median smallest big-M</td><td>204 s</td><td>206 s</td><td>207 s</td></tr>
+        <tr><td>LP relaxation bound</td><td>229.33</td><td>578.50</td><td>1154.46</td></tr>
+        <tr><td>MILP value / bound at the time limit</td><td>219 / 219<span class="sub">proved in 8.8 s</span></td><td>541 / 576<span class="sub">60 s</span></td><td>145 / 1147<span class="sub">120 s</span></td></tr>
+        <tr><td>CP-SAT value / bound</td><td>219 / 219<span class="sub">proved in 0.7 s</span></td><td>557 / 575<span class="sub">60 s</span></td><td>1072 / 1138<span class="sub">120 s</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose qa">
+    <details class="sol"><summary>1. Why is the LP relaxation's optimum an upper bound on the best plan?</summary><p>Every integer plan satisfies all the rows and has its binaries in [0, 1], so it is one of the points the LP chooses from. The LP's maximum over a larger set cannot be smaller than the maximum over the plans.</p></details>
+    <details class="sol"><summary>2. In the one-way row, why is <span class="m">M = g_{ab} - e_b + \ell_a</span> the smallest valid value?</summary><p>When a task is not selected the row reads <span class="m">t_b - t_a \ge g_{ab} - M</span> and must hold for every start pair in the bounds. The smallest <span class="m">t_b - t_a</span> is <span class="m">e_b - \ell_a</span>, so the row is harmless if and only if <span class="m">g_{ab} - M \le e_b - \ell_a</span>. Any smaller M would forbid real start pairs of an unselected task.</p></details>
+    <details class="sol"><summary>3. Why is that M always positive for the pairs the model keeps?</summary><p>A pair is kept only if "a then b" is not automatically satisfied, i.e. the latest end of a plus the reconfiguration time is after the earliest start of b: <span class="m">\ell_a + g_{ab} > e_b</span>. That is <span class="m">M > 0</span>.</p></details>
+    <details class="sol"><summary>4. What do the two rows of a two-way pair say when <span class="m">x_a = x_b = 1</span> and <span class="m">y = 0</span>?</summary><p>The first bracket is <span class="m">3 - 1 - 1 - 0 = 1</span>, so the "a first" row is switched off by <span class="m">M_1</span>; the second is <span class="m">2 - 2 + 0 = 0</span>, so the row is the precedence <span class="m">t_a \ge t_b + g_{ba}</span>: b goes first.</p></details>
+    <details class="sol"><summary>5. Why does <span class="m">x_a = x_b = \tfrac12</span> switch a one-way row off completely?</summary><p>The bracket <span class="m">2 - x_a - x_b</span> is 1, the same value as when one task is not chosen, and M was chosen precisely so that a bracket of 1 makes the row hold everywhere in the bounds.</p></details>
+    <details class="sol"><summary>6. Deleting all precedence rows leaves the LP bound unchanged. Does that make them useless?</summary><p>No. They are needed for correctness: without them the integer solutions would include plans that violate reconfiguration times. They are useless only to the LP relaxation, which is why branch and bound has to recover them by branching, and why the MILP is slow.</p></details>
+    <details class="sol"><summary>7. On medium seed 0 HiGHS's bound (576) is almost CP-SAT's (575), yet its plan is 541 against 557. What does that suggest?</summary><p>That the MILP's difficulty in 60 s is on the primal side, finding good plans, more than on the bound. Its search is guided by LP solutions that ignore reconfiguration, so rounding them rarely gives a schedule that works.</p></details>
+    <details class="sol"><summary>8. What makes the small-instance agreement between CP-SAT and HiGHS an independent check?</summary><p>Two different formulations (optional intervals with enforced precedences, big-M rows), two unrelated solvers, and a third program, the checker, validating both plans. A modelling error in one would very likely show up as a different optimum.</p></details>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+    <ol class="exercises">
+      <li><div><b>A big-M by hand.</b> Task a may start in [100, 160] s and lasts 40 s; task b may start in [150, 260] s; the reconfiguration time from a to b is 25 s and only "a then b" fits. Write the row and its smallest M. Is the pair kept by the sweep?</div>
+        <details class="sol"><summary>Hint</summary><p><span class="m">g_{ab} = 40 + 25</span>. The smallest <span class="m">t_b - t_a</span> in the bounds is <span class="m">e_b - \ell_a</span>.</p></details>
+        <details class="sol"><summary>Solution</summary><p><span class="m">g_{ab} = 65</span>, <span class="m">e_b - \ell_a = 150 - 160 = -10</span>, so <span class="m">M = 65 + 10 = 75</span> and the row is <span class="m">t_b - t_a \ge 65 - 75(2 - x_a - x_b)</span>. The pair is kept because <span class="m">\ell_a + g_{ab} = 225 > 150 = e_b</span>: with a late and b early, the precedence would be violated by 75 s, which is exactly M.</p></details>
+      </li>
+      <li><div><b>A careless M.</b> Copy <code>build_milp</code>, replace every big-M by the horizon, and solve the small instance's LP relaxation and MILP. Compare with the original.</div>
+        <details class="sol"><summary>Hint</summary><p><code>code/ch09_numbers.py</code> has a <code>build_variant(inst, "naive")</code> that does this; pass <code>integrality</code> with zeros for the LP and the original mask for the MILP.</p></details>
+        <details class="sol"><summary>Solution</summary><p>The LP bound is 229.33 in both cases, and the MILP proves 219 in about the same time as the original in the script's run (a few seconds; the exact time varies with the machine's load). Here the M does not matter, because the LP already ignores the precedences with the smallest M. The habit is still right: on problems where precedences do bind the relaxation, a large M weakens it, and a very large M (here 21,600 against a median of 204) also degrades the numerics, since a binary that the solver accepts as 1 within its integrality tolerance (of the order of <span class="m">10^{-6}</span>) leaves <span class="m">21{,}600 \times 10^{-6} \approx 0.02</span> s of slack on the starts.</p></details>
+      </li>
+      <li><div><b>Clique rows.</b> Build the graph whose edges join incompatible opportunities (same target, or neither order fits), find cliques greedily, add <span class="m">\sum_{o \in C} x_o \le 1</span> for each clique of three or more, and solve the LP again. How much does the bound move? Why not more?</div>
+        <details class="sol"><summary>Hint</summary><p>For each opportunity, start a clique with it and add neighbours, highest priority first, that are adjacent to every member so far. The script's <code>main()</code> does this in a dozen lines.</p></details>
+        <details class="sol"><summary>Solution</summary><p>26 cliques on small move the bound from 229.33 to 229.00; 487 on medium move it from 578.50 to 577.25. The cliques only strengthen the incompatibilities that are already linear; the fractional plans that pin the bound use budgets fully and ignore reconfiguration, and a clique row says nothing about two tasks that are compatible in one order. Stronger rows would have to encode time, for example "the tasks of one pass, plus their settle times, fit in the pass", which the repository's README reports as tried in CP-SAT, moving the medium bound only from 575 to 573.</p></details>
+      </li>
+      <li><div><b>A time-indexed model.</b> Another classic formulation uses one binary <span class="m">z_{o,t}</span> per opportunity and possible start second, with "at most one task covers each second on each satellite" rows. Count its binaries on the small and medium instances, on a 1-second and a 10-second grid. What does it gain, and what does it cost?</div>
+        <details class="sol"><summary>Hint</summary><p>Opportunity o has <span class="m">\ell_o - e_o + 1</span> possible integer starts. Sequence-dependent reconfiguration does not fit the "one task per second" rows directly: think about what it needs.</p></details>
+        <details class="sol"><summary>Solution</summary><p>On small, 19,828 binaries on a 1-second grid and 2,134 on a 10-second grid; on medium, 155,243 and 16,760 (against 1,373 selections in <code>milp.py</code>). Time-indexed relaxations are known to be much stronger for scheduling, because overlaps are forbidden second by second with no big-M. But the reconfiguration time depends on which pair of tasks is adjacent, and encoding that needs rows per pair of start times, which multiplies the size again; a coarse grid also loses optimal starts. That trade-off, strength against size, is the whole subject of formulation design <a href="#ref-1">[1]</a>.</p></details>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col" style="margin-top:0.4rem">
+    <ol class="steps">
+      <li><div><b>LP and MILP</b>: maximise a linear objective under linear rows; a MILP forces some variables to be integers. Dropping integrality gives the LP relaxation, whose optimum is an upper bound.</div></li>
+      <li><div><b>Branch and bound</b> solves LPs on a tree, branching on fractional variables and pruning nodes whose LP bound cannot beat the incumbent. A stronger formulation (a tighter relaxation) prunes more.</div></li>
+      <li><div><b>The model</b>: <span class="m">x_o</span> binary, <span class="m">t_o \in [e_o, \ell_o]</span> continuous, <span class="m">y_{ab}</span> binary for the 356 two-way pairs; at-most-one, budget and exclusion rows are linear as they are.</div></li>
+      <li><div><b>Big-M</b>: <span class="m">t_b - t_a \ge g_{ab} - M(2 - x_a - x_b)</span> with the smallest valid <span class="m">M = g_{ab} - e_b + \ell_a</span>, and a three-index version with <span class="m">y</span> for two-way pairs. Median M about 205 s against a horizon of 6 or 12 h.</div></li>
+      <li><div><b>The weakness</b>: fractional x or y switch the rows off. The LP bound (229.33 small, 578.50 medium, 1154.46 large) is identical with the precedence rows deleted; the LP sees budgets, not reconfiguration.</div></li>
+      <li><div><b>The benchmark</b> (cited): same optimum as CP-SAT on small, 10 to 17 times slower; worse at medium (once below greedy); 145 and 894 on large against greedy's 1060 and 1047. HiGHS on 1 thread, CP-SAT on 8.</div></li>
+    </ol>
+  </div>
+  <div class="col prose" style="margin-top:1rem">
+    <h3>The vocabulary, in one table</h3>
+  </div>
+  <div class="col table-wrap" style="margin-top:0.6rem">
+    <table id="vocT">
+      <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Linear program (LP)</td><td>Maximise <span class="m">c^\top x</span> under linear inequalities and bounds, with real variables.</td></tr>
+        <tr><td>MILP</td><td>An LP in which some variables must be integers.</td></tr>
+        <tr><td>LP relaxation</td><td>The MILP with integrality dropped; its optimum bounds the MILP's.</td></tr>
+        <tr><td>Incumbent</td><td>The best integer solution found so far in a branch and bound.</td></tr>
+        <tr><td>Integrality gap</td><td>The distance between the LP bound and the integer optimum.</td></tr>
+        <tr><td>Big-M constraint</td><td>A row switched off by subtracting <span class="m">M</span> times a binary expression.</td></tr>
+        <tr><td>Smallest valid M</td><td>The least M that makes the switched-off row hold for every value the bounds allow.</td></tr>
+        <tr><td>Disjunction</td><td>An "or" of constraints, here "a before b or b before a", written with an order binary.</td></tr>
+        <tr><td>Formulation strength</td><td>How close a formulation's relaxation is to the integer problem; same integer solutions, different solver behaviour.</td></tr>
+        <tr><td>Clique inequality</td><td><span class="m">\sum_{o \in C} x_o \le 1</span> for pairwise incompatible opportunities: valid for plans, not implied by the pairwise rows.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="references">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Scope and further reading</h2>
+  </div>
+  <div class="col prose">
+    <p><b>Scope.</b> The chapter treats the LP solver as a black box: it does not derive the simplex method, duality or the theory of cutting planes, and it does not tune HiGHS (presolve, cut and heuristic options were left at their defaults through SciPy). Other MILP formulations of the same problem exist (time-indexed, flow-based, or with indicator constraints that some solvers handle without an explicit M), and commercial MILP solvers may behave differently from HiGHS on the large instance; none of that was measured here. The benchmark numbers are one run each, cited from the repository.</p>
+    <ul class="refs">
+      <li id="ref-1"><span class="rn">[1]</span><div>L. A. Wolsey. <em>Integer Programming</em>. Wiley, 1998; second edition 2020. The standard textbook: formulations and their strength, LP relaxations, branch and bound, valid inequalities including cliques, and the big-M modelling of disjunctions.</div></li>
+      <li id="ref-2"><span class="rn">[2]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>. Springer, fifth edition, 2016. Scheduling with sequence-dependent setup times, of which the reconfiguration time is an instance, and its classic MILP formulations.</div></li>
+      <li id="ref-3"><span class="rn">[3]</span><div>Q. Huangfu and J. A. J. Hall. Parallelizing the dual revised simplex method. <em>Mathematical Programming Computation</em>, 10:119–142, 2018. The simplex solver at the core of HiGHS, the solver SciPy's <code>milp</code> calls.</div></li>
+      <li id="ref-4"><span class="rn">[4]</span><div>F. Rossi, P. van Beek and T. Walsh (eds.). <em>Handbook of Constraint Programming</em>. Elsevier, 2006. Propagation, global constraints and the scheduling constraints that let CP-SAT reason on intervals rather than on big-M rows.</div></li>
+      <li id="ref-5"><span class="rn">[5]</span><div>Google OR-Tools, CP-SAT solver documentation. <a href="https://developers.google.com/optimization">developers.google.com/optimization</a>. Interval variables, <code>NoOverlap</code>, enforcement literals, and the solver parameters used in chapter 08.</div></li>
+    </ul>
+    <p>Next, chapter 10 cuts the horizon into blocks to make CP-SAT faster on the large instance, measures what the decomposition loses at block borders, and reads the benchmark critically: gaps against loose bounds, threads, and the run-to-run noise of a search stopped at a time limit.</p>
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="08-constraint-programming-with-cp-sat.html"><span class="lbl">Previous · 08</span><span class="t">Constraint programming with CP-SAT</span></a>
+  <a class="next" rel="next" href="10-rolling-horizons-and-reading-a-benchmark.html"><span class="lbl">Next · 10</span><span class="t">Rolling horizons and reading a benchmark</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter 09 of "Satellite Pass Planning from Scratch" by Elie Rouphael. The pair in the hero widget is recomputed in your browser from the course's shared instance with sat.js; the LP relaxations, model sizes and the MILP solve come from code/ch09_numbers.py, and the benchmark numbers from the repository's results/benchmark.json. The scenario is synthetic and makes no claim about any real satellite system. Math rendered with KaTeX, code highlighted with highlight.js.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/sat.js"></script>
+<script src="interactive/instance-small.js"></script>
+<script src="interactive/ch09-data.js"></script>
+<script src="interactive/ch09.js"></script>
+</body>
+</html>

@@ -155,4 +155,19 @@ export const tutorials: Tutorial[] = [
     },
     draft: false,
   },
+  {
+    title: 'Satellite Pass Planning from Scratch',
+    description:
+      "A ten-chapter interactive course built from the author's satellite-pass-planning repository, one concept per chapter, from Newton's law to an optimality proof. Part one builds the physics: a circular orbit integrated step by step, the frames and rotations that place it in space, the rotating Earth and its ground tracks, and the geometry that decides when a satellite can see a target. Part two turns that into a planning problem for a small constellation listening to maritime targets: opportunities, reconfiguration times, power and memory budgets, and an independent checker. Part three solves it four ways, a greedy rule, constraint programming with CP-SAT, a big-M MILP with HiGHS and a rolling horizon, and reads the benchmark critically. The model runs live in the browser, ported line for line from the Python, and every number is checked against it.",
+    topics: ['Orbital Mechanics', 'Scheduling', 'Constraint Programming', 'CP-SAT', 'Integer Programming', 'Python'],
+    prerequisites: 'Python, high-school physics and a little linear algebra; no orbital mechanics or optimisation assumed',
+    level: 'Intermediate',
+    added: '2026-10-30T12:00',
+    href: '/tutorials/satellite-pass-planning/index.html',
+    cover: {
+      src: '/tutorials/satellite-pass-planning/cover.png',
+      alt: 'Ground tracks of four satellites over one revolution on a world map grid, crossing ten maritime areas whose targets are drawn as orange dots',
+    },
+    draft: false,
+  },
 ];
