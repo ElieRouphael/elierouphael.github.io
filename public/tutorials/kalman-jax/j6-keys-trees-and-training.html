@@ -163,7 +163,7 @@ jax.random.uniform(key, (4,))        # the same four numbers: same key, same dra
     <pre><code class="language-python">process_noise = jax.random.normal(key, (1000,))
 measurement_noise = jax.random.normal(key, (1000,))    # correlation with the first: 0.99999994</code></pre>
     <p>A simulation built this way would feed the filter process and measurement noise that are perfectly correlated, and nothing would raise an error. Split instead, and the correlation is <span class="m">-0.003</span>, what independent samples of 1000 give.</p>
-    <p><b>2. Split before use, and keep one key to split again.</b> The repository's data generator does exactly this, at every step:</p>
+    <p><b>2. Split before use, and keep one key to split again.</b> The repository's data generator, which made <a href="02-the-kalman-filter-and-its-nonlinear-cousins.html#model">chapter 02's data</a>, does exactly this, at every step:</p>
     <pre><code class="language-python">key, process_key = jax.random.split(key)          # kalman_jax/filters.py
 x_true = F @ x_true + jax.random.multivariate_normal(process_key, jnp.zeros(2), Q)
 key, measurement_key = jax.random.split(key)</code></pre>
@@ -179,7 +179,7 @@ key, measurement_key = jax.random.split(key)</code></pre>
     <h2>Pytrees</h2>
   </div>
   <div class="col prose">
-    <p>The networks chapters 03 and 04 train keep their parameters in a list of <code>(W, b)</code> tuples: chapter 03's is built by <code>init_mlp_params(key, [3, 16, 16, 16, 16, 2])</code>, chapter 04's by the same function with sizes <code>[9, 32, 32, 1]</code>. Nobody had to tell <code>jax.grad</code>, <code>jit</code> or Optax how to handle that list. JAX treats any nesting of lists, tuples, dicts and a few other containers as a <b>pytree</b>: a tree whose internal nodes are containers and whose <em>leaves</em> are arrays. Every transformation flattens its arguments into leaves, works on those, and rebuilds the same structure.</p>
+    <p>The networks chapters 03 and 04 train keep their parameters in a list of <code>(W, b)</code> tuples: <a href="03-learning-what-the-model-leaves-out.html#model">chapter 03's</a> is built by <code>init_mlp_params(key, [3, 16, 16, 16, 16, 2])</code>, <a href="04-a-real-series-next-hour-no2.html#model">chapter 04's</a> by the same function with sizes <code>[9, 32, 32, 1]</code>. Nobody had to tell <code>jax.grad</code>, <code>jit</code> or Optax how to handle that list. JAX treats any nesting of lists, tuples, dicts and a few other containers as a <b>pytree</b>: a tree whose internal nodes are containers and whose <em>leaves</em> are arrays. Every transformation flattens its arguments into leaves, works on those, and rebuilds the same structure.</p>
     <pre><code class="language-python">leaves, treedef = jax.tree_util.tree_flatten(params)
 treedef            # PyTreeDef([(*, *), (*, *), (*, *), (*, *), (*, *)])
 len(leaves)        # 10 arrays
@@ -235,7 +235,7 @@ params = optax.apply_updates(params, updates)          # params + updates, leaf 
     <h2>The training loop</h2>
   </div>
   <div class="col prose">
-    <p>Everything in Part I meets in the repository's loop (<code>kalman_jax/learned_dynamics.py</code>):</p>
+    <p>Everything in Part I meets in the repository's loop, the one that trains <a href="03-learning-what-the-model-leaves-out.html#grad">chapter 03's network</a> (<code>kalman_jax/learned_dynamics.py</code>):</p>
     <pre><code class="language-python">@jax.jit                                                          # J2: compiled once
 def update(current_params, current_opt_state):                    # J2: pure; J6: pytrees in and out
     loss, grads = value_and_grad(loss_fn)(current_params, A, B, C, Q, R, x0, P0, us, ys)   # J3, through a J5 scan
@@ -246,7 +246,7 @@ def update(current_params, current_opt_state):                    # J2: pure; J6
 for step in range(num_steps):                                     # a Python loop of compiled steps
     params, opt_state, loss = update(params, opt_state)</code></pre>
     <p>The parameters and the optimiser state go in and come out every step; nothing persists in between except what the loop variables hold. Because every step has the same signature, <code>update</code> is compiled once (J2), and the data, closed over, is a constant of the compiled program.</p>
-    <p>The Python loop could itself become a <code>lax.scan</code> over steps, with <code>(params, opt_state)</code> as the carry (exercise 5), so that the whole training run is one compiled program. Is that faster? For 1000 Adam steps on Part 6's problem, each step a gradient through a 1000-step filter, the Python loop took <span id="tLoop">1.8 s</span> and the scan <span id="tScan">2.1 s</span>, with the order reversed in another run; both ended at exactly the same parameters. Each step does about 2 ms of work, so a dispatch of about 13 µs (J2) is lost in it. A scan over training steps pays off when the steps are tiny, or when the whole run must be one function, to be vmapped over seeds (J4) or differentiated with respect to a hyperparameter. Otherwise the Python loop is simpler, and lets you log, save and stop early.</p>
+    <p>The Python loop could itself become a <code>lax.scan</code> over steps, with <code>(params, opt_state)</code> as the carry (exercise 5), so that the whole training run is one compiled program. Is that faster? For 1000 Adam steps on Part 6's problem, each step a gradient through a 1000-step filter, the Python loop took <span id="tLoop">1.8 s</span> and the scan <span id="tScan">2.1 s</span>, with the order reversed in another run; both ended at exactly the same parameters. Each step does about 2 ms of work, so a dispatch of about 13 µs (J2) is lost in it. A scan over training steps pays off when the steps are tiny, or when the whole run must be one function, to be vmapped over seeds (J4) or differentiated with respect to a hyperparameter. Otherwise the Python loop is simpler, and lets you log, save and stop early on a validation score, as <a href="04-a-real-series-next-hour-no2.html#better">chapter 04</a> recommends for its learned forecaster.</p>
   </div>
 </section>
 
@@ -257,7 +257,7 @@ for step in range(num_steps):                                     # a Python loo
     <h2>Back to Kalman</h2>
   </div>
   <div class="col prose">
-    <p>J3 estimated chapter 02's two noise levels by minimising the filter's negative log-likelihood with plain gradient descent, and found the likelihood's valley 89 times flatter in one direction than the other: gradient descent crept along it. J4 confirmed the method is sound: chapter 02's low estimate of <span class="m">\sigma_a</span> came from an unlucky dataset, not a biased estimator. Now the same problem with Optax. The training function is the repository's loop above with <code>nll</code> as the loss and <span class="m">\theta = (\log\sigma_a, \log\sigma_z)</span> as the parameters, run from <span class="m">\sigma_a = \sigma_z = 1</span>:</p>
+    <p>J3 estimated <a href="02-the-kalman-filter-and-its-nonlinear-cousins.html#model">chapter 02's two noise levels</a> by minimising the filter's negative log-likelihood with plain gradient descent, and found the likelihood's valley 89 times flatter in one direction than the other: gradient descent crept along it. J4 confirmed the method is sound: chapter 02's low estimate of <span class="m">\sigma_a</span> came from an unlucky dataset, not a biased estimator. Now the same problem with Optax. The training function is the repository's loop above with <code>nll</code> as the loss and <span class="m">\theta = (\log\sigma_a, \log\sigma_z)</span> as the parameters, run from <span class="m">\sigma_a = \sigma_z = 1</span>:</p>
   </div>
   <div class="col table-wrap" style="margin-top:0.6rem">
     <table id="optT" class="numT">
@@ -281,7 +281,7 @@ for step in range(num_steps):                                     # a Python loo
     <p class="status" id="raceCap" role="status" aria-live="polite"></p>
   </div>
   <div class="col prose">
-    <p>Chapters 03 and 04 use the same machinery at a larger scale: <code>optax.adam(1e-3)</code> on the parameters of <code>init_mlp_params</code>, 914 in chapter 03's network and 1409 in chapter 04's, with keys split per layer, gradients through a scan of the filter, and the Python training loop of Part 5.</p>
+    <p>Chapters 03 and 04 use the same machinery at a larger scale: <code>optax.adam(1e-3)</code> on the parameters of <code>init_mlp_params</code>, 914 in <a href="03-learning-what-the-model-leaves-out.html#grad">chapter 03's network</a> and 1409 in <a href="04-a-real-series-next-hour-no2.html#model">chapter 04's</a>, with one key per weight and bias, gradients through a scan of the filter, and the Python training loop of Part 5.</p>
   </div>
   <div class="col table-wrap" style="margin-top:0.6rem">
     <table id="kT2">
@@ -310,17 +310,17 @@ for step in range(num_steps):                                     # a Python loo
     <table id="partT">
       <thead><tr><th>Chapter</th><th>The idea</th><th>What it found in the Kalman code</th></tr></thead>
       <tbody>
-        <tr><td><a href="j1-arrays-and-the-numbers-inside-them.html">J1</a></td><td>Immutable arrays, broadcasting, IEEE 754 floats, float32 by default</td><td>The jitter of <span class="m">10^{-9}</span> vanishes in float32; the unscented filter's NaN in chapter 02 is predictable from a table of gaps.</td></tr>
+        <tr><td><a href="j1-arrays-and-the-numbers-inside-them.html">J1</a></td><td>Immutable arrays, broadcasting, IEEE 754 floats, float32 by default</td><td>The jitter of <span class="m">10^{-9}</span> vanishes in float32; <a href="02-the-kalman-filter-and-its-nonlinear-cousins.html#ukf">the unscented filter's NaN in chapter 02</a> is predictable from a table of gaps.</td></tr>
         <tr><td><a href="j2-pure-functions-tracing-and-jit.html">J2</a></td><td>Pure functions, tracing to jaxprs, compilation and its cache</td><td>One filter step is 33 times faster compiled; <code>run_linear_kf</code> without <code>jit</code> recompiles on every call.</td></tr>
         <tr><td><a href="j3-automatic-differentiation-from-scratch.html">J3</a></td><td>Forward and reverse mode, from scratch</td><td>The gradient of the filter's likelihood estimates its noise levels; a NaN guard is needed for gradients, not only values.</td></tr>
         <tr><td><a href="j4-vmap-one-function-many-inputs.html">J4</a></td><td>Vectorisation by batching rules</td><td>1000 filters in one call; the filter is consistent; chapter 02's noise estimate was an unlucky dataset.</td></tr>
-        <tr><td><a href="j5-loops-as-data-scan.html">J5</a></td><td>Loops as compiled primitives</td><td>A Python loop takes minutes to compile; the smoother is a reverse scan and halves the filter's error.</td></tr>
+        <tr><td><a href="j5-loops-as-data-scan.html">J5</a></td><td>Loops as compiled primitives</td><td>A Python loop takes minutes to compile; the smoother is a reverse scan and almost halves the filter's error.</td></tr>
         <tr><td>J6</td><td>Keys, pytrees, gradient transformations</td><td>Adam finds the noise levels in under a quarter of gradient descent's steps.</td></tr>
       </tbody>
     </table>
   </div>
   <div class="col prose">
-    <p>Part II begins with chapter 01, a vehicle tracker in plain Python, and then chapter 02, where every line of <code>kalman_jax/filters.py</code> should now read as something you have seen built.</p>
+    <p>Part II begins with <a href="01-tracking-a-vehicle-with-a-kalman-filter.html">chapter 01</a>, a vehicle tracker in NumPy with no JAX, and then <a href="02-the-kalman-filter-and-its-nonlinear-cousins.html">chapter 02</a>, where every line of <code>kalman_jax/filters.py</code> should now read as something you have seen built.</p>
   </div>
 </section>
 
