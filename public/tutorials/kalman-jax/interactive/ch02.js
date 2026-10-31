@@ -7,7 +7,7 @@
 "use strict";
 const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
 
-/* NET-BEGIN  (this block is also run under Node by the equivalence test) */
+/* NET-BEGIN  (self-contained: this block is also exported for Node, below, so it can be tested outside the page) */
 /* Small dense-matrix helpers (arrays of rows). */
 const mm = (A, B) => A.map(r => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
 const mv = (A, x) => A.map(r => r.reduce((s, v, k) => s + v * x[k], 0));

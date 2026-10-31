@@ -5,7 +5,7 @@
 "use strict";
 const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
 
-/* NET-BEGIN  (this block is also run under Node by the equivalence test) */
+/* NET-BEGIN  (self-contained: this block is also exported for Node, below, so it can be tested outside the page) */
 /* The repository's KalmanFilter class for the constant-velocity model, written out for a 2-state, 1-measurement
    filter: predict x = F x, P = F P F' + Q; update with K = P H' / S and the textbook P = P - K H P. */
 function runTracker(zs, dt, Q, R, { P0 = [[1, 0], [0, 1]], x0 = [0, 0], joseph = false } = {}) {

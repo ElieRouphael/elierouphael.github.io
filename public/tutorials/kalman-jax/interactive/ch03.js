@@ -7,7 +7,7 @@
 "use strict";
 const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
 
-/* NET-BEGIN  (this block is also run under Node by the equivalence test) */
+/* NET-BEGIN  (self-contained: this block is also exported for Node, below, so it can be tested outside the page) */
 const mv = (A, x) => A.map(r => r.reduce((s, v, k) => s + v * x[k], 0));
 const mm = (A, B) => A.map(r => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
 const tr = A => A[0].map((_, j) => A.map(r => r[j]));
@@ -149,7 +149,7 @@ function drawHero() {
   const t = Array.from({ length: 50 }, (_, i) => i);
   const cl = $("#heroL"), narrow = narrowOf(cl, 600);
   const ref = hero.kind === "filtered" ? D.losses : D.forecastLosses;
-  const fr = frame(cl, narrow ? 1.5 : 1.3, { x: [0, 1000], y: [-3, 0.2], xlabel: "Adam step", ylabel: "log10 loss", xticks: [0, 250, 500, 750, 1000], yticks: [-3, -2, -1, 0] });
+  const fr = frame(cl, narrow ? 1.5 : 1.3, { x: [0, 1000], y: [-3, 0.5], xlabel: "Adam step", ylabel: "log10 loss", xticks: [0, 250, 500, 750, 1000], yticks: [-3, -2, -1, 0] });
   plotLine(fr, ref.map((_, i) => i), ref.map(v => Math.log10(v)), { color: alpha("--muted", 0.8), width: 1.4 });
   if (hero.losses.length) plotLine(fr, hero.losses.map((_, i) => i), hero.losses.map(v => Math.log10(v)), { color: css("--post"), width: 2 });
   const cx = $("#heroX"), frx = frame(cx, narrow ? 1.5 : 1.3, { x: [0, 49], y: [-8, 6], xlabel: "step", ylabel: "x₀: measured, filtered, ±1.96σ", xticks: [0, 10, 20, 30, 40], yticks: [-8, -4, 0, 4] });
@@ -165,7 +165,8 @@ function drawHero() {
   $("#rLoss").textContent = hero.losses.length ? fmt(hero.losses[hero.losses.length - 1], 4) : "–";
   $("#rTrain").textContent = `${fmt(evTrain.filtered, 3)} / ${fmt(evTrain.dyn, 3)}`; $("#rFresh").textContent = `${fmt(evFresh.filtered, 3)} / ${fmt(evFresh.dyn, 3)}`; $("#rZero").textContent = `${fmt(evFresh.forecast, 3)} / ${fmt(evFresh.zero, 3)}`;
   const done = hero.step >= hero.steps;
-  caption($("#heroStatus"), `${hero.losses.length ? `Training in the browser with the ${hero.kind === "filtered" ? "repository's loss (filtered state against the measurement)" : "one-step forecast loss (predicted state against the measurement)"}: ${hero.step} Adam steps, loss ${fmt(hero.losses[hero.losses.length - 1], 4)}` : "Press Train: 1000 Adam steps on the repository's 50-step rollout, in the browser, with the gradient taken by backpropagation through the Kalman recursion"} (grey: JAX's trace for the same loss, which reaches ${fmt(ref[ref.length - 1], 4)}; 32-bit against 64-bit arithmetic lets the two drift apart after a few hundred steps). Middle: the training rollout's first state, measured (dots) and filtered (blue) with the ±1.96σ band of the filter's covariance; right: the true residual [[3\\sin x_0 + 2\\cos x_1]] minus the learned one along the rollout, for each state component. On the rollout it was trained on, the filtered estimate is within ${fmt(evTrain.filtered, 3)} of the true state and the residual is learned to ${fmt(evTrain.dyn, 2)} RMS${done ? "" : " so far"}. On a fresh rollout with different inputs the residual error is ${fmt(evFresh.dyn, 2)} and the one-step forecast misses the measurements by ${fmt(evFresh.forecast, 2)}, worse than the ${fmt(evFresh.zero, 2)} of a model with no residual at all: the network fitted the trajectory, not the function. Part 3 says why.`);
+  caption($("#heroStatus"), `${hero.losses.length ? `Training in the browser with the ${hero.kind === "filtered" ? "repository's loss (filtered state against the measurement)" : "one-step forecast loss (predicted state against the measurement)"}: ${hero.step} Adam steps, loss ${fmt(hero.losses[hero.losses.length - 1], 4)}` : "Press Train: 1000 Adam steps on the repository's 50-step rollout, in the browser, with the gradient taken by backpropagation through the Kalman recursion"} (grey: JAX's trace for the same loss, which reaches ${fmt(ref[ref.length - 1], 4)}; 32-bit against 64-bit arithmetic lets the two drift apart after a few hundred steps). Middle: the training rollout's first state, measured (dots) and filtered (blue) with the ±1.96σ band of the filter's covariance; right: the true residual [[3\\sin x_0 + 2\\cos x_1]] minus the learned one along the rollout, for each state component. ${hero.losses.length ? `On the rollout it was trained on, the filtered estimate is within ${fmt(evTrain.filtered, 3)} of the true state and the residual is learned to ${fmt(evTrain.dyn, 2)} RMS${done ? "" : " so far"}. On a fresh rollout with different inputs the residual error is ${fmt(evFresh.dyn, 2)} and the one-step forecast misses the measurements by ${fmt(evFresh.forecast, 2)}, worse than the ${fmt(evFresh.zero, 2)} of the linear baseline [[A y_{t-1} + B u_t]], which ignores the residual: the network fitted the trajectory, not the function. Part 3 says why.` : `Before training the network's output is close to zero, so this is the filter alone: the residual error on the training rollout, ${fmt(evTrain.dyn, 2)}, is the size of the residual itself, and on a fresh rollout the one-step forecast misses by ${fmt(evFresh.forecast, 2)}, already worse than the ${fmt(evFresh.zero, 2)} of the linear baseline [[A y_{t-1} + B u_t]], because a gain of 0.36 makes the filter lag the measurements. Press Train to see what the network adds.`}`);
+  if (typeof map !== "undefined" && map.which === "page") drawMap();   // the map's "page" view follows the training
 }
 $$("#heroK .btn").forEach(b => b.addEventListener("click", () => { if (hero.running) return; $$("#heroK .btn").forEach(x => x.setAttribute("aria-pressed", x === b)); hero.kind = b.dataset.k; resetTraining(); drawHero(); }));
 $("#hTrain").addEventListener("click", () => { if (hero.running) return; if (hero.step >= hero.steps) resetTraining(); runTraining(); });
@@ -175,12 +176,15 @@ resetTraining();
 
 /* ============================================================ the residual map */
 const map = { which: "trained" };
+const AS = D.stable.A, QH = [[0.01, 0], [0, 0.01]], RH = [[0.0025, 0], [0, 0.0025]];
+const SCHED_S = gainSchedule(AS, C, Q, R, P0, 50), SCHED_H = gainSchedule(AS, C, QH, RH, P0, 50);
 function drawMap() {
-  const params = map.which === "trained" ? D.params : map.which === "page" ? hero.params : D.stable.filtered.params;
-  const roll = map.which === "stable" ? D.stable.train : D.train, u = 0;
+  const bounded = map.which === "stable" || map.which === "honest";
+  const params = map.which === "trained" ? D.params : map.which === "page" ? hero.params : map.which === "stable" ? D.stable.filtered.params : D.stable.honest.params;
+  const trainXs = map.which === "stable" ? D.stable.train.xs : map.which === "honest" ? D.stable.honest.trainXs : D.train.xs, u = 0;
   const cv = $("#mapC"), narrow = narrowOf(cv);
-  const lim = 8, n = 48;
-  const fr = frame(cv, narrow ? 1.1 : 1.6, { x: [-lim, lim], y: [-lim, lim], xlabel: "x₀", ylabel: "x₁", xticks: [-8, -4, 0, 4, 8], yticks: [-8, -4, 0, 4, 8] });
+  const lim = bounded ? 13 : 8, n = 52, ticks = bounded ? [-12, -6, 0, 6, 12] : [-8, -4, 0, 4, 8];
+  const fr = frame(cv, narrow ? 1.1 : 1.6, { x: [-lim, lim], y: [-lim, lim], xlabel: "x₀", ylabel: "x₁", xticks: ticks, yticks: ticks });
   const { ctx, X, Y } = fr, cw = (X(lim) - X(-lim)) / n, ch = (Y(-lim) - Y(lim)) / n;
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
     const x = -lim + (i + 0.5) * 2 * lim / n, y = -lim + (j + 0.5) * 2 * lim / n;
@@ -188,10 +192,27 @@ function drawMap() {
     const s = Math.min(1, e / 5); ctx.fillStyle = `rgba(${Math.round(235 * s + 42 * (1 - s))}, ${Math.round(104 * s + 120 * (1 - s))}, ${Math.round(52 * s + 214 * (1 - s))}, 0.75)`;
     ctx.fillRect(X(x) - cw / 2, Y(y) - ch / 2, cw + 0.5, ch + 0.5);
   }
-  ctx.fillStyle = css("--ink"); roll.xs.forEach(x => { ctx.beginPath(); ctx.arc(X(Math.max(-lim, Math.min(lim, x[0]))), Y(Math.max(-lim, Math.min(lim, x[1]))), 2.2, 0, 2 * Math.PI); ctx.fill(); });
-  if (map.which !== "stable") { ctx.strokeStyle = alpha("--ink", 0.5); ctx.setLineDash([3, 3]); D.fresh.xs.forEach((x, i) => { if (i) { ctx.beginPath(); ctx.moveTo(X(Math.max(-lim, Math.min(lim, D.fresh.xs[i - 1][0]))), Y(Math.max(-lim, Math.min(lim, D.fresh.xs[i - 1][1])))); ctx.lineTo(X(Math.max(-lim, Math.min(lim, x[0]))), Y(Math.max(-lim, Math.min(lim, x[1])))); ctx.stroke(); } }); ctx.setLineDash([]); }
-  const inside = roll.xs.length, fr7 = D.fresh.xs.filter(x => Math.abs(x[0]) <= 8 && Math.abs(x[1]) <= 8).length;
-  caption($("#mapCap"), `Absolute error of the learned residual over the state plane at [[u = 0]], blue for zero and orange for 5 or more, with the training states as dots${map.which !== "stable" ? " and the fresh rollout of the hero demo as a dashed path" : ""}. ${map.which === "trained" ? "JAX's trained network" : map.which === "page" ? "The page's current network" : "The network trained on the bounded plant of Part 4"} is accurate near the ${inside} states it saw and wrong almost everywhere else: a tanh network cannot extrapolate a periodic function. ${map.which !== "stable" ? `The plant's state wanders, because [[A]] is a double integrator with eigenvalues at 1: the fresh rollout leaves the square [[[-8, 8]^2]] after ${fr7} of its 50 steps and reaches [[x_0 = 30]], where the network's output is whatever its last tanh layer saturated at.` : "On the bounded plant the fresh rollouts stay in the explored region, and the learned residual transfers as far as 50 samples allow."}`);
+  const clip = v => Math.max(-lim, Math.min(lim, v));
+  const path = xs => { ctx.beginPath(); xs.forEach((x, i) => i ? ctx.lineTo(X(clip(x[0])), Y(clip(x[1]))) : ctx.moveTo(X(clip(x[0])), Y(clip(x[1])))); ctx.stroke(); };
+  ctx.fillStyle = css("--ink"); trainXs.forEach(x => { ctx.beginPath(); ctx.arc(X(clip(x[0])), Y(clip(x[1])), 2.2, 0, 2 * Math.PI); ctx.fill(); });
+  ctx.strokeStyle = alpha("--ink", 0.5); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  if (bounded) ["7", "11", "13"].forEach(k => path(D.stable.tests[k].xs)); else path(D.fresh.xs);
+  ctx.setLineDash([]);
+  const net = map.which === "trained" ? "JAX's trained network" : map.which === "page" ? "The page's current network" : map.which === "stable" ? "The network trained on the bounded plant with the repository's noise (1000 Adam steps)" : "Part 4's final model, trained on the bounded plant with honest noise and 500 training states (2000 Adam steps),";
+  let tail;
+  if (!bounded) {
+    const inSq = D.fresh.xs.filter(x => Math.abs(x[0]) <= 8 && Math.abs(x[1]) <= 8).length, firstOut = D.fresh.xs.findIndex(x => Math.abs(x[0]) > 8 || Math.abs(x[1]) > 8);
+    tail = `The plant's state wanders, because [[A]] is a double integrator with eigenvalues at 1: only ${inSq} of the fresh rollout's 50 states lie inside the square [[[-8, 8]^2]], which it first leaves after ${firstOut} steps, and it reaches [[x_0 = ${fmt(Math.max(...D.fresh.xs.map(x => x[0])), 0)}]], where the network's output is whatever its last tanh layer saturated at.`;
+  } else {
+    /* How the bounded-plant network does on test rollout 7, computed here with its own filter. */
+    const t7 = D.stable.tests["7"], ev = evaluate(params, AS, B, C, t7, x0, map.which === "stable" ? SCHED_S : SCHED_H);
+    const lo = [0, 1].map(i => Math.min(...trainXs.map(x => x[i]))), hi = [0, 1].map(i => Math.max(...trainXs.map(x => x[i])));
+    const out7 = t7.xs.filter(x => x.some((v, i) => v < lo[i] || v > hi[i])).length;
+    tail = `The bounded plant keeps its state near the origin, and the three test rollouts of Part 4 (dashed) pass much closer to the training states than on the original plant, but not always: test rollout 7 spends ${out7} of its 50 steps outside the box the training states span. ${ev.forecast > ev.zero ? `On it this network's one-step forecast misses by ${fmt(ev.forecast, 2)}, worse than the linear baseline's ${fmt(ev.zero, 2)}.` : `This network still forecasts it a little better than the linear baseline, ${fmt(ev.forecast, 2)} against ${fmt(ev.zero, 2)}; Part 4's thousand rollouts show where it does not.`}`;
+  }
+  const untrained = map.which === "page" && !hero.losses.length;
+  cv.setAttribute("aria-label", `Heat map of the absolute error of the learned residual over the state plane, with the training states as dots and ${bounded ? "three test rollouts as dashed paths" : "a fresh trajectory as a dashed path leaving the explored region"}`);
+  caption($("#mapCap"), `Absolute error of the learned residual over the state plane at [[u = 0]], blue for zero and orange for 5 or more, with the training states as dots and ${bounded ? "the three test rollouts of Part 4 as dashed paths" : "the fresh rollout of the hero demo as a dashed path"}. ${untrained ? "The page's network has not been trained yet (press Train above): its output is close to zero, so the map shows the size of the true residual itself." : `${net} is accurate near the ${trainXs.length} states it saw and wrong almost everywhere else: a tanh network cannot extrapolate a periodic function.`} ${tail}`);
 }
 $$("#mapSeg .btn").forEach(b => b.addEventListener("click", () => { $$("#mapSeg .btn").forEach(x => x.setAttribute("aria-pressed", x === b)); map.which = b.dataset.w; drawMap(); }));
 
@@ -205,8 +226,13 @@ function fillStudy() {
   $("#studyT tbody").innerHTML = rows.map(r => `<tr>${r.map((c, i) => i === 6 && +c < +r[7] ? `<td><b>${c}</b></td>` : `<td>${c}</td>`).join("")}</tr>`).join("");
 }
 
+function fillMany() {
+  $("#manyT tbody").innerHTML = D.many.map(m => `<tr><td>${m.label}</td><td>${fmt(m.fc[0], 2)} / ${fmt(m.fc[1], 2)}</td><td>${fmt(m.lin[0], 2)} / ${fmt(m.lin[1], 2)}</td><td>${m.wins} of 1000</td></tr>`).join("");
+}
+
 function drawAll() { drawHero(); drawMap(); }
 fillStudy();
+fillMany();
 drawAll();
 onRedraw(drawAll);
 })();
