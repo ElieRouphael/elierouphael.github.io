@@ -5,7 +5,7 @@ interactive/*.js); this script only produces the two generated assets next to th
 
     kalman-jax-course.zip   the JAX repository's code (package, scripts, tests, README, requirements, data notes),
                             the vehicle-tracking repository (chapter 01), the C program, original and corrected (chapter 05),
-                            and Part I's scripts (code/j1_numbers.py ... j6_numbers.py, under part1/)
+                            and Part I's scripts (code/j1_numbers.py ... j6_numbers.py, under part1/, with code/requirements.txt)
     cover.png               preview image for the tutorials card
 
 Usage:  python scripts/build_kalman_jax_course.py [path/to/Kalman-Filter-with-JAX]
@@ -61,6 +61,7 @@ def write_zip(repo: Path) -> Path:
                 print(f"  (skipped, not found: {src})")
         for src in sorted((OUT / "code").glob("j*_numbers.py")):     # Part I: one script per chapter
             z.write(src, f"{ARCHIVE_FOLDER}/part1/{src.name}")
+        z.write(OUT / "code" / "requirements.txt", f"{ARCHIVE_FOLDER}/part1/requirements.txt")   # the versions they were checked with
     return path
 
 
