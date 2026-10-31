@@ -3,23 +3,41 @@
    on its recorded simulation, with the noise matrices and the data adjustable. Needs ../kit/kit.js. */
 (() => {
 "use strict";
-const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
+const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg, ticks, tickLabel } = window.Kit;
 
 /* NET-BEGIN  (self-contained: this block is also exported for Node, below, so it can be tested outside the page) */
 /* The repository's KalmanFilter class for the constant-velocity model, written out for a 2-state, 1-measurement
-   filter: predict x = F x, P = F P F' + Q; update with K = P H' / S and the textbook P = P - K H P. */
-function runTracker(zs, dt, Q, R, { P0 = [[1, 0], [0, 1]], x0 = [0, 0], joseph = false } = {}) {
-  let x = x0.slice(), P = P0.map(r => r.slice()); const est = [], vel = [], gains = [], sds = [];
+   filter: predict x = F x, P = F P F' + Q; update with K = P H' / S and the textbook P = P - K H P. It also returns
+   the innovations y and their variances S, and with keep the predicted x and P and the updated P, for the smoother. */
+function runTracker(zs, dt, Q, R, { P0 = [[1, 0], [0, 1]], x0 = [0, 0], joseph = false, keep = false } = {}) {
+  let x = x0.slice(), P = P0.map(r => r.slice()); const est = [], vel = [], gains = [], sds = [], ys = [], Ss = [], xp = [], Pp = [], Pf = [];
   for (const z of zs) {
-    const xp = [x[0] + dt * x[1], x[1]];
+    const xp_ = [x[0] + dt * x[1], x[1]];
     const p00 = P[0][0] + dt * (P[1][0] + P[0][1]) + dt * dt * P[1][1] + Q[0][0], p01 = P[0][1] + dt * P[1][1] + Q[0][1], p11 = P[1][1] + Q[1][1];
-    const S = p00 + R, k0 = p00 / S, k1 = p01 / S, innov = z - xp[0];
-    x = [xp[0] + k0 * innov, xp[1] + k1 * innov];
+    const S = p00 + R, k0 = p00 / S, k1 = p01 / S, innov = z - xp_[0];
+    x = [xp_[0] + k0 * innov, xp_[1] + k1 * innov];
     if (joseph) { const a = 1 - k0; P = [[a * a * p00 + k0 * k0 * R, a * (p01 - k1 * p00) + k0 * k1 * R], [a * (p01 - k1 * p00) + k0 * k1 * R, p11 - 2 * k1 * p01 + k1 * k1 * p00 + k1 * k1 * R]]; }
     else P = [[p00 - k0 * p00, p01 - k0 * p01], [p01 - k1 * p00, p11 - k1 * p01]];   // P - K H P, as the repository
-    est.push(x[0]); vel.push(x[1]); gains.push([k0, k1]); sds.push(Math.sqrt(Math.max(P[0][0], 0)));
+    est.push(x[0]); vel.push(x[1]); gains.push([k0, k1]); sds.push(Math.sqrt(Math.max(P[0][0], 0))); ys.push(innov); Ss.push(S);
+    if (keep) { xp.push(xp_); Pp.push([[p00, p01], [p01, p11]]); Pf.push(P); }
   }
-  return { est, vel, gains, sds };
+  return { est, vel, gains, sds, ys, Ss, xp, Pp, Pf };
+}
+/* The innovations' negative log-likelihood per step, (1/T) sum of (log 2 pi S + y^2 / S) / 2 (J3, Part 7): it needs only
+   the measurements, not the truth. */
+const nllOf = r => { let s = 0; for (let i = 0; i < r.ys.length; i++) s += Math.log(2 * Math.PI * r.Ss[i]) + r.ys[i] ** 2 / r.Ss[i]; return s / (2 * r.ys.length); };
+/* The Rauch-Tung-Striebel smoother (J5, Part 7): one backward pass over a run made with keep, x_s[k] = x_f[k] +
+   G (x_s[k+1] - x_p[k+1]) with G = P_f[k] F' P_p[k+1]^-1. Each estimate uses the later measurements too: offline only. */
+function rtsSmooth(run, dt) {
+  const n = run.est.length, sp = run.est.slice(), sv = run.vel.slice();
+  for (let k = n - 2; k >= 0; k--) {
+    const [[a, b], [c, d]] = run.Pf[k], [[e, f], [g, h]] = run.Pp[k + 1], det = e * h - f * g;
+    const m00 = a + dt * b, m01 = b, m10 = c + dt * d, m11 = d;                     // P_f F'
+    const G00 = (m00 * h - m01 * g) / det, G01 = (m01 * e - m00 * f) / det, G10 = (m10 * h - m11 * g) / det, G11 = (m11 * e - m10 * f) / det;
+    const dp = sp[k + 1] - run.xp[k + 1][0], dv = sv[k + 1] - run.xp[k + 1][1];
+    sp[k] = run.est[k] + G00 * dp + G01 * dv; sv[k] = run.vel[k] + G10 * dp + G11 * dv;
+  }
+  return { est: sp, vel: sv };
 }
 const rmse = (a, b, i0 = 0, i1 = a.length) => { let s = 0; for (let i = i0; i < i1; i++) s += (a[i] - b[i]) ** 2; return Math.sqrt(s / (i1 - i0)); };
 /* The true velocity of the recorded chirp 15 sin(t^2) is 30 t cos(t^2); the CSV's "true_velocity" column is 2t. */
@@ -35,17 +53,19 @@ function makeRng(seed) {
 function generate(n, dt, sd, rng) { const time = [], truth = [], noisy = []; for (let i = 0; i < n; i++) { const t = i * dt, p = 15 * Math.sin(t * t); time.push(t); truth.push(p); noisy.push(p + sd * rng.normal()); } return { time, truth, noisy }; }
 /* NET-END */
 
-if (typeof module !== "undefined" && module.exports) { module.exports = { runTracker, rmse, chirpVel, makeRng, generate }; return; }
+if (typeof module !== "undefined" && module.exports) { module.exports = { runTracker, nllOf, rtsSmooth, rmse, chirpVel, makeRng, generate }; return; }
 
 const D = window.KV, N = D.time.length, DT = D.dt;
-const st = { source: "repo", seed: 1, qScale: 1, R: 25, joseph: false, win: 0, winLen: 300 };
+const st = { source: "repo", seed: 1, qScale: 1, R: 25, joseph: false, smooth: false, win: 0, winLen: 300 };
 let data = null, run = null;
 function compute() {
   data = st.source === "repo" ? { time: D.time, truth: D.true, noisy: D.noisy } : generate(N, DT, 5, makeRng(st.seed * 131 + 11));
   const Q = [[1 * st.qScale, 0], [0, 3 * st.qScale]];
-  run = runTracker(data.noisy, DT, Q, st.R, { joseph: st.joseph });
+  run = runTracker(data.noisy, DT, Q, st.R, { joseph: st.joseph, keep: st.smooth });
   run.r = { meas: rmse(data.noisy, data.truth), kf: rmse(run.est, data.truth), thirds: [0, 1, 2].map(k => [rmse(data.noisy, data.truth, k * 333, k === 2 ? N : (k + 1) * 333), rmse(run.est, data.truth, k * 333, k === 2 ? N : (k + 1) * 333)]) };
   run.r.vel = rmse(run.vel, data.time.map(chirpVel));
+  run.sm = st.smooth ? rtsSmooth(run, DT) : null;
+  if (run.sm) run.r.sm = { kf: rmse(run.sm.est, data.truth), thirds: [0, 1, 2].map(k => rmse(run.sm.est, data.truth, k * 333, k === 2 ? N : (k + 1) * 333)), vel: rmse(run.sm.vel, data.time.map(chirpVel)) };
 }
 function drawHero() {
   if (!run) compute();
@@ -56,13 +76,17 @@ function drawHero() {
   fr.ctx.fillStyle = alpha("--muted", 0.5); for (let i = a; i < b; i++) { fr.ctx.beginPath(); fr.ctx.arc(fr.X(data.time[i]), fr.Y(data.noisy[i]), 1.5, 0, 2 * Math.PI); fr.ctx.fill(); }
   plotLine(fr, t, data.truth.slice(a, b), { color: css("--ink"), width: 2 });
   plotLine(fr, t, run.est.slice(a, b), { color: css("--post"), width: 1.8 });
-  const cvv = $("#heroV"), vt = t.map(chirpVel), vk = run.vel.slice(a, b), csv = D.trueVel.slice(a, b);
-  const lo = Math.min(...vt, ...vk), hi = Math.max(...vt, ...vk);
+  if (run.sm) plotLine(fr, t, run.sm.est.slice(a, b), { color: css("--c4"), width: 1.6 });
+  cv.setAttribute("aria-label", `True position of the vehicle, its noisy measurements and the Kalman estimate over a window of the run${run.sm ? ", with the offline smoother's estimate" : ""}`);
+  const cvv = $("#heroV"), vt = t.map(chirpVel), vk = run.vel.slice(a, b), csv = D.trueVel.slice(a, b), vs = run.sm ? run.sm.vel.slice(a, b) : [];
+  const lo = Math.min(...vt, ...vk, ...vs), hi = Math.max(...vt, ...vk, ...vs);
   const frv = frame(cvv, narrow ? 2.4 : 4.5, { x: [t[0], t[t.length - 1]], y: [lo - 5, hi + 5], xlabel: "time [s]", ylabel: "velocity [m/s]" });
   if (st.source === "repo") plotLine(frv, t, csv, { color: alpha("--muted", 0.9), width: 1.2, dash: [4, 3] });
   plotLine(frv, t, vt, { color: css("--ink"), width: 2 }); plotLine(frv, t, vk, { color: css("--post"), width: 1.6 });
+  if (run.sm) plotLine(frv, t, vs, { color: css("--c4"), width: 1.4 });
   const r = run.r;
-  $("#legCsv").hidden = st.source !== "repo";
+  $("#legCsv").hidden = st.source !== "repo"; $("#legSm").hidden = !run.sm;
+  $("#rSm").textContent = run.sm ? fmt(r.sm.kf, 2) : "–"; $("#rSmThirds").textContent = run.sm ? r.sm.thirds.map(v => fmt(v, 2)).join(" / ") : "–";
   cvv.setAttribute("aria-label", st.source === "repo" ? "The velocity inferred by the filter against the true velocity of the chirp and the CSV's inconsistent true_velocity column" : "The velocity inferred by the filter against the true velocity of the chirp");
   $("#rVel0").textContent = fmt(rmse(data.time.map(() => 0), data.time.map(chirpVel)), 1);
   /* The repository's estimates are in the data file, rounded to 4 decimals like the measurements the page runs on. */
@@ -71,22 +95,34 @@ function drawHero() {
   const eq = repoRun ? Math.max(...run.est.map((v, i) => Math.abs(v - D.est[i]))) : null;   // position, in metres
   $("#rEq").textContent = eq === null ? "–" : `${sci(eq)} m`;
   $("#rMeas").textContent = fmt(r.meas, 2); $("#rKF").textContent = fmt(r.kf, 2); $("#rThirds").textContent = r.thirds.map(v => fmt(v[1], 2)).join(" / "); $("#rVel").textContent = fmt(r.vel, 1); $("#rK").textContent = `(${fmt(run.gains[N - 1][0], 3)}, ${fmt(run.gains[N - 1][1], 3)})`;
-  caption($("#heroStatus"), `${st.source === "repo" ? "The repository's recorded simulation" : `A fresh simulation of the same chirp with the page's random numbers (seed ${st.seed})`}, ${fmt(t[0], 1)} to ${fmt(t[t.length - 1], 1)} s of 10: the true position [[15 \\sin t^2]] (black), the measurements with noise of sd 5 (dots) and the Kalman estimate (blue) with [[Q = ${st.qScale} \\times \\mathrm{diag}(1, 3)]], [[R = ${st.R}]]${st.joseph ? ", Joseph-form update" : ""}. Below, the velocity the filter infers (blue) against the true velocity [[30\\,t\\cos t^2]] (black)${st.source === "repo" ? " and the CSV's \"true_velocity\" column [[2t]] (grey dashed), which is the derivative of nothing in the file" : ""}. Over the whole run the RMSE is ${fmt(r.meas, 2)} m for the raw measurements and ${fmt(r.kf, 2)} m for the filter${repoRun ? (st.joseph ? ` (the repository's settings with the Joseph-form update; its position estimates still match the repository's to ${sci(eq)} m, the four-decimal rounding of the page's copy of the data)` : ` (the repository's script; the page matches its position estimates to ${sci(eq)} m, the four-decimal rounding of the page's copy of the data)`) : ""}; by thirds of the run, ${r.thirds.map(v => fmt(v[1], 2)).join(", ")} m against ${r.thirds.map(v => fmt(v[0], 2)).join(", ")} m for the measurements. ${r.thirds[2][1] > r.thirds[2][0] ? "In the last third the filter is worse than the sensor it is filtering: the chirp oscillates faster than the constant-velocity model can follow, and the estimate lags." : "The filter beats the sensor in every third."} Its steady-state gain is [[(${fmt(run.gains[N - 1][0], 3)}, ${fmt(run.gains[N - 1][1], 3)})]].`);
+  caption($("#heroStatus"), `${st.source === "repo" ? "The repository's recorded simulation" : `A fresh simulation of the same chirp with the page's random numbers (seed ${st.seed})`}, ${fmt(t[0], 1)} to ${fmt(t[t.length - 1], 1)} s of 10: the true position [[15 \\sin t^2]] (black), the measurements with noise of sd 5 (dots) and the Kalman estimate (blue) with [[Q = ${st.qScale} \\times \\mathrm{diag}(1, 3)]], [[R = ${st.R}]]${st.joseph ? ", Joseph-form update" : ""}. Below, the velocity the filter infers (blue) against the true velocity [[30\\,t\\cos t^2]] (black)${st.source === "repo" ? " and the CSV's \"true_velocity\" column [[2t]] (grey dashed), which is the derivative of nothing in the file" : ""}. Over the whole run the RMSE is ${fmt(r.meas, 2)} m for the raw measurements and ${fmt(r.kf, 2)} m for the filter${repoRun ? (st.joseph ? ` (the repository's settings with the Joseph-form update; its position estimates still match the repository's to ${sci(eq)} m, the four-decimal rounding of the page's copy of the data)` : ` (the repository's script; the page matches its position estimates to ${sci(eq)} m, the four-decimal rounding of the page's copy of the data)`) : ""}; by thirds of the run, ${r.thirds.map(v => fmt(v[1], 2)).join(", ")} m against ${r.thirds.map(v => fmt(v[0], 2)).join(", ")} m for the measurements. ${r.thirds[2][1] > r.thirds[2][0] ? "In the last third the filter is worse than the sensor it is filtering: the chirp oscillates faster than the constant-velocity model can follow, and the estimate lags." : "The filter beats the sensor in every third."}${run.sm ? ` The smoother (green) runs backwards over the stored filter results once the last measurement is in, so each of its estimates also uses the later measurements: its RMSE is ${fmt(r.sm.kf, 2)} m (by thirds ${r.sm.thirds.map(v => fmt(v, 2)).join(", ")} m) and its velocity RMSE ${fmt(r.sm.vel, 1)} m/s, against the filter's ${fmt(r.vel, 1)}. It cannot run in real time.` : ""} The filter's steady-state gain is [[(${fmt(run.gains[N - 1][0], 3)}, ${fmt(run.gains[N - 1][1], 3)})]].`);
 }
 function drawSweep() {
   const base = st.source === "repo" ? { noisy: D.noisy, truth: D.true } : data;
-  const scales = [], errs = []; for (let i = -40; i <= 60; i++) { const e = i / 20, s = 10 ** e; scales.push(e); errs.push(rmse(runTracker(base.noisy, DT, [[s, 0], [0, 3 * s]], st.R, { joseph: st.joseph }).est, base.truth)); }
+  const scales = [], errs = [], nlls = [];
+  for (let i = -40; i <= 60; i++) { const e = i / 20, s = 10 ** e, r = runTracker(base.noisy, DT, [[s, 0], [0, 3 * s]], st.R, { joseph: st.joseph }); scales.push(e); errs.push(rmse(r.est, base.truth)); nlls.push(nllOf(r)); }
   const at1 = scales.indexOf(0), eNow = Math.log10(st.qScale);
   const cv = $("#sweepC"), narrow = narrowOf(cv);
-  const fr = frame(cv, narrow ? 1.5 : 2.6, { x: [-2, 3], y: [0, Math.max(...errs) * 1.05], xlabel: "log10 of the Q scale (repository: 0)", ylabel: "position RMSE [m]", xticks: [-2, -1, 0, 1, 2, 3] });
+  const fr = frame(cv, narrow ? 1.5 : 2.6, { x: [-2, 3], y: [0, Math.max(...errs) * 1.05], xlabel: "log10 of the Q scale (repository: 0)", ylabel: "position RMSE [m]", xticks: [-2, -1, 0, 1, 2, 3], pad: { r: 40 } });
+  /* The innovations' negative log-likelihood, which needs no truth, on its own right-hand axis. */
+  const ctx = fr.ctx, nLo = Math.min(...nlls), nHi = Math.max(...nlls), nPad = 0.06 * (nHi - nLo || 1), n0 = nLo - nPad, n1 = nHi + nPad;
+  const fr2 = { ...fr, y0: n0, y1: n1, Y: v => fr.pad.t + fr.ih - (v - n0) / (n1 - n0) * fr.ih };
+  ctx.fillStyle = css("--c5"); ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  for (const v of ticks(n0, n1, 4)) ctx.fillText(tickLabel(v), fr.w - fr.pad.r + 6, fr2.Y(v));
+  ctx.textAlign = "right"; ctx.textBaseline = "top"; ctx.fillText("NLL per step", fr.w - 2, 0); ctx.textBaseline = "alphabetic";
+  plotLine(fr2, scales, nlls, { color: css("--c5"), width: 2 });
   const meas = rmse(base.noisy, base.truth); fr.ctx.strokeStyle = alpha("--ink", 0.5); fr.ctx.setLineDash([4, 4]); seg(fr.ctx, fr.X(-2), fr.Y(meas), fr.X(3), fr.Y(meas)); fr.ctx.setLineDash([]);
   plotLine(fr, scales, errs, { color: css("--post"), width: 2 });
-  const best = errs.indexOf(Math.min(...errs));
-  fr.ctx.fillStyle = css("--warm"); fr.ctx.beginPath(); fr.ctx.arc(fr.X(scales[best]), fr.Y(errs[best]), 4, 0, 2 * Math.PI); fr.ctx.fill();
+  const best = errs.indexOf(Math.min(...errs)), nBest = nlls.indexOf(Math.min(...nlls));
+  /* Each curve's minimum, with a dotted drop to the axis so that the two scales can be compared. */
+  for (const [px, py, c] of [[fr.X(scales[best]), fr.Y(errs[best]), css("--warm")], [fr.X(scales[nBest]), fr2.Y(nlls[nBest]), css("--c5")]]) {
+    ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.setLineDash([2, 3]); seg(ctx, px, py, px, fr.Y(0)); ctx.setLineDash([]);
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(px, py, 4, 0, 2 * Math.PI); ctx.fill();
+  }
   /* The demo's own Q scale, on the same curve. */
   fr.ctx.strokeStyle = css("--ink"); fr.ctx.lineWidth = 1.5; fr.ctx.beginPath(); fr.ctx.arc(fr.X(eNow), fr.Y(run.r.kf), 6, 0, 2 * Math.PI); fr.ctx.stroke();
   const isRepoQ = st.source === "repo" && st.R === 25;
-  caption($("#sweepCap"), `Position RMSE of the filter as the repository's [[Q = \\mathrm{diag}(1, 3)]] is scaled by a factor from [[10^{-2}]] to [[10^{3}]], with [[R = ${st.R}]]; the dashed line is the raw measurements' RMSE of ${fmt(meas, 2)} m. ${isRepoQ ? "The repository's choice (scale 1)" : "Scale 1"} gives ${fmt(errs[at1], 2)} m; the minimum, ${fmt(errs[best], 2)} m, is at a scale of [[10^{${fmt(scales[best], 2)}}]] = ${fmt(10 ** scales[best], 1)} (orange), and the open circle is the demo's setting, scale ${st.qScale} (${fmt(run.r.kf, 2)} m). A small [[Q]] tells the filter the velocity hardly changes, so it averages over many samples and lags the chirp badly (${fmt(errs[0], 2)} m at scale 0.01); a large [[Q]] tells it to trust each new measurement, so it moves toward the raw sensor as the scale grows (${fmt(errs[errs.length - 1], 2)} m at scale 1000, against the sensor's ${fmt(meas, 2)} m). The optimum is where the model's lag and the sensor's noise balance; it is not a property of the sensor but of how wrong the constant-velocity model is for this motion.`);
+  caption($("#sweepCap"), `Position RMSE of the filter as the repository's [[Q = \\mathrm{diag}(1, 3)]] is scaled by a factor from [[10^{-2}]] to [[10^{3}]], with [[R = ${st.R}]]; the dashed line is the raw measurements' RMSE of ${fmt(meas, 2)} m. ${isRepoQ ? "The repository's choice (scale 1)" : "Scale 1"} gives ${fmt(errs[at1], 2)} m; the minimum, ${fmt(errs[best], 2)} m, is at a scale of [[10^{${fmt(scales[best], 2)}}]] = ${fmt(10 ** scales[best], 1)} (orange), and the open circle is the demo's setting, scale ${st.qScale} (${fmt(run.r.kf, 2)} m). A small [[Q]] tells the filter the velocity hardly changes, so it averages over many samples and lags the chirp badly (${fmt(errs[0], 2)} m at scale 0.01); a large [[Q]] tells it to trust each new measurement, so it moves toward the raw sensor as the scale grows (${fmt(errs[errs.length - 1], 2)} m at scale 1000, against the sensor's ${fmt(meas, 2)} m). The optimum is where the model's lag and the sensor's noise balance; it is not a property of the sensor but of how wrong the constant-velocity model is for this motion. The purple curve, on the right-hand axis, is the innovations' negative log-likelihood per step, which needs only the measurements: it is smallest at a scale of [[10^{${fmt(scales[nBest], 2)}}]] = ${fmt(10 ** scales[nBest], 1)} (purple dot), where the RMSE is ${fmt(errs[nBest], 2)} m${nBest === best ? ", the RMSE's own minimum" : ""}.`);
 }
 function drawLag() {
   const base = st.source === "repo" ? { time: D.time, noisy: D.noisy, truth: D.true } : data;
@@ -107,9 +143,10 @@ $("#hQ").addEventListener("input", e => { st.qScale = +(10 ** +e.target.value).t
 $("#hR").addEventListener("input", e => { st.R = +(10 ** +e.target.value).toPrecision(2); $("#hRV").textContent = st.R; compute(); drawAll(); });
 $("#hWin").addEventListener("input", e => { st.win = +e.target.value; $("#hWinV").textContent = `${fmt(st.win * DT, 1)} to ${fmt(Math.min(N, st.win + st.winLen) * DT, 1)} s`; drawHero(); });
 $("#hJoseph").addEventListener("click", () => { st.joseph = !st.joseph; $("#hJoseph").setAttribute("aria-pressed", st.joseph); compute(); drawAll(); });
+$("#hSmooth").addEventListener("click", () => { st.smooth = !st.smooth; $("#hSmooth").setAttribute("aria-pressed", st.smooth); compute(); drawHero(); });
 $("#hRepo").addEventListener("click", () => { st.source = "repo"; sync(); compute(); drawAll(); });
 $("#hNew").addEventListener("click", () => { st.source = "fresh"; st.seed++; sync(); compute(); drawAll(); });
-$("#hReset").addEventListener("click", () => { st.qScale = 1; st.R = 25; st.joseph = false; st.source = "repo"; sync(); $("#hQ").value = 0; $("#hR").value = Math.log10(25); $("#hQV").textContent = "1"; $("#hRV").textContent = "25"; $("#hJoseph").setAttribute("aria-pressed", "false"); compute(); drawAll(); });
+$("#hReset").addEventListener("click", () => { st.qScale = 1; st.R = 25; st.joseph = false; st.smooth = false; st.source = "repo"; sync(); $("#hQ").value = 0; $("#hR").value = Math.log10(25); $("#hQV").textContent = "1"; $("#hRV").textContent = "25"; $("#hJoseph").setAttribute("aria-pressed", "false"); $("#hSmooth").setAttribute("aria-pressed", "false"); compute(); drawAll(); });
 function sync() { $("#hRepo").setAttribute("aria-pressed", st.source === "repo"); }
 $("#hQV").textContent = "1"; $("#hRV").textContent = "25"; $("#hWinV").textContent = "0.0 to 3.0 s";
 function drawAll() { drawHero(); drawSweep(); drawLag(); }

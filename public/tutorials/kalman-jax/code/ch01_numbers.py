@@ -3,7 +3,7 @@
 
 Usage:  python ch01_numbers.py          # print everything the page quotes
         python ch01_numbers.py data     # print the page's data file, interactive/ch01-data.js
-Needs numpy only.
+Needs numpy; the last section also uses JAX and Optax when they are installed, and is skipped otherwise.
 
 The page runs on the kalman_vehicle_tracking repository's CSV as first committed (commit adf4b35,
 data/example_data.csv), shipped next to this script as data/vehicle_example_data_original.csv. The repository
@@ -264,3 +264,190 @@ for scale in (10, 1):
     xn, *_ = run(z_new, F2, H2, scale * Q_repo, 25.0, np.eye(2), joseph=True)
     out(f"regenerated CSV, Q = {scale} x diag(1, 3), solve and Joseph form: measurements {rmse(z_new, truth_new):.3f} m, "
         f"Kalman {rmse(xn[:, 0], truth_new):.3f} m")
+
+
+section("11. Without the ground truth: the innovations' likelihood (Part 3 and its chart)")
+
+
+def run_batch(zs, Qs, Rs):
+    """The class's filter for B pairs (Q, R) at once, vectorised over the pairs: the same arithmetic as run_class
+    written out for a 2-state, 1-measurement filter. Returns the estimates, velocities, innovations y and their S."""
+    Qs, Rs = np.asarray(Qs, float), np.asarray(Rs, float)
+    B = len(Rs)
+    x0, x1, P00, P01, P10, P11 = np.zeros(B), np.zeros(B), np.ones(B), np.zeros(B), np.zeros(B), np.ones(B)
+    est, vel, ys, Ss = (np.empty((B, len(zs))) for _ in range(4))
+    for k, z in enumerate(zs):
+        x0, x1 = x0 + dt * x1, x1                                                       # predict
+        P00, P01, P10, P11 = (P00 + dt * (P01 + P10) + dt * dt * P11 + Qs[:, 0, 0], P01 + dt * P11 + Qs[:, 0, 1],
+                              P10 + dt * P11 + Qs[:, 1, 0], P11 + Qs[:, 1, 1])
+        S = P00 + Rs                                                                    # update
+        k0, k1, y = P00 / S, P10 / S, z - x0
+        x0, x1 = x0 + k0 * y, x1 + k1 * y
+        P00, P01, P10, P11 = P00 - k0 * P00, P01 - k0 * P01, P10 - k1 * P00, P11 - k1 * P01
+        est[:, k], vel[:, k], ys[:, k], Ss[:, k] = x0, x1, y, S
+    return est, vel, ys, Ss
+
+
+def nll(ys, Ss):
+    """The negative log-likelihood per step of the measurements under the filter's predictions (J3, Part 7)."""
+    return np.mean(0.5 * (np.log(2 * np.pi) + np.log(Ss) + ys ** 2 / Ss), axis=-1)
+
+
+b_est, *_ = run_batch(zs, [Q_repo], [25.0])
+out(f"the vectorised filter matches the class to {np.abs(b_est[0] - est).max():.1e} m")
+# The chart's grid, as the page computes it live: 101 scales, R = 25.
+g_est, g_vel, g_y, g_S = run_batch(zs, [10 ** e * Q_repo for e in grid], np.full(len(grid), 25.0))
+g_nll = nll(g_y, g_S)
+gi = int(np.argmin(g_nll))
+out(f"chart grid ({len(grid)} runs of the filter): likelihood smallest at scale 10^{grid[gi]:.2f} = {10 ** grid[gi]:.1f} (RMSE {rmse(g_est[gi], truth):.2f} m), "
+    f"RMSE smallest at 10^{best:.2f} = {10 ** best:.1f}; NLL per step from {g_nll.min():.2f} to {g_nll.max():.2f}, "
+    f"{g_nll[grid.index(0.0)]:.2f} at scale 1")
+# The same refinement as the RMSE's in section 5: scales 4.0 to 12.0 in steps of 0.1.
+f_scales = np.round(np.arange(4.0, 12.01, 0.1), 1)
+f_est, f_vel, f_y, f_S = run_batch(zs, [s_ * Q_repo for s_ in f_scales], np.full(len(f_scales), 25.0))
+fi = int(np.argmin(nll(f_y, f_S)))
+out(f"fine: likelihood smallest at scale {f_scales[fi]}: RMSE {rmse(f_est[fi], truth):.4f} m (page: "
+    f"{rmse(f_est[fi], truth):.2f}), against the RMSE's best {fine[fbest]:.4f} m at {fbest}: "
+    f"{1000 * (rmse(f_est[fi], truth) - fine[fbest]):.0f} mm worse; mean y^2/S there {np.mean(f_y[fi] ** 2 / f_S[fi]):.2f}")
+# Chapter 02's integrated white-noise Q(sigma_a) with R = sigma_z^2, both free: a grid on (log sigma_a, log sigma_z),
+# then three finer grids around the best point.
+la, lz = np.log(np.geomspace(100, 3000, 60)), np.log(np.geomspace(2, 10, 60))
+for width in (None, 0.1, 0.01, 0.001):
+    if width is not None:
+        la, lz = np.linspace(a_best - width, a_best + width, 41), np.linspace(z_best - width, z_best + width, 41)
+    A_, Z_ = (m.ravel() for m in np.meshgrid(la, lz))
+    i_est, i_vel, i_y, i_S = run_batch(zs, [q_int(np.exp(2 * a)) for a in A_], np.exp(2 * Z_))
+    i_nll = nll(i_y, i_S)
+    ii = int(np.argmin(i_nll))
+    a_best, z_best = A_[ii], Z_[ii]
+sa_ml, sz_ml = np.exp(a_best), np.exp(z_best)
+out(f"chapter 02's Q(sigma_a), sigma_a and sigma_z free: likelihood smallest at sigma_a = {sa_ml:.2f}, "
+    f"sigma_z = {sz_ml:.4f} (true 5); NLL per step {i_nll[ii]:.6f}")
+out(f"  there: position RMSE {rmse(i_est[ii], truth):.3f} m (thirds {fmt(thirds(i_est[ii], truth))}), velocity "
+    f"{rmse(i_vel[ii], v_true):.1f} m/s, mean y^2/S {np.mean(i_y[ii] ** 2 / i_S[ii]):.3f}")
+out(f"  with the truth, the same Q's best (section 6): sigma_a {s_best} -> {iq_err[s_best]:.3f} m")
+
+section("12. The smoother (Part 4 and the hero's 'smoother (offline)')")
+
+
+def filter_and_smoother(zs, Q, R=25.0):
+    """The class's filter, keeping its predictions, then the Rauch-Tung-Striebel backward pass (J5, Part 7)."""
+    x, P = np.zeros(2), np.eye(2)
+    xf, Pf, xp, Pp = [], [], [], []
+    for z in zs:
+        x, P = F2 @ x, F2 @ P @ F2.T + Q
+        xp.append(x); Pp.append(P)
+        K = P @ H2 / (H2 @ P @ H2 + R)
+        x, P = x + K * (z - H2 @ x), P - np.outer(K, H2 @ P)
+        xf.append(x); Pf.append(P)
+    xs = list(xf)                                     # the last filtered estimate is already smoothed
+    for k in range(len(zs) - 2, -1, -1):
+        G = Pf[k] @ F2.T @ np.linalg.inv(Pp[k + 1])
+        xs[k] = xf[k] + G @ (xs[k + 1] - xp[k + 1])
+    return np.array(xf), np.array(xs)
+
+
+for name, Qm in (("the repository's Q", Q_repo), ("Q x 10", 10 * Q_repo),
+                 (f"question 4's Q, sigma_a = {sa_best:.0f}", q_pc(sa_best))):
+    xf_, xs_ = filter_and_smoother(zs, Qm)
+    out(f"{name}: position {rmse(xf_[:, 0], truth):.3f} -> {rmse(xs_[:, 0], truth):.3f} m; by thirds "
+        f"{fmt(thirds(xf_[:, 0], truth))} -> {fmt(thirds(xs_[:, 0], truth))} m; velocity "
+        f"{rmse(xf_[:, 1], v_true):.2f} -> {rmse(xs_[:, 1], v_true):.2f} m/s")
+out(f"filter here against the class: {np.abs(filter_and_smoother(zs, Q_repo)[0][:, 0] - est).max():.1e} m; "
+    f"sensor by thirds {fmt(thirds(zs, truth))} m; answering 0 for the velocity {rmse(0 * t, v_true):.1f} m/s")
+
+section("13. Optional, in JAX: Part 2's box and Adam on the likelihood (Part 3)")
+try:
+    import jax
+    import jax.numpy as jnp
+    import optax
+except ImportError:
+    jax = None
+    out("JAX or Optax is not installed: section skipped (pip install jax optax)")
+
+if jax is not None:
+    out("jax", jax.__version__, "optax", optax.__version__)
+
+    def run_tracker(zs, F, H, Q, R, x0, P0):            # Part 2's box, verbatim
+        def step(carry, z):                    # pure: the state comes in and goes out
+            x, P = carry
+            x, P = F @ x, F @ P @ F.T + Q          # predict
+            S = H @ P @ H.T + R                    # update
+            K = P @ H.T @ jnp.linalg.inv(S)
+            x = x + K @ (z - H @ x)
+            P = P - K @ H @ P
+            return (x, P), x                   # the new carry, and one output
+        _, xs = jax.lax.scan(step, (x0, P0), zs)
+        return xs
+
+    def run_tracker_joseph(zs, F, H, Q, R, x0, P0):     # the same, with the repository's later Joseph form
+        def step(carry, z):
+            x, P = carry
+            x, P = F @ x, F @ P @ F.T + Q
+            S = H @ P @ H.T + R
+            K = P @ H.T @ jnp.linalg.inv(S)
+            x = x + K @ (z - H @ x)
+            A = jnp.eye(2, dtype=P.dtype) - K @ H
+            P = A @ P @ A.T + K @ R @ K.T
+            return (x, P), (x, jnp.linalg.eigvalsh(P)[0])
+        _, out_ = jax.lax.scan(step, (x0, P0), zs)
+        return out_
+
+    def jax_model():
+        F = jnp.array([[1.0, dt], [0.0, 1.0]]); H = jnp.array([[1.0, 0.0]])
+        Q, R = jnp.diag(jnp.array([1.0, 3.0])), jnp.array([[25.0]])
+        return F, H, Q, R, jnp.zeros(2), jnp.eye(2)
+
+    # JAX's default, float32 (J1, Part 4).
+    m32 = jax_model()
+    x32 = np.asarray(run_tracker(jnp.asarray(zs)[:, None], *m32), np.float64)
+    xj32, mins32 = run_tracker_joseph(jnp.asarray(zs)[:, None], *m32)
+    xj32 = np.asarray(xj32, np.float64)
+    out(f"float32 ({m32[0].dtype}): the box against the float64 class {np.abs(x32[:, 0] - est).max():.1e} m; "
+        f"Joseph against textbook {np.abs(xj32[:, 0] - x32[:, 0]).max():.1e} m; "
+        f"smallest eigenvalue of P {float(mins32.min()):.2f}")
+    # float64, switched on for the rest of the section.
+    jax.config.update("jax_enable_x64", True)
+    m64 = jax_model()
+    x64 = np.asarray(run_tracker(jnp.asarray(zs, jnp.float64)[:, None], *m64))
+    out(f"float64 ({m64[0].dtype}): the box against the class {np.abs(x64[:, 0] - est).max():.1e} m")
+
+    # Adam on the likelihood, theta = (log sigma_a, log sigma_z), chapter 02's Q(sigma_a), as J6, Part 6.
+    def nll_jax(theta, zs):
+        sa, sz = jnp.exp(theta[0]), jnp.exp(theta[1])
+        Q = sa ** 2 * jnp.array([[dt ** 3 / 3, dt ** 2 / 2], [dt ** 2 / 2, dt]])
+        F = jnp.array([[1.0, dt], [0.0, 1.0]])
+
+        def step(carry, z):
+            x, P = carry
+            x, P = F @ x, F @ P @ F.T + Q
+            S = P[0, 0] + sz ** 2
+            K, y = P[:, 0] / S, z - x[0]
+            return (x + K * y, P - jnp.outer(K, P[0, :])), 0.5 * (jnp.log(2 * jnp.pi) + jnp.log(S) + y ** 2 / S)
+        _, terms = jax.lax.scan(step, (jnp.zeros(2), jnp.eye(2)), zs)
+        return jnp.mean(terms)
+
+    z64 = jnp.asarray(zs, jnp.float64)
+    out(f"the JAX likelihood at the numpy minimum: {float(nll_jax(jnp.log(jnp.array([sa_ml, sz_ml])), z64)):.6f}")
+    optimizer = optax.adam(0.05)
+    theta = jnp.log(jnp.array([100.0, 1.0]))
+    opt_state = optimizer.init(theta)
+
+    @jax.jit
+    def update(theta, opt_state):
+        loss, grads = jax.value_and_grad(nll_jax)(theta, z64)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        return optax.apply_updates(theta, updates), opt_state, loss
+
+    path = []
+    for _ in range(1000):
+        theta, opt_state, _ = update(theta, opt_state)
+        path.append(np.exp(np.asarray(theta)))
+    path = np.array(path)
+    close = np.all(np.abs(path / np.array([sa_ml, sz_ml]) - 1) < 1e-3, axis=1)
+    settled = next(k for k in range(len(close)) if close[k:].all()) + 1
+    out(f"Adam(0.05) from sigma_a = 100, sigma_z = 1: within 0.1% of the minimum, and stays, from step {settled}; "
+        f"after 300 steps ({path[299][0]:.1f}, {path[299][1]:.3f}); after 1000 ({path[-1][0]:.2f}, {path[-1][1]:.4f})")
+    hess = np.asarray(jax.hessian(nll_jax)(theta, z64))
+    out(f"Hessian of the NLL per step at the minimum, in (log sigma_a, log sigma_z): eigenvalues "
+        f"{fmt(np.linalg.eigvalsh(hess), 3)}")
