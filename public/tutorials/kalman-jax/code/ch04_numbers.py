@@ -353,6 +353,11 @@ n_all = len(frame)
 complete = frame.dropna(subset=DEFAULT_INPUT_COLUMNS + [DEFAULT_TARGET_COLUMN])
 out(f"{n_all} hourly rows, {frame['timestamp'].min()} to {frame['timestamp'].max()}; {len(complete)} complete; "
     f"splits {len(tr['controls'])} / {len(va['controls'])} / {len(te['controls'])}")
+n_tgt = int(complete[DEFAULT_TARGET_COLUMN].shift(-1).notna().sum())     # complete rows that have a next row
+b_tr, b_va = _time_split_bounds(n_tgt, 0.7, 0.15)                        # int(0.7 n), then + int(0.15 n)
+out(f"{n_tgt} rows have a next-row target; the 70/15/15 bounds give {b_tr} / {b_va - b_tr} / {n_tgt - b_va}; "
+    f"train_effective_end = train_end - horizon drops the last row before each boundary: "
+    f"{b_tr - 1} / {b_va - 1 - b_tr} / {n_tgt - b_va}")
 for name, s in (("train", tr), ("val", va), ("test", te)):
     out(f"{name}: {str(s['timestamps'][0])[:16]} to {str(s['timestamps'][-1])[:16]}")
 out(f"training NO2 mean {mean_t:.1f}, sd {std_t:.1f}")

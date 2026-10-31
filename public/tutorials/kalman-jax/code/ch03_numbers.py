@@ -424,6 +424,9 @@ if DATA:
 
 section("1. The plant and the filter (Part 1)")
 out(f"RMS size of the residual sqrt(9/2 + 4/2) = {np.sqrt(9 / 2 + 4 / 2):.2f}; the filter assumes sds {np.sqrt(0.1):.2f} (process) and {np.sqrt(0.5):.2f} (sensor)")
+p_leaves = jax.tree_util.tree_leaves(p0)
+out(f"the residual network, init_mlp_params(PRNGKey(42), {SIZES}): {len(p0)} (W, b) pairs, a pytree of {len(p_leaves)} arrays "
+    f"holding {sum(int(a.size) for a in p_leaves)} parameters")
 
 
 def gains(A, q, r, T):
@@ -515,11 +518,26 @@ out(f"bounded-plant network at u = 0: median |error| {np.median(egrid):.2f} over
     f"{np.median(egrid[near]):.2f} within 0.5 of a training state")
 
 section("4. The study on three fresh rollouts (Part 4, the table, exercise 4)")
+
+
+def same_draws(a, b):
+    """Two rollouts (xs, us, ys): are the inputs identical, and how far apart is their sensor noise ys - xs?"""
+    same_u = bool(np.array_equal(np.asarray(a[1]), np.asarray(b[1])))
+    return same_u, float(np.abs(np.asarray(a[2] - a[0]) - np.asarray(b[2] - b[0])).max())
+
+
+pairs = [(M[("original", T, "repo", 2000, "filtered")]["data"], M[("stable", T, "repo", 2000, "filtered")]["data"]) for T in (50, 500)]
+pairs += [(generate_data(T=50, key=random.PRNGKey(k)), generate_data(T=50, key=random.PRNGKey(k), A_true=A_STAB)) for k in KEYS3]
+chk = [same_draws(a, b) for a, b in pairs]
+out(f"generate_data on the two plants with the same key (training key 0, T = 50 and 500; test keys 7, 11, 13): inputs identical "
+    f"{all(c[0] for c in chk)}; sensor noise ys - xs differs by at most {max(c[1] for c in chk):.0e}, the float32 rounding of y = x + noise")
 for key, m in M.items():
     s = score3(m["params"], m["A"], m["Q"], m["R"]).mean(0)
     out(f"{key}: final loss {float(m['losses'][-1]):.4g}; 3-key mean forecast {s[1]:.2f}, linear baseline {s[2]:.2f}, residual error {s[3]:.2f}")
 
 section("5. The same models on 1000 fresh rollouts (generate_data, keys 100-1099)")
+c1000 = same_draws(many_rollouts(A_ORIG), many_rollouts(A_STAB))
+out(f"keys 100-1099 on the two plants: inputs identical {c1000[0]}; sensor noise differs by at most {c1000[1]:.0e}")
 honest_key = ("stable", 500, "honest", 2000, "filtered")
 for key in (("original", 50, "repo", 1000, "filtered"), ("original", 50, "honest", 2000, "filtered"),
             ("stable", 50, "repo", 2000, "filtered"), honest_key, ("stable", 500, "honest", 2000, "forecast")):
