@@ -7,7 +7,7 @@
 "use strict";
 const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg } = window.Kit;
 
-/* NET-BEGIN  (this block is also run under Node by the equivalence test) */
+/* NET-BEGIN  (self-contained: this block is also exported for Node, below, so it can be tested outside the page) */
 /* Small dense-matrix helpers (arrays of rows). */
 const mm = (A, B) => A.map(r => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
 const mv = (A, x) => A.map(r => r.reduce((s, v, k) => s + v * x[k], 0));
@@ -54,10 +54,12 @@ function runEKF(zs, f, Fj, h, Hj, Q, R, x0, P0) {
 /* Unscented filter with the repository's sigma-point construction. `rnd` rounds every intermediate
    result (identity for double precision, Math.fround to emulate JAX's default float32). */
 function ukfWeights(n, alpha, beta, kappa, rnd) {
-  const lambda = rnd(rnd(alpha * alpha) * (n + kappa) - n), sc = rnd(n + lambda);
+  /* filters.py computes the weights with Python floats (double precision) and JAX stores the results in float32:
+     so compute in double here and round only the outputs. */
+  const lambda = alpha * alpha * (n + kappa) - n, sc = n + lambda;
   const Wm = new Array(2 * n + 1).fill(rnd(1 / (2 * sc))), Wc = Wm.slice();
-  Wm[0] = rnd(lambda / sc); Wc[0] = rnd(rnd(lambda / sc) + rnd(1 - rnd(alpha * alpha) + beta));
-  return { sc, Wm, Wc };
+  Wm[0] = rnd(lambda / sc); Wc[0] = rnd(lambda / sc + (1 - alpha * alpha + beta));
+  return { sc: rnd(sc), Wm, Wc };
 }
 function chol2(P, rnd) {   // lower Cholesky factor of a 2x2 matrix, rounded like the reference
   const l11 = rnd(Math.sqrt(P[0][0])), l21 = rnd(P[1][0] / l11), l22 = rnd(Math.sqrt(rnd(P[1][1] - rnd(l21 * l21))));
@@ -160,9 +162,10 @@ function drawHero() {
   $("#rKF").textContent = `${fmt(r.kf[0], 4)} / ${fmt(r.kf[1], 4)}`; $("#rEKF").textContent = `${fmt(r.ekf[0], 4)} / ${fmt(r.ekf[1], 4)}`; $("#rUKF").textContent = `${fmt(r.ukf[0], 4)} / ${fmt(r.ukf[1], 4)}`;
   $("#rMeas").textContent = fmt(H0.measRmse, 4); $("#rGain").textContent = `(${fmt(H0.ss.K[0], 4)}, ${fmt(H0.ss.K[1], 4)})`;
   const isRepo = hero.source === "repo";
-  caption($("#heroStatus"), `${isRepo ? "The repository's 1000-step rollout (JAX random key 42)" : `A fresh 1000-step rollout with process noise ${fmt(hero.procStd, 2)} and measurement noise ${fmt(hero.measStd, 2)}`}, samples ${a} to ${b} shown: true position (black) and velocity, the noisy position measurements (dots), and the estimates of the linear filter (blue), the extended filter (green, dashed) and the unscented filter with [[\\alpha = 1]] (orange, dotted). Position RMSE: measurements alone ${fmt(H0.measRmse, 4)}, linear filter ${fmt(r.kf[0], 4)}, EKF ${fmt(r.ekf[0], 4)}, UKF ${fmt(r.ukf[0], 4)}; velocity RMSE ${fmt(r.kf[1], 4)}, ${fmt(r.ekf[1], 4)}, ${fmt(r.ukf[1], 4)}${isRepo ? ", the script's printed 0.1554 and 0.1351 (JAX runs in 32-bit, the page in 64-bit; they agree to four decimals)" : ""}. On a linear model the three filters are the same filter: the EKF's Jacobians are the model matrices, and the unscented transform of a linear map is exact. The filter divides the measurement error by ${fmt(H0.measRmse / r.kf[0], 1)} and recovers a velocity it never measures; its steady-state gain is [[(${fmt(H0.ss.K[0], 3)}, ${fmt(H0.ss.K[1], 3)})]]: each new position moves the position estimate by a tenth of the innovation and the velocity by six hundredths.`);
+  const shown = [hero.show.kf && "the linear filter (blue)", hero.show.ekf && "the extended filter (green, dashed)", hero.show.ukf && "the unscented filter with [[\\alpha = 1]] (orange, dotted)"].filter(Boolean);
+  caption($("#heroStatus"), `${isRepo ? "The repository's 1000-step rollout (JAX random key 42)" : `A fresh 1000-step rollout with process noise ${fmt(hero.procStd, 2)} and measurement noise ${fmt(hero.measStd, 2)}`}, samples ${a} to ${b} shown: true position (black) and velocity, the noisy position measurements (dots)${shown.length ? `, and the estimates of ${shown.length > 1 ? shown.slice(0, -1).join(", ") + " and " + shown[shown.length - 1] : shown[0]}` : ""}. Position RMSE: measurements alone ${fmt(H0.measRmse, 4)}, linear filter ${fmt(r.kf[0], 4)}, EKF ${fmt(r.ekf[0], 4)}, UKF ${fmt(r.ukf[0], 4)}; velocity RMSE ${fmt(r.kf[1], 4)}, ${fmt(r.ekf[1], 4)}, ${fmt(r.ukf[1], 4)}${isRepo ? ", the script's printed 0.1554 and 0.1351 (JAX runs in 32-bit, the page in 64-bit; they agree to four decimals)" : ""}. On a linear model the three filters are the same filter: the EKF's Jacobians are the model matrices, and the unscented transform of a linear map is exact. The filter divides the measurement error by ${fmt(H0.measRmse / r.kf[0], 1)} and recovers a velocity it never measures; its steady-state gain is [[(${fmt(H0.ss.K[0], 3)}, ${fmt(H0.ss.K[1], 3)})]]: each new reading moves the position estimate ${fmt(100 * H0.ss.K[0], 0)}% of the way to it and changes the velocity by ${fmt(H0.ss.K[1], 3)} per unit of innovation.`);
 }
-$$("#heroF .btn").forEach(b => b.addEventListener("click", () => { hero.show[b.dataset.f] = !hero.show[b.dataset.f]; b.setAttribute("aria-pressed", hero.show[b.dataset.f]); drawHero(); }));
+$$("#heroF .btn").forEach(b => b.addEventListener("click", () => { hero.show[b.dataset.f] = !hero.show[b.dataset.f]; b.setAttribute("aria-pressed", hero.show[b.dataset.f]); $(`.legend [data-leg="${b.dataset.f}"]`).classList.toggle("off", !hero.show[b.dataset.f]); drawHero(); }));
 $("#hProc").addEventListener("input", e => { hero.procStd = +e.target.value; $("#hProcV").textContent = fmt(hero.procStd, 2); hero.source = "fresh"; sync(); runHero(); drawHero(); });
 $("#hMeas").addEventListener("input", e => { hero.measStd = +e.target.value; $("#hMeasV").textContent = fmt(hero.measStd, 2); hero.source = "fresh"; sync(); runHero(); drawHero(); });
 $("#hNew").addEventListener("click", () => { hero.seed++; hero.source = "fresh"; sync(); runHero(); drawHero(); });
@@ -179,15 +182,22 @@ function drawUKF() {
   const kf = runKF(D.zs, MDL, x0, P0).xs;
   const w = ukfWeights(2, uk.alpha, 2, uk.kappa, v => v);
   const cv = $("#ukfC"), narrow = narrowOf(cv);
-  const n = 400, t = Array.from({ length: n }, (_, i) => i * 0.1);
+  const n = 600, t = Array.from({ length: n }, (_, i) => i * 0.1);   // 60 s: the emulated float32 run fails after 45
   const d32 = r32.xs.slice(0, n).map((x, i) => isFinite(x[0]) ? Math.abs(x[0] - kf[i][0]) : NaN), d64 = r64.xs.slice(0, n).map((x, i) => Math.abs(x[0] - kf[i][0]));
-  const fr = frame(cv, narrow ? 1.5 : 2.6, { x: [0, 40], y: [-16, 1], xlabel: "time [s]", ylabel: "log10 |UKF − linear KF| (position)", yticks: [-15, -10, -5, 0] });
+  const fr = frame(cv, narrow ? 1.5 : 2.6, { x: [0, 60], y: [-16, 1], xlabel: "time [s]", ylabel: "log10 |UKF − linear KF| (position)", yticks: [-15, -10, -5, 0] });
   plotLine(fr, t, d64.map(v => Math.log10(Math.max(v, 1e-16))), { color: css("--post"), width: 1.6 });
   plotLine(fr, t.filter((_, i) => isFinite(d32[i])), d32.filter(isFinite).map(v => Math.log10(Math.max(v, 1e-16))), { color: css("--warm"), width: 1.8 });
   if (r32.nanFrom >= 0 && r32.nanFrom < n) { fr.ctx.strokeStyle = css("--warm"); fr.ctx.setLineDash([4, 3]); seg(fr.ctx, fr.X(r32.nanFrom * 0.1), fr.pad.t, fr.X(r32.nanFrom * 0.1), fr.Y(-16)); fr.ctx.setLineDash([]); }
   const e32 = r32.nanFrom < 0 ? rmse2(D.xs, r32.xs) : null;
-  caption($("#ukfCap"), `The unscented filter on the repository's data with [[\\alpha = ${uk.alpha}]], [[\\kappa = ${uk.kappa}]], [[\\beta = 2]]: distance from the linear filter's position estimate in double precision (blue) and with every intermediate result rounded to 32-bit (orange, how JAX runs by default). The sigma-point weights are [[W_0 = ${fmt(w.Wm[0], 3)}]] on the centre and [[W_i = ${fmt(w.Wm[1], 3)}]] on each of the four spread points, with the spread scaled by [[\\sqrt{n + \\lambda} = ${w.sc > 0 ? fmt(Math.sqrt(w.sc), 4) : "undefined"}]]. ` + (uk.alpha <= 0.01 ? `With [[\\alpha = ${uk.alpha}]] the centre weight is ${fmt(w.Wm[0], 0)} and the spread points sit [[${fmt(Math.sqrt(w.sc), 4)}]] standard deviations from the mean: the covariance is reconstructed as a difference of numbers a million times larger than itself, which 32-bit arithmetic cannot represent. ${r32.nanFrom >= 0 ? `The emulated filter loses the covariance's positive-definiteness and turns to NaN at step ${r32.nanFrom} (JAX's run fails at step ${D.py.ukfNanFrom}; the exact step depends on the order of operations). ` : ""}In double precision the same weights work, to ${fmt(Math.max(...d64) * 1e7, 1)} parts in ten million of the linear filter. ` : `With [[\\alpha = ${uk.alpha}]] the weights are of order one, the spread points sit about one standard deviation out, and both precisions track the linear filter${e32 ? `: RMSE ${fmt(e32[0], 4)} and ${fmt(e32[1], 4)} in 32-bit against the linear filter's 0.1554 and 0.1351` : ""}. `) + `The paper's recommended [[\\alpha = 10^{-3}]] works in double precision; the repository's default is [[\\alpha = 1]], and the page's hero demo uses it.`);
+  const amp = Math.abs(w.Wm[0]) + 4 * Math.abs(w.Wm[1]), lost = Math.log10(amp);
+  const max32 = Math.max(...r32.xs.map((x, i) => Math.abs(x[0] - kf[i][0])).filter(isFinite));   // the whole run, up to any NaN
+  /* Whole numbers with thousands separators: "\\," inside KaTeX, a narrow no-break space in text. */
+  const grp = (v, sep) => { const s = String(Math.round(Math.abs(v))); return (v < 0 ? "-" : "") + (s.length >= 5 ? s.replace(/\B(?=(\d{3})+(?!\d))/g, sep) : s); };
+  const wTxt = v => Math.abs(v) >= 100 ? grp(v, "\\,") : fmt(v, 3);
+  const thou = v => grp(+v.toPrecision(2), "\u202f");
+  caption($("#ukfCap"), `The unscented filter on the repository's data with [[\\alpha = ${uk.alpha}]], [[\\kappa = ${uk.kappa}]], [[\\beta = 2]]: distance from the linear filter's position estimate in double precision (blue) and with every intermediate result rounded to 32-bit (orange, how JAX runs by default). The sigma-point weights are [[W_0 = ${wTxt(w.Wm[0])}]] on the centre and [[W_i = ${wTxt(w.Wm[1])}]] on each of the four spread points, which sit [[\\sqrt{n + \\lambda} = ${fmt(Math.sqrt(w.sc), 4)}]] standard deviations from the mean. The mean is therefore assembled from terms about ${amp < 10 ? fmt(amp, 1) : thou(amp)} times the size of the result${w.Wm[0] >= 0 ? ", and nothing cancels" : lost >= 1 ? `, which costs about ${fmt(lost, 1)} of float32's seven significant digits` : ", which costs less than one of float32's seven significant digits"}. ` + (r32.nanFrom >= 0 ? `The emulated 32-bit filter loses the covariance's positive-definiteness and turns to NaN at step ${r32.nanFrom}${r32.nanFrom >= n ? ` (${fmt(r32.nanFrom / 10, 1)} s, past the right edge of the chart)` : ""}${uk.alpha === 1e-3 ? ` (JAX's run fails at step ${D.py.ukfNanFrom}; the exact step depends on the order of operations)` : ""}, after drifting up to ${fmt(max32, 2)} from the linear filter. ` : `The emulated 32-bit filter runs to the end, at most ${max32 < 1e-3 ? fmt(max32, 6) : fmt(max32, 3)} from the linear filter over the whole run, with RMSE ${fmt(e32[0], 4)} and ${fmt(e32[1], 4)} against the linear filter's 0.1554 and 0.1351. `) + `In double precision the filter stays within ${fmt(Math.max(...d64) * 1e7, 1)}[[\\times 10^{-7}]] of the linear one over the 60 s shown, at this [[\\alpha]] as at [[\\alpha = 1]]: that floor is the [[10^{-9}]] the repository adds to [[P]] before each Cholesky factorisation, not the weights. The repository's default is [[\\alpha = 1]], and the page's hero demo uses it.`);
 }
+$("#emuNan").textContent = runUKF(D.zs, f, h, MDL.Q, MDL.R, x0, P0, { alpha: 1e-3, kappa: 0, float32: true }).nanFrom;
 $("#ukA").addEventListener("input", e => { uk.alpha = +(10 ** +e.target.value).toPrecision(2); $("#ukAV").textContent = uk.alpha; drawUKF(); });
 $("#ukAV").textContent = uk.alpha;
 
