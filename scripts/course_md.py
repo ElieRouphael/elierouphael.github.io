@@ -310,14 +310,22 @@ def page_head(title: str, description: str, extra_css: str = "") -> str:
 <link rel="stylesheet" href="{FONTS}">
 <link rel="stylesheet" href="{KATEX}/katex.min.css">
 <link rel="stylesheet" href="../kit/kit.css">
-<link rel="stylesheet" href="course.css">
+<link rel="stylesheet" href="course.css{stamp()}">
 {extra_css}</head>
 <body>
 """
 
 
+# A build stamp on the course's own assets, so that a rebuilt stylesheet or demo is not served from the cache.
+ASSET_VERSION = ""
+
+
+def stamp() -> str:
+    return f"?v={ASSET_VERSION}" if ASSET_VERSION else ""
+
+
 def page_scripts(scripts: list[str]) -> str:
-    tags = "\n".join(f'<script src="{s}"></script>' for s in scripts)
+    tags = "\n".join(f'<script src="{s}{stamp()}"></script>' for s in scripts)
     return f"""
 <script src="{KATEX}/katex.min.js"></script>
 <script src="{HLJS}"></script>

@@ -32,6 +32,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import course_md  # noqa: E402
 from course_md import MD, Chapter, Course, chapter_page, load_course, mark_heading_ids, page_head, page_scripts, postprocess, render_chapter_file, resolve_refs  # noqa: E402
 
 SITE = Path(__file__).resolve().parents[1]
@@ -185,6 +186,8 @@ def write_zip(course: Course, repo: Path) -> None:
 
 def main() -> None:
     course = load_course(SRC / "course.yaml")
+    import time
+    course_md.ASSET_VERSION = time.strftime("%Y%m%d%H%M%S")
     repo = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else (course.package_root.parent if course.package_root else None)
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "notebooks").mkdir(exist_ok=True)

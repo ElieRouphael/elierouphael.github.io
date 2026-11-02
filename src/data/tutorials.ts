@@ -113,8 +113,8 @@ export const tutorials: Tutorial[] = [
   {
     title: 'Advanced MPC and Learning MPC',
     description:
-      'A ten-notebook course on constrained optimal control that never treats the optimizer as a black box: convex optimization and KKT conditions, invariant sets, recursive feasibility and stability of MPC, collision avoidance as a mixed-integer decision, Learning MPC from repeated executions, minimum-time racing and learned vehicle models, and the bridge from dynamic programming to reinforcement learning, closing with one design checked end to end.',
-    topics: ['MPC', 'Learning MPC', 'Invariant Sets', 'Optimization', 'Dynamic Programming'],
+      'A two-part interactive course on constrained optimal control that never treats the optimizer as a black box. Part A teaches fifteen concepts one chapter each, all on the same double integrator: state-space models, prediction matrices, convexity and KKT, a QP solver you can read, the finite-horizon problem, the receding horizon, Lyapunov stability and LQR, polytopes, reachability, invariance, the terminal-ingredient stability theorem, safe sets and the learned terminal value of Learning MPC, Bellman and dynamic programming, and disjunctive constraints; each with a live demo, the package function read line by line, and exercises whose solutions run. Part B assembles them in six labs: collision avoidance, Learning MPC on a repeated task, minimum-time racing, learned vehicle models, the bridge to reinforcement learning, and one design checked end to end. Every number is reproduced by a script.',
+    topics: ['MPC', 'Learning MPC', 'Invariant Sets', 'Optimization', 'Dynamic Programming', 'NumPy'],
     prerequisites: 'Linear algebra, basic control (state-space models, stability) and Python',
     level: 'Advanced',
     added: '2026-10-02T10:16',
