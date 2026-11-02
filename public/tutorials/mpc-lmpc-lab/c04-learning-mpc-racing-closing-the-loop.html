@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>C4 · Learning MPC racing: closing the loop · Advanced MPC and Learning MPC</title>
+<meta name="description" content="The racing controller assembled from labs B3 and B4 and chapters A12 and A13, lap after lap on the RC-car track: a local time-varying model refitted along the horizon, a local convex safe set with costs-to-go in samples to the finish line, one QP per sample, and the lap time falling from 30.4 to 7.9 seconds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102223530">
+<style>
+@media (max-width: 480px) { #lapT, #ingT { font-size: 0.8rem; } }
+
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part C, Beyond the nominal case · Chapter C4 of 4</span>
+  <h1>Learning MPC racing: closing the loop</h1>
+  <p class="lede">Lab B3 derived the racing problem and lab B4 built the prediction model, and both stopped before a lap was driven. This chapter closes the loop: the Learning MPC racing controller of Rosolia and Borrelli, assembled from the concepts of Part A and the labs, drives the 1:10-scale car around the RC track lap after lap, its only teacher the laps it has already driven. Four slow seed laps, then twenty laps of learning, every one checked against the track and the input limits, every quadratic program solved by the course's own solver. The laps below were computed in Python and shipped to this page; move the slider to watch the line tighten, the speed rise and, on lap 19, the one thing the theory never promised.</p>
+  <p class="byline">Elie Rouphael · Needs labs B2, B3 and B4 · Every number is checked in Python</p>
+  <p class="concepts"><span class="lbl">Concepts used</span><a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">sampled and convex safe sets</a>, <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">the learned terminal value and the LMPC problem</a>, <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">the local affine time-varying model</a>, <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">Frenet coordinates and the minimum-time planner</a>, <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">prediction with a time-varying affine model</a>, <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">the interior-point solver</a>, <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">Learning MPC iterations on the double integrator</a></p>
+  <div class="downloads">
+    <a class="btn" href="code/c04_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The RC track with the seed laps and the Learning MPC laps, coloured from the first lap to the last</p>
+      <canvas id="mapC" aria-label="The RC-car track with the four seed laps in grey and the twenty Learning MPC laps coloured from blue to orange, the selected lap drawn thick" aria-describedby="heroStatus"></canvas>
+      <p class="chart-title" style="margin-top:0.6rem">Lap times, seeds then learned laps; and the selected lap's speed and lateral offset along the track</p>
+      <div class="two">
+        <canvas id="timeC" aria-label="Lap times of the seed laps and of every Learning MPC lap as bars, with the centreline planner's lap time as a dashed line" aria-describedby="heroStatus"></canvas>
+        <canvas id="speedC" aria-label="Longitudinal speed of the selected lap against progress along the track, with the planner's speed profile and the lateral offset" aria-describedby="heroStatus"></canvas>
+      </div>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Learning MPC lap: <b id="hLapV"></b></span>
+      <span class="row"><input type="range" id="hLap" min="1" max="20" step="1" value="20"></span>
+    </label>
+    <button class="btn" type="button" id="hAll" aria-pressed="true">show every lap</button>
+    <div class="readouts" aria-live="off">
+      <span>lap time</span><span class="v" id="rTime">–</span>
+      <span>largest <span class="m">|e_y|</span></span><span class="v" id="rEy">–</span>
+      <span>largest <span class="m">v_x</span></span><span class="v" id="rVx">–</span>
+      <span>QPs solved</span><span class="v" id="rQp">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the last lap</button></div>
+    <p class="hint">Computed in Python by the chapter's script and replayed here: the browser draws the laps, it does not refit the model or solve the QPs. Track 20.19 m long, half-width 0.4 m; sample 0.1 s; inputs <span class="m">|\delta| \le 0.5</span>, <span class="m">|a| \le 10</span>; horizon 14; safe set 4 laps × 12 states.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#assembled"><span class="n">1</span><span class="t">The controller, assembled</span><span class="d">Every ingredient, and the chapter that taught it</span></a>
+    <a href="#model"><span class="n">2</span><span class="t">The model layer: a time-varying model along the plan</span><span class="d">A time-varying model along the plan</span></a>
+    <a href="#safeset"><span class="n">3</span><span class="t">The safe-set layer: forty-eight states near the end of the plan</span><span class="d">Forty-eight stored states near the end of the plan</span></a>
+    <a href="#cost"><span class="n">4</span><span class="t">The cost: lap time through the terminal value, smoothness through rates</span><span class="d">Lap time through the terminal value, smoothness through rates</span></a>
+    <a href="#qp"><span class="n">5</span><span class="t">The QP, and a fallback rule</span><span class="d">Seventy-six variables, one QP per sample, a fallback rule</span></a>
+    <a href="#laps"><span class="n">6</span><span class="t">Twenty laps, every one checked</span><span class="d">Twenty laps, every one checked</span></a>
+    <a href="#guarantees"><span class="n">7</span><span class="t">What is guaranteed, and what the car does not give</span><span class="d">What chapter A12&#x27;s proof needs and the car does not give</span></a>
+    <a href="#curve"><span class="n">8</span><span class="t">The learning curve, and a bound it will not reach</span><span class="d">The learning curve, and the planner&#x27;s bound</span></a>
+    <a href="#code"><span class="n">9</span><span class="t">The code behind it</span><span class="d">The chapter&#x27;s solve function and the linear LMPC it generalises</span></a>
+    <a href="#pitfalls"><span class="n">10</span><span class="t">Common pitfalls</span><span class="d">Six confusions</span></a>
+    <a href="#check"><span class="n">11</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">12</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">13</span><span class="t">The course on one page</span><span class="d">The course on one page</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="assembled">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The controller, assembled</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The task.</strong> Drive the 1:10-scale car of lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> around its 20.19 m track, half-width 0.4 m, as fast as it will go, starting from nothing better than four laps of a noisy path follower at 0.8 m/s. The plant is the dynamic bicycle model with Pacejka tyres, integrated at 1 ms and sampled every 0.1 s; the state is <span class="m">x = (v_x, v_y, r, e_\psi, s, e_y)</span> and the input <span class="m">u = (\delta, a)</span>, as in lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>. Nothing in the controller knows the tyre law. It knows the Frenet kinematics, which lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a> derived, and it has the stored laps.</p>
+<p><strong>The idea.</strong> Learning MPC for a repeated task, chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>: at every sample solve a short-horizon problem whose terminal ingredients, the set where the plan may end and the price of ending there, come from the laps already driven. Lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> ran it on the linear cart, where chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>'s proof makes the convex hull of stored states a safe set and chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>'s argument makes the barycentric value a terminal cost. The car is nonlinear, so every ingredient is made <em>local</em>: the model is refitted around the plan, the safe set is the hull of stored states near the plan's end, and the guarantees become what Part 7 says they become.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Ingredient</th>
+<th>What it is here</th>
+<th>Where the course taught it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prediction model</td>
+<td>An affine time-varying model <span class="m">x_{k+1} = A_k x_k + B_k u_k + c_k</span>, refitted at every step of the horizon from the last four laps by lab B4's local regression</td>
+<td><a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>, <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>, <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a></td>
+</tr>
+<tr>
+<td>Terminal set</td>
+<td>The convex hull of 48 stored states, 12 from each of the 4 fastest laps, nearest in progress to the plan's predicted end</td>
+<td><a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a></td>
+</tr>
+<tr>
+<td>Terminal cost</td>
+<td>The barycentric mixture of those states' costs-to-go, counted in samples to the finish line</td>
+<td><a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a></td>
+</tr>
+<tr>
+<td>Stage cost</td>
+<td>None on the state; an input-rate penalty <span class="m">\Delta u_k^\top \mathrm{diag}(5, 50)\,\Delta u_k</span> for smoothness</td>
+<td><a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a></td>
+</tr>
+<tr>
+<td>Constraints</td>
+<td>The lane $</td>
+<td>e_y</td>
+</tr>
+<tr>
+<td>Online problem</td>
+<td>One QP in 28 inputs and 48 weights, solved by the interior-point method</td>
+<td><a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a></td>
+</tr>
+<tr>
+<td>Receding horizon</td>
+<td>Apply the first input, measure, shift the plan, refit, solve again</td>
+<td><a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a></td>
+</tr>
+<tr>
+<td>Lap-to-lap learning</td>
+<td>Each successful lap joins the database; faster laps replace slower ones in the safe set</td>
+<td><a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a></td>
+</tr>
+<tr>
+<td>Fallback</td>
+<td>If the QP is infeasible, replay the fastest stored lap's input from the nearest stored state</td>
+<td><a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>, exercise 11</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="define"><p class="define-title">What makes racing LMPC different from the cart's</p>
+<p><strong>In plain words:</strong> the same loop, with every piece recomputed around where the car is and where its plan ends, because a nonlinear car has no single linear model and no global convex safe set. The lap time enters only through the terminal value: the controller never tracks a reference line, it minimises the number of samples it expects to need to reach the finish, as learned from the laps that already did.</p>
+<p><strong>More precisely:</strong> the terminal cost of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>, <span class="m">V_c(x_N) = \lambda^\top J</span> with <span class="m">x_N = S^\top \lambda</span>, where <span class="m">J_r</span> is the number of samples lap <span class="m">i</span> still needed from its state <span class="m">s_r</span> to cross the finish line (negative for states just beyond it); the safe set <span class="m">S</span> holds only states near the plan's end, so that the hull is small enough for the local model to be trusted inside it; and the dynamics along the horizon are the local affine model of lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> evaluated along the previous plan, so that the problem stays a QP.</p>
+<dl><dt>Lap</dt><dd>One crossing of the finish line to the next; laps after the first start where the previous one ended (a flying start).</dd><dt>Cost-to-go</dt><dd>Samples to the finish line of the lap that visited the state: <span class="m">T_i - k</span> for the <span class="m">k</span>-th state of a lap of <span class="m">T_i</span> samples.</dd><dt>Local safe set</dt><dd><span class="m">4 \times 12</span> stored states, chosen by progress <span class="m">s</span>, with the lap's own first 40 states shifted by one lap length standing in for the lap after the line.</dd><dt>Plan</dt><dd>The 14-step predicted trajectory; the next step's model is linearised along it, shifted by one.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The model layer: a time-varying model along the plan</h2>
+  </div>
+  <div class="col prose">
+
+<p>Chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> stacked an LTI model over a horizon; lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> fitted an affine model to the car at one operating point and showed that along a 14-step horizon its matrices move. The controller combines the two. Given the previous plan <span class="m">(\bar x_0, \bar u_0), \dots, (\bar x_{N-1}, \bar u_{N-1})</span>, where <span class="m">\bar x_0</span> is the measured state and the <span class="m">\bar u_k</span> are the last solution's inputs shifted by one, it fits</p>
+<div class="math-block" data-narrow="x_k = \Phi_k x_0 + \Gamma_k U + d_k, \ \Phi_{k+1} = A_k \Phi_k, \quad \Gamma_{k+1} = A_k \Gamma_k + B_k E_k, \ d_{k+1} = A_k d_k + c_k">x_{k+1} = A_k x_k + B_k u_k + c_k, \qquad (A_k, B_k, c_k) = \mathrm{fit}(\bar x_k, \bar u_k), \qquad \bar x_{k+1} = A_k \bar x_k + B_k \bar u_k + c_k,</div>
+<p>one local regression per step, each with the structured rows for <span class="m">v_x, v_y, r</span> from the 7 nearest transitions of each of the 4 most recent laps and the exact Frenet rows linearised at <span class="m">\bar x_k</span>. Then it stacks them exactly as chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> did for a constant model, with the matrices now indexed by step:</p>
+<div class="math-block">x_k = \Phi_k x_0 + \Gamma_k U + d_k, \qquad \Phi_{k+1} = A_k \Phi_k, \quad \Gamma_{k+1} = A_k \Gamma_k + B_k E_k, \quad d_{k+1} = A_k d_k + c_k,</div>
+<p>where <span class="m">E_k</span> picks <span class="m">u_k</span> out of the stacked <span class="m">U</span> and the affine constants accumulate in <span class="m">d_k</span>. Every predicted state is then affine in <span class="m">U</span> and every constraint on it is a row of the QP, as in chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>.</p>
+<p><strong>Why along the previous plan, not the stored lap.</strong> At the first sample of the first learned lap there is no previous plan; the controller takes the fastest stored lap's inputs from the nearest stored state as the guess. From then on the shifted solution is the guess: the plan the optimiser found a tenth of a second ago is the best available picture of where the car will be, and the local model is only trustworthy near data it was fitted on, which the plan's states are if the plan resembles a stored lap. Over the twenty laps the model layer never ran out of data at a horizon state until lap 20, where 10 of 1106 local fits fell back to the nearest seven transitions with a widened bandwidth, lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>'s support fallback: by then the car was going where no stored lap had gone.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="safeset">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The safe-set layer: forty-eight states near the end of the plan</h2>
+  </div>
+  <div class="col prose">
+
+<p>Chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a> stored every state of every successful run. On the track that would be thousands of states in six dimensions, and, worse, a hull spanning the whole lap would ask the local model to be valid across it. The racing controller keeps a <em>local</em> convex safe set:</p>
+<div class="math-block" data-narrow="S = \bigcup_{i \in \text{4 fastest}} { 12 \text{ states of lap } i \text{ nearest in } s \text{ to } \hat s_N }">S = \bigcup_{i \in \text{4 fastest laps}} \{ \text{the 12 stored states of lap } i \text{ nearest in } s \text{ to } \hat s_N \}, \qquad \hat s_N = \text{the progress of the plan&#x27;s predicted end},</div>
+<p>48 states in all, with their costs-to-go <span class="m">J_r</span> in samples. Nearest in progress, not in the full state: the terminal state must land in their hull, and states one or two metres ahead on the track are the ones a 1.4 s horizon can reach.</p>
+<p><strong>Counting to the finish line.</strong> A lap of <span class="m">T_i</span> samples gives its <span class="m">k</span>-th state the cost <span class="m">J = T_i - k</span>: how many samples that lap still needed. Minimising <span class="m">\lambda^\top J</span> at the end of the plan is minimising the expected remaining lap time, in tenths of a second, as the stored laps experienced it. There is no reference line and no speed target anywhere in the cost; the car goes faster because the states of faster laps carry smaller costs, and chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>'s LP mixes them.</p>
+<p><strong>The finish line is not a wall.</strong> Near the end of a lap the plan's end lies beyond <span class="m">s = L</span>, where a lap's own stored states run out. Each lap's first 40 states are appended with <span class="m">s + L</span> and cost-to-go <span class="m">-k</span>: the lap after the line, represented by the same lap's start, so that crossing the line is worth exactly what it costs and the plan may look through it. Without this the car would brake before the line, which is lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a>'s plateau in a different guise: a terminal value that is pessimistic where the data end.</p>
+<p><strong>Fastest four, most recent four.</strong> The safe set takes the four fastest successful laps, so a slow early lap drops out as soon as four better ones exist; the model takes the four most recent successful ones, whose operating points are closest to the current car. Lap 19, which left the track, counts as unsuccessful for both and is never stored, which is chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>'s rule that only successful runs certify anything.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="cost">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The cost: lap time through the terminal value, smoothness through rates</h2>
+  </div>
+  <div class="col prose">
+
+<div class="math-block">\min_{U, \lambda}\ \sum_{k=0}^{N-1} (u_k - u_{k-1})^\top \begin{pmatrix} 5 &amp; 0 \\ 0 &amp; 50 \end{pmatrix} (u_k - u_{k-1}) + \lambda^\top J,</div>
+<p>with <span class="m">u_{-1}</span> the input applied at the previous sample. The rate penalty is the only stage cost: it stops the steering from chattering between samples and keeps the acceleration from flipping between its bounds, and it is cheap enough, on a scale where <span class="m">J</span> counts samples, that the lap time dominates. The constraints are the lane on every predicted state, <span class="m">|e_{y,k}| \le 0.4</span>, a speed box <span class="m">0.1 \le v_{x,k} \le 4</span> that keeps the affine model from being asked about a stopped or an absurd car, the input bounds <span class="m">|\delta_k| \le 0.5</span>, <span class="m">|a_k| \le 10</span>, and the terminal ingredients</p>
+<div class="math-block">x_N = S^\top \lambda, \qquad \mathbf 1^\top \lambda = 1, \qquad 0 \le \lambda \le 1 .</div>
+<p>Six equality rows tie the plan's end to the hull of the 48 stored states, one row makes the weights a mixture. With <span class="m">x_N</span> affine in <span class="m">U</span> these are linear equalities in <span class="m">(U, \lambda)</span>: the problem is a QP, exactly the structure of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>'s LMPC problem with the matrices of lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> in place of <span class="m">A</span> and <span class="m">B</span>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="qp">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The QP, and a fallback rule</h2>
+  </div>
+  <div class="col prose">
+
+<p>Seventy-six variables, 28 inputs and 48 weights; 56 inequality rows for the lane and the speed box, 56 input bounds and 96 weight bounds stacked by the solver, 7 equalities. The interior-point method of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> solves it in 16 to 35 iterations, about 8 ms each on the author's laptop, which is comfortably inside the 100 ms sample. A lap is 80 to 220 such problems; the twenty laps are 2376 of them.</p>
+<div class="widget" id="qpW">
+  <p class="chart-title">One QP of lap 3: the local safe set, the plan and its terminal point</p>
+  <canvas id="qpC" aria-label="A zoom on the track around the car with the 48 safe-set states shaded by cost-to-go, the 14-step predicted plan and the terminal point chosen in the hull" aria-describedby="qpCap"></canvas>
+  <div class="controls">
+    <label class="field"><span>Sample of lap 3: <b id="qStepV"></b></span>
+      <span class="row"><input type="range" id="qStep" min="0" max="6" step="1" value="1"></span></label>
+  </div>
+  <p class="caption" id="qpCap"></p>
+</div>
+<p><strong>Reading the figure.</strong> The blue dots are the 48 stored states, darker when fewer samples separate them from the finish line; they come from four laps, so they lie along four nearby lines through the corridor. The orange plan starts at the car and ends on the circled terminal point, which is a mixture of two or three stored states, the enlarged dots: Carathéodory's theorem (chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>) promises a representation with at most seven points in six dimensions, and the LP's optimum uses far fewer. At sample 25 of lap 3 the car is at <span class="m">s = 2.83</span> m at 1.22 m/s; the plan ends at <span class="m">s = 4.52</span> m with a learned value of 141.0 samples, chosen among candidates worth 136 to 243.</p>
+<p><strong>When the QP is infeasible.</strong> The guess may be wrong enough, or the car may have gone where no stored state is reachable within the lane, for the equality and lane rows to be incompatible. The solver then reports a failure (its residual does not fall, chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> Part 8), and the controller applies the rule of lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>'s exercise 11: replay the input of the fastest stored lap at the stored state nearest the car in <span class="m">(s, e_y)</span>, an input known to have kept a car inside the lane from nearly here, and rebuild the guess from that lap. On the first eighteen laps the rule was never needed; lap 19 needed it 49 times.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="laps">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Twenty laps, every one checked</h2>
+  </div>
+  <div class="col prose">
+
+<p>The four seed laps are lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>'s identification laps: 304 samples, 30.4 s each, with the dithered path follower wandering up to 0.355 m from the centreline. Then the learned controller drives, each lap starting where the previous one ended.</p>
+<div class="table-wrap num">
+<p>| Lap | Samples | Time (s) | Faster by (s) | Max <span class="m">|e_y|</span> (m) | Max <span class="m">v_x</span> (m/s) | QPs | Fallbacks |
+|---|---|---|---|---|---|---|---|
+| 1, standing start | 219 | 21.9 | 8.5 | 0.246 | 1.11 | 219 | 0 |
+| 2 | 183 | 18.3 | 3.6 | 0.237 | 1.25 | 183 | 0 |
+| 3 | 166 | 16.6 | 1.7 | 0.228 | 1.38 | 166 | 0 |
+| 4 | 152 | 15.2 | 1.4 | 0.205 | 1.52 | 152 | 0 |
+| 5 | 142 | 14.2 | 1.0 | 0.198 | 1.63 | 142 | 0 |
+| 6 | 134 | 13.4 | 0.8 | 0.196 | 1.71 | 134 | 0 |
+| 7 | 127 | 12.7 | 0.7 | 0.190 | 1.81 | 127 | 0 |
+| 8 | 120 | 12.0 | 0.7 | 0.184 | 1.92 | 120 | 0 |
+| 9 | 113 | 11.3 | 0.7 | 0.251 | 2.02 | 113 | 0 |
+| 10 | 109 | 10.9 | 0.4 | 0.294 | 2.13 | 109 | 0 |
+| 11 | 103 | 10.3 | 0.6 | 0.308 | 2.27 | 103 | 0 |
+| 12 | 99 | 9.9 | 0.4 | 0.321 | 2.39 | 99 | 0 |
+| 13 | 96 | 9.6 | 0.3 | 0.337 | 2.50 | 96 | 0 |
+| 14 | 93 | 9.3 | 0.3 | 0.342 | 2.62 | 93 | 0 |
+| 15 | 90 | 9.0 | 0.3 | 0.359 | 2.73 | 90 | 0 |
+| 16 | 89 | 8.9 | 0.1 | 0.347 | 2.85 | 89 | 0 |
+| 17 | 86 | 8.6 | 0.3 | 0.345 | 2.91 | 86 | 0 |
+| 18 | 83 | 8.3 | 0.3 | 0.331 | 2.90 | 83 | 0 |
+| 19, left the track | 93 | 9.3 | −1.0 | 0.923 | 2.98 | 93 | 49 |
+| 20 | 79 | 7.9 | 0.4 | 0.338 | 3.00 | 79 | 0 |</p>
+</div>
+<p><strong>What happened.</strong> The first learned lap already cuts the seed time by 8.5 s: with no state cost at all, the terminal value alone pulls the car towards the states of the seed laps that were closest to the line, and the plan may drive the input to its bounds between them. Each lap then widens the envelope: the fastest stored speed grows by about 0.1 m/s a lap because the terminal state must stay in the hull of stored states, and only the stored states can raise it. Eighteen laps improve on every lap before them, the gains shrinking from 3.6 s to 0.1 to 0.3 s as the car approaches what its tyres allow in the corners. The inputs stayed inside their bounds on every lap by construction, and the lane was respected on every lap but one, with the largest offset rising from 0.18 m to 0.36 m as the controller learned to use the width of the track.</p>
+<p><strong>Lap 19.</strong> At 2.98 m/s, going where no stored lap had been, the local model's prediction and the car parted ways: the plan was feasible, the car arrived somewhere else, and from there no plan satisfied both the lane rows and the terminal equality. The QP was infeasible at 49 of 93 samples; the fallback replayed the fastest lap's inputs, the car ran 0.92 m from the centreline, more than twice the half-width, and came back. The lap was not stored. Lap 20, from the same database as lap 18 plus nothing, drove 7.9 s, the fastest of all, with 10 local fits short of data. Part 7 says why none of this contradicts a theorem, and why it is the honest end of the course.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="guarantees">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>What is guaranteed, and what the car does not give</h2>
+  </div>
+  <div class="col prose">
+
+<p>Chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a> proved that the convex hull of stored states is control invariant, and chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a> that the barycentric value decreases along a stored mixture, so that the LMPC of lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> is recursively feasible and its iteration cost never increases. Both proofs use linearity exactly once, at the line</p>
+<div class="math-block">f\Big(\sum_r \lambda_r s_r,\ \sum_r \lambda_r u_r\Big) = \sum_r \lambda_r f(s_r, u_r),</div>
+<p>which says that the mixture of stored states driven by the mixture of stored inputs lands on the mixture of stored successors. For the bicycle model it is false: the tyre forces are nonlinear in the slip angles, and chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>'s one-dimensional counter-example, <span class="m">f(x, u) = x^2 + u</span>, already breaks it. The racing controller has no certificate of recursive feasibility and no non-increasing lap time. What it has instead:</p>
+<ol>
+<li><strong>A local convexification.</strong> The 48 states span a short stretch of track and a narrow band of speeds, within which the car's dynamics are close to affine, and the local model is fitted on exactly those transitions. The hull is approximately invariant in the sense that a mixed input from a mixed state lands near the mixed successor, with an error of the order of the model's one-step error, 0.01 to 0.02 in the velocities on lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>'s held-out lap.</li>
+<li><strong>An empirical learning curve.</strong> Eighteen monotone laps are an observation, as lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> insisted its curves were, not a theorem. The curve bends when the model's error grows faster than the gains shrink.</li>
+<li><strong>A fallback that is itself data.</strong> The replayed input is one that kept a car in the lane from nearly the same state; it is not a proof either, and on lap 19 the car still left the track by half a metre before the replayed inputs brought it back. A real car would want a hard brake-and-hold law with its own invariant set, the layered fallbacks of lab <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a>.</li>
+</ol>
+<p>What transfers from the theory is the mechanism, not the certificate: the terminal set gives the optimiser somewhere safe to end, the terminal value tells it which end is cheap, the receding horizon corrects the model's errors at every sample, and the data improve both ingredients with every lap. What does not transfer is the word &quot;guaranteed&quot;. Robust learning MPC, with the model error bounded and the constraints tightened by it, is where that word comes back, and chapter <a href="c01-tube-mpc-for-a-bounded-disturbance.html" title="Tube MPC for a bounded disturbance">C1</a> shows the linear version of the tool.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="curve">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The learning curve, and a bound it will not reach</h2>
+  </div>
+  <div class="col prose">
+
+<p>The lap times fall as <span class="m">21.9, 18.3, 16.6, \dots, 8.3</span> s, each gain smaller than the last. Lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a>'s double integrator converged in three iterations because its terminal value, once the data reached the optimal path, was exact; here the terminal value is only as good as the fastest stored lap, and each lap can be faster than the stored ones only by what the model lets the optimiser dare between stored states. That is why the fastest speed climbs in steps of about 0.1 m/s: the gain per lap is the width of the model's trust region, not the distance to the optimum.</p>
+<p><strong>The planner's number.</strong> Lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a>'s centreline speed planner, run on the same scaled track with the tyres' peak friction coefficient 0.8 and the input bound <span class="m">|a| \le 10</span>, needs 4.43 s for a lap at 2.20 to 7.85 m/s. The fastest learned lap takes 7.9 s at 1.60 to 2.99 m/s, half the planner's speed on average and 30 percent of it at <span class="m">s = 9.5</span> m. The two are different problems. The planner has no lateral dynamics: it allows the speed that pure friction permits at each curvature, with no tyre slip, no yaw inertia, no steering bound, and it drives the centreline, where the learned car uses up to 0.34 m of the 0.4 m half-width to straighten its line. The planner is an optimistic bound for a car that could instantly take any lateral acceleration up to <span class="m">0.8g</span>; the learned controller is a real closed loop on a car whose tyres saturate, and it has driven 20 laps. Where the planner says the straights allow 7.85 m/s, the learned car reaches 3 m/s because no stored lap has gone faster, and the gap on the straights is the clearest picture of what more laps would buy before the corners, not the data, became the limit.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The chapter's controller lives in its numbers script, <code>code/c04_numbers.py</code>, which also carries a copy of the track, the car and lab B4's local regression from the course package's racing module so that it runs alone. Its solve function is the QP of Parts 2 to 5 in forty lines; read it against the linear <code>LMPCController.solve</code> below it, which it generalises.</p>
+<pre><code class="language-python">    def solve(self, x0, u_prev, U_guess, model):
+        &quot;&quot;&quot;One Learning MPC step: linearise along the guess, build the QP in (U, lambda), solve it.&quot;&quot;&quot;
+        n, m = 6, 2
+        A_list, B_list, c_list, xbar, fallbacks = [], [], [], np.asarray(x0, float).copy(), 0
+        for k in range(N):                                   # the LTV model along the guessed trajectory
+            A, B, c, fb = model.fit(xbar, U_guess[k]); fallbacks += fb
+            A_list.append(A); B_list.append(B); c_list.append(c)
+            xbar = A @ xbar + B @ U_guess[k] + c
+        P, Gm, d = [np.eye(n)], [np.zeros((n, m * N))], [np.zeros(n)]
+        for k in range(N):                                   # x_{k+1} = A_k x_k + B_k u_k + c_k, stacked in U
+            Gk = A_list[k] @ Gm[k]; Gk[:, m * k:m * k + m] += B_list[k]
+            P.append(A_list[k] @ P[k]); Gm.append(Gk); d.append(A_list[k] @ d[k] + c_list[k])
+        base = [P[k] @ x0 + d[k] for k in range(N + 1)]      # the part of x_k that does not depend on U
+        S, J, _ = self.safe_set(float(base[N][4]))
+        M = len(S)
+        nz = m * N + M
+        # cost: input rates, and the learned terminal value lambda' J
+        D = np.eye(m * N)
+        for k in range(1, N):
+            D[m * k:m * k + m, m * (k - 1):m * k] = -np.eye(m)
+        Rbar = np.kron(np.eye(N), RATE)
+        p = np.zeros(m * N); p[:m] = u_prev
+        H = np.zeros((nz, nz)); H[:m * N, :m * N] = 2.0 * D.T @ Rbar @ D
+        f = np.zeros(nz); f[:m * N] = -2.0 * D.T @ Rbar @ p; f[m * N:] = J
+        # lane and speed constraints on every predicted state
+        A_ub, b_ub = [], []
+        for k in range(1, N + 1):
+            for row, sign, lim in ((5, 1.0, self.W), (5, -1.0, self.W), (0, 1.0, VX_MAX), (0, -1.0, -VX_MIN)):
+                r = np.zeros(nz); r[:m * N] = sign * Gm[k][row]
+                A_ub.append(r); b_ub.append(lim - sign * base[k][row])
+        # terminal state in the convex hull of the local safe set
+        A_eq = np.zeros((n + 1, nz)); b_eq = np.zeros(n + 1)
+        A_eq[:n, :m * N] = Gm[N]; A_eq[:n, m * N:] = -S.T; b_eq[:n] = -base[N]
+        A_eq[n, m * N:] = 1.0; b_eq[n] = 1.0
+        lb = np.r_[np.tile(UMIN, N), np.zeros(M)]; ub = np.r_[np.tile(UMAX, N), np.ones(M)]
+        res = solve_qp(H, f, A_ub=np.vstack(A_ub), b_ub=np.array(b_ub), A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub)
+        U = res.x[:m * N].reshape(N, m); lam = res.x[m * N:]
+        X = np.array([base[k] + Gm[k] @ res.x[:m * N] for k in range(N + 1)])
+        return {&quot;success&quot;: res.success, &quot;U&quot;: U, &quot;lam&quot;: lam, &quot;X&quot;: X, &quot;S&quot;: S, &quot;J&quot;: J, &quot;terminal&quot;: S.T @ lam,
+                &quot;value&quot;: float(lam @ J), &quot;nit&quot;: res.nit, &quot;fallbacks&quot;: fallbacks}
+</code></pre>
+<p>Four blocks. The first fits the time-varying model along the guess and accumulates <code>P</code>, <code>Gm</code> and <code>d</code>, the <span class="m">\Phi_k</span>, <span class="m">\Gamma_k</span> and <span class="m">d_k</span> of Part 2; <code>base[k]</code> is what <span class="m">x_k</span> would be with <span class="m">U = 0</span>. The second builds the rate penalty: <code>D</code> is the difference matrix of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>'s rate constraints, and the previous input enters through <code>p</code>, so that the first rate is <span class="m">u_0 - u_{-1}</span>. The third writes the lane and speed rows for <span class="m">k = 1, \dots, N</span> with the sign trick that turns a two-sided bound into two one-sided rows. The fourth is chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>'s terminal equality, <span class="m">\Gamma_N U - S^\top \lambda = -\text{base}_N</span>, with the simplex row under it. The solver's <code>success</code> flag drives the fallback in the lap loop.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · LMPCController.solve</p><pre><code class="language-python">    def solve(
+        self,
+        x0,
+        *,
+        last_n_trajectories=None,
+        warm=None,
+    ):
+        x0 = np.asarray(x0, float).reshape(self.n)
+
+        S, V, Usafe, nxt = self.safe_data(last_n_trajectories)
+
+        M = len(S)
+        nu = self.N * self.m
+        p = self.Q1.shape[0]
+        ne = max(self.N - 1, 0) * p
+        nz = nu + M + ne
+
+        Qbar = np.kron(np.eye(self.N), self.Q)
+        Qbar[-self.n:, -self.n:] = 0.0
+        Rbar = np.kron(np.eye(self.N), self.R)
+
+        H = np.zeros((nz, nz))
+        f = np.zeros(nz)
+
+        H[:nu, :nu] = 2.0 * (
+            self.Su.T @ Qbar @ self.Su
+            + Rbar
+        )
+        f[:nu] = 2.0 * self.Su.T @ Qbar @ (self.Sx @ x0)
+
+        f[nu:nu+M] = V
+
+        if ne:
+            f[nu+M:] = 1.0
+
+        A_ub = []
+        b_ub = []
+
+        A_state = np.zeros((2 * self.N * self.n, nz))
+        A_state[:self.N*self.n, :nu] = self.Su
+        A_state[self.N*self.n:, :nu] = -self.Su
+
+        b_state = np.r_[
+            np.tile(self.x_upper, self.N) - self.Sx @ x0,
+            -np.tile(self.x_lower, self.N) + self.Sx @ x0,
+        ]
+
+        A_ub.append(A_state)
+        b_ub.append(b_state)
+
+        for k in range(1, self.N):
+            row_x = self.Su[(k-1)*self.n:k*self.n, :]
+            offset_x = self.Sx[(k-1)*self.n:k*self.n, :] @ x0
+
+            for i in range(p):
+                e_idx = nu + M + (k - 1) * p + i
+
+                row = np.zeros(nz)
+                row[:nu] = self.Q1[i] @ row_x
+                row[e_idx] = -1.0
+                A_ub.append(row[None, :])
+                b_ub.append(np.array([-self.Q1[i] @ offset_x]))
+
+                row = np.zeros(nz)
+                row[:nu] = -self.Q1[i] @ row_x
+                row[e_idx] = -1.0
+                A_ub.append(row[None, :])
+                b_ub.append(np.array([self.Q1[i] @ offset_x]))
+
+        A_eq = np.zeros((self.n + 1, nz))
+        b_eq = np.zeros(self.n + 1)
+
+        A_eq[:self.n, :nu] = self.Su[-self.n:, :]
+        A_eq[:self.n, nu:nu+M] = -S.T
+        b_eq[:self.n] = -self.Sx[-self.n:, :] @ x0
+
+        A_eq[self.n, nu:nu+M] = 1.0
+        b_eq[self.n] = 1.0
+
+        lb = np.r_[
+            np.tile(self.u_lower, self.N),
+            np.zeros(M),
+            np.zeros(ne),
+        ]
+
+        ub = np.r_[
+            np.tile(self.u_upper, self.N),
+            np.ones(M),
+            np.full(ne, np.inf),
+        ]
+
+        if warm is None:
+            warm = self.warm_start_from_stored_path(
+                x0,
+                last_n_trajectories=last_n_trajectories,
+            )
+
+        if warm is None or len(np.asarray(warm).reshape(-1)) != nz:
+            lam0 = np.zeros(M)
+            nearest = int(np.argmin(np.linalg.norm(S - x0, axis=1)))
+            lam0[nearest] = 1.0
+
+            warm = self._pack_warm(
+                x0,
+                np.zeros((self.N, self.m)),
+                lam0,
+                S,
+            )
+
+        res = solve_qp(
+            H,
+            f,
+            A_ub=np.vstack(A_ub),
+            b_ub=np.concatenate(b_ub),
+            A_eq=A_eq,
+            b_eq=b_eq,
+            lb=lb,
+            ub=ub,
+            x0=np.asarray(warm, float).reshape(-1),
+            tol=1e-8,
+            maxiter=3000,
+        )
+
+        U = res.x[:nu].reshape(self.N, self.m)
+        lam = res.x[nu:nu+M]
+
+        Xpred = (
+            self.Sx @ x0
+            + self.Su @ res.x[:nu]
+        ).reshape(self.N, self.n)
+
+        Xfull = np.vstack([x0, Xpred])
+
+        objective = sum(
+            stage_cost(
+                Xfull[k],
+                U[k],
+                self.Q,
+                self.R,
+                self.Q1,
+            )
+            for k in range(self.N)
+        )
+        objective += float(lam @ V)
+
+        terminal_state = S.T @ lam
+
+        return LMPCSolution(
+            success=bool(res.success),
+            U=U,
+            X=Xpred,
+            lambdas=lam,
+            objective=float(objective),
+            terminal_state=terminal_state,
+            message=res.message,
+            max_violation=float(res.max_violation),
+            raw_decision=res.x.copy(),
+            safe_states=S,
+            safe_values=V,
+            safe_inputs=Usafe,
+            next_index=nxt,
+        )</code></pre>
+<p>The linear controller of lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> is the same problem with three differences. Its prediction matrices are the constant <code>Sx</code>, <code>Su</code> of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>, computed once in the constructor, where the racing solve rebuilds <code>Gm</code> every sample from fourteen local fits. Its safe set is every stored state of the trajectories in the window, <code>safe_data</code>, where the racing solve keeps 48 near the plan's end. And its stage cost is the quadratic <span class="m">x^\top Q x + u^\top R u</span> with the <span class="m">\ell_1</span> epigraph block, where the racing cost is a rate penalty alone. Everything else is literally the same rows: the state bounds through the prediction matrices, <code>A_eq</code> tying <code>x_N</code> to <code>S.T</code>, the row of ones, the weights bounded in <span class="m">[0, 1]</span>, and one call to <code>solve_qp</code>.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The lap time falls every lap, so the method is stable.&quot;</strong> Eighteen monotone laps are an observation on a nonlinear plant with no certificate; lap 19 is what the missing certificate looks like.</li>
+<li><strong>&quot;The safe set is the hull of all stored states.&quot;</strong> Only locally: 48 states near the plan's end. The hull of a whole lap would be meaningless for a nonlinear car and would ask the local model to be valid across the track.</li>
+<li><strong>&quot;The controller tracks the fastest lap.&quot;</strong> There is no reference anywhere. It minimises the learned samples-to-finish of its terminal state; the fastest lap matters only through the costs its states carry and the inputs the fallback replays.</li>
+<li><strong>&quot;Infeasibility means the car is lost.&quot;</strong> It means no plan exists under the local model, the lane rows and this safe set. The fallback input is itself stored data, and it brought the car back; a real car needs a certified backup on top.</li>
+<li><strong>&quot;The planner's 4.43 s is the optimum this car should reach.&quot;</strong> The planner ignores lateral dynamics, tyre saturation and the steering bound and drives the centreline. It bounds a different car.</li>
+<li><strong>&quot;More laps always help.&quot;</strong> Each lap widens the data envelope by about what the model can be trusted to extrapolate; past the point where the model's error outgrows that step, a lap can leave the track, and a lap that does is not stored.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why is the model refitted along the previous plan rather than fixed for the lap?</summary>
+<p>Because the car's affine model changes with the operating point, as lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> measured: along a 14-step horizon the matrices move by norms of order one. The previous plan, shifted by one, is the best estimate of the horizon's operating points, and the fits there are supported by stored data as long as the plan resembles a stored lap.</p>
+</details>
+<details class="sol"><summary>2. What does a stored state's cost-to-go count, and why can it be negative?</summary>
+<p>The samples the lap that visited it still needed to cross the finish line, <span class="m">T_i - k</span>. A lap's first 40 states are appended beyond the line with <span class="m">s + L</span> and cost <span class="m">-k</span>, standing in for the lap after the line, so that a plan ending past the line is priced correctly instead of being pulled back to it.</p>
+</details>
+<details class="sol"><summary>3. Why 12 states from each of the 4 fastest laps, nearest in progress?</summary>
+<p>The terminal state must land in their hull, and a 1.4 s horizon reaches about a metre or two of track; states nearest in <span class="m">s</span> are the reachable ones. Four laps give the hull some width in the other coordinates; the fastest four carry the smallest costs, which is what the optimiser is after.</p>
+</details>
+<details class="sol"><summary>4. Where is the lap time in the cost?</summary>
+<p>Only in <span class="m">\lambda^\top J</span>: the learned samples-to-finish of the terminal state. The rate penalty is for smoothness; there is no state cost and no reference.</p>
+</details>
+<details class="sol"><summary>5. Which line of chapter A12's invariance proof fails for the car?</summary>
+<p>The one that pulls the convex combination through the dynamics, <span class="m">f(\sum \lambda_r s_r, \sum \lambda_r u_r) = \sum \lambda_r f(s_r, u_r)</span>: true for a linear model, false for Pacejka tyres. The local safe set makes the error small, not zero.</p>
+</details>
+<details class="sol"><summary>6. What exactly happened on lap 19, in the vocabulary of chapter A6?</summary>
+<p>A loss of recursive feasibility: the plan was feasible, the applied input took the plant somewhere the plan did not predict, and from there no plan satisfied the constraints and the terminal equality. For the linear cart with designed or learned terminal ingredients that cannot happen; here the terminal ingredients are only approximately invariant.</p>
+</details>
+<details class="sol"><summary>7. Why is lap 19 not stored, and what would storing it do?</summary>
+<p>Chapter A12's safe set certifies feasible continuations only from successful runs. A lap that left the lane would offer continuations through states outside the lane as &quot;safe&quot;, and the terminal value would price them as cheap because the lap was fast.</p>
+</details>
+<details class="sol"><summary>8. Why can the learned car not reach the planner's 7.85 m/s on the straights?</summary>
+<p>The terminal state must be a mixture of stored states, so the plan can end only at stored speeds, and each lap raises the fastest stored speed by what the local model will extrapolate, about 0.1 m/s. The planner's number also belongs to a car without lateral dynamics; even with unlimited laps the learned car would stop short of it in the corners.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>The numbers script runs the whole experiment in about half a minute; every exercise below changes one line of it.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Horizon.</b> Run the twenty laps with <span class="m">N = 8</span> and <span class="m">N = 20</span>. Which changes: the first learned lap, the gain per lap, or the lap on which the car first leaves the track?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>N</code> is a module constant; the horizon fixes how far ahead of the car the safe set is chosen, since the plan's predicted end is where the 48 states are gathered.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Change <code>N</code> at the top of Part two and rerun. A shorter horizon looks less far down the track, so the plan's end and its safe set sit closer to the car and the terminal value is a shorter-range estimate; a longer one compounds the local model's error over more steps, lab B4's thirty-step lesson. Compare the three learning curves and the lap of the first fallback; report which horizon reaches 10 s first and which first leaves the track.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The rate penalty.</b> Set the rate penalty to <span class="m">\mathrm{diag}(0.5, 5)</span> and to <span class="m">\mathrm{diag}(50, 500)</span>. What happens to the steering, the lap times and the number of interior-point iterations?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>RATE</code> in Part two. A rate penalty is the only term in the cost that depends on the inputs; without it the QP is a linear program in the inputs and the optimiser sits on the bounds.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With the small penalty the inputs chatter between their bounds and the car's line becomes jagged; the lap time may fall faster at first and the car leaves the track earlier. With the large one the steering cannot follow the corners within the horizon and the lap time plateaus well above 8 s. The iteration counts rise when the problem becomes nearly linear (many active bounds). Report the three curves.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The size of the safe set.</b> Change <code>SS_POINTS</code> from 12 to 4 and to 30, and <code>SS_LAPS</code> from 4 to 2.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Fewer points make a thinner hull; the terminal equality then has fewer places to land.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With 4 points per lap the hull is nearly a line through four states and the QP is infeasible more often, the fallback rule firing on the early laps; with 30 the hull spans more of the track and the local model is asked to be valid across it, so the plan's end can be optimistic and the car oversteps the lane earlier. Two laps instead of four halve the width of the hull in the velocity coordinates. Count the fallbacks per lap in each case and say which setting you would ship.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A real fallback.</b> Replace the replay rule by a brake-and-hold law: <span class="m">a = -10</span> until <span class="m">v_x \le 0.5</span>, then <span class="m">a = 0</span>, with <span class="m">\delta = -0.6 e_y - 0.9 e_\psi</span> (the seed controller's steering). Rerun from lap 19's state and compare the excursion.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The <code>else</code> branch of <code>drive_lap</code>; the seed laps show that this steering law keeps the car inside the lane at low speed.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The brake law stops the excursion sooner but costs more lap time than the replay; its advantage is that it does not depend on the database. For a certificate it would need its own invariant set, computed for the car's linearisation at low speed with chapter A10's tools and the tightening of chapter C1; lab B6's engineering questions list the layers.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The model's data.</b> Use all stored laps for the local model instead of the most recent four (<code>MODEL_LAPS</code>), then only the most recent one.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Lab B4 found that more points from different operating conditions bias a local fit.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With every lap the regression's neighbourhoods are pulled towards slower laps, the model underestimates what the car does at speed and the learning slows; with a single lap the fits have 7 points, are ill-conditioned, and the plan grows erratic. Four recent laps are a compromise, not an optimum; report the lap-time curves and the number of model support fallbacks.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build it: the stacked time-varying prediction.</b> Write the recursion for <span class="m">\Phi_k</span>, <span class="m">\Gamma_k</span> and <span class="m">d_k</span> yourself from <span class="m">x_{k+1} = A_k x_k + B_k u_k + c_k</span>, and check it against the <code>P</code>, <code>Gm</code>, <code>d</code> of the solve function by rolling out the fitted models with the solution's inputs.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">\Gamma_{k+1} = A_k \Gamma_k + B_k E_k</span> where <span class="m">E_k</span> is the <span class="m">2 \times 2N</span> selector of <span class="m">u_k</span>; the base term carries <span class="m">A_k d_k + c_k</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">X = [x0]
+for k in range(N):
+    X.append(A_list[k] @ X[-1] + B_list[k] @ U[k] + c_list[k])
+assert np.allclose(np.array(X), sol[&quot;X&quot;])          # the stacked form equals the rollout, to round-off
+</code></pre>
+<p>Chapter A2's identity with step-indexed matrices: the stacked prediction is the rollout written as an affine function of <span class="m">U</span>, which is what makes every constraint a row.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>The course on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>A state and a model</strong> (A1, A2): the car's six coordinates, and an affine time-varying model stacked over fourteen steps.</div></li>
+<li><div><strong>A convex problem and its solver</strong> (A3, A4, A5): one QP per sample, 76 variables, solved by the interior-point method to a certificate of optimality.</div></li>
+<li><div><strong>The receding horizon</strong> (A6): apply the first input, measure, shift, refit, solve again, 2376 times in twenty laps.</div></li>
+<li><div><strong>Sets and invariance</strong> (A8 to A11): the lane as a polytope, and terminal ingredients that make the loop feasible and stable when the plant is linear.</div></li>
+<li><div><strong>Learning the terminal ingredients</strong> (A12, A13, B2): a safe set of stored states and a value learned from their costs, here local, with the lap time as the cost.</div></li>
+<li><div><strong>The racing problem</strong> (B3, B4): Frenet coordinates, the bicycle model, and a prediction model learned from laps.</div></li>
+<li><div><strong>Closing the loop</strong> (C4): 30.4 s to 8.3 s in eighteen laps, each inside the lane, then one lap that is not, and a 7.9 s lap after it.</div></li>
+<li><div><strong>What was proved and what was observed</strong> (A11, B6): every certificate in the course was for a model that equals the plant; the racing car is the reminder.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lap, flying start</td>
+<td>One crossing of the line to the next; later laps start where the previous ended.</td>
+</tr>
+<tr>
+<td>Samples to the finish</td>
+<td>The cost-to-go of a stored state: how many samples its lap still needed.</td>
+</tr>
+<tr>
+<td>Local safe set</td>
+<td>48 stored states near the plan's predicted end, from the four fastest laps.</td>
+</tr>
+<tr>
+<td>Wrapped states</td>
+<td>A lap's first 40 states shifted by one lap length, with negative cost, standing for the next lap.</td>
+</tr>
+<tr>
+<td>Plan, guess</td>
+<td>The 14-step predicted trajectory; the previous plan shifted, along which the model is refitted.</td>
+</tr>
+<tr>
+<td>Rate penalty</td>
+<td>The only stage cost, on <span class="m">u_k - u_{k-1}</span>.</td>
+</tr>
+<tr>
+<td>Fallback</td>
+<td>On an infeasible QP, the fastest stored lap's input from the nearest stored state.</td>
+</tr>
+<tr>
+<td>Model support fallback</td>
+<td>A local fit with no stored transition inside the kernel bandwidth.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> A deterministic simulation with a measured state, one controller configuration, and twenty laps; no disturbance, no sensor, no robustness certificate. The planner comparison uses lab B3's reduced model on the same track and is a bound for a different car.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>U. Rosolia and F. Borrelli. &quot;Learning How to Autonomously Race a Car: A Predictive Control Approach&quot;. <em>IEEE Transactions on Control Systems Technology</em> 28(6), 2713–2719, 2020. <a href="https://doi.org/10.1109/TCST.2019.2948135">doi:10.1109/TCST.2019.2948135</a>. The controller this chapter implements: local safe set, local model, lap-time cost.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>U. Rosolia, A. Carvalho and F. Borrelli. &quot;Autonomous racing using learning Model Predictive Control&quot;. <em>2017 American Control Conference</em>, 5115–5120. <a href="https://doi.org/10.23919/ACC.2017.7963748">doi:10.23919/ACC.2017.7963748</a>. The first racing results and the samples-to-finish cost.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>U. Rosolia and F. Borrelli. &quot;Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework&quot;. <em>IEEE Transactions on Automatic Control</em> 63(7), 1883–1896, 2018. <a href="https://doi.org/10.1109/TAC.2017.2753460">doi:10.1109/TAC.2017.2753460</a>. The guarantees for the linear case, chapters A12 and A13.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017. Suboptimal and robust MPC, for the certificate this chapter lacks.</div></li>
+</ul>
+<p>Rosolia and Borrelli <a href="#ref-1">[1]</a> is the method; the course's version uses the labs' track, car and regression, the package's solver, and its own fallback rule. This is the last chapter. The <a href="index.html">index</a> lists every concept of Part A on which it stands, and chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a> is where the cart was first pushed.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="c03-nonlinear-mpc-by-successive-linearisation.html"><span class="lbl">Previous · C3</span><span class="t">Nonlinear MPC by successive linearisation</span></a>
+  <a class="next" href="index.html"><span class="lbl">Course</span><span class="t">Back to the overview</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter C4 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102223530"></script>
+<script src="interactive/c04-data.js?v=20261102223530"></script>
+<script src="interactive/c04.js?v=20261102223530"></script>
+</body>
+</html>

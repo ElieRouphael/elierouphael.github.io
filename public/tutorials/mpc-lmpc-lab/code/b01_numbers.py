@@ -84,7 +84,7 @@ for Ru in (0.1, 1.0, 1000.0):
 # --------------------------------------------------------------------------------------------------------------
 section("Part 7: yield is not stop")
 for name, kw in (("A geometric yield", dict()), ("B full stop", dict(terminal_stop=True)),
-                 ("C centre-line", dict(yield_boundary="workshop_center"))):
+                 ("C centre-line", dict(yield_boundary="center_line"))):
     s = solve_collision_strategy(x0, "yield", N=4, mu=0.10, **kw)
     print(f"{name}: success {s.success}" + (f", x_4 = {s.X[-1].round(3).tolist()}" if s.success else ""))
 print(f"time to brake from 5 m/s to rest at {0.1 * G:.3f} m/s^2: {5 / (0.1 * G):.2f} s")
