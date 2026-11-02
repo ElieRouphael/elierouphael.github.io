@@ -165,6 +165,66 @@ def simple_page(course: Course, md_path: Path, title: str, description: str, scr
 """ + page_scripts(scripts)
 
 
+
+# ---------------------------------------------------------------- concept index (generated from the chapters)
+
+def concepts_page(course: Course) -> str:
+    """Every definition box and code walk of the course, with the chapter and part that holds it."""
+    rows_by_chapter = []
+    for ch in course.chapters:
+        src = SRC / "chapters" / f"{ch.id}.md"
+        if not src.exists():
+            continue
+        text = src.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---\n", text, flags=re.S)
+        body = text[m.end():] if m else text
+        section_id, section_title = "", ""
+        concepts, walks = [], []
+        for line in body.splitlines():
+            h = re.match(r"^## (.*?)\s*\{#([A-Za-z0-9_-]+)\}\s*$", line)
+            if h:
+                section_title, section_id = re.sub(r"\$([^$]*)\$", r'<span class="m">\1</span>', h[1]), h[2]
+                continue
+            d = re.match(r"^:{3,} define (.+)$", line)
+            if d:
+                title = re.sub(r"\$([^$]*)\$", r'<span class="m">\1</span>', d[1].strip())
+                concepts.append((title, section_id, section_title))
+                continue
+            c = re.match(r"^:{3,} code (\S+)$", line)
+            if c:
+                path, _, what = c[1].partition(":")
+                walks.append((path.split("/")[-1] + (f" · {what}" if what else ""), section_id))
+        if concepts or walks:
+            rows_by_chapter.append((ch, concepts, walks))
+    out = []
+    for ch, concepts, walks in rows_by_chapter:
+        items = "".join(
+            f'<div><span>{t} <span class="note">· {st}</span></span>'
+            f'<a class="where" href="{ch.slug}.html#{sid}">{ch.label} · {html.escape(ch.short)}</a></div>'
+            for t, sid, st in concepts)
+        code = "".join(
+            f'<div><span><code>{html.escape(w)}</code></span><a class="where" href="{ch.slug}.html#{sid}">{ch.label} · read line by line</a></div>'
+            for w, sid in walks)
+        out.append(f'<section id="{ch.id}"><div class="col part-head"><h2>{ch.label} · {html.escape(ch.title)}</h2></div>'
+                   f'<div class="col prose"><div class="concept-index">{items}{code}</div></div></section>')
+    description = ("Each concept of the course with the chapter and part that defines it, and each function of the "
+                   "course package that a chapter reads line by line.")
+    return page_head(f"Concept index · {course.name}", description) + f"""
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; {html.escape(course.name)}</a><a href="/">{html.escape(course.author)}</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">{html.escape(course.name)} · Reference</span>
+  <h1>Concept index</h1>
+  <p class="lede">{description} Every entry links to the definition box or the code walk on the chapter page; the <a href="notation.html">notation page</a> lists the symbols.</p>
+</header>
+
+{chr(10).join(out)}
+
+<footer class="col">
+  <p>Part of "{html.escape(course.name)}" by {html.escape(course.author)}. Generated from the chapter sources at build time. {course.license}</p>
+</footer>
+""" + page_scripts([])
+
 # ---------------------------------------------------------------- zip
 
 def write_zip(course: Course, repo: Path) -> None:
@@ -220,11 +280,11 @@ def main() -> None:
     pages = (("notation", "Notation and the canonical system",
               "Every symbol the course uses, the sign conventions, and the one double integrator every concept chapter runs on, with its numbers.",
               ["interactive/mpc-lib.js", "interactive/notation.js"]),
-             ("concepts", "Concept index",
-              "Each concept of the course with the chapter and part that defines it, the demo that shows it and the function that computes it.", []))
+             )
     for name, title, desc, scripts in pages:
         if (SRC / f"{name}.md").exists():
             (OUT / f"{name}.html").write_text(simple_page(course, SRC / f"{name}.md", title, desc, scripts), encoding="utf-8")
+    (OUT / "concepts.html").write_text(concepts_page(course), encoding="utf-8")
     if repo and repo.exists():
         write_zip(course, repo)
     print(f"Wrote {OUT}")

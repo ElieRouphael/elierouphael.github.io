@@ -1,101 +1,17 @@
-/* Advanced MPC and Learning MPC, chapter 09, Capstone: the live demos.
-   The numerics are chapter 03's verified block (polytope toolkit of chapter 02, LQR by Riccati iteration, the
-   condensed MPC quadratic program with a primal-dual interior-point solver, receding-horizon closed loops), plus
-   the condensed QP data of exercise B.1, the feasibility LP of A.3, and the LMPC of chapter 05 with its
-   barycentric terminal cost. Everything on the page is recomputed here. Needs ../kit/kit.js. */
+/* Advanced MPC and Learning MPC, lab B6, Capstone: the live demos.
+   The numerics come from the shared toolkit (mpc-lib.js: the polytopes, the LQR, the condensed MPC with the
+   interior-point solver, the receding-horizon closed loops), plus this lab's additions: the condensed QP data of
+   exercise B.1, the feasibility LP of Part 3, and the Learning MPC of lab B2 with its barycentric terminal cost.
+   Everything on the page is recomputed here; the defaults reproduce the numbers script. Needs ../kit/kit.js
+   and mpc-lib.js. */
 (() => {
 "use strict";
 const { $, $$, css, fmt, caption, frame, plotLine, alpha, onRedraw, narrowOf, seg, clamp } = window.Kit;
+const { zeros, mm, mv, tr, dot, quad, dlqr, box, contains, hull, vertices, approxEqual, maximalInvariant, maximalControlInvariant,
+  controllableSets, closedLoopAdmissible, area, predictionMatrices, makeMPC, closedLoop, legend } = window.MPC;
+const solveQP = (H, f, G, g, E = [], e = [], iters = 120) => window.MPC.solveQP(H, f, G, g, E, e, null, null, { iters });
 
-/* NET-BEGIN  (this block is also run under Node by the equivalence test) */
-const zeros = (r, c) => Array.from({ length: r }, () => new Array(c).fill(0));
-const eye = n => zeros(n, n).map((row, i) => row.map((_, j) => i === j ? 1 : 0));
-const mm = (A, B) => A.map(r => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
-const mv = (A, x) => A.map(r => r.reduce((s, v, k) => s + v * x[k], 0));
-const tr = A => A[0].map((_, j) => A.map(r => r[j]));
-const add = (A, B) => A.map((r, i) => r.map((v, j) => v + B[i][j]));
-const sub = (A, B) => A.map((r, i) => r.map((v, j) => v - B[i][j]));
-const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
-const quad = (P, x) => dot(x, mv(P, x));
-function solve(A0, b0) {
-  const n = A0.length, A = A0.map((r, i) => [...r, b0[i]]);
-  for (let c = 0; c < n; c++) {
-    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
-    [A[c], A[p]] = [A[p], A[c]]; if (Math.abs(A[c][c]) < 1e-14) A[c][c] = 1e-14;
-    for (let r = 0; r < n; r++) { if (r === c) continue; const m = A[r][c] / A[c][c]; if (!m) continue; for (let k = c; k <= n; k++) A[r][k] -= m * A[c][k]; }
-  }
-  return A.map((r, i) => r[n] / r[i]);
-}
-const inv = A => tr(A[0].map((_, j) => solve(A, A.map((r, i) => i === j ? 1 : 0))));
-function eig2(M) { const t = M[0][0] + M[1][1], d = M[0][0] * M[1][1] - M[0][1] * M[1][0], disc = t * t / 4 - d; return disc >= 0 ? [[t / 2 + Math.sqrt(disc), 0], [t / 2 - Math.sqrt(disc), 0]] : [[t / 2, Math.sqrt(-disc)], [t / 2, -Math.sqrt(-disc)]]; }
-function dlqr(A, B, Q, R, iters = 10000) {
-  let P = Q;
-  for (let it = 0; it < iters; it++) { const BtP = mm(tr(B), P), S = add(R, mm(BtP, B)), K = mm(inv(S), mm(BtP, A)); const Pn = add(Q, sub(mm(tr(A), mm(P, A)), mm(tr(mm(BtP, A)), K))); const diff = Math.max(...sub(Pn, P).flat().map(Math.abs)); P = Pn; if (diff < 1e-13) break; }
-  const BtP = mm(tr(B), P), K = mm(inv(add(R, mm(BtP, B))), mm(BtP, A)), Acl = sub(A, mm(B, K));
-  return { K, P, Acl, eig: A.length === 2 ? eig2(Acl) : [[Acl[0][0], 0]] };
-}
-/* ---- polytopes {H, h} in 2-D (chapter 02's toolkit) ---- */
-const poly = (H, h) => ({ H, h });
-const box = (lo, hi) => poly([[1, 0], [0, 1], [-1, 0], [0, -1]], [hi[0], hi[1], -lo[0], -lo[1]]);
-const contains = (P, x, tol = 1e-8) => P.H.every((row, i) => dot(row, x) <= P.h[i] + tol);
-function hull(pts) { const P = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]), cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); const lo = [], up = []; for (const p of P) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 1e-12) lo.pop(); lo.push(p); } for (const p of P.slice().reverse()) { while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], p) <= 1e-12) up.pop(); up.push(p); } return lo.slice(0, -1).concat(up.slice(0, -1)); }
-function vertices(P, tol = 1e-8) { const pts = []; for (let i = 0; i < P.H.length; i++) for (let j = i + 1; j < P.H.length; j++) { const det = P.H[i][0] * P.H[j][1] - P.H[i][1] * P.H[j][0]; if (Math.abs(det) < 1e-10) continue; const x = [(P.h[i] * P.H[j][1] - P.H[i][1] * P.h[j]) / det, (P.H[i][0] * P.h[j] - P.h[i] * P.H[j][0]) / det]; if (contains(P, x, tol)) pts.push(x); } const uniq = []; for (const p of pts) if (!uniq.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-7)) uniq.push(p); return uniq.length < 3 ? uniq : hull(uniq); }
-function removeRedundancy(P) { const V = vertices(P); if (V.length < 3) return P; const H = [], h = []; for (let i = 0; i < P.H.length; i++) { const m = Math.max(...V.map(v => dot(P.H[i], v))); if (m > P.h[i] - 1e-7 && !H.some((row, k) => Math.abs(row[0] - P.H[i][0]) < 1e-9 && Math.abs(row[1] - P.H[i][1]) < 1e-9 && Math.abs(h[k] - P.h[i]) < 1e-9)) { H.push(P.H[i]); h.push(P.h[i]); } } return poly(H, h); }
-const intersect = (P, Q) => removeRedundancy(poly([...P.H, ...Q.H], [...P.h, ...Q.h]));
-const preimage = (S, A) => removeRedundancy(poly(S.H.map(row => mv(tr(A), row)), S.h.slice()));
-function predecessor(S, A, B, umin, umax) { const ax = S.H.map(row => mv(tr(A), row)), bu = S.H.map(row => row[0] * B[0][0] + row[1] * B[1][0]), c = S.h.slice(); ax.push([0, 0], [0, 0]); bu.push(1, -1); c.push(umax, -umin); const pos = [], neg = [], zer = []; bu.forEach((b, i) => (b > 1e-12 ? pos : b < -1e-12 ? neg : zer).push(i)); const H = [], h = []; for (const i of zer) { H.push(ax[i]); h.push(c[i]); } for (const n of neg) for (const p of pos) { H.push([ax[p][0] / bu[p] - ax[n][0] / bu[n], ax[p][1] / bu[p] - ax[n][1] / bu[n]]); h.push(c[p] / bu[p] - c[n] / bu[n]); } return removeRedundancy(poly(H, h)); }
-const approxEqual = (P, Q, tol = 1e-6) => { const V1 = vertices(P), V2 = vertices(Q); if (!V1.length || !V2.length) return V1.length === V2.length; return V1.every(v => contains(Q, v, tol)) && V2.every(v => contains(P, v, tol)); };
-function maximalInvariant(A, X, maxIter = 100) { let Om = removeRedundancy(X); const history = [Om]; for (let i = 0; i < maxIter; i++) { const nxt = intersect(X, preimage(Om, A)); history.push(nxt); if (approxEqual(nxt, Om)) return { set: nxt, history }; Om = nxt; } return { set: Om, history }; }
-function maximalControlInvariant(A, B, X, umin, umax, maxIter = 100) { let C = removeRedundancy(X); const history = [C]; for (let i = 0; i < maxIter; i++) { const nxt = intersect(X, predecessor(C, A, B, umin, umax)); history.push(nxt); if (approxEqual(nxt, C)) return { set: nxt, history }; C = nxt; } return { set: C, history }; }
-function controllableSets(A, B, X, target, umin, umax, N) { const sets = [intersect(target, X)]; for (let i = 0; i < N; i++) sets.push(intersect(X, predecessor(sets[sets.length - 1], A, B, umin, umax))); return sets; }
-const closedLoopAdmissible = (X, K, umin, umax) => intersect(X, poly([[-K[0], -K[1]], [K[0], K[1]]], [umax, -umin]));
-const area = V => V.length < 3 ? 0 : Math.abs(V.reduce((s, v, i) => { const w = V[(i + 1) % V.length]; return s + v[0] * w[1] - w[0] * v[1]; }, 0)) / 2;
-const zeroTarget = () => poly([[1, 0], [0, 1], [-1, 0], [0, -1]], [0, 0, 0, 0]);
-/* ---- a primal-dual interior point for  min 1/2 z'Hz + f'z,  G z <= g,  E z = e ---- */
-function solveQP(H, f, G, g, E = [], e = [], iters = 80) {
-  const n = f.length, m = g.length, p = e.length; let z = new Array(n).fill(0), lam = new Array(m).fill(1), nu = new Array(p).fill(0), s = g.map((gi, i) => Math.max(gi - dot(G[i], z), 1));
-  const Gt = m ? tr(G) : null, Et = p ? tr(E) : null;
-  for (let it = 0; it < iters; it++) {
-    const rd = mv(H, z).map((v, i) => v + f[i] + (m ? dot(Gt[i], lam) : 0) + (p ? dot(Et[i], nu) : 0)), rp = G.map((row, i) => dot(row, z) + s[i] - g[i]), re = E.map((row, i) => dot(row, z) - e[i]);
-    const mu = m ? dot(s, lam) / m : 0, sigma = 0.1, rc = s.map((si, i) => sigma * mu - si * lam[i]);
-    if (Math.max(...rd.map(Math.abs), ...rp.map(Math.abs), ...re.map(Math.abs), 0) < 1e-10 && mu < 1e-11) break;
-    const D = lam.map((l, i) => l / s[i]), M = zeros(n + p, n + p), rhs = new Array(n + p).fill(0);
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { let v = H[i][j]; for (let k = 0; k < m; k++) v += G[k][i] * D[k] * G[k][j]; M[i][j] = v; }
-    for (let k = 0; k < p; k++) for (let i = 0; i < n; i++) { M[i][n + k] = E[k][i]; M[n + k][i] = E[k][i]; }
-    const t = rc.map((v, i) => (v + lam[i] * rp[i]) / s[i]);
-    for (let i = 0; i < n; i++) rhs[i] = -rd[i] - (m ? dot(Gt[i], t) : 0);
-    for (let k = 0; k < p; k++) rhs[n + k] = -re[k];
-    const sol = solve(M, rhs), dz = sol.slice(0, n), dnu = sol.slice(n), ds = rp.map((v, i) => -v - dot(G[i], dz)), dl = rc.map((v, i) => (v - lam[i] * ds[i]) / s[i]);
-    let a = 1; for (let i = 0; i < m; i++) { if (ds[i] < 0) a = Math.min(a, -0.99 * s[i] / ds[i]); if (dl[i] < 0) a = Math.min(a, -0.99 * lam[i] / dl[i]); }
-    z = z.map((v, i) => v + a * dz[i]); s = s.map((v, i) => v + a * ds[i]); lam = lam.map((v, i) => v + a * dl[i]); nu = nu.map((v, i) => v + a * dnu[i]);
-  }
-  return { z, lam, obj: 0.5 * quad(H, z) + dot(f, z), maxViolation: Math.max(...g.map((gi, i) => dot(G[i], z) - gi), ...e.map((ei, i) => Math.abs(dot(E[i], z) - ei)), 0) };
-}
-function predictionMatrices(A, B, N) { const n = 2, Sx = zeros(N * n, n), Su = zeros(N * n, N); let Ap = eye(n); const powers = [Ap]; for (let i = 1; i <= N; i++) { Ap = mm(A, Ap); powers.push(Ap); } for (let i = 0; i < N; i++) { for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) Sx[i * n + r][c] = powers[i + 1][r][c]; for (let j = 0; j <= i; j++) { const blk = mm(powers[i - j], B); for (let r = 0; r < n; r++) Su[i * n + r][j] = blk[r][0]; } } return { Sx, Su }; }
-/* the condensed MPC: terminal = {kind: "zero"} | {kind: "set", H, h} | {kind: "none"} */
-function makeMPC(A, B, Q, R, N, P, xlb, xub, umin, umax, terminal) {
-  const n = 2, { Sx, Su } = predictionMatrices(A, B, N), Qbar = zeros(N * n, N * n);
-  for (let i = 0; i < N; i++) { const W = i === N - 1 ? P : Q; for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) Qbar[i * n + r][i * n + c] = W[r][c]; }
-  const SuTQ = mm(tr(Su), Qbar), H = mm(SuTQ, Su).map((r, i) => r.map((v, j) => 2 * (v + (i === j ? R : 0)))), F = mm(SuTQ, Sx).map(r => r.map(v => 2 * v)), SxTQSx = mm(tr(Sx), mm(Qbar, Sx));
-  return { A, B, N, Q, R, P, Sx, Su, terminal, solve(x0) {
-    const f = mv(F, x0), Sxx = mv(Sx, x0), G = [], g = [], E = [], e = [];
-    for (let r = 0; r < N * n; r++) { const k = r % n; G.push(Su[r]); g.push(xub[k] - Sxx[r]); G.push(Su[r].map(v => -v)); g.push(-xlb[k] + Sxx[r]); }
-    for (let j = 0; j < N; j++) { const ej = new Array(N).fill(0); ej[j] = 1; G.push(ej); g.push(umax); G.push(ej.map(v => -v)); g.push(-umin); }
-    const SuN = Su.slice(-n), SxNx = Sxx.slice(-n);
-    if (terminal.kind === "zero") { E.push(SuN[0], SuN[1]); e.push(-SxNx[0], -SxNx[1]); }
-    else if (terminal.kind === "set") terminal.H.forEach((row, i) => { G.push(SuN[0].map((_, j) => row[0] * SuN[0][j] + row[1] * SuN[1][j])); g.push(terminal.h[i] - dot(row, SxNx)); });
-    const r = solveQP(H, f, G, g, E, e), X = []; const Xs = Sxx.map((v, i) => v + dot(Su[i], r.z)); for (let i = 0; i < N; i++) X.push([Xs[i * n], Xs[i * n + 1]]);
-    const J = quad(Q, x0) + r.obj + quad(SxTQSx, x0);   // the full finite-horizon value: x0'Qx0 + sum_1^{N-1} x'Qx + sum u'Ru + xN'PxN
-    return { U: r.z, X, J, feasible: r.maxViolation < 1e-6 };
-  } };
-}
-function closedLoop(mpc, x0, steps = 40, tol = 1e-3) {
-  let x = x0.slice(); const xs = [x.slice()], us = [], vals = [], stages = []; let infeasibleAt = -1;
-  for (let t = 0; t < steps; t++) { const sol = mpc.solve(x); if (!sol.feasible) { infeasibleAt = t; break; } const u = sol.U[0]; vals.push(sol.J); stages.push(quad(mpc.Q, x) + mpc.R * u * u); us.push(u); x = mv(mpc.A, x).map((v, i) => v + mpc.B[i][0] * u); xs.push(x.slice()); if (Math.hypot(...x) < tol) break; }
-  const resid = vals.slice(1).map((v, t) => v - vals[t] + stages[t]);
-  return { xs, us, vals, stages, resid, infeasibleAt };
-}
-/* ---- chapter 09 additions: the condensed QP data, a feasibility LP, the LMPC of chapter 05 on this system ---- */
+/* ---- this lab's additions: the condensed QP data, a feasibility LP, the LMPC of lab B2 on this system ---- */
 function condensed(mpc, x0) {   /* exercise B.1: 1/2 U'HU + f'U + c with G U <= w; the rows are named for the KKT widget */
   const n = 2, N = mpc.N, { Sx, Su } = mpc, Qbar = zeros(N * n, N * n);
   for (let i = 0; i < N; i++) { const W = i === N - 1 ? mpc.P : mpc.Q; for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) Qbar[i * n + r][i * n + c] = W[r][c]; }
@@ -136,9 +52,7 @@ function completeToOrigin(A, B, X, U) {   /* two-step deadbeat completion [AB B]
   let xc = x; for (const u of [u0, u1]) { xc = mv(A, xc).map((v, i) => v + b[i] * u); U.push(u); X.push(xc); } X[X.length - 1] = [0, 0]; return { X, U, bridge: [u0, u1] };
 }
 function convexSafeValue(x, S, J) { const M = S.length, G = [], g = []; for (let r = 0; r < M; r++) { const row = new Array(M).fill(0); row[r] = -1; G.push(row); g.push(0); } const E = [S.map(s => s[0]), S.map(s => s[1]), new Array(M).fill(1)], e = [x[0], x[1], 1]; const r = solveQP(zeros(M, M), J.slice(), G, g, E, e, 120); return { value: dot(r.z, J), lam: r.z, ok: r.maxViolation < 1e-6 }; }
-/* NET-END */
 
-function legend(ctx, lines, x, y, narrow) { ctx.fillStyle = css("--muted"); ctx.font = "11px " + css("--font-mono"); ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; const out = narrow ? lines.flatMap(l => l.split(" · ")) : lines; out.forEach((l, i) => ctx.fillText(l, x, y + 13 * i)); }
 function drawPoly(fr, V, stroke, width = 1.5, dash = null, fill = null) { if (V.length < 3) return; const { ctx, X, Y } = fr; ctx.beginPath(); V.forEach((v, i) => i ? ctx.lineTo(X(v[0]), Y(v[1])) : ctx.moveTo(X(v[0]), Y(v[1]))); ctx.closePath(); if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.stroke(); ctx.setLineDash([]); } }
 const phaseFrame = (cv, narrow, big) => frame(cv, narrow ? 1.15 : (big ? 1.5 : 1.7), { x: [-4.6, 4.6], y: [-3.5, 3.5], xlabel: "position p", ylabel: "velocity v", xticks: [-4, -2, 0, 2, 4], yticks: [-3, -2, -1, 0, 1, 2, 3] });
 
@@ -184,7 +98,7 @@ function drawHero() {
   let text = `${hs.design === "terminal" ? "MPC with the LQR terminal ingredients" : "Plain MPC, no terminal cost and no terminal set"}, [[N = ${hs.N}]], from the ${S.feas} feasible starts of the ${GRID.length}-state grid${hs.design === "terminal" ? ` (every grid state of [[\\mathcal X_{${hs.N}} = \\mathcal K_{${hs.N}}(\\mathcal X_f)]])` : `, the grid states of [[\\mathcal K_{${hs.N}}(\\mathcal X)]]${S.doomed ? `, of which ${S.doomed} are doomed: feasible now, outside [[\\mathcal C_\\infty]]` : ""}`}. `;
   if (hs.design === "terminal") text += `Every closed loop stayed feasible${S.lost ? " except " + S.lost : ""}, entered [[\\mathcal X_f]] within ${S.enter} steps and converged; the largest decrease residual [[J_N^\\star(x^+) - J_N^\\star(x) + q(x, u)]] over all steps is ${S.resid.toExponential(1)}, zero up to solver tolerance, and the worst closed-loop cost is ${fmt(S.worst, 4)} times [[J_\\infty^\\star]]. `;
   else text += `${S.lost} closed loops lost feasibility (${S.lostC} from starts inside [[\\mathcal C_\\infty]], ${S.lost - S.lostC} from doomed starts), ${S.noconv} stayed feasible without converging in 40 steps; ${Number.isNaN(S.worst) ? "no converged run to compare" : `among the converged runs the worst cost is ${fmt(S.worst, 4)} times [[J_\\infty^\\star]] and ${S.over20} starts pay more than 20 percent extra`}. ${S.resid > 1e-6 ? `The decrease inequality fails: the largest residual is ${S.resid.toExponential(1)}, as it must with [[V_f = 0]], where a longer horizon can only add cost.` : ""} `;
-  if (pr) text += `The probe at [[(${fmt(pr.x0[0], 1)}, ${fmt(pr.x0[1], 1)})]]: ${pr.infeasibleAt >= 0 ? `the QP became infeasible at step ${pr.infeasibleAt}` : `${pr.us.length} steps, closed-loop cost ${fmt(pr.stages.reduce((s, v) => s + v, 0), 4)} against [[J_\\infty^\\star = ${fmt(jinf(pr.x0), 4)}]]${pr.enter >= 0 ? `, inside [[\\mathcal X_f]] from step ${pr.enter}` : ""}, largest residual ${Math.max(...pr.resid, -Infinity).toExponential(1)}`}${nb ? ". This is the notebook's start for the comparisons of Parts 4 and 5" : ""}. `;
+  if (pr) text += `The probe at [[(${fmt(pr.x0[0], 1)}, ${fmt(pr.x0[1], 1)})]]: ${pr.infeasibleAt >= 0 ? `the QP became infeasible at step ${pr.infeasibleAt}` : `${pr.us.length} steps, closed-loop cost ${fmt(pr.stages.reduce((s, v) => s + v, 0), 4)} against [[J_\\infty^\\star = ${fmt(jinf(pr.x0), 4)}]]${pr.enter >= 0 ? `, inside [[\\mathcal X_f]] from step ${pr.enter}` : ""}, largest residual ${Math.max(...pr.resid, -Infinity).toExponential(1)}`}${nb ? ". This is the lab's start for the comparisons of Parts 4 and 5" : ""}. `;
   else text += "The probe is not a feasible start for this design. ";
   text += "Tap a grid state to move the probe.";
   caption($("#heroStatus"), text);
@@ -218,7 +132,7 @@ function drawFeasible() {
   const rows = KXF.map((S, N) => ({ N, a: area(vertices(S)), nested: N === 0 || vertices(KXF[N - 1]).every(v => contains(S, v, 1e-9)), eq: approxEqual(S, CINF, 1e-7) }));
   $("#fsT").innerHTML = "<thead><tr><th>N</th><th>area of X_N</th><th>fraction of C_inf</th><th>X_(N−1) inside X_N</th><th>X_N = C_inf</th></tr></thead><tbody>" + rows.map(r => `<tr><td>${r.N}</td><td>${fmt(r.a, 4)}</td><td>${fmt(r.a / area(VC), 4)}</td><td class="words">${r.nested ? "yes" : "no"}</td><td class="words">${r.eq ? "yes" : "no"}</td></tr>`).join("") + "</tbody>";
   const first = rows.find(r => r.eq);
-  caption($("#fsCap"), `The feasible sets [[\\mathcal X_N = \\mathcal K_N(\\mathcal X_f)]] computed with chapter 02's recursion. They are nested and grow quickly: ${fmt(100 * rows[1].a / area(VC), 0)} percent of [[\\mathcal C_\\infty]] for [[N = 1]], ${fmt(100 * rows[3].a / area(VC), 0)} percent for [[N = 3]], and all of it from [[N = ${first ? first.N : "?"}]]. From that horizon on the terminal constraint costs no region of attraction; below it, states of [[\\mathcal C_\\infty \\setminus \\mathcal X_N]] are rejected although some controller could keep them in [[\\mathcal X]]. Each [[\\mathcal X_N]] is control invariant: from a state of [[\\mathcal K_N]] some admissible input reaches [[\\mathcal K_{N-1} \\subseteq \\mathcal K_N]]. That set-level statement is recursive feasibility.`);
+  caption($("#fsCap"), `The feasible sets [[\\mathcal X_N = \\mathcal K_N(\\mathcal X_f)]] computed with chapter A9's recursion. They are nested and grow quickly: ${fmt(100 * rows[1].a / area(VC), 0)} percent of [[\\mathcal C_\\infty]] for [[N = 1]], ${fmt(100 * rows[3].a / area(VC), 0)} percent for [[N = 3]], and all of it from [[N = ${first ? first.N : "?"}]]. From that horizon on the terminal constraint costs no region of attraction; below it, states of [[\\mathcal C_\\infty \\setminus \\mathcal X_N]] are rejected although some controller could keep them in [[\\mathcal X]]. Each [[\\mathcal X_N]] is control invariant: from a state of [[\\mathcal K_N]] some admissible input reaches [[\\mathcal K_{N-1} \\subseteq \\mathcal K_N]]. That set-level statement is recursive feasibility.`);
 }
 
 /* =====================================================================
@@ -265,7 +179,7 @@ function drawLMPC() {
   if (res) { const c = res.store.costs, inc = Math.max(-Infinity, ...c.slice(1).map((v, j) => v - c[j])); text += `LMPC with [[N = ${lm.N}]] and all stored data${lm.running === lm.N ? `, iteration ${res.iterations.length + 1} of 10 running` : ""}: after ${res.iterations.length} iteration${res.iterations.length === 1 ? "" : "s"} the cost is ${fmt(c[c.length - 1], 6)}, ${((c[c.length - 1] - JS) / JS).toExponential(2)} above [[J_\\infty^\\star]] relatively; the largest increase between iterations is ${Number.isFinite(inc) ? inc.toExponential(1) : "none yet"} (guaranteed non-positive up to solver tolerance); ${res.store.S.length} stored states${res.failed ? `; then it failed at ${res.failed}` : ""}. `; }
   const done = [2, 3, 4].filter(N => lm.runs[N] && lm.runs[N].iterations.length === 10);
   if (done.length) text += `Final relative gaps: ${done.map(N => `[[N = ${N}]]: ${((lm.runs[N].store.costs[10] - JS) / JS).toExponential(2)}`).join(", ")}. `;
-  text += `One iteration removes almost all of the excess for every horizon; then the horizons part ways. With [[N = 4]] the gap keeps falling and the trajectory joins the optimal one; with [[N = 2]] and [[N = 3]] it stalls after the first iteration, and the notebook's brute-force search confirms that the plateau is not a solver artefact: the best [[N = 2]] plan at [[x_S]] with the data of iteration 10 costs exactly the stored trajectory's cost. The mechanism is the terminal cost: to improve, a plan must end elsewhere in [[CS^j]], where [[V_c^j]] interpolates the costs of suboptimal trajectories and over-estimates the optimal cost-to-go. A gain that appears only later in the tail is invisible to a short plan.`;
+  text += `One iteration removes almost all of the excess for every horizon; then the horizons part ways. With [[N = 4]] the gap keeps falling and the trajectory joins the optimal one; with [[N = 2]] and [[N = 3]] it stalls after the first iteration, and the numbers script's brute-force search confirms that the plateau is not a solver artefact: the best [[N = 2]] plan at [[x_S]] with the data of iteration 10 costs exactly the stored trajectory's cost. The mechanism is the terminal cost: to improve, a plan must end elsewhere in [[CS^j]], where [[V_c^j]] interpolates the costs of suboptimal trajectories and over-estimates the optimal cost-to-go. A gain that appears only later in the tail is invisible to a short plan.`;
   caption($("#lmCap"), text);
 }
 $$("#lmW [data-n]").forEach(b => b.addEventListener("click", () => { lm.N = +b.dataset.n; if (!lm.runs[lm.N] && !lm.running) lmpcRun(lm.N, () => { drawLMPC(); setTimeout(drawB6, 20); }); drawLMPC(); }));
@@ -280,7 +194,7 @@ function drawKKT() {
   let price = null; if (active.length) { const k = mu.indexOf(Math.max(...mu)), i = active[k], eps = 1e-4, w2 = w.slice(); w2[i] += eps; const r2 = solveQP(H, f, G, w2, [], [], 120), J2 = 0.5 * quad(H, r2.z) + dot(f, r2.z) + c; price = { name: names[i], mu: mu[k], dJ: J2 - J, pred: -mu[k] * eps }; }
   $("#kkNV").textContent = N;
   let ev = Infinity; { const M = H.map(row => row.slice()); for (let s = 0; s < 50; s++) for (let p = 0; p < N; p++) for (let q = p + 1; q < N; q++) { if (Math.abs(M[p][q]) < 1e-14) continue; const th = (M[q][q] - M[p][p]) / (2 * M[p][q]), t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1)), cs = 1 / Math.sqrt(t * t + 1), sn = t * cs; for (let k = 0; k < N; k++) { const a = M[k][p], b = M[k][q]; M[k][p] = cs * a - sn * b; M[k][q] = sn * a + cs * b; } for (let k = 0; k < N; k++) { const a = M[p][k], b = M[q][k]; M[p][k] = cs * a - sn * b; M[q][k] = sn * a + cs * b; } } ev = Math.min(...M.map((row, i) => row[i])); }
-  caption($("#kkCap"), `The condensed QP at [[x_S]] with [[N = ${N}]] has ${G.length} constraint rows and a Hessian whose smallest eigenvalue is ${fmt(ev, 3)}, so the minimiser is unique: U* = (${U.map(u => fmt(u, 4)).join(", ")}), [[J_${N}^\\star(x_S) = ${fmt(J, 6)}]]. Active constraints: ${active.length ? active.map((i, k) => `${names[i]} with multiplier ${fmt(mu[k], 4)}`).join("; ") : "none"}; stationarity residual [[\\|HU^\\star + f + G_A^\\top \\mu\\|]] of ${stat.toExponential(1)}. ${price ? `A multiplier is the price of its constraint: relaxing "${price.name}" by [[10^{-4}]] changes the optimal cost by ${price.dJ.toExponential(4)}, against [[-\\mu_i \\varepsilon = ${price.pred.toExponential(4)}]].` : ""} ${N === 5 ? "This is the notebook's computation, which finds the single active constraint [[u_1 \\ge -1]] with multiplier 0.4944." : ""} Without inequalities the KKT system of the uncondensed problem reduces to the Riccati recursion, and with [[P]] from the DARE [[P_k = P]] for all [[k]]: that is why the MPC equals the LQR inside [[\\mathcal X_f]].`);
+  caption($("#kkCap"), `The condensed QP at [[x_S]] with [[N = ${N}]] has ${G.length} constraint rows and a Hessian whose smallest eigenvalue is ${fmt(ev, 3)}, so the minimiser is unique: U* = (${U.map(u => fmt(u, 4)).join(", ")}), [[J_${N}^\\star(x_S) = ${fmt(J, 6)}]]. Active constraints: ${active.length ? active.map((i, k) => `${names[i]} with multiplier ${fmt(mu[k], 4)}`).join("; ") : "none"}; stationarity residual [[\\|HU^\\star + f + G_A^\\top \\mu\\|]] of ${stat.toExponential(1)}. ${price ? `A multiplier is the price of its constraint: relaxing "${price.name}" by [[10^{-4}]] changes the optimal cost by ${price.dJ.toExponential(4)}, against [[-\\mu_i \\varepsilon = ${price.pred.toExponential(4)}]].` : ""} ${N === 5 ? "This is the lab's computation, which finds the single active constraint [[u_1 \\ge -1]] with multiplier 0.4944." : ""} Without inequalities the KKT system of the uncondensed problem reduces to the Riccati recursion, and with [[P]] from the DARE [[P_k = P]] for all [[k]]: that is why the MPC equals the LQR inside [[\\mathcal X_f]].`);
 }
 $("#kkN").addEventListener("input", drawKKT);
 
@@ -293,7 +207,7 @@ function drawB6() {
   const { S, J, U } = res.store, r = rng(7), resid = [], excess = [], rel = [];
   for (let k = 0; k < 40; k++) { const idx = []; while (idx.length < 3) { const i = Math.floor(r() * S.length); if (!idx.includes(i)) idx.push(i); } const a = [r(), r(), r()], t = a.reduce((s, v) => s + v, 0), lam0 = a.map(v => v / t), x = [0, 1].map(d => idx.reduce((s, i, k) => s + lam0[k] * S[i][d], 0)); const v = convexSafeValue(x, S, J); if (!v.ok) continue; const u = dot(v.lam, U), xn = mv(A, x).map((q, i) => q + B[i][0] * u), vn = convexSafeValue(xn, S, J); if (!vn.ok) continue; resid.push(vn.value - v.value + stageCost(Q, R, x, u)); const Jx = jinf(x); excess.push(v.value - Jx); if (Jx >= 0.1) rel.push((v.value - Jx) / Jx); }
   rel.sort((a, b) => a - b);
-  caption($("#b6Cap"), `With the ${S.length} stored states of the [[N = ${lm.N}]] run, ${resid.length} random convex combinations of three stored states: the decrease residual [[V_c(x^+) - V_c(x) + q(x, u)]] with [[u = \\sum_i \\lambda_i u_i]] is at most ${Math.max(...resid).toExponential(1)} (inequality (b) holds to round-off), [[V_c - J_\\infty^\\star]] is at least ${Math.min(...excess).toExponential(1)} (never below the optimum), and between stored states [[V_c]] over-estimates [[J_\\infty^\\star]] by a median of ${fmt(100 * rel[Math.floor(rel.length / 2)], 0)} percent over the ${rel.length} points with [[J_\\infty^\\star \\ge 0.1]]. The notebook's random points give medians of 57 percent with the [[N = 2]] data and 77 percent with the [[N = 4]] data. LMPC still reaches the optimum with [[N = 4]] because [[V_c]] only needs to be accurate near the optimal trajectory, where the stored states accumulate.`);
+  caption($("#b6Cap"), `With the ${S.length} stored states of the [[N = ${lm.N}]] run, ${resid.length} random convex combinations of three stored states: the decrease residual [[V_c(x^+) - V_c(x) + q(x, u)]] with [[u = \\sum_i \\lambda_i u_i]] is at most ${Math.max(...resid).toExponential(1)} (inequality (b) holds to round-off), [[V_c - J_\\infty^\\star]] is at least ${Math.min(...excess).toExponential(1)} (never below the optimum), and between stored states [[V_c]] over-estimates [[J_\\infty^\\star]] by a median of ${fmt(100 * rel[Math.floor(rel.length / 2)], 0)} percent over the ${rel.length} points with [[J_\\infty^\\star \\ge 0.1]]. The numbers script's random points give medians of 45 percent with the [[N = 2]] data and 60 percent with the [[N = 4]] data. LMPC still reaches the optimum with [[N = 4]] because [[V_c]] only needs to be accurate near the optimal trajectory, where the stored states accumulate.`);
 }
 
 function drawAll() { drawHero(); drawIngredients(); drawFeasible(); drawPlain(); drawLMPC(); drawKKT(); drawB6(); }
