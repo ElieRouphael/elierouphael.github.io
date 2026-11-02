@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>C3 · Nonlinear MPC by successive linearisation · Advanced MPC and Learning MPC</title>
+<meta name="description" content="The unicycle&#x27;s finite-horizon problem solved by linearising along the current plan and solving a QP in the step, repeated to convergence: the Jacobians, time-varying prediction matrices, the linearised terminal pose with its defect, linear convergence against SLSQP, the elastic mode that keeps every QP feasible, and the real-time iteration that solves one QP per sample in closed loop.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102223319">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part C, Beyond the nominal case · Chapter C3 of 4</span>
+  <h1>Nonlinear MPC by successive linearisation</h1>
+  <p class="lede">Chapter A5 handed the unicycle to SciPy's SLSQP and called it a black box. This chapter opens that box with the tools the course already has: linearise the dynamics along the current plan, which turns the nonlinear finite-horizon problem into a quadratic program in the correction to the plan, solve it with the course's own solver, add the correction, repeat. Fifteen such steps reach the same pose, cost and inputs as SLSQP. Then the same idea runs in closed loop, one linearisation and one QP per sample, and recovers from a push. Below, drag through the iterations and push the robot.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A4, A5 and A6 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/c03_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The unicycle's plan in the plane: at each successive-linearisation iteration, or in closed loop under a push</p>
+      <canvas id="planeC" aria-label="The unicycle path from the origin to the target pose, with the plan at the chosen iteration of the successive linearisation, or the closed-loop path of the real-time iteration with a push" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="seg stack" role="group" aria-label="Initial guess">
+      <button class="btn" type="button" data-guess="guess" aria-pressed="true">from the guess of chapter A5</button>
+      <button class="btn" type="button" data-guess="straight" aria-pressed="false">from straight ahead, v = 0.5</button>
+      <button class="btn" type="button" data-guess="zeros" aria-pressed="false">from all zeros (elastic mode)</button>
+    </div>
+    <label class="field"><span>Open loop: show iteration <b id="hIterV"></b></span>
+      <span class="row"><input type="range" id="hIter" min="0" max="15" step="1" value="15"></span>
+    </label>
+    <div class="seg" role="group" aria-label="Mode">
+      <button class="btn" type="button" data-mode="open" aria-pressed="true">open-loop iterations</button>
+      <button class="btn" type="button" data-mode="closed" aria-pressed="false">closed loop, one QP per sample</button>
+    </div>
+    <label class="field"><span>Push at sample <b id="hPushAtV"></b></span>
+      <span class="row"><input type="range" id="hPushAt" min="2" max="28" step="1" value="10"></span>
+    </label>
+    <label class="field"><span>Push size in <span class="m">Y</span> (and <span class="m">0.75\times</span> in <span class="m">\theta</span>): <b id="hPushSizeV"></b></span>
+      <span class="row"><input type="range" id="hPushSize" min="0" max="0.4" step="0.05" value="0.15"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>cost</span><span class="v" id="rCost">–</span>
+      <span>terminal residual</span><span class="v" id="rRes">–</span>
+      <span id="lblStep">largest |δU| of the last step</span><span class="v" id="rStep">–</span>
+      <span>iterations</span><span class="v" id="rIters">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the chapter's run</button></div>
+    <p class="hint">Unicycle <span class="m">\dot X = v\cos\theta</span>, <span class="m">\dot Y = v\sin\theta</span>, <span class="m">\dot\theta = \omega</span>, Euler at <span class="m">T_s = 0.2</span>; from <span class="m">(0, 0, 0)</span> to <span class="m">(2, 1, 0)</span> in <span class="m">N = 30</span> steps, <span class="m">|v|, |\omega| \le 1</span>, rates at most <span class="m">0.2</span>, cost <span class="m">0.05 \sum \lVert u_k \rVert^2 + 0.10 \sum \lVert u_k - u_{k-1} \rVert^2</span>. Every QP is solved here by the course's interior-point method.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#problem"><span class="n">1</span><span class="t">The problem, and what makes it nonlinear</span><span class="d">The unicycle, the guess, and what makes it nonlinear</span></a>
+    <a href="#linearise"><span class="n">2</span><span class="t">Linearise along the plan</span><span class="d">Jacobians and time-varying prediction matrices</span></a>
+    <a href="#step"><span class="n">3</span><span class="t">One QP in the correction</span><span class="d">One QP in the correction, with the pose as a linearised equality</span></a>
+    <a href="#convergence"><span class="n">4</span><span class="t">Fifteen steps to the pose</span><span class="d">Fifteen steps, a constant factor, SLSQP</span></a>
+    <a href="#elastic"><span class="n">5</span><span class="t">When the linearised equality cannot be met</span><span class="d">When the linearised equality is inconsistent: the exact penalty</span></a>
+    <a href="#rti"><span class="n">6</span><span class="t">The real-time iteration: one QP per sample</span><span class="d">One QP per sample, in closed loop</span></a>
+    <a href="#guarantees"><span class="n">7</span><span class="t">What is and is not certified</span><span class="d">What is and is not certified</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The code behind it</span><span class="d">The functions written for this chapter</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="problem">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The problem, and what makes it nonlinear</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The unicycle.</strong> A robot at position <span class="m">(X, Y)</span> with heading <span class="m">\theta</span>, driven by a forward speed <span class="m">v</span> and a turning rate <span class="m">\omega</span>: <span class="m">\dot X = v\cos\theta</span>, <span class="m">\dot Y = v\sin\theta</span>, <span class="m">\dot\theta = \omega</span>. One Euler step of length <span class="m">T_s = 0.2</span> is</p>
+<div class="math-block" data-narrow="z_{k+1} = \begin{pmatrix} X_k + T_s v_k \cos\theta_k \ Y_k + T_s v_k \sin\theta_k \ \theta_k + T_s \omega_k \end{pmatrix}">z_{k+1} = f(z_k, u_k) = \begin{pmatrix} X_k + T_s v_k \cos\theta_k \\ Y_k + T_s v_k \sin\theta_k \\ \theta_k + T_s \omega_k \end{pmatrix}, \qquad z = (X, Y, \theta),\quad u = (v, \omega).</div>
+<p><strong>The task of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>.</strong> Reach the pose <span class="m">z_f = (2, 1, 0)</span> from <span class="m">z_0 = (0, 0, 0)</span> in exactly <span class="m">N = 30</span> steps, with <span class="m">|v_k| \le 1</span>, <span class="m">|\omega_k| \le 1</span> and <span class="m">|u_k - u_{k-1}| \le 0.2</span> componentwise, minimising effort and roughness,</p>
+<div class="math-block" data-narrow="A_k = \begin{pmatrix} 1 &amp; 0 &amp; -T_s v_k \sin\theta_k \ 0 &amp; 1 &amp; T_s v_k \cos\theta_k \ 0 &amp; 0 &amp; 1 \end{pmatrix}, \quad B_k = \begin{pmatrix} T_s \cos\theta_k &amp; 0 \ T_s \sin\theta_k &amp; 0 \ 0 &amp; T_s \end{pmatrix}">J(U) = 0.05 \sum_{k=0}^{N-1} \lVert u_k \rVert^2 + 0.10 \sum_{k=1}^{N-1} \lVert u_k - u_{k-1} \rVert^2 .</div>
+<p><strong>Where the nonlinearity sits.</strong> The cost is a quadratic in the stacked inputs <span class="m">U</span>, the input and rate bounds are linear in <span class="m">U</span>. Only one thing is not: the final pose <span class="m">z_N</span> depends on <span class="m">U</span> through thirty compositions of <span class="m">f</span>, with the heading entering through <span class="m">\sin\theta</span> and <span class="m">\cos\theta</span>. The terminal equality <span class="m">z_N(U) = z_f</span> is a nonlinear equation in <span class="m">U</span>, and that one equation makes the whole problem a nonlinear program: there is no prediction identity <span class="m">X = \mathcal S_x x_0 + \mathcal S_u U</span> as in chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>, and chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> had to hand the problem to SciPy's SLSQP, a sequential quadratic programming method, which found cost <span class="m">0.3167</span> from the guess &quot;drive, turn, unwind&quot; (ten steps at <span class="m">v = 0.8</span>, <span class="m">\omega = 0.3</span>, ten at <span class="m">0.6</span>, <span class="m">-0.3</span>, ten at <span class="m">0.4</span>, <span class="m">0</span>). That guess costs <span class="m">0.7230</span> and ends at <span class="m">(3.44, 0.80, 0)</span>, a whole 1.44 past the target in <span class="m">X</span>.</p>
+<div class="define"><p class="define-title">What is successive linearisation?</p>
+<p><strong>In plain words:</strong> pretend the robot is linear around the plan you have, solve the resulting QP for a correction to the plan, apply the correction, and repeat with the corrected plan as the new linearisation point. Each round is a problem the course already knows how to solve; the rounds converge to a plan that satisfies the true, nonlinear pose constraint.</p>
+<p><strong>More precisely:</strong> with a plan <span class="m">\bar U</span> and its rollout <span class="m">\bar Z</span>, the dynamics are replaced by their first-order expansion <span class="m">\delta z_{k+1} = A_k \delta z_k + B_k \delta u_k</span> along <span class="m">(\bar Z, \bar U)</span>, the terminal map by <span class="m">z_N(\bar U + \delta U) \approx \bar z_N + M \delta U</span> with <span class="m">M = \partial z_N / \partial U</span>, and the problem by the QP <span class="m">\min_{\delta U} J(\bar U + \delta U)</span> subject to the bounds on <span class="m">\bar U + \delta U</span> and <span class="m">M \delta U = z_f - \bar z_N</span>. Then <span class="m">\bar U \leftarrow \bar U + \delta U</span>. It is sequential quadratic programming without the second-order terms of the constraint, a Gauss–Newton iteration on the terminal map.</p>
+<dl><dt>Linearisation point</dt><dd>The current plan and its rollout: the place where the Jacobians are evaluated.</dd><dt>Defect <span class="m">z_f - \bar z_N</span></dt><dd>How far the current plan ends from the pose; the right-hand side of the linearised equality.</dd><dt>Correction <span class="m">\delta U</span></dt><dd>The QP's decision variable: the change to make to the plan.</dd><dt>Real-time iteration</dt><dd>One such QP per sample, in closed loop, instead of iterating to convergence.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="linearise">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Linearise along the plan</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The Jacobians.</strong> Differentiating the Euler step at a point <span class="m">(z, u)</span>,</p>
+<div class="math-block">A_k = \frac{\partial f}{\partial z} = \begin{pmatrix} 1 &amp; 0 &amp; -T_s v_k \sin\theta_k \\ 0 &amp; 1 &amp; T_s v_k \cos\theta_k \\ 0 &amp; 0 &amp; 1 \end{pmatrix}, \qquad B_k = \frac{\partial f}{\partial u} = \begin{pmatrix} T_s \cos\theta_k &amp; 0 \\ T_s \sin\theta_k &amp; 0 \\ 0 &amp; T_s \end{pmatrix}.</div>
+<p>Read them: a change of heading moves the next position sideways, in proportion to the speed; a change of speed moves it along the current heading; the turning rate acts only on the heading. At step 10 of the guess, where <span class="m">\theta = 0.600</span> and <span class="m">v = 0.6</span>, the third column of <span class="m">A_{10}</span> is <span class="m">(-0.0678, 0.0990, 1)</span> and the first column of <span class="m">B_{10}</span> is <span class="m">(0.1651, 0.1129, 0)</span>. The matrices change along the plan: the model is linear time-varying, the LTV class of chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>.</p>
+<p><strong>Time-varying prediction matrices.</strong> Chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> stacked the states of an LTI system with powers of <span class="m">A</span>. With a different <span class="m">A_k</span> at every step the powers become products, and the identity reads</p>
+<div class="math-block" data-narrow="[\mathcal S_u]<em>{i, j} = A</em>{i-1} \cdots A_{j+1} B_j,\ j &lt; i;\quad [\mathcal S_u]_{i,i} = B_i">\begin{pmatrix} \delta z_1 \\ \delta z_2 \\ \vdots \\ \delta z_N \end{pmatrix} = \mathcal S_x \delta z_0 + \mathcal S_u \delta U, \qquad [\mathcal S_u]_{i, j} = A_{i-1} A_{i-2} \cdots A_{j+1} B_j \quad (j &lt; i), \qquad [\mathcal S_u]_{i, i} = B_i .</div>
+<p>For the pose only the last block row matters, <span class="m">M = \partial z_N / \partial U</span>, a <span class="m">3 \times 60</span> matrix whose block <span class="m">j</span> is <span class="m">A_{N-1} \cdots A_{j+1} B_j</span>: how an input change at step <span class="m">j</span>, propagated through every later step, moves the final pose. Along the guess, perturbing the inputs by <span class="m">10^{-4}</span> and comparing the linear prediction with the true rollout gives an error of <span class="m">9.6 \times 10^{-9}</span>: second order in the perturbation, as a first-order expansion should be. The matrix <span class="m">M</span> has rank 3 there, so every direction of the pose can be reached by a first-order change of the inputs.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="step">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>One QP in the correction</h2>
+  </div>
+  <div class="col prose">
+
+<p>With the plan <span class="m">\bar U</span> and its rollout <span class="m">\bar Z</span>, the step solves</p>
+<div class="math-block" data-narrow="\begin{aligned} \min_{\delta U}\ &amp; \tfrac12, \delta U^\top H \delta U + (H \bar U)^\top \delta U \ \text{s.t. } &amp; -1 \le \bar U + \delta U \le 1, \ &amp; |D(\bar U + \delta U)| \le 0.2, \ &amp; M \delta U = z_f - \bar z_N . \end{aligned}">\min_{\delta U}\ \tfrac12\, \delta U^\top H \delta U + (H \bar U)^\top \delta U \quad \text{s.t.}\quad -1 \le \bar U + \delta U \le 1, \quad |D(\bar U + \delta U)| \le 0.2, \quad M \delta U = z_f - \bar z_N ,</div>
+<p>where <span class="m">H = 2(0.05\, I + 0.10\, D^\top D)</span> is the cost's Hessian and <span class="m">D</span> the difference matrix of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>, so that <span class="m">J(\bar U + \delta U) = J(\bar U) + (H\bar U)^\top \delta U + \tfrac12 \delta U^\top H \delta U</span> exactly, with no approximation at all. The bounds are linear in <span class="m">\delta U</span> since <span class="m">\bar U</span> is a constant. The only approximation is the last row: the pose at the end of the corrected plan is predicted by the linearisation, <span class="m">\bar z_N + M \delta U</span>, and asked to equal <span class="m">z_f</span>; the right-hand side is the defect, how far the current plan misses.</p>
+<p>This is a convex QP with 60 variables, 116 inequality rows and 3 equalities, handed to the solver of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>, which returns the correction and, with it, the multipliers of the three pose rows. After the update <span class="m">\bar U \leftarrow \bar U + \delta U</span> the true rollout ends somewhere else than the linear prediction said, because the prediction was first order; the next iteration linearises there. Convergence means that the defect, and with it the correction, go to zero.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="convergence">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Fifteen steps to the pose</h2>
+  </div>
+  <div class="col prose">
+
+<p>From chapter A5's guess the iteration goes like this (the numbers script prints the table):</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>iteration</th>
+<th>cost</th>
+<th>terminal residual</th>
+<th>largest <span class="m">\lvert \delta U \rvert</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.270984</td>
+<td><span class="m">1.85 \times 10^{-1}</span></td>
+<td>0.476</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.317834</td>
+<td><span class="m">7.84 \times 10^{-3}</span></td>
+<td>0.115</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.316598</td>
+<td><span class="m">5.89 \times 10^{-4}</span></td>
+<td>0.038</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.316679</td>
+<td><span class="m">1.17 \times 10^{-4}</span></td>
+<td><span class="m">8.3 \times 10^{-3}</span></td>
+</tr>
+<tr>
+<td>5</td>
+<td>0.316694</td>
+<td><span class="m">1.92 \times 10^{-5}</span></td>
+<td><span class="m">3.7 \times 10^{-3}</span></td>
+</tr>
+<tr>
+<td>7</td>
+<td>0.316697</td>
+<td><span class="m">6.02 \times 10^{-7}</span></td>
+<td><span class="m">6.0 \times 10^{-4}</span></td>
+</tr>
+<tr>
+<td>10</td>
+<td>0.316697</td>
+<td><span class="m">3.21 \times 10^{-9}</span></td>
+<td><span class="m">3.8 \times 10^{-5}</span></td>
+</tr>
+<tr>
+<td>15</td>
+<td>0.316697</td>
+<td><span class="m">4.97 \times 10^{-13}</span></td>
+<td><span class="m">4.9 \times 10^{-7}</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Read the table.</strong> The first step is large: it repairs the guess's rate violations (the guess jumps <span class="m">\omega</span> from <span class="m">0.3</span> to <span class="m">-0.3</span>, three times the allowed rate) and moves the end of the plan from 1.44 off to 0.19 off, at a cost that is still too low because the linear prediction overestimated what the step achieves. From the second step on, the residual falls by a factor of about six per iteration: <span class="m">0.075, 0.199, 0.164, 0.187, 0.168, 0.179</span> between consecutive rows. A constant factor is linear convergence. Newton's method on the full KKT system, with the second derivatives of the terminal map in the Lagrangian's Hessian, would converge quadratically; the Gauss–Newton step drops those terms, and pays with a few more iterations, each of which is a convex QP that the solver finishes in 11 Newton steps of its own.</p>
+<p><strong>The answer.</strong> After 15 iterations the pose is met to <span class="m">5 \times 10^{-13}</span> and the cost is <span class="m">0.316697</span>; the whole run takes about 60 ms. No input or rate bound is active at the solution: the largest speed is <span class="m">0.4585</span>, the largest turning rate <span class="m">0.3919</span>, the largest rate <span class="m">0.0298</span> against <span class="m">0.2</span>. The robot pulls away at <span class="m">(v, \omega) = (0.224, 0.390)</span>, turning hard while slow, carries most of its speed through the middle at <span class="m">v \approx 0.45</span> with the heading unwinding, and arrives aligned.</p>
+<p><strong>SLSQP, for comparison.</strong> SciPy's general-purpose sequential quadratic programming, from the same guess: 27 iterations, about three times the time, cost <span class="m">0.316697</span>, pose met to <span class="m">5 \times 10^{-12}</span>, and inputs that agree with the successive-linearisation plan to <span class="m">6.7 \times 10^{-6}</span>. The two methods are the same idea; SLSQP additionally updates a quasi-Newton approximation of the Lagrangian's Hessian and takes a line search, which is what a general solver must do when it knows nothing about the problem's structure. Here the structure is known, the cost is exactly quadratic, and the simplest version suffices. From the straight-ahead guess <span class="m">v = 0.5</span> the iteration needs 11 steps and lands on the same plan to <span class="m">2.4 \times 10^{-7}</span>.</p>
+<div class="widget" id="convW">
+  <div class="controls">
+    <label class="field"><span>Elastic-mode penalty <span class="m">\rho</span>: <b id="convRhoV"></b></span>
+      <span class="row"><input type="range" id="convRho" min="0" max="2" step="1" value="2"></span></label>
+  </div>
+  <canvas id="convC" aria-label="The terminal residual against the iteration on a logarithmic scale, for the hard linearised equality and for the elastic mode with the chosen penalty"></canvas>
+  <p class="caption" id="convCap"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="elastic">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>When the linearised equality cannot be met</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Two guesses the hard equality cannot start from.</strong> From all-zero inputs the first QP is infeasible. The reason is in the Jacobians: with <span class="m">v = 0</span> and <span class="m">\theta = 0</span> along the whole plan, the third column of every <span class="m">A_k</span> is zero and the second row of every <span class="m">B_k</span> is zero, so no first-order change of the inputs moves <span class="m">Y</span>. The matrix <span class="m">M</span> has rank 2 and the row <span class="m">\delta Y_N = 1</span> has no solution: a parked robot's sideways position is invisible to the linearised model. From random inputs in <span class="m">[-0.5, 0.5]</span> the rank is 3, but the defect of about 2 asks for a correction that the box <span class="m">|u| \le 1</span> and the rate bounds cannot deliver in one step. In both cases the hard equality is inconsistent with the other constraints, and the solver's independent certificate of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> says so.</p>
+<p><strong>The elastic mode.</strong> Replace the equality by <span class="m">M \delta U + s^+ - s^- = z_f - \bar z_N</span> with slacks <span class="m">s^\pm \ge 0</span>, and add <span class="m">\rho\, \mathbf 1^\top (s^+ + s^-)</span> to the cost: the <span class="m">\ell_1</span> exact penalty of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>, applied to the pose. The QP is now always feasible, and whenever the pose can be reached at a multiplier below <span class="m">\rho</span> the slacks are zero and the solution is unchanged. The multipliers of the three pose rows at the solution are <span class="m">(-0.093, -0.261, 0.210)</span>, the price of moving the required pose by one unit in <span class="m">X</span>, <span class="m">Y</span> and <span class="m">\theta</span>; so any <span class="m">\rho</span> above <span class="m">0.261</span> is exact. With <span class="m">\rho = 20</span> the iteration from the guess takes the same 15 steps to the same plan, to <span class="m">6 \times 10^{-14}</span>; from all zeros it takes 13 and from random inputs 19, all to the same cost <span class="m">0.316697</span>. With <span class="m">\rho = 1</span> it still converges in 15; with <span class="m">\rho = 0.1</span>, below the multiplier, it settles after 50 iterations on a plan that misses the pose by <span class="m">0.85</span> at the cheaper cost <span class="m">0.0797</span>: missing costs less than reaching, which is what a penalty that is not exact permits. The widget above draws the two paths.</p>
+<p><strong>A trust region.</strong> The step can also be bounded, <span class="m">|\delta U| \le \Delta</span> entrywise, to keep the linearisation honest when the guess is poor. With <span class="m">\rho = 20</span> and <span class="m">\Delta = 0.25</span> the iteration from the guess is unchanged, 15 steps; with <span class="m">\Delta = 0.1</span> the first QP is infeasible, because the guess's rate violation of <span class="m">0.6</span> cannot be repaired within the radius. On this problem the full step never overshoots and no trust region is needed; on a problem where it does, the standard remedy is to shrink <span class="m">\Delta</span> when the true cost or residual after the step is worse than the linear prediction promised, and to grow it when the prediction was good.</p>
+<p><strong>A target behind the start.</strong> For <span class="m">z_f = (0, 1, \pi)</span>, chapter A5's second target, the hard equality converges in 11 iterations to cost <span class="m">0.4941</span>, the elastic mode likewise, and SLSQP found the same. A reversing manoeuvre is no harder for the method than a forward one.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="rti">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The real-time iteration: one QP per sample</h2>
+  </div>
+  <div class="col prose">
+
+<p>Nonlinear MPC in closed loop would, at every sample, iterate the linearisation to convergence from the measured state and apply the first move. The real-time iteration does less: one linearisation and one QP per sample, along the plan shifted from the previous sample, and applies the first move of the corrected plan. The iterations that converge the open-loop problem are spread across the samples of the closed loop, and because the measured state moves only a little between samples, the one step per sample keeps up.</p>
+<p><strong>The experiment.</strong> The horizon shrinks with the time left, <span class="m">N - t</span> moves at sample <span class="m">t</span>, so that the pose is still required at step 30. The first move is rate-bounded against the input just applied, which the open-loop problem had no need for. The pose constraint is elastic with <span class="m">\rho = 20</span>, because a push late in the run can make the pose unreachable within the input and rate bounds in the samples that remain, and the QP must still return a move. At the chosen sample the state is pushed by <span class="m">(0, 0.15, 0.10)</span>, a sideways shove and a twist.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>push</th>
+<th>at sample</th>
+<th>final pose error</th>
+<th>closed-loop cost</th>
+<th>bounds respected</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>none</td>
+<td>–</td>
+<td><span class="m">0</span></td>
+<td>0.3177</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><span class="m">(0, 0.15, 0.10)</span></td>
+<td>10</td>
+<td><span class="m">0</span></td>
+<td>0.2886</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><span class="m">(0, 0.40, 0.30)</span></td>
+<td>10</td>
+<td><span class="m">0</span></td>
+<td>0.3409</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><span class="m">(0, 0.15, 0.10)</span></td>
+<td>25</td>
+<td><span class="m">(0, 0.139, 0)</span></td>
+<td>0.3750</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><span class="m">(0, 0.15, 0.10)</span></td>
+<td>28</td>
+<td><span class="m">(0, 0.154, 0.065)</span></td>
+<td>0.3307</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>noise of 0.01 on every state</td>
+<td>every</td>
+<td><span class="m">(0.008, 0.012, 0.015)</span></td>
+<td>0.3601</td>
+<td>yes</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Read the table.</strong> Without a push the closed loop re-solves the same problem from the states the plan predicted and costs <span class="m">0.3177</span>, a hair above the open-loop <span class="m">0.3167</span> because the one QP per sample is a step short of convergence at every sample. A push at sample 10 leaves twenty samples to recover, and the loop reaches the pose exactly; the shove in the right direction even lowers the cost, since it does part of the turning for free. A push at sample 25 leaves five samples, and the pose is missed by <span class="m">0.139</span> in <span class="m">Y</span>: with rates bounded by <span class="m">0.2</span> and <span class="m">\omega</span> by 1, the robot cannot turn and side-step that far in one second, and the elastic constraint reports the shortfall instead of an infeasible QP. A weaker penalty gives up more of the pose for a cheaper loop: <span class="m">\rho = 2</span> misses by <span class="m">0.146</span> at cost <span class="m">0.3555</span>, <span class="m">\rho = 0.5</span> by <span class="m">0.154</span> at <span class="m">0.3451</span>. Iterating to convergence at every sample instead, 153 QPs in all rather than 30, reproduces the one-QP loop's result for the push at sample 10 to the fourth decimal: the extra QPs buy nothing here.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="guarantees">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>What is and is not certified</h2>
+  </div>
+  <div class="col prose">
+
+<div class="callout warm">
+<p><strong>Convergence of the iteration is local, and the closed loop has no stability theorem.</strong> The successive linearisation converges to a point where the linearised problem has no correction, a KKT point of the nonlinear program, and only when started close enough to one; the elastic mode and the trust region widen the basin, they do not make it global. Chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>'s lesson stands: agreeing restarts, here the guess, straight ahead, zeros and random inputs all reaching <span class="m">0.316697</span>, are evidence about this problem, not a proof. The real-time iteration adds a second gap: its closed loop is not the closed loop of the converged nonlinear MPC, and neither has the terminal ingredients of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>. The recursive feasibility and the Lyapunov decrease proved there for linear MPC are not available; the elastic terminal constraint keeps the QP feasible, which is a property of the optimisation, not of the robot. Nonlinear MPC theory recovers the guarantees with a terminal set and cost built from the linearisation at the target, the quasi-infinite-horizon construction cited in lab <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a>, and with conditions on how far one QP per sample may lag the converged solution.</p>
+</div>
+<p>What the chapter does certify, numerically: every QP solved has its KKT residual below <span class="m">10^{-10}</span> and its multipliers in hand; the pose is met to round-off by the converged plan; every input and rate bound holds along every closed-loop run in the table; and the plan agrees with an independent solver's. That is the same standard the linear chapters hold themselves to, applied one linearisation at a time.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>Nothing in this chapter is in the course package except the solver. The numbers script contains the new functions; the demo script holds the same ones in JavaScript. Three of them are quoted here.</p>
+<pre><code class="language-python">def jacobians(z, u):
+    &quot;&quot;&quot;A_k = df/dz and B_k = df/du at the linearisation point (z, u).&quot;&quot;&quot;
+    th = z[2]; v = u[0]
+    A = np.array([[1.0, 0.0, -TS * v * np.sin(th)],
+                  [0.0, 1.0, TS * v * np.cos(th)],
+                  [0.0, 0.0, 1.0]])
+    B = np.array([[TS * np.cos(th), 0.0],
+                  [TS * np.sin(th), 0.0],
+                  [0.0, TS]])
+    return A, B
+</code></pre>
+<p>The derivatives of the Euler step, written out rather than obtained by automatic differentiation; for a model with more than three states that is the first thing to automate, and the Kalman course on this site shows how.</p>
+<pre><code class="language-python">def ltv_prediction(As, Bs):
+    &quot;&quot;&quot;[dz_1; ...; dz_N] = Sx dz_0 + Su [du_0; ...; du_{N-1}] for dz_{k+1} = A_k dz_k + B_k du_k.&quot;&quot;&quot;
+    n, m = Bs[0].shape; N = len(As)
+    Sx = np.zeros((N * n, n)); Su = np.zeros((N * n, N * m))
+    Phi = np.eye(n)
+    for i in range(N):
+        Phi = As[i] @ Phi                             # A_i ... A_0
+        Sx[i * n:(i + 1) * n] = Phi
+        P = np.eye(n)                                 # P = A_{i-1} ... A_{j+1}, built backwards in j
+        for j in range(i, -1, -1):
+            Su[i * n:(i + 1) * n, j * m:(j + 1) * m] = P @ Bs[j]
+            P = P @ As[j]
+    return Sx, Su
+</code></pre>
+<p>Compare with <code>prediction_matrices</code> of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>: the matrix powers have become ordered products, built backwards from the diagonal block <span class="m">B_i</span> so that each product is extended by one factor at a time. The demo needs only the last block row and builds it the same way.</p>
+<pre><code class="language-python"># the core of sqp(): one linearise-and-solve step with the hard terminal equality
+Z = rollout(z0, U)
+As, Bs = zip(*[jacobians(Z[k], U[k]) for k in range(N)])
+Sx, Su = ltv_prediction(list(As), list(Bs))
+M = Su[-n:]                                   # d z_N / d U along the plan
+defect = zf - Z[-1]                           # how far the plan's end is from the pose
+f = H @ U.reshape(-1)                         # J(U + dU) = 0.5 dU'H dU + (H U)' dU + J(U)
+lb = -UMAX - U.reshape(-1); ub = UMAX - U.reshape(-1)
+res = solve_qp(H, f, A_ub=G, b_ub=g - G @ U.reshape(-1), A_eq=M, b_eq=defect, lb=lb, ub=ub)
+U = U + res.x.reshape(N, m)
+</code></pre>
+<p>Five lines of setup and one call: the linearisation point, the terminal map and its defect, the cost's linear term at the current plan, the bounds shifted by the current plan, the solve, the update. The elastic mode adds six slack variables and the penalty to the same call; the closed loop calls it with <code>maxiter=1</code>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The QP solved, so the pose is met.&quot;</strong> The QP met the <em>linearised</em> pose. The true rollout of the corrected plan ends somewhere else, by an amount that is second order in the correction, and only the converged iteration meets the pose itself. Always roll the plan out and measure the defect.</li>
+<li><strong>&quot;The cost is approximated too.&quot;</strong> Not here: the cost is a quadratic in <span class="m">U</span> and the QP carries it exactly. Only the terminal map is linearised. For a cost that is not quadratic, its Hessian would be approximated as well, and that is what SLSQP's quasi-Newton update is for.</li>
+<li><strong>&quot;A linearisation always has a solution.&quot;</strong> From a standstill the linearised unicycle cannot move sideways; the rank of <span class="m">M</span> drops and the hard equality is inconsistent. The elastic mode exists for this.</li>
+<li><strong>&quot;A small penalty is a soft version of the constraint.&quot;</strong> Below the constraint's multiplier the penalty is not exact and the pose is simply missed, by <span class="m">0.85</span> at <span class="m">\rho = 0.1</span>. Exactness needs <span class="m">\rho</span> above the multiplier, which the solver reports.</li>
+<li><strong>&quot;One QP per sample is an approximation of nonlinear MPC.&quot;</strong> It is a different controller, whose closed loop here matches the fully converged one to four decimals, but that agreement was measured, not proved; and neither controller carries the guarantees of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> without terminal ingredients built for the nonlinear model.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Which part of the unicycle problem is nonlinear, and which parts are not?</summary>
+<p>Only the terminal pose <span class="m">z_N(U) = z_f</span>, through thirty compositions of the Euler step with its sines and cosines. The cost is an exact quadratic in <span class="m">U</span> and the input and rate bounds are linear in <span class="m">U</span>.</p>
+</details>
+<details class="sol"><summary>2. What does the entry <span class="m">-T_s v_k \sin\theta_k</span> of <span class="m">A_k</span> say?</summary>
+<p>That a small change of heading at step <span class="m">k</span> moves the next <span class="m">X</span> position backwards by that amount: the robot drives along a slightly rotated direction, and the effect is proportional to the speed. At <span class="m">v = 0</span> it vanishes, which is why a parked robot's position does not respond to its heading at first order.</p>
+</details>
+<details class="sol"><summary>3. Why does the time-varying prediction matrix contain products instead of powers?</summary>
+<p>Because <span class="m">A_k</span> differs at every step: propagating a change from step <span class="m">j</span> to step <span class="m">i</span> multiplies it by <span class="m">A_{i-1}</span>, then <span class="m">A_{i-2}</span>, down to <span class="m">A_{j+1}</span>, an ordered product that collapses to a power only when all the factors are equal.</p>
+</details>
+<details class="sol"><summary>4. What is the defect, and where does it appear in the QP?</summary>
+<p>The difference <span class="m">z_f - \bar z_N</span> between the required pose and the end of the current plan's true rollout. It is the right-hand side of the linearised terminal equality <span class="m">M \delta U = z_f - \bar z_N</span>: the correction must move the predicted end by exactly that amount.</p>
+</details>
+<details class="sol"><summary>5. Why does the residual shrink by a constant factor rather than quadratically?</summary>
+<p>The step uses the Jacobians of the dynamics but not the second derivatives of the terminal map, so it is a Gauss–Newton rather than a Newton step on the KKT conditions. Linear convergence at a rate set by the neglected curvature, about <span class="m">0.17</span> here, is the price; the benefit is that every step is a convex QP with a known Hessian.</p>
+</details>
+<details class="sol"><summary>6. When is the elastic penalty exact?</summary>
+<p>When <span class="m">\rho</span> exceeds the largest multiplier of the pose rows at the solution, <span class="m">0.261</span> here: then reaching the pose is cheaper than paying the penalty for missing it, the slacks are zero, and the solution is that of the hard problem. Below it, the pose is missed by whatever the penalty tolerates.</p>
+</details>
+<details class="sol"><summary>7. What does the real-time iteration do differently from nonlinear MPC?</summary>
+<p>One linearisation and one QP per sample, along the plan shifted from the previous sample, instead of iterating to convergence at every sample. The convergence is spread over the samples; the measured state moves little between them, so one step keeps up, as the matching costs of the two closed loops show here.</p>
+</details>
+<details class="sol"><summary>8. Why is the pose missed by 0.139 after a push at sample 25 but met after a push at sample 10?</summary>
+<p>Because recovering a sideways displacement of 0.15 with a twist of 0.10 needs several samples of turning and driving within <span class="m">|\omega| \le 1</span> and rates of <span class="m">0.2</span> per step; five samples are not enough, twenty are. The elastic constraint turns &quot;infeasible&quot; into &quot;this close, at this cost&quot;.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed and the numbers script's functions imported. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Derive the Jacobians.</b> Starting from the Euler step, derive <span class="m">A_k</span> and <span class="m">B_k</span> by hand, and check them against <code>jacobians</code> with a finite difference at <span class="m">z = (0.5, 0.2, 0.6)</span>, <span class="m">u = (0.6, 0.3)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Differentiate each of the three components with respect to each of <span class="m">X, Y, \theta, v, \omega</span>; only <span class="m">\theta</span> and <span class="m">v</span> appear nonlinearly.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\partial X^+ / \partial\theta = -T_s v\sin\theta</span>, <span class="m">\partial Y^+ / \partial\theta = T_s v\cos\theta</span>, <span class="m">\partial X^+ / \partial v = T_s\cos\theta</span>, <span class="m">\partial Y^+ / \partial v = T_s\sin\theta</span>, <span class="m">\partial\theta^+ / \partial\omega = T_s</span>, and the identity on the diagonal. A central difference with step <span class="m">10^{-6}</span> agrees to about <span class="m">10^{-10}</span>.</p>
+<pre><code class="language-python">z, u, h = np.array([0.5, 0.2, 0.6]), np.array([0.6, 0.3]), 1e-6
+A, B = jacobians(z, u)
+A_fd = np.column_stack([(step(z + h * e, u) - step(z - h * e, u)) / (2 * h) for e in np.eye(3)])
+B_fd = np.column_stack([(step(z, u + h * e) - step(z, u - h * e)) / (2 * h) for e in np.eye(2)])
+print(np.abs(A - A_fd).max(), np.abs(B - B_fd).max())     # both about 1e-10
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build it: the terminal map by chain rule.</b> Compute <span class="m">M = \partial z_N / \partial U</span> along the guess in two ways: from the last block row of <code>ltv_prediction</code>, and by propagating a sensitivity matrix forward, <span class="m">S_{k+1} = A_k S_k + B_k E_k</span> with <span class="m">E_k</span> selecting the inputs of step <span class="m">k</span>. Compare, then compare with a finite difference of the rollout.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Forward: keep <span class="m">S_k = \partial z_k / \partial U</span>, a <span class="m">3 \times 2N</span> matrix that starts at zero; each step multiplies it by <span class="m">A_k</span> and adds <span class="m">B_k</span> into the columns of step <span class="m">k</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The two constructions agree to round-off, and both agree with a central difference of the rollout to about <span class="m">2 \times 10^{-10}</span>. The forward recursion costs one <span class="m">3 \times 3</span> product per step and is what a real implementation uses; the full <span class="m">\mathcal S_u</span> is needed only when intermediate states are constrained.</p>
+<pre><code class="language-python">Z = rollout(Z0, U0); S = np.zeros((3, 2 * N)); M_fwd = None
+for k in range(N):
+    A, B = jacobians(Z[k], U0[k])
+    S = A @ S; S[:, 2 * k:2 * k + 2] += B
+M_fwd = S
+M_ltv = ltv_prediction(*map(list, zip(*[jacobians(Z[k], U0[k]) for k in range(N)])))[1][-3:]
+print(np.abs(M_fwd - M_ltv).max())                           # round-off
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The first step repairs the guess.</b> The guess violates the rate bound (its <span class="m">\omega</span> jumps by <span class="m">0.6</span>). Show that the first QP must change at least some inputs by <span class="m">0.2</span>, and find in the table which iteration first satisfies every bound.</p>
+<details class="sol"><summary>Hint</summary>
+<p>A jump of <span class="m">0.6</span> between two consecutive inputs must become at most <span class="m">0.2</span>; the correction to the two inputs must absorb <span class="m">0.4</span> between them.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>If <span class="m">\bar u_{10} - \bar u_9 = -0.6</span> in <span class="m">\omega</span> and the corrected difference must lie in <span class="m">[-0.2, 0.2]</span>, then <span class="m">\delta\omega_{10} - \delta\omega_9 \ge 0.4</span>, so at least one of the two corrections is <span class="m">0.2</span> or more in size; the table's first step has largest <span class="m">|\delta U| = 0.476</span>. Every iterate after the first satisfies all bounds, because the bounds are imposed on <span class="m">\bar U + \delta U</span> exactly and the QP enforces them: the linearisation touches only the pose.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The penalty threshold.</b> Run the elastic mode with <span class="m">\rho \in \{0.1, 0.2, 0.3, 1\}</span> and report the terminal residual at convergence. Where does the behaviour change, and why there?</p>
+<details class="sol"><summary>Hint</summary>
+<p>The pose multipliers at the solution are <span class="m">(-0.093, -0.261, 0.210)</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For <span class="m">\rho = 0.3</span> and <span class="m">1</span> the residual is at round-off after 15 iterations and the cost is <span class="m">0.316697</span>; for <span class="m">\rho = 0.2</span> the <span class="m">Y</span> row, whose multiplier <span class="m">0.261</span> exceeds <span class="m">\rho</span>, is given up: the iteration runs its 50 iterations and the pose is missed by <span class="m">0.34</span> in <span class="m">Y</span> alone, at cost <span class="m">0.2386</span>; for <span class="m">\rho = 0.1</span> the <span class="m">X</span> row is given up as well and the plan drifts to cost <span class="m">0.0797</span>, missing by <span class="m">0.69</span> in <span class="m">X</span> and <span class="m">0.85</span> in <span class="m">Y</span> while the heading is still met. The threshold is the largest multiplier, as the exact-penalty theorem of chapter A5 says.</p>
+<pre><code class="language-python">for rho in (0.1, 0.2, 0.3, 1.0):
+    U, it, hist = sqp(Z0, ZF, U0, N, rho=rho)
+    print(rho, it, round(cost(U), 6), f&quot;{hist[-1][1]:.1e}&quot;)
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Pushes along the run.</b> Push the closed loop by <span class="m">(0, 0.15, 0.10)</span> at every sample from 5 to 28 and plot the final pose error against the sample of the push. From which sample on is the pose missed?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>closed_loop(push, push_at=t)</code> returns the error; loop over <code>t</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The error is zero up to a push at sample 20 and grows from 21 on: <span class="m">0.0002</span> at 21, <span class="m">0.054</span> at 22, <span class="m">0.094</span> at 23, <span class="m">0.139</span> at 25 and <span class="m">0.154</span> at 27. Nine samples suffice to recover this push within the bounds, eight almost do, and five leave the <span class="m">0.139</span> of the table. The curve is the closed loop's reachability in time, the nonlinear version of the controllable sets of chapter <a href="a09-pre-post-and-controllable-sets.html" title="Pre, Post and controllable sets">A9</a>, measured by experiment rather than computed as a polytope.</p>
+<pre><code class="language-python">for t in range(5, 29):
+    Z, Ua, err, _, ok = closed_loop(np.array([0.0, 0.15, 0.10]), push_at=t)
+    print(t, err.max().round(4), ok)
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A Newton step instead of Gauss–Newton.</b> The Lagrangian's Hessian adds <span class="m">\sum_i \nu_i\, \partial^2 z_{N,i} / \partial U^2</span> to <span class="m">H</span>, with <span class="m">\nu</span> the pose multipliers. Estimate the size of that term from the multipliers and the curvature of the terminal map, and say why dropping it costs a constant factor per iteration rather than divergence.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The multipliers are at most <span class="m">0.26</span> and the terminal map's second derivatives are of order <span class="m">T_s^2 v</span>, which is small; compare with the diagonal of <span class="m">H</span>, <span class="m">2(0.05 + 2 \cdot 0.10) = 0.5</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The neglected term is at most a few hundredths against a Hessian diagonal of <span class="m">0.5</span>: a relative perturbation of order <span class="m">0.1</span>, which is roughly the contraction factor <span class="m">0.17</span> observed. Gauss–Newton converges linearly at a rate set by the ratio of the neglected curvature to the kept Hessian, so a small ratio means fast linear convergence and a large one means slow convergence or none; here it is small because the cost's curvature dominates the constraint's. Adding the term and solving the resulting indefinite-Hessian QP would give quadratic convergence at the price of a nonconvex subproblem.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The nonlinearity</strong> is one equation: the terminal pose <span class="m">z_N(U) = z_f</span> through thirty Euler steps; the cost and bounds are exact quadratics and linear rows in <span class="m">U</span>.</div></li>
+<li><div><strong>Linearise along the plan</strong>: Jacobians <span class="m">A_k</span>, <span class="m">B_k</span> of the Euler step, time-varying prediction matrices with ordered products in place of powers, the terminal map <span class="m">M = \partial z_N / \partial U</span>, rank 3 along a moving plan.</div></li>
+<li><div><strong>One QP per step</strong>: the exact quadratic cost in <span class="m">\delta U</span>, bounds on <span class="m">\bar U + \delta U</span>, and <span class="m">M \delta U = z_f - \bar z_N</span>; solved by chapter A4's method in 11 Newton steps.</div></li>
+<li><div><strong>Convergence</strong>: 15 iterations from the guess to cost <span class="m">0.316697</span> and a residual of <span class="m">5 \times 10^{-13}</span>, a factor of about six per iteration, linear; SLSQP takes 27 iterations and three times the time for the same inputs to <span class="m">7 \times 10^{-6}</span>.</div></li>
+<li><div><strong>Elastic mode</strong>: slacks on the pose with an <span class="m">\ell_1</span> penalty above the largest multiplier <span class="m">0.261</span> keep every QP feasible, from all-zero inputs (rank 2) or random ones, and are exact; below it, the pose is missed.</div></li>
+<li><div><strong>Real-time iteration</strong>: one QP per sample along the shifted plan; a push at sample 10 is absorbed exactly, one at sample 25 leaves <span class="m">0.139</span> in <span class="m">Y</span>; 30 QPs match 153.</div></li>
+<li><div><strong>Certified</strong>: KKT residuals, bounds and the pose, numerically; not certified: global optimality or closed-loop stability.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linearisation point</td>
+<td>The plan and its rollout at which the Jacobians are evaluated.</td>
+</tr>
+<tr>
+<td>Jacobians <span class="m">A_k</span>, <span class="m">B_k</span></td>
+<td>Derivatives of the one-step map with respect to the state and the input.</td>
+</tr>
+<tr>
+<td>Time-varying prediction matrices</td>
+<td><span class="m">\mathcal S_x</span>, <span class="m">\mathcal S_u</span> with ordered products <span class="m">A_{i-1} \cdots A_{j+1} B_j</span>.</td>
+</tr>
+<tr>
+<td>Terminal map <span class="m">M</span></td>
+<td><span class="m">\partial z_N / \partial U</span>, the last block row of <span class="m">\mathcal S_u</span>.</td>
+</tr>
+<tr>
+<td>Defect</td>
+<td><span class="m">z_f - \bar z_N</span>, the pose error of the current plan.</td>
+</tr>
+<tr>
+<td>Gauss–Newton step</td>
+<td>A QP with the exact cost Hessian and the linearised constraint, no constraint curvature.</td>
+</tr>
+<tr>
+<td>Elastic mode</td>
+<td>Slacks on the equality with an <span class="m">\ell_1</span> penalty: always feasible, exact above the multiplier.</td>
+</tr>
+<tr>
+<td>Trust region</td>
+<td>A bound $</td>
+</tr>
+<tr>
+<td>Real-time iteration</td>
+<td>One linearisation and one QP per sample in closed loop.</td>
+</tr>
+<tr>
+<td>Shrinking horizon</td>
+<td>The number of moves left to the fixed final time.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> A deterministic nonlinear plant with a measured state, a quadratic cost and a terminal equality; the simplest SQP, without second-order constraint terms, line search or globalisation beyond the elastic mode and an optional trust region. Nonlinear MPC with stability guarantees, state estimation and model error are out of scope; lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> shows the other route to an affine prediction model, from data rather than from Jacobians.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>J. Nocedal and S. J. Wright. <em>Numerical Optimization</em>, 2nd ed. Springer, 2006. <a href="https://doi.org/10.1007/978-0-387-40065-5">doi:10.1007/978-0-387-40065-5</a>. Sequential quadratic programming, Gauss–Newton, elastic mode and trust regions, chapters 10 and 18.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>M. Diehl, H. G. Bock and J. P. Schlöder. &quot;A real-time iteration scheme for nonlinear optimization in optimal feedback control&quot;. <em>SIAM Journal on Control and Optimization</em> 43(5), 1714–1736, 2005. <a href="https://doi.org/10.1137/S0363012902400713">doi:10.1137/S0363012902400713</a>. The real-time iteration.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Nonlinear MPC and its numerical methods, chapter 8.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>H. Chen and F. Allgöwer. &quot;A quasi-infinite horizon nonlinear model predictive control scheme with guaranteed stability&quot;. <em>Automatica</em> 34(10), 1205–1217, 1998. <a href="https://doi.org/10.1016/S0005-1098(98)00073-9">doi:10.1016/S0005-1098(98)00073-9</a>. Terminal ingredients for nonlinear MPC.</div></li>
+</ul>
+<p>Nocedal and Wright <a href="#ref-1">[1]</a> is the reference for the method, Diehl, Bock and Schlöder <a href="#ref-2">[2]</a> for the real-time iteration, and Chen and Allgöwer <a href="#ref-4">[4]</a> for the guarantees this chapter does not have. Chapter <a href="c04-learning-mpc-racing-closing-the-loop.html" title="Learning MPC racing: closing the loop">C4</a> closes the loop on the racing car, where the affine prediction model is learned from laps instead of differentiated from equations.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="c02-reference-tracking-and-offset-free-mpc.html"><span class="lbl">Previous · C2</span><span class="t">Reference tracking and offset-free MPC</span></a>
+  <a class="next" rel="next" href="c04-learning-mpc-racing-closing-the-loop.html"><span class="lbl">Next · C4</span><span class="t">Learning MPC racing: closing the loop</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter C3 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102223319"></script>
+<script src="interactive/c03.js?v=20261102223319"></script>
+</body>
+</html>

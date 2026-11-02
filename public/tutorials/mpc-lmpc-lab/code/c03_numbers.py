@@ -272,3 +272,21 @@ for rho in (2.0, 0.5):
     print(f"push at 25 with rho = {rho}: pose error {err}, cost {cost(Ua):.4f} (a cheaper loop that misses by more)")
 Z, Ua, err, n_qp, ok = closed_loop(np.array([0.0, 0.15, 0.10]), 10, iters=30)
 print(f"re-converging at every sample instead (push at 10): {n_qp} QPs in all, pose error {err}, cost {cost(Ua):.4f}")
+
+section("Exercises")
+z, u, h = np.array([0.5, 0.2, 0.6]), np.array([0.6, 0.3]), 1e-6
+A, B = jacobians(z, u)
+A_fd = np.column_stack([(step(z + h * e, u) - step(z - h * e, u)) / (2 * h) for e in np.eye(3)])
+B_fd = np.column_stack([(step(z, u + h * e) - step(z, u - h * e)) / (2 * h) for e in np.eye(2)])
+print(f"exercise 1: Jacobians against a central difference: {np.abs(A - A_fd).max():.1e}, {np.abs(B - B_fd).max():.1e}")
+Zg = rollout(Z0, U0); S = np.zeros((3, 2 * N))
+for k in range(N):
+    Ak, Bk = jacobians(Zg[k], U0[k]); S = Ak @ S; S[:, 2 * k:2 * k + 2] += Bk
+M_ltv = ltv_prediction(*map(list, zip(*[jacobians(Zg[k], U0[k]) for k in range(N)])))[1][-3:]
+M_fd = np.column_stack([(rollout(Z0, U0 + h * e.reshape(N, 2))[-1] - rollout(Z0, U0 - h * e.reshape(N, 2))[-1]) / (2 * h) for e in np.eye(2 * N)])
+print(f"exercise 2: forward sensitivity against ltv_prediction {np.abs(S - M_ltv).max():.1e}; against a central difference of the rollout {np.abs(M_ltv - M_fd).max():.1e}")
+for rho in (0.1, 0.2, 0.3, 1.0):
+    Ux, itx, hx = sqp(Z0, ZF, U0, N, rho=rho)
+    print(f"exercise 4: rho = {rho}: {itx} iterations, cost {cost(Ux):.6f}, residual {hx[-1][1]:.1e}, pose error by row {np.abs(ZF - rollout(Z0, Ux)[-1]).round(3)}")
+errs = [(t, round(float(closed_loop(np.array([0.0, 0.15, 0.10]), push_at=t)[2].max()), 4)) for t in range(18, 29)]
+print(f"exercise 5: largest pose error against the sample of the push (0, 0.15, 0.1): {errs}")
