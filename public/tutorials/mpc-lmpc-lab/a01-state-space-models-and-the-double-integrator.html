@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A1 · State-space models and the double integrator · Advanced MPC and Learning MPC</title>
+<meta name="description" content="States, inputs and dynamics, the four model classes, the course&#x27;s double integrator from Newton&#x27;s law with its two discretisations, and why the plant and the prediction model are different things.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A1 of 15</span>
+  <h1>State-space models and the double integrator</h1>
+  <p class="lede">Every controller in this course acts on a state, and every prediction it makes comes from a model that advances that state one sample at a time. This chapter fixes the vocabulary: what a state is, the four model classes the course uses, and the one system every concept chapter runs on, a cart that can only be pushed, sampled once a second. Below, push it yourself and watch the state move, in time and as a point in the plane, with the two discretisations the course will meet.</p>
+  <p class="byline">Elie Rouphael · Needs linear algebra and the idea of a derivative · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a01_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The cart under a held input sequence: position, velocity and input against the step</p>
+      <canvas id="timeC" aria-label="Position, velocity and input of the double integrator against the step for the chosen input sequence" aria-describedby="heroStatus"></canvas>
+      <p class="chart-title" style="margin-top:0.6rem">The same trajectory as a point moving in the position–velocity plane</p>
+      <canvas id="planeC" aria-label="The state trajectory in the phase plane with the constraint box" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="seg stack" role="group" aria-label="Input sequence">
+      <button class="btn" type="button" data-preset="push" aria-pressed="true">push, coast, brake: 1, 1, 0, −1, −1</button>
+      <button class="btn" type="button" data-preset="early" aria-pressed="false">brake earlier: 1, 1, −1, −1, 0</button>
+      <button class="btn" type="button" data-preset="half" aria-pressed="false">half-size inputs, eight moves</button>
+    </div>
+    <label class="field"><span>Scale every input by <b id="hScaleV"></b></span>
+      <span class="row"><input type="range" id="hScale" min="0.5" max="1.5" step="0.05" value="1"></span>
+    </label>
+    <button class="btn" type="button" id="hEuler" aria-pressed="false">also show the Euler model</button>
+    <div class="readouts" aria-live="off">
+      <span>final state</span><span class="v" id="rFinal">–</span>
+      <span>largest <span class="m">|v|</span></span><span class="v" id="rMaxV">–</span>
+      <span>leaves the box</span><span class="v" id="rBox">–</span>
+      <span>Euler's largest lag</span><span class="v" id="rGap">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the first sequence</button></div>
+    <p class="hint">Start <span class="m">x_0 = (-3, 0)</span>, sample time <span class="m">T_s = 1</span>, zero-order hold: <span class="m">p_{k+1} = p_k + v_k + u_k / 2</span>, <span class="m">v_{k+1} = v_k + u_k</span>. The box is the course's state constraint <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>; the inputs are checked against <span class="m">|u| \le 1</span> in chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#state"><span class="n">1</span><span class="t">The language of dynamical systems</span><span class="d">State, input, dynamics, output</span></a>
+    <a href="#classes"><span class="n">2</span><span class="t">Four model classes</span><span class="d">LTI, affine, LTV, nonlinear</span></a>
+    <a href="#cart"><span class="n">3</span><span class="t">The cart: a double integrator from Newton</span><span class="d">Newton, the sample, the matrices</span></a>
+    <a href="#discretisation"><span class="n">4</span><span class="t">Two discretisations: zero-order hold against Euler</span><span class="d">Zero-order hold against Euler</span></a>
+    <a href="#plant"><span class="n">5</span><span class="t">The plant and the prediction model</span><span class="d">Two models, one system</span></a>
+    <a href="#constraints"><span class="n">6</span><span class="t">Constraints as sets</span><span class="d">The box and the interval</span></a>
+    <a href="#code"><span class="n">7</span><span class="t">The code behind it</span><span class="d">rollout and vehicle_matrices</span></a>
+    <a href="#pitfalls"><span class="n">8</span><span class="t">Common pitfalls</span><span class="d">Four confusions</span></a>
+    <a href="#check"><span class="n">9</span><span class="t">Check your understanding</span><span class="d">Six questions with answers</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">11</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="state">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The language of dynamical systems</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>State, input, dynamics, output.</strong> A deterministic discrete-time system is written</p>
+<div class="math-block" data-narrow="A = \begin{pmatrix} 1 &amp; T_s \ 0 &amp; 1 \end{pmatrix}, \quad B = \begin{pmatrix} T_s^2 / 2 \ T_s \end{pmatrix}; \qquad T_s = 1: \quad \boxed{A = \begin{pmatrix} 1 &amp; 1 \ 0 &amp; 1 \end{pmatrix},\ B = \begin{pmatrix} 0.5 \ 1 \end{pmatrix}}">x_{k+1} = f_k(x_k, u_k), \qquad x_k \in \mathbb R^n,\quad u_k \in \mathbb R^m .</div>
+<p>The index <span class="m">k</span> counts samples, not seconds: <span class="m">x_k</span> is the state at time <span class="m">k T_s</span> for a sample period <span class="m">T_s</span>. The input <span class="m">u_k</span> is what the controller chooses. An output equation <span class="m">y_k = h_k(x_k, u_k)</span> may be added when only part of the state is measured; this course assumes the state is measured, and says in chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> what changes when it is not.</p>
+<div class="define"><p class="define-title">What is a state?</p>
+<p><strong>In plain words:</strong> the smallest list of numbers that, together with the inputs from now on, determines everything the system will do. For a cart, its position and velocity; its position alone is not enough, since two carts at the same place moving at different speeds have different futures.</p>
+<p><strong>More precisely:</strong> a vector <span class="m">x_k</span> such that the next state is a function of the current state and input only, <span class="m">x_{k+1} = f_k(x_k, u_k)</span>, with no dependence on earlier states or inputs. The dimension <span class="m">n</span> is the order of the system. Any quantity the controller needs to predict must be part of the state or computable from it.</p>
+<dl><dt>State <span class="m">x_k \in \mathbb R^n</span></dt><dd>Position and velocity of the cart: <span class="m">n = 2</span>.</dd><dt>Input <span class="m">u_k \in \mathbb R^m</span></dt><dd>The acceleration the motor applies: <span class="m">m = 1</span>.</dd><dt>Dynamics <span class="m">f_k</span></dt><dd>The rule that advances the state by one sample.</dd><dt>Trajectory</dt><dd>The sequence <span class="m">x_0, x_1, x_2, \dots</span> produced by an input sequence <span class="m">u_0, u_1, \dots</span> from a start <span class="m">x_0</span>.</dd></dl>
+</div>
+<p><strong>Why the state, and not the history.</strong> Model predictive control predicts: it asks what the next <span class="m">N</span> states would be under a candidate input sequence. That question has an answer only if the current state summarises the past. The hero demo shows the summary at work: the trajectory in the plane is a sequence of points, and from any of them the rest of the path depends only on the inputs still to come.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="classes">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Four model classes</h2>
+  </div>
+  <div class="col prose">
+
+<p>The course moves between four kinds of <span class="m">f</span>, deliberately.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Dynamics</th>
+<th>Where the course uses it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LTI, linear time-invariant</td>
+<td><span class="m">x_{k+1} = A x_k + B u_k</span></td>
+<td>Every concept chapter: the double integrator below</td>
+</tr>
+<tr>
+<td>Affine</td>
+<td><span class="m">x_{k+1} = A x_k + B u_k + c</span></td>
+<td>The locally identified models of chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>, where the constant is the linearisation offset</td>
+</tr>
+<tr>
+<td>LTV, linear time-varying</td>
+<td><span class="m">x_{k+1} = A_k x_k + B_k u_k + c_k</span></td>
+<td>The prediction model along a racing horizon, chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a></td>
+</tr>
+<tr>
+<td>Nonlinear</td>
+<td><span class="m">x_{k+1} = f(x_k, u_k)</span></td>
+<td>The unicycle of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>, the bicycle model of chapter <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>For an LTI model, prediction is matrix algebra (chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>) and the optimal-control problem is a quadratic program (chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>). For an affine model the same holds with one extra constant. For a nonlinear model the problem is a nonlinear program, and chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> shows what that costs. The racing chapters keep a nonlinear plant and give the optimiser a sequence of affine models instead: that is the whole point of local model learning.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="cart">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The cart: a double integrator from Newton</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The physics.</strong> A cart of unit mass on a rail, pushed by a force equal to its acceleration <span class="m">a</span>: <span class="m">\dot p = v</span>, <span class="m">\dot v = a</span>. Two integrations take the input to the position, hence the name.</p>
+<p><strong>One sample.</strong> Hold the acceleration constant at <span class="m">a_k</span> for one sample period <span class="m">T_s</span>. Integrating twice,</p>
+<div class="math-block">p_{k+1} = p_k + T_s v_k + \tfrac{1}{2} T_s^2 a_k, \qquad v_{k+1} = v_k + T_s a_k ,</div>
+<p>exactly, with no approximation: a piecewise-constant input makes the continuous cart's state at the sample instants an LTI system. With the state <span class="m">x_k = (p_k, v_k)</span> and the input <span class="m">u_k = a_k</span>,</p>
+<div class="math-block">A = \begin{pmatrix} 1 &amp; T_s \\ 0 &amp; 1 \end{pmatrix}, \qquad B = \begin{pmatrix} T_s^2 / 2 \\ T_s \end{pmatrix}, \qquad \text{and with } T_s = 1:\quad \boxed{A = \begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \end{pmatrix},\ B = \begin{pmatrix} 0.5 \\ 1 \end{pmatrix}}.</div>
+<p>These are the course's matrices. The eigenvalues of <span class="m">A</span> are both 1: left alone, the cart neither returns to rest nor runs away, it coasts. That is why every stabilising result later is about what the input does, not what the plant does on its own (chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a>).</p>
+<p><strong>Read the hero.</strong> From <span class="m">x_0 = (-3, 0)</span>, the inputs <span class="m">1, 1, 0, -1, -1</span> move the velocity to 1, 2, 2, 1, 0 and the position to <span class="m">-2.5, -1, 1, 2.5, 3</span>: the cart crosses the origin at full speed and stops at <span class="m">p = 3</span>. Each position increment is the old velocity plus half the input, <span class="m">v_k + u_k / 2</span>, the second term being the distance gained during the sample by the acceleration itself. Braking one step earlier stops it at <span class="m">p = 1</span>. Halving the inputs and holding them twice as long gives the same peak velocity of 2 but twice the distance, 8 in all, and the cart leaves the box at step 7: the same kind of sequence, scaled, is no longer admissible. Scale the first sequence in the demo to find the factor at which it first leaves the box.</p>
+<p><strong>This tiny system already contains the difficulties of MPC.</strong> The input acts on the velocity at once but on the position only through the velocity, so correcting a position error takes planning; the physical limits bound both states and the input; and a cart moving fast near the edge of its box cannot be saved by any admissible input, which chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> turns into geometry.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="discretisation">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Two discretisations: zero-order hold against Euler</h2>
+  </div>
+  <div class="col prose">
+
+<p>The zero-order-hold model above is exact. A cruder model, explicit Euler, replaces the derivative by a difference:</p>
+<div class="math-block">p_{k+1} = p_k + T_s v_k, \qquad v_{k+1} = v_k + T_s a_k, \qquad B_{\mathrm{Euler}} = \begin{pmatrix} 0 \\ T_s \end{pmatrix}.</div>
+<p>The velocity update is the same; the position update ignores the acceleration during the sample, so the position lags the true one by <span class="m">\tfrac12 T_s^2 a_k</span> per step, or, summed, by <span class="m">T_s v_k / 2</span> for a cart that started at rest. With <span class="m">T_s = 1</span> and the first hero sequence the Euler positions are <span class="m">-3, -2, 0, 2, 3</span> against the exact <span class="m">-2.5, -1, 1, 2.5, 3</span>: a whole unit apart at the peak velocity, agreeing again only once the cart is at rest.</p>
+<div class="widget" id="tsW">
+  <div class="controls">
+    <label class="field"><span>Sample time <span class="m">T_s</span>: <b id="tsV"></b> s</span>
+      <span class="row"><input type="range" id="tsSel" min="0" max="3" step="1" value="0"></span></label>
+  </div>
+  <canvas id="tsC" aria-label="Position under the zero-order-hold and the Euler model, and the shared velocity, for a push-then-brake manoeuvre at the chosen sample time"></canvas>
+  <p class="caption" id="tsCap"></p>
+</div>
+<p><strong>Why keep Euler at all.</strong> Lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> uses it with a one-second sample, as the published collision-avoidance exercise does, and the lag is visible in its feasibility maps: with Euler a car cannot clear a crossing that the exact model says it can. Chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> uses Euler for the Frenet kinematics at a 0.1 s sample, where the lag is small. The rule: a discretisation is part of the model, its error is a modelling error, and a one-second Euler step on a cart is coarse.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="plant">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The plant and the prediction model</h2>
+  </div>
+  <div class="col prose">
+
+<div class="callout">
+<p><strong>Two models, one system.</strong> The <em>plant</em> is the system being controlled, or its simulation: it evolves according to physics. The <em>prediction model</em> is what the optimiser uses to imagine the future. In the concept chapters the two coincide, so that every theorem can be checked exactly. On a real system they never do: the plant is nonlinear, its parameters drift, its sample is not quite periodic, and disturbances act on it. MPC optimises with the model; the plant decides what happens.</p>
+</div>
+<p>The gap between the two is the recurring theme of the labs: chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> fits a prediction model to a nonlinear car from its own recorded laps, and chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> asks which guarantees survive a mismatch (none, strictly, and what to do about it). Keep the distinction in mind every time a chapter says &quot;the model&quot;: it means the prediction model, and a statement about the model becomes a statement about the plant only when the two agree.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="constraints">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Constraints as sets</h2>
+  </div>
+  <div class="col prose">
+
+<p>The cart's limits are written as sets. The state must stay in a box and the input in an interval,</p>
+<div class="math-block">\mathcal X = \{x : |p| \le 4,\ |v| \le 3\} = \{x : H_x x \le h_x\}, \qquad \mathcal U = \{u : |u| \le 1\},</div>
+<p>with four rows for the box, <span class="m">H_x = \begin{pmatrix} 1 &amp; 0 \\ 0 &amp; 1 \\ -1 &amp; 0 \\ 0 &amp; -1 \end{pmatrix}</span> and <span class="m">h_x = (4, 3, 4, 3)</span>. Writing <span class="m">|p| \le 4</span> as two inequalities <span class="m">p \le 4</span> and <span class="m">-p \le 4</span> is the format every optimisation solver takes, and chapter <a href="a08-polytopes-and-set-operations.html" title="Polytopes and set operations">A8</a> builds a whole geometry on it. The input interval is a one-dimensional box of the same kind.</p>
+<p><strong>A constraint is checked on every state, not only the last.</strong> From <span class="m">(-3, 0)</span> with the input held at its bound <span class="m">u = 1</span>, the velocity reaches its bound 3 after three steps, at position 1.5; one more push would violate <span class="m">|v| \le 3</span> at a position that is still comfortably inside. Whether a sequence of inputs is <em>admissible</em> depends on the whole trajectory it produces, and that is what the prediction matrices of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> make checkable in one matrix inequality.</p>
+<div class="define"><p class="define-title">The canonical system</p>
+<p><strong>In plain words:</strong> one cart, one set of limits, one cost, used in every concept chapter so that the numbers carry over: the LQR gain computed in chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a> is the one that defines the terminal set in chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> and the terminal cost in chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</p>
+<p><strong>More precisely:</strong> <span class="m">x^+ = Ax + Bu</span> with the matrices above, <span class="m">\mathcal X</span> the box <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>, <span class="m">\mathcal U</span> the interval <span class="m">|u| \le 1</span>, and the stage cost <span class="m">q(x, u) = x^\top Q x + R u^2</span> with <span class="m">Q = \mathrm{diag}(1, 0.2)</span> and <span class="m">R = 0.2</span>. Where a chapter needs a weaker motor to make an effect visible it says so and uses <span class="m">|u| \le 0.5</span>. The <a href="notation.html">notation page</a> lists every number computed from it.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The course package keeps the model in two small functions. The first rolls any LTI system out under an input sequence; it is what the hero demo and the numbers script call.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/linear.py · rollout</p><pre><code class="language-python">def rollout(A, B, x0, U):
+    &quot;&quot;&quot;Roll out an LTI system for an input sequence U with shape (N,m).&quot;&quot;&quot;
+    A = np.asarray(A, float); B = np.asarray(B, float)
+    x = np.asarray(x0, float).copy()
+    xs = [x.copy()]
+    for u in np.atleast_2d(U):
+        u = np.asarray(u, float).reshape(-1)
+        x = A @ x + B @ u
+        xs.append(x.copy())
+    return np.asarray(xs)</code></pre>
+<p>Three things to read. The inputs arrive as a two-dimensional array with one row per step, <code>np.atleast_2d(U)</code>, so that a scalar input and a vector input are handled by the same loop. The state is copied before the loop, <code>x = ...copy()</code>, because the function must not modify the caller's <code>x0</code>; this is the first of many places where a numerical course has to be careful about aliasing. And the returned array has one more row than there are inputs: <code>xs</code> starts with <span class="m">x_0</span> and gains one state per input, which is why every trajectory in the course has <span class="m">T + 1</span> states for <span class="m">T</span> inputs.</p>
+</div>
+<p>The second builds the matrices for either discretisation; lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> uses it with its Euler default.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/collision.py · vehicle_matrices</p><pre><code class="language-python">def vehicle_matrices(Ts=1.0, discretization=&quot;euler&quot;):
+    &quot;&quot;&quot;
+    State x=[d,v], input a.
+
+    &#x27;euler&#x27; reproduces the supplied workshop:
+        d+ = d + Ts v
+        v+ = v + Ts a
+
+    &#x27;zoh&#x27; is the exact zero-order-hold discretization of the continuous
+    double integrator:
+        d+ = d + Ts v + 0.5 Ts^2 a
+        v+ = v + Ts a
+    &quot;&quot;&quot;
+    Ts = float(Ts)
+    A = np.array([[1.0, Ts],
+                  [0.0, 1.0]])
+
+    if discretization == &quot;euler&quot;:
+        B = np.array([[0.0],
+                      [Ts]])
+    elif discretization in {&quot;zoh&quot;, &quot;exact&quot;}:
+        B = np.array([[0.5 * Ts**2],
+                      [Ts]])
+    else:
+        raise ValueError(&quot;discretization must be &#x27;euler&#x27; or &#x27;zoh&#x27;&quot;)
+
+    return A, B</code></pre>
+<p>The matrix <span class="m">A</span> is the same for both models, since both update the velocity exactly and both carry the position forward with the old velocity. Only <span class="m">B</span> differs: Euler puts a zero where the zero-order hold has <span class="m">T_s^2 / 2</span>. That single entry is the whole difference the widget of Part 4 draws.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The position is the state.&quot;</strong> Not for anything with inertia. Two carts at the same position with different velocities have different futures; the state must contain both.</li>
+<li><strong>&quot;<span class="m">k</span> is time in seconds.&quot;</strong> It counts samples. With <span class="m">T_s = 0.5</span> the state <span class="m">x_6</span> is the state at 3 s, and a horizon of <span class="m">N = 6</span> steps looks 3 s ahead.</li>
+<li><strong>&quot;Euler is fine because it is first order.&quot;</strong> At <span class="m">T_s = 1</span> its position lags the truth by <span class="m">v / 2</span>, a whole unit at the cart's cruising speed. Whether that matters depends on what is being checked; for a constraint on the position it matters.</li>
+<li><strong>&quot;The model is the system.&quot;</strong> The prediction model is the optimiser's picture of the plant. Every guarantee in Part A is proved for the model; it transfers to the plant only when they agree.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why is the double integrator called that?</summary>
+<p>Two integrations separate the input from the position: the acceleration integrates to the velocity and the velocity to the position. In discrete time the input reaches the velocity in one step and the position only through the velocity.</p>
+</details>
+<details class="sol"><summary>2. Where does the <span class="m">\tfrac12 T_s^2</span> in <span class="m">B</span> come from?</summary>
+<p>From integrating a constant acceleration twice over one sample: the velocity grows linearly, so the extra distance covered during the sample is <span class="m">\tfrac12 a T_s^2</span>. The zero-order-hold model is exact for piecewise-constant inputs because of it.</p>
+</details>
+<details class="sol"><summary>3. What does Euler change, and by how much?</summary>
+<p>Only the position update, which drops the <span class="m">\tfrac12 T_s^2 a_k</span> term. For a cart starting at rest the position then lags the exact one by <span class="m">T_s v_k / 2</span>: one unit at <span class="m">T_s = 1</span> and <span class="m">v = 2</span>, an eighth of a unit at <span class="m">T_s = 0.1</span>.</p>
+</details>
+<details class="sol"><summary>4. Is the double integrator stable on its own?</summary>
+<p>No, and not unstable either: both eigenvalues of <span class="m">A</span> equal 1, so a coasting cart keeps its velocity for ever. Stability has to come from the input, which is why chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a> designs a feedback law.</p>
+</details>
+<details class="sol"><summary>5. What makes an input sequence admissible?</summary>
+<p>That every state it produces lies in <span class="m">\mathcal X</span> and every input in <span class="m">\mathcal U</span>. It is a property of the whole trajectory, checked with the prediction matrices of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>.</p>
+</details>
+<details class="sol"><summary>6. Why does the course keep the plant and the prediction model apart in its vocabulary?</summary>
+<p>Because every theorem is about the model, and a controller is judged on the plant. Naming the gap keeps track of which statements are proofs and which are hopes; chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> makes the list.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Derive the zero-order hold.</b> Starting from <span class="m">\dot p = v</span>, <span class="m">\dot v = a</span> with <span class="m">a</span> held constant on <span class="m">[kT_s, (k+1)T_s)</span>, derive <span class="m">p_{k+1}</span> and <span class="m">v_{k+1}</span> and read off <span class="m">A</span> and <span class="m">B</span> for a general <span class="m">T_s</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Integrate the velocity equation first, then substitute the result into the position equation and integrate again.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">v(t) = v_k + a_k (t - kT_s)</span> on the sample, so <span class="m">v_{k+1} = v_k + T_s a_k</span>. Then <span class="m">p(t) = p_k + v_k (t - kT_s) + \tfrac12 a_k (t - kT_s)^2</span>, so <span class="m">p_{k+1} = p_k + T_s v_k + \tfrac12 T_s^2 a_k</span>. Hence <span class="m">A = \begin{pmatrix} 1 &amp; T_s \\ 0 &amp; 1 \end{pmatrix}</span>, <span class="m">B = (T_s^2 / 2, T_s)</span>. Nothing was approximated: the model is exact at the sample instants for any piecewise-constant input.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A faster sample.</b> Write the matrices for <span class="m">T_s = 0.5</span> and roll the cart out from <span class="m">x_0 = (-2, 0.25)</span> under the inputs <span class="m">0.4, 0.2, 0, -0.2, -0.3, 0.1</span>. Check the states against <code>rollout</code>.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">B = (0.125, 0.5)</span>; the first position is <span class="m">-2 + 0.5 \cdot 0.25 + 0.125 \cdot 0.4</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">A = \begin{pmatrix} 1 &amp; 0.5 \\ 0 &amp; 1 \end{pmatrix}</span>, <span class="m">B = (0.125, 0.5)</span>. The states are <span class="m">(-1.825, 0.45)</span>, <span class="m">(-1.575, 0.55)</span>, <span class="m">(-1.3, 0.55)</span>, <span class="m">(-1.05, 0.45)</span>, <span class="m">(-0.8625, 0.3)</span> and <span class="m">(-0.7, 0.35)</span>: the cart drifts right, speeds up to 0.55, and is braked back to 0.35.</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.collision import vehicle_matrices
+from advanced_mpc_lmpc.linear import rollout
+A, B = vehicle_matrices(0.5, &quot;zoh&quot;)
+X = rollout(A, B, [-2.0, 0.25], np.array([0.4, 0.2, 0, -0.2, -0.3, 0.1])[:, None])
+print(X.round(4))        # six rows after the start, ending at (-0.7, 0.35)
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Euler's lag.</b> Show that for a cart starting at rest the Euler position lags the exact position by exactly <span class="m">T_s v_k / 2</span> at every step <span class="m">k</span>, whatever the inputs.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Subtract the two position recursions; the velocities are identical in both models.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Both models have the same velocities, <span class="m">v_k = T_s \sum_{j&lt;k} a_j</span>. The exact position adds <span class="m">\tfrac12 T_s^2 a_j</span> at each step and Euler does not, so the gap after <span class="m">k</span> steps is <span class="m">\tfrac12 T_s^2 \sum_{j&lt;k} a_j = \tfrac12 T_s v_k</span>. The gap is zero whenever the cart is at rest, which is why the two models agree on the final position of a manoeuvre that ends at rest and disagree everywhere in between. The numbers script prints the gap for <span class="m">T_s = 1, 0.5, 0.25, 0.1</span>: 1, 0.625, 0.3125 and 0.125, each equal to <span class="m">T_s / 2</span> times the peak velocity.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Classify the models.</b> For each of these, say which of the four classes it belongs to and why: (a) <span class="m">x^+ = 1.2x + u</span>; (b) <span class="m">x^+ = Ax + Bu + c</span> with a fixed <span class="m">c</span>; (c) the unicycle <span class="m">x^+ = x + T_s v \cos\theta</span>; (d) <span class="m">x_{k+1} = A_k x_k + B_k u_k</span> with <span class="m">A_k</span> from a lookup table indexed by <span class="m">k</span>. Then simulate (a) with <span class="m">u = 0</span> from <span class="m">x = 1</span> for ten steps.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Look for constants added to a linear map, for time indices on the matrices, and for anything that is not linear in <span class="m">(x, u)</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>(a) LTI, scalar, and unstable: the eigenvalue is 1.2, so from <span class="m">x = 1</span> with no input the state reaches <span class="m">1.2^{10} = 6.19</span> after ten steps. (b) Affine: linear plus a constant; it becomes LTI in the shifted variable <span class="m">x - x_{\mathrm{eq}}</span> if an equilibrium <span class="m">x_{\mathrm{eq}} = A x_{\mathrm{eq}} + c</span> exists. (c) Nonlinear: <span class="m">\cos\theta</span> multiplies an input by a function of the state. (d) LTV: linear at each step, with matrices that depend on the step.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The box as inequalities.</b> Write <span class="m">-2 \le p \le 3</span>, <span class="m">-1 \le v \le 4</span> as <span class="m">H x \le h</span>, and check that <span class="m">(3, 4)</span> is in the set and <span class="m">(3.5, 0)</span> is not.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Each lower bound becomes a row with a minus sign.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">H = \begin{pmatrix} 1 &amp; 0 \\ -1 &amp; 0 \\ 0 &amp; 1 \\ 0 &amp; -1 \end{pmatrix}</span>, <span class="m">h = (3, 2, 4, 1)</span>. For <span class="m">(3, 4)</span> the four products are <span class="m">3, -3, 4, -4</span>, each at most its bound; for <span class="m">(3.5, 0)</span> the first is <span class="m">3.5 &gt; 3</span>. <code>HPolytope.box([-2, -1], [3, 4]).contains(x)</code> does the same test, in chapter <a href="a08-polytopes-and-set-operations.html" title="Polytopes and set operations">A8</a>.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The state</strong> is what the future depends on: position and velocity for the cart, <span class="m">x_{k+1} = f_k(x_k, u_k)</span>.</div></li>
+<li><div><strong>Four classes</strong>: LTI for the concepts, affine and LTV for the racing prediction models, nonlinear for the plants.</div></li>
+<li><div><strong>The cart</strong>: <span class="m">A = \begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \end{pmatrix}</span>, <span class="m">B = (0.5, 1)</span> at <span class="m">T_s = 1</span>, exact for held inputs; eigenvalues 1, so it coasts.</div></li>
+<li><div><strong>Euler</strong> drops the <span class="m">\tfrac12 T_s^2 a_k</span> term and lags the exact position by <span class="m">T_s v_k / 2</span>: one unit at <span class="m">T_s = 1</span>, <span class="m">v = 2</span>.</div></li>
+<li><div><strong>Plant against prediction model</strong>: the theorems are about the model; the plant decides.</div></li>
+<li><div><strong>Constraints are sets</strong>: the box <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span> as four rows <span class="m">H_x x \le h_x</span>, the input interval <span class="m">|u| \le 1</span>, checked on every state of a trajectory.</div></li>
+<li><div><strong>The canonical system</strong>: these matrices and sets with <span class="m">Q = \mathrm{diag}(1, 0.2)</span>, <span class="m">R = 0.2</span>, in every concept chapter.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>State, input, output</td>
+<td>What the future depends on; what the controller chooses; what is measured.</td>
+</tr>
+<tr>
+<td>Sample period <span class="m">T_s</span></td>
+<td>The time between two states <span class="m">x_k</span> and <span class="m">x_{k+1}</span>.</td>
+</tr>
+<tr>
+<td>LTI, affine, LTV, nonlinear</td>
+<td><span class="m">Ax + Bu</span>; plus a constant; with time-varying matrices; anything else.</td>
+</tr>
+<tr>
+<td>Zero-order hold</td>
+<td>A piecewise-constant input; the discretisation that is exact for it.</td>
+</tr>
+<tr>
+<td>Explicit Euler</td>
+<td>Derivative replaced by a difference; the position lags by <span class="m">T_s v / 2</span>.</td>
+</tr>
+<tr>
+<td>Plant, prediction model</td>
+<td>The system that evolves; the model the optimiser predicts with.</td>
+</tr>
+<tr>
+<td>Admissible</td>
+<td>A trajectory whose every state is in <span class="m">\mathcal X</span> and every input in <span class="m">\mathcal U</span>.</td>
+</tr>
+<tr>
+<td>Canonical system</td>
+<td>The course's cart, box, interval and weights, shared by every concept chapter.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Deterministic discrete-time models with a measured state. Noise, estimation and sampling jitter are out of scope; the labs say where they enter.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Discrete-time models and constraints for predictive control.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>K. J. Åström and B. Wittenmark. <em>Computer-Controlled Systems: Theory and Design</em>, 3rd ed. Prentice Hall, 1997. Sampling, the zero-order hold and the exact discretisation of a linear system.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>C.-T. Chen. <em>Linear System Theory and Design</em>, 3rd ed. Oxford University Press, 1999. State-space models, the state as a summary of the past.</div></li>
+</ul>
+<p>Åström and Wittenmark <a href="#ref-2">[2]</a> derive the zero-order-hold model for a general linear system, of which Part 3 is the two-state case. Next, chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> stacks the states of a whole horizon into one matrix identity, the backbone of every quadratic program in the course.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="index.html"><span class="lbl">Course</span><span class="t">The overview</span></a>
+  <a class="next" rel="next" href="a02-prediction-matrices-and-condensing.html"><span class="lbl">Next · A2</span><span class="t">Prediction matrices and condensing</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A1 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js"></script>
+<script src="interactive/a01.js"></script>
+</body>
+</html>
