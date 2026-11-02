@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>B1 · Vehicle–bike collision avoidance · Advanced MPC and Learning MPC</title>
+<meta name="description" content="A yield-or-pass decision as two convex QPs, friction-limited braking, closed-form reachability and the critical friction, feasibility maps over initial conditions, what the weights change, why yield is not stop, and the occupancy window.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part B, Labs · Chapter B1 of 6</span>
+  <h1>Vehicle–bike collision avoidance</h1>
+  <p class="lede">A vehicle approaches a crossing that a bicycle will occupy at a known time. Should it stay on the near side, or accelerate and clear the crossing first? The vehicle model is a point mass; the difficulty is the word "or", which chapter A15 turned into one binary variable and two convex programs. This lab runs that decision to the end: both strategies are solved as quadratic programs for every one of 660 initial states, live, and you can change the friction, the horizon, the cost, the discretisation and the meaning of "yield".</p>
+  <p class="byline">Elie Rouphael · Needs chapters A5 and A15 · Every number is checked in Python</p>
+  <p class="concepts"><span class="lbl">Concepts used</span><a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">the finite-horizon problem</a>, <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">disjunctive constraints and Big-M</a>, <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">Euler against zero-order hold</a>, <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">multipliers and active constraints</a></p>
+  <div class="downloads">
+    <a class="btn" href="code/b01_numbers.py" download>The numbers script (.py)</a>
+<a class="btn" href="notebooks/04_collision_avoidance_cftoc.ipynb" download>The lab notebook (.ipynb)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Strategy map over initial position and speed, and the two plans from the chosen state</p>
+      <canvas id="mapC" aria-label="A grid of initial states coloured by how many collision-avoidance strategies are feasible, or by which one is cheaper, with the chosen state outlined" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+      <canvas id="trajC" aria-label="The vehicle centre position predicted by the yield and pass plans against the prediction step, with the forbidden band of positions shaded" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="seg" role="group" aria-label="Map">
+      <button class="btn" type="button" data-mode="count" aria-pressed="true">how many feasible</button>
+      <button class="btn" type="button" data-mode="best" aria-pressed="false">which is cheaper</button>
+    </div>
+    <label class="field"><span>Friction <span class="m">\mu</span>: <b id="hMuV"></b></span>
+      <span class="row"><input type="range" id="hMu" min="0.03" max="0.2" step="0.01" value="0.1"></span>
+    </label>
+    <label class="field"><span>Horizon <span class="m">N</span> (seconds): <b id="hNV"></b></span>
+      <span class="row"><input type="range" id="hN" min="3" max="8" step="1" value="4"></span>
+    </label>
+    <label class="field"><span>Input weight <span class="m">R</span>: <b id="hRV"></b></span>
+      <span class="row"><input type="range" id="hR" min="0" max="4" step="1" value="1"></span>
+    </label>
+    <div class="seg stack" role="group" aria-label="Options">
+      <button class="btn" type="button" id="hYB" aria-pressed="false">looser centre-line yield bound d ≤ 100</button>
+      <button class="btn" type="button" id="hStop" aria-pressed="false">yield must end at a full stop</button>
+      <button class="btn" type="button" id="hZoh" aria-pressed="false">exact zero-order-hold model</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>none feasible</span><span class="v" id="rNone">–</span>
+      <span>both feasible</span><span class="v" id="rBoth">–</span>
+      <span>pass cheaper</span><span class="v" id="rPass">–</span>
+      <span>chosen state</span><span class="v" id="rProbe">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the lab's setting</button></div>
+    <p class="hint">Crossing centre at 100 m, 8 m wide, car 4.5 m long; <span class="m">0 \le v \le 32</span> m/s, <span class="m">|a| \le \mu g</span>; cost <span class="m">\sum R a_k^2 + \sum 3 (v_k - 20)^2 + 3 (v_N - 20)^2</span>. The bicycle arrives at the end of the horizon. 1320 quadratic programs are solved on every change, by the same interior-point method as the course package.</p>
+  </div>
+</div>
+</div>
+<div class="col prose">
+
+<p>This lab has its own system, a longitudinal point mass on a road, not the course's double integrator; the two are cousins, and chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a> explains their discretisations.</p>
+
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#scene"><span class="n">1</span><span class="t">The scene</span><span class="d">The forbidden interval and the two strategies</span></a>
+    <a href="#model"><span class="n">2</span><span class="t">Vehicle model, constraints and cost</span><span class="d">Euler point mass, friction, speed tracking</span></a>
+    <a href="#nominal"><span class="n">3</span><span class="t">The nominal scenario</span><span class="d">Yield wins, and why passing is impossible</span></a>
+    <a href="#reach"><span class="n">4</span><span class="t">Analytic reachability under the Euler model</span><span class="d">Closed-form terminal position, critical friction</span></a>
+    <a href="#friction"><span class="n">5</span><span class="t">Friction and feasibility</span><span class="d">Set inclusion and the strategy maps</span></a>
+    <a href="#weights"><span class="n">6</span><span class="t">What do Q, R and P actually change?</span><span class="d">Preference, never feasibility</span></a>
+    <a href="#stop"><span class="n">7</span><span class="t">&quot;Yield&quot; is not automatically &quot;stop&quot;</span><span class="d">Three different statements</span></a>
+    <a href="#window"><span class="n">8</span><span class="t">The general bicycle-occupancy window</span><span class="d">Safety at every conflict instant</span></a>
+    <a href="#meaning"><span class="n">9</span><span class="t">Interpreting infeasibility, and the model's limitations</span><span class="d">Infeasibility, limitations</span></a>
+    <a href="#code"><span class="n">10</span><span class="t">The code behind it</span><span class="d">strategy_grid and the Euler extrema</span></a>
+    <a href="#pitfalls"><span class="n">11</span><span class="t">Common pitfalls</span><span class="d">Seven confusions</span></a>
+    <a href="#check"><span class="n">12</span><span class="t">Check your understanding</span><span class="d">Ten questions with answers</span></a>
+    <a href="#exercises"><span class="n">13</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">14</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="scene">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The scene</h2>
+  </div>
+  <div class="col prose">
+
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="m">d_{\mathrm{bike}}</span></td>
+<td>100 m</td>
+<td>centre of the bicycle's conflict region, along the road</td>
+</tr>
+<tr>
+<td><span class="m">w_{\mathrm{bike}}</span></td>
+<td>8 m</td>
+<td>width of that region measured along the vehicle's travel direction</td>
+</tr>
+<tr>
+<td><span class="m">l_{\mathrm{car}}</span></td>
+<td>4.5 m</td>
+<td>vehicle length</td>
+</tr>
+<tr>
+<td><span class="m">t_{\min}</span></td>
+<td>4 s</td>
+<td>when the bicycle enters the region</td>
+</tr>
+<tr>
+<td><span class="m">v_{\max}</span>, <span class="m">T_s</span>, <span class="m">g</span></td>
+<td>32 m/s, 1 s, 9.81 m/s²</td>
+<td>speed limit, sample time, gravity</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>The two strategies, from chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a>.</strong> The vehicle centre <span class="m">d</span> is collision-free at the conflict time if its front stays short of the near edge, <span class="m">d \le d_{\max} = d_{\mathrm{bike}} - (l_{\mathrm{car}} + w_{\mathrm{bike}}) / 2 = 93.75</span> m (yield), or its rear has cleared the far edge, <span class="m">d \ge d_{\min} = 106.25</span> m (pass). The forbidden centre positions form a gap of <span class="m">l_{\mathrm{car}} + w_{\mathrm{bike}} = 12.5</span> m, and the safe set, the union of two half-lines, is not convex: the midpoint of two safe positions is the middle of the crossing. Chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a> showed that with a single binary variable the mixed-integer program is solved exactly by solving the two convex branches and keeping the cheaper feasible one. That is what this lab does, 1320 times per map.</p>
+<div class="define"><p class="define-title">What is a strategy map?</p>
+<p><strong>In plain words:</strong> for every starting position and speed on a grid, the answer to two questions: how many of the two manoeuvres can be executed at all, and which of them is cheaper.</p>
+<p><strong>More precisely:</strong> on the grid <span class="m">d_0 \in \{0, 5, \dots, 95\}</span>, <span class="m">v_0 \in \{0, 1, \dots, 32\}</span>, 660 states, the feasible count <span class="m">\in \{0, 1, 2\}</span> of the yield and pass QPs, and the code of the cheaper feasible one. Feasibility depends on the model, the horizon and the constraints; preference depends on the cost as well. The map keeps the two apart.</p>
+<dl><dt>Yield, pass</dt><dd>Stay short of the region; be beyond it, while the bicycle is present.</dd><dt>Feasible count</dt><dd>How many manoeuvres exist from a state, before any cost is consulted.</dd><dt>Critical friction</dt><dd>The <span class="m">\mu</span> at which the reachable interval of terminal positions equals the forbidden gap.</dd><dt>Occupancy window</dt><dd>The conflict instants over which safety must hold.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="model">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Vehicle model, constraints and cost</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Longitudinal point mass.</strong> <span class="m">\dot d = v</span>, <span class="m">\dot v = a</span>, state <span class="m">x = (d, v)</span>, input <span class="m">u = a</span>. Discretised with explicit Euler and <span class="m">T_s = 1</span> s,</p>
+<div class="math-block">d_{k+1} = d_k + T_s v_k, \qquad v_{k+1} = v_k + T_s a_k, \qquad A = \begin{pmatrix} 1 &amp; T_s \\ 0 &amp; 1 \end{pmatrix}, \quad B = \begin{pmatrix} 0 \\ T_s \end{pmatrix}.</div>
+<p>A subtle consequence, from chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>: <span class="m">a_k</span> changes the next velocity but does not enter <span class="m">d_{k+1}</span> directly. The exact zero-order-hold discretisation has <span class="m">d_{k+1} = d_k + T_s v_k + \tfrac12 T_s^2 a_k</span>, so <span class="m">B_{\mathrm{ZOH}} = (\tfrac12 T_s^2, T_s)</span>. The lab keeps Euler, as the published exercise does and because Part 3 has closed-form reachability for it; with a one-second sample the choice visibly moves feasibility boundaries, which the demo's last toggle and exercise 7 show.</p>
+<p><strong>Constraints.</strong> Speed <span class="m">0 \le v_k \le 32</span> m/s, the lower bound forbidding reversing in this one-dimensional scene. Acceleration is friction-limited,</p>
+<div class="math-block">-\mu g \le a_k \le \mu g: \qquad \mu = 0.10 \Rightarrow |a_k| \le 0.981 \text{ m/s}^2, \qquad \mu = 0.05 \Rightarrow |a_k| \le 0.4905 \text{ m/s}^2,</div>
+<p>an intentionally simplified model: symmetric limits, a known constant <span class="m">\mu</span>, no drag or powertrain limits, no combined longitudinal and lateral tyre usage.</p>
+<p><strong>Cost.</strong> With <span class="m">R = 1</span>, <span class="m">Q = 3</span>, <span class="m">P = 3</span> and reference speed <span class="m">v_{\mathrm{ref}} = 20</span> m/s,</p>
+<div class="math-block">J = \sum_{k=0}^{N-1} R a_k^2 + \sum_{k=0}^{N-1} Q (v_k - v_{\mathrm{ref}})^2 + P (v_N - v_{\mathrm{ref}})^2 .</div>
+<p>Effort, speed tracking during the manoeuvre, terminal speed error. The position does not appear in the cost at all; it enters only through the collision-avoidance constraints. Each fixed strategy is then the finite-horizon problem of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>: linear dynamics, a convex quadratic objective, linear state and input constraints, plus <span class="m">d_k \le d_{\max}</span> during the bicycle's presence for yield or <span class="m">d_k \ge d_{\min}</span> for pass.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="nominal">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The nominal scenario</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Which yield condition?</strong> The geometric condition <span class="m">d_k \le d_{\max}</span> includes the vehicle and crossing geometry. A looser centre-line variant asks only that the vehicle centre has not passed the centre of the crossing, <span class="m">d_N \le d_{\mathrm{bike}}</span>, which admits positions where the front already overlaps the region. Neither imposes a terminal speed, so yielding does not mean stopping. The lab uses the geometric bound by default and labels the centre-line one explicitly when used.</p>
+<p><strong>A horizon that ends when the bicycle arrives.</strong> The nominal scenario sets <span class="m">T = t_{\min} = 4</span> s, so the strategy constraint is imposed only at <span class="m">k = N</span>; Part 8 extends it to a whole occupancy window. From <span class="m">x_0 = (60, 5)</span>:</p>
+<div class="math-block">\text{yield: feasible, } J = 2582.56,\ x_4 = (85.886,\ 8.924); \qquad \text{pass: infeasible.}</div>
+<p>Yield is selected. One thing the plots do not say out loud: the selected yield plan accelerates at the full <span class="m">+0.981</span> m/s² for all four steps and ends at <span class="m">d_4 = 85.9</span> m, short of <span class="m">d_{\max} = 93.75</span> with room to spare. The yield constraint is not active, and its multiplier (chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a>) is zero. From this state the vehicle cannot reach the region in four seconds whatever it does, so &quot;yield&quot; here is simply speed tracking towards 20 m/s, and the only thing the collision logic did was rule passing out.</p>
+<p><strong>Why passing is impossible from here.</strong> Even maximal acceleration cannot move the centre beyond <span class="m">d_{\min} = 106.25</span> m by <span class="m">t = 4</span> s under the Euler model. Part 3 shows this from the dynamics rather than from the solver.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="reach">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Analytic reachability under the Euler model</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Closed-form velocity and terminal position.</strong> From <span class="m">v_{k+1} = v_k + T_s a_k</span>, <span class="m">v_k = v_0 + T_s \sum_{j=0}^{k-1} a_j</span>; from <span class="m">d_{k+1} = d_k + T_s v_k</span>, <span class="m">d_N = d_0 + T_s \sum_{k=0}^{N-1} v_k</span>, and substituting,</p>
+<div class="math-block">d_N = d_0 + N T_s v_0 + T_s^2 \sum_{j=0}^{N-2} (N - 1 - j)\, a_j .</div>
+<p>Notice that <span class="m">a_{N-1}</span> does not affect <span class="m">d_N</span>: it changes <span class="m">v_N</span>, but the final position was already computed from <span class="m">v_{N-1}</span>. A discretisation-specific property worth knowing before reading the optimiser's output.</p>
+<p><strong>Extrema when the speed bounds are inactive.</strong> Setting every position-relevant acceleration to <span class="m">\pm\mu g</span> and using <span class="m">\sum_{r=1}^{N-1} r = N(N-1)/2</span>,</p>
+<div class="math-block">d_N^{\max / \min} = d_0 + N T_s v_0 \pm \mu g T_s^2 \frac{N(N-1)}{2}.</div>
+<p>For <span class="m">x_0 = (60, 5)</span>, <span class="m">N = 4</span>, <span class="m">\mu = 0.10</span>: <span class="m">d_4 \in [74.114, 85.886]</span>. The maximum is below <span class="m">d_{\min} = 106.25</span>, so passing is dynamically impossible; the yield bound 93.75 is above the maximum, so yielding costs nothing. That is the analytic explanation of the solver's verdict, and of the inactive constraint.</p>
+<p><strong>Width of the controllable interval and the critical friction.</strong> The reachable terminal positions span <span class="m">d_N^{\max} - d_N^{\min} = \mu g T_s^2 N(N-1)</span>, while the forbidden gap is <span class="m">l_{\mathrm{car}} + w_{\mathrm{bike}}</span>. A necessary condition for some initial state to have both strategies reachable is therefore <span class="m">\mu g T_s^2 N(N-1) \ge l_{\mathrm{car}} + w_{\mathrm{bike}}</span>, with the critical value</p>
+<div class="math-block">\mu_{\mathrm{crit}} = \frac{l_{\mathrm{car}} + w_{\mathrm{bike}}}{g T_s^2 N(N-1)} = \frac{12.5}{9.81 \cdot 12} = 0.1062 .</div>
+<p>At <span class="m">\mu = 0.10</span> the width is 11.77 m, just short of the 12.5 m gap, so no initial state has both strategies feasible, which the map at the top confirms with zero &quot;both&quot; cells; at <span class="m">\mu = 0.12</span> the width is 14.13 m and overlap becomes possible.</p>
+<div class="widget" id="reachW">
+  <div class="two">
+    <label class="field"><span><span class="m">d_0</span>: <b id="rDV"></b></span><span class="row"><input type="range" id="rD" min="0" max="100" step="5" value="60"></span></label>
+    <label class="field"><span><span class="m">v_0</span>: <b id="rVV"></b></span><span class="row"><input type="range" id="rV" min="0" max="32" step="1" value="5"></span></label>
+  </div>
+  <div class="two">
+    <label class="field"><span><span class="m">\mu</span>: <b id="rMuV"></b></span><span class="row"><input type="range" id="rMu" min="0.03" max="0.2" step="0.01" value="0.1"></span></label>
+    <label class="field"><span><span class="m">N</span>: <b id="rNV"></b></span><span class="row"><input type="range" id="rN" min="2" max="8" step="1" value="4"></span></label>
+  </div>
+  <canvas id="reachC" aria-label="A horizontal axis of terminal positions with the analytically reachable interval drawn as a blue box, the forbidden gap shaded orange, and dots at the terminal positions of the two strategy QPs" aria-describedby="reachCap"></canvas>
+  <p class="caption" id="reachCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="friction">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Friction and feasibility</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>A set-inclusion argument.</strong> Let <span class="m">\mathcal U(\mu) = [-\mu g, \mu g]</span>. If <span class="m">0 &lt; \mu_1 &lt; \mu_2</span> then <span class="m">\mathcal U(\mu_1) \subset \mathcal U(\mu_2)</span>: every input sequence admissible at low friction is admissible at high friction. With everything else unchanged,</p>
+<div class="math-block">\mathcal F(\mu_1) \subseteq \mathcal F(\mu_2),</div>
+<p>where <span class="m">\mathcal F(\mu)</span> is the set of initial states from which at least one modelled strategy is feasible. &quot;Lower friction enlarges the infeasible region&quot; is a theorem about sets, not an observation from a plot.</p>
+<p><strong>Strategy maps.</strong> The numbers script solves both QPs on the 660-state grid and keeps two maps: how many strategies are feasible (0, 1 or 2) and which feasible one is cheaper. That separates feasibility from preference. At <span class="m">\mu = 0.10</span> there are 7 states with no strategy; at <span class="m">\mu = 0.05</span>, 36, an increase of 29 that the inclusion argument guarantees for every state, not only grid points: the script checks that no state loses a strategy when the friction rises. The infeasible states lie along the line <span class="m">d_0 + 4 v_0 \approx 100</span>: too fast to stop short, too slow to clear. The state <span class="m">(85, 3)</span> is the closest call: its optimal yield plan brakes hard, then accelerates, and ends exactly on the bound <span class="m">d_4 = 93.75</span>, an active constraint that a less careful solver can mistake for infeasibility. The demo recomputes both maps on every slider change.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="weights">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>What do Q, R and P actually change?</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Objective weights do not change feasibility.</strong> For a fixed model, horizon, state, input and collision constraints, changing <span class="m">Q</span>, <span class="m">R</span>, <span class="m">P</span> changes only the objective; it cannot create or destroy feasible trajectories. In exact optimisation,</p>
+<div class="math-block">\text{the feasible set is independent of } Q, R, P.</div>
+<p>What the weights can change is which feasible trajectory is optimal and, when both branches are feasible, which is cheaper.</p>
+<p><strong>A state where both are feasible.</strong> With <span class="m">\mu = 0.15</span> and <span class="m">x_0 = (30, 17)</span>, both strategies are feasible, and only <span class="m">R</span> is varied:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th><span class="m">R</span></th>
+<th>yield cost</th>
+<th>yield <span class="m">\sum a^2</span></th>
+<th>pass cost</th>
+<th>pass <span class="m">\sum a^2</span></th>
+<th>chosen</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.1</td>
+<td>220.80</td>
+<td>6.92</td>
+<td>36.69</td>
+<td>5.78</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>1</td>
+<td>226.88</td>
+<td>6.23</td>
+<td>41.76</td>
+<td>5.52</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>1563.44</td>
+<td>1.29</td>
+<td>5165.38</td>
+<td>5.13</td>
+<td>yield</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With a small effort penalty, speed tracking dominates and passing, which keeps the speed near 20, is preferred. With <span class="m">R = 1000</span> the optimiser prefers the branch needing less acceleration, and yield, which can coast, wins. Both branches stay feasible throughout. The correct separation: <span class="m">\mu</span> changes control authority and feasibility; <span class="m">Q</span>, <span class="m">R</span>, <span class="m">P</span> change preference among feasible solutions. Set the demo's friction to 0.15, the state to <span class="m">(30, 17)</span> and sweep <span class="m">R</span> to watch the colour flip.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="stop">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>&quot;Yield&quot; is not automatically &quot;stop&quot;</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Three distinct statements that casual language conflates.</strong> A, geometric yield: <span class="m">d_N \le d_{\max}</span>, the vehicle is on the safe near side at the conflict time. B, full stop: <span class="m">d_N \le d_{\max}</span> and <span class="m">v_N = 0</span>, strictly more restrictive. C, centre-line condition: <span class="m">d_N \le d_{\mathrm{bike}}</span>, looser than A because <span class="m">d_{\mathrm{bike}} &gt; d_{\max}</span>. From <span class="m">x_0 = (60, 5)</span>: A feasible, C feasible, B infeasible: the vehicle can stay short of the region but cannot brake from 5 m/s to zero in four seconds at 0.981 m/s² (it needs 5.1 s). Hence</p>
+<div class="math-block">\text{yield feasible} \ \not\Rightarrow\ \text{full stop feasible}.</div>
+<p>Toggle &quot;yield must end at a full stop&quot; in the demo: the yield-feasible region collapses from 268 grid states to 75, roughly those with <span class="m">v_0 \le N \mu g = 3.9</span> m/s and enough room (exercise 5).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="window">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The general bicycle-occupancy window</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>From a terminal-time condition to a time-indexed one.</strong> Suppose the bicycle occupies the region over <span class="m">t \in [t_{\min}, t_{\max}] = [4, 6]</span> and the horizon continues beyond, <span class="m">N = 8</span>. Yield must then impose <span class="m">d_k \le d_{\max}</span> for <span class="m">k = 4, 5, 6</span>, not merely at the first instant; pass must impose <span class="m">d_k \ge d_{\min}</span> over the same steps, although with <span class="m">v_k \ge 0</span> the later pass inequalities are redundant, since a vehicle that has cleared the region cannot come back. For yield, enforcing the whole window is essential. From <span class="m">(60, 5)</span>, the window problem selects yield with cost 4730.0: the vehicle brakes briefly, holds its centre at exactly <span class="m">d_6 = 93.75</span> as the bicycle leaves, then accelerates to reach 112 m at <span class="m">k = 8</span>.</p>
+<p><strong>Why one binary variable is meaningful.</strong> One strategy variable for the whole window commits to one topological manoeuvre: near side throughout, or far side throughout. Independent binaries <span class="m">s_k</span> at every step would let the optimiser be yield-side at one conflict instant and pass-side at a later one, which physically means driving through the forbidden interval while the bicycle is there. Logical variables must encode the manoeuvre-level logic, not individual inequalities.</p>
+<div class="widget" id="winW">
+  <div class="two">
+    <label class="field"><span><span class="m">d_0</span>: <b id="wDV"></b></span><span class="row"><input type="range" id="wD" min="0" max="95" step="5" value="60"></span></label>
+    <label class="field"><span><span class="m">v_0</span>: <b id="wVV"></b></span><span class="row"><input type="range" id="wV" min="0" max="32" step="1" value="5"></span></label>
+  </div>
+  <canvas id="winC" aria-label="Vehicle centre position against time step over an eight-step horizon with the bicycle's occupancy window shaded, under yield enforced at one instant, yield enforced over the whole window, and pass" aria-describedby="winCap"></canvas>
+  <p class="caption" id="winCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="meaning">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Interpreting infeasibility, and the model's limitations</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>&quot;Neither strategy is feasible&quot; has a precise but limited meaning.</strong> It says that under this model no admissible acceleration sequence satisfies either manoeuvre. It does not prove a collision is physically unavoidable: the model excludes steering around the bicycle, the bicycle reacting, leaving the lane, and emergency manoeuvres outside the acceleration envelope. The correct statement is that neither modelled longitudinal strategy is feasible under the stated assumptions, and that qualification matters in safety analysis.</p>
+<p><strong>Limitations.</strong> The bicycle's timing is exactly known, where real systems have uncertainty in detection, speed, intent and arrival time; a robust formulation would require safety for every arrival time in a set, a chance-constrained one a probabilistic risk bound. The friction is a known scalar, where a conservative robust option replaces <span class="m">\mu</span> by a guaranteed lower bound <span class="m">\underline\mu</span> (exercise 8); richer models use friction circles and combined-slip tyres <a href="#ref-4">[4]</a>. The vehicle is a one-dimensional point mass without steering, lateral position, yaw, tyre slip, actuator delay or estimation error. This is deliberate: it isolates one idea,</p>
+<div class="math-block">\text{simple dynamics} + \text{logical environment constraint} \Rightarrow \text{hybrid, nonconvex optimal control},</div>
+<p>and lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a> moves to the Frenet coordinates that make lateral constraints tractable along a track.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The strategy maps are a loop over the grid that calls <code>choose_collision_strategy</code>, which in turn solves the two branch QPs with the package's interior-point solver (chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>).</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/collision.py · strategy_grid</p><pre><code class="language-python">def strategy_grid(d_values, v_values, **kwargs):
+    &quot;&quot;&quot;
+    Evaluate strategy feasibility and optimal choice on an initial-state grid.
+
+    Returns integer arrays with codes:
+        feasible_count: 0,1,2
+        best_code: -1 infeasible, 0 yield, 1 pass
+    &quot;&quot;&quot;
+    d_values = np.asarray(d_values, float)
+    v_values = np.asarray(v_values, float)
+
+    feasible_count = np.zeros((len(v_values), len(d_values)), dtype=int)
+    best_code = -np.ones((len(v_values), len(d_values)), dtype=int)
+
+    for iv, v0 in enumerate(v_values):
+        for idd, d0 in enumerate(d_values):
+            best, sols = choose_collision_strategy(
+                np.array([d0, v0]),
+                **kwargs,
+            )
+
+            feasible_count[iv, idd] = sum(sol.success for sol in sols)
+
+            if best is not None:
+                best_code[iv, idd] = 0 if best.strategy == &quot;yield&quot; else 1
+
+    return feasible_count, best_code</code></pre>
+<p>Two integer arrays, one per question. <code>feasible_count</code> counts the branches whose QP converged with every constraint satisfied; <code>best_code</code> records the cheaper one, and stays <span class="m">-1</span> when none is feasible. The keyword arguments are passed straight through to the branch solver, which is how the demo's toggles (the centre-line bound, the full stop, the zero-order hold) reach the QP without any other code changing. Feasibility is decided by the solver's success flag, which for the interior-point method means that the KKT residuals are below tolerance; an independent linear-programming certificate for the doubtful cases is in lab <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a>.</p>
+</div>
+<p>The reachability bounds of Part 3 are two lines of arithmetic, and the function says in its docstring why the last acceleration is absent.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/collision.py · terminal_position_extrema_no_speed_limits</p><pre><code class="language-python">def terminal_position_extrema_no_speed_limits(
+    x0,
+    *,
+    N=4,
+    Ts=1.0,
+    mu=0.10,
+    g=9.81,
+):
+    &quot;&quot;&quot;
+    Analytic terminal-position extrema for the *Euler* workshop model
+    when speed constraints are inactive.
+
+    d_N = d_0 + N Ts v_0
+          + Ts^2 sum_{j=0}^{N-2} (N-1-j) a_j.
+
+    The last acceleration a_{N-1} affects v_N but not d_N under the
+    explicit Euler position update.
+    &quot;&quot;&quot;
+    d0, v0 = np.asarray(x0, float).reshape(2)
+    amax = float(mu) * float(g)
+
+    leverage = Ts**2 * N * (N - 1) / 2.0
+    nominal = d0 + N * Ts * v0
+
+    return (
+        float(nominal - amax * leverage),
+        float(nominal + amax * leverage),
+    )</code></pre>
+<p><code>leverage</code> is <span class="m">T_s^2 N(N-1)/2</span>, the sum <span class="m">\sum_{j=0}^{N-2} (N - 1 - j)</span> times <span class="m">T_s^2</span>: how far one unit of acceleration, held for all the position-relevant steps, moves the terminal position. The bounds are the nominal coasting position plus and minus <span class="m">\mu g</span> times that leverage, and they are exact only while the speed bounds <span class="m">0 \le v \le 32</span> stay inactive, which is the caveat in the function's name.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The double-integrator dynamics make the problem convex.&quot;</strong> No. Each fixed strategy is a convex QP; the union &quot;<span class="m">d \le d_{\max}</span> or <span class="m">d \ge d_{\min}</span>&quot; is not. The logic, not the plant, creates the nonconvexity.</li>
+<li><strong>&quot;Lower <span class="m">\mu</span> only changes comfort.&quot;</strong> No. It bounds the input, so it changes the reachable set and feasibility.</li>
+<li><strong>&quot;Changing <span class="m">Q</span> or <span class="m">R</span> changes the feasible region.&quot;</strong> Not with the constraints and model unchanged. Weights change optimality.</li>
+<li><strong>&quot;Yield means <span class="m">v_N = 0</span>.&quot;</strong> Only if imposed. The nominal formulation imposes no terminal speed.</li>
+<li><strong>&quot;<span class="m">d_N \le d_{\mathrm{bike}}</span> is geometric collision avoidance.&quot;</strong> No. It admits <span class="m">d_N \in (d_{\max}, d_{\mathrm{bike}}]</span>, where the front already overlaps the region.</li>
+<li><strong>&quot;Safe at the instant the bicycle arrives means safe.&quot;</strong> No. The yield constraint must hold at every conflict instant; Part 8 has a state that is safe at <span class="m">k = 4</span> and inside the crossing at <span class="m">k = 5</span>.</li>
+<li><strong>&quot;Solver infeasibility means a collision is unavoidable.&quot;</strong> It means no solution exists within the modelled dynamics, bounds, strategies and prediction assumptions.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why is each fixed-strategy problem convex?</summary>
+<p>Linear dynamics, linear state, input and strategy constraints once the branch is fixed, and a convex quadratic objective.</p>
+</details>
+<details class="sol"><summary>2. Why can two QPs replace the mixed-integer program here?</summary>
+<p>There is one binary decision. Enumerating <span class="m">s = 0</span> and <span class="m">s = 1</span> gives exactly the minimum of the two branch-optimal costs, as chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a> showed.</p>
+</details>
+<details class="sol"><summary>3. What does <span class="m">\mu</span> do mathematically?</summary>
+<p>It scales the admissible input interval <span class="m">a \in [-\mu g, \mu g]</span>. Reducing it gives a subset of the former control set, so the set of feasible initial states cannot grow.</p>
+</details>
+<details class="sol"><summary>4. Do <span class="m">Q</span>, <span class="m">R</span> and <span class="m">P</span> change feasibility?</summary>
+<p>No, not when only the weights change. They change which feasible trajectory or strategy is optimal; feasibility is set by the dynamics and constraints.</p>
+</details>
+<details class="sol"><summary>5. What is unusual about the last acceleration under explicit Euler?</summary>
+<p><span class="m">a_{N-1}</span> changes <span class="m">v_N</span> but not <span class="m">d_N</span>, because the position update uses <span class="m">v_{N-1}</span> and has no direct acceleration term.</p>
+</details>
+<details class="sol"><summary>6. Why is &quot;yield&quot; different from &quot;stop&quot;?</summary>
+<p>Yield can mean only that the vehicle remains before the region. A full stop additionally requires <span class="m">v_N = 0</span> or an equivalent condition.</p>
+</details>
+<details class="sol"><summary>7. Why must the yield constraint be enforced for the whole occupancy window?</summary>
+<p>Being safe at the instant the bicycle enters does not stop the vehicle from entering the region a step later while the bicycle is still there.</p>
+</details>
+<details class="sol"><summary>8. Why is the yield constraint inactive at the nominal state?</summary>
+<p>Because even full acceleration ends the horizon at 85.9 m, short of the 93.75 m bound: the optimiser's answer is pure speed tracking and the multiplier of the yield row is zero.</p>
+</details>
+<details class="sol"><summary>9. What is the critical friction a condition for?</summary>
+<p>It is necessary for the two strategy regions to overlap anywhere: the reachable interval of terminal positions must be at least as wide as the forbidden gap. It is not sufficient, and it says nothing about preference.</p>
+</details>
+<details class="sol"><summary>10. What does &quot;both strategies infeasible&quot; actually prove?</summary>
+<p>Only that neither modelled longitudinal manoeuvre is possible within the chosen horizon and constraints; not that every physically possible avoidance has failed.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Euler prediction.</b> From <span class="m">d_{k+1} = d_k + T_s v_k</span> and <span class="m">v_{k+1} = v_k + T_s a_k</span>, derive <span class="m">d_N = d_0 + N T_s v_0 + T_s^2 \sum_{j=0}^{N-2} (N - 1 - j) a_j</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Write <span class="m">v_k</span> as a sum of accelerations, then sum the velocities and count how many times each <span class="m">a_j</span> appears.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">v_k = v_0 + T_s \sum_{j=0}^{k-1} a_j</span>, and <span class="m">d_N = d_0 + T_s \sum_{k=0}^{N-1} v_k = d_0 + N T_s v_0 + T_s^2 \sum_{k=0}^{N-1} \sum_{j=0}^{k-1} a_j</span>. The acceleration <span class="m">a_j</span> appears in <span class="m">v_k</span> for every <span class="m">k \ge j + 1</span>, that is <span class="m">N - 1 - j</span> times for <span class="m">j \le N - 2</span> and zero times for <span class="m">j = N - 1</span>. Swapping the sums gives the formula.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Critical friction.</b> Ignoring active speed constraints, derive <span class="m">\mu_{\mathrm{crit}} = (l_{\mathrm{car}} + w_{\mathrm{bike}}) / (g T_s^2 N(N-1))</span>. What does it mean, and what does it not guarantee?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Compare the width of the reachable terminal interval with the forbidden gap.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The reachable terminal positions span <span class="m">\mu g T_s^2 N(N-1)</span>; both strategies can only be reachable from one state if that span is at least the gap <span class="m">l_{\mathrm{car}} + w_{\mathrm{bike}}</span>, which gives <span class="m">\mu_{\mathrm{crit}} = 0.1062</span> for <span class="m">N = 4</span>. It is a necessary condition for the two feasible regions to overlap anywhere, and only that: it does not say overlap occurs, since the speed bounds may bind and the interval must also be placed so that both bounds fall inside it, and it says nothing about which strategy is preferred.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the strategy map yourself.</b> Without <code>strategy_grid</code>, loop over the 660 states, call <code>solve_collision_strategy</code> for both branches, and count the states with no feasible strategy at <span class="m">\mu = 0.10</span> and <span class="m">\mu = 0.05</span>. Then check the inclusion <span class="m">\mathcal F(0.05) \subseteq \mathcal F(0.10)</span> state by state.</p>
+<details class="sol"><summary>Hint</summary>
+<p>A state is in <span class="m">\mathcal F(\mu)</span> when at least one branch's <code>success</code> is true; inclusion means no state is feasible at 0.05 and infeasible at 0.10.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>7 states have no strategy at <span class="m">\mu = 0.10</span> and 36 at <span class="m">\mu = 0.05</span>; the inclusion holds at every one of the 660 states, as the set argument of Part 5 promises for all states, grid or not.</p>
+<pre><code class="language-python">import numpy as np
+from advanced_mpc_lmpc.collision import solve_collision_strategy
+D = np.arange(0, 100, 5); V = np.arange(0, 33)
+def feasible(mu):
+    return np.array([[any(solve_collision_strategy(np.array([d0, v0]), s, N=4, mu=mu).success
+                          for s in (&quot;yield&quot;, &quot;pass&quot;)) for d0 in D] for v0 in V])
+F10, F05 = feasible(0.10), feasible(0.05)
+print((~F10).sum(), (~F05).sum())          # 7 36
+print(np.all(F05 &lt;= F10))                  # True: feasible at low friction implies feasible at high friction
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Objective weights.</b> Choose an initial state where both strategies are feasible, vary only <span class="m">R</span>, and verify that feasibility does not change while the selected strategy may.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Part 6's state and friction.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>At <span class="m">\mu = 0.15</span> and <span class="m">(30, 17)</span>, both branches are feasible for <span class="m">R = 0.1, 1, 1000</span> (the solver succeeds every time, with unchanged constraints), and the choice flips from pass to yield at large <span class="m">R</span>. The demo reproduces the table of Part 6.</p>
+<pre><code class="language-python">for Ru in (0.1, 1.0, 10.0, 100.0, 1000.0):
+    best, sols = choose_collision_strategy(np.array([30.0, 17.0]), N=4, mu=0.15, Ru=Ru)
+    print(Ru, [s.success for s in sols], best.strategy)     # feasibility [True, True] throughout; choice flips
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Full stop.</b> Add <span class="m">v_N = 0</span> to the yield branch, map the initial states for which a full stop is feasible, and compare with the geometric-yield feasible set.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>terminal_stop=True</code>; a stop needs <span class="m">v_0 \le N \mu g</span> and enough distance.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>On the 660-state grid, geometric yield is feasible from 268 states and a full stop from 75. A stop in four seconds needs <span class="m">v_0 \le 4 \cdot 0.981 = 3.92</span> m/s, so only <span class="m">v_0 \in \{0, 1, 2, 3\}</span> qualify at all, and the car must also not cross <span class="m">d_{\max}</span> while braking: with <span class="m">v_0 = 3</span> the closest admissible start is <span class="m">d_0 = 85</span>, with <span class="m">v_0 = 0</span> it is 95. Yield-feasible states lie along and below the line <span class="m">d_0 + 4v_0 \approx 100</span>; stop-feasible ones in a thin strip at the bottom of the map.</p>
+<pre><code class="language-python">yield_ok = np.array([[solve_collision_strategy(np.array([d0, v0]), &quot;yield&quot;, N=4, mu=0.10).success for d0 in D] for v0 in V])
+stop_ok = np.array([[solve_collision_strategy(np.array([d0, v0]), &quot;yield&quot;, N=4, mu=0.10, terminal_stop=True).success for d0 in D] for v0 in V])
+print(yield_ok.sum(), stop_ok.sum())    # 268 75
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Occupancy window.</b> With <span class="m">t_{\min} = 4</span>, <span class="m">t_{\max} = 6</span>, <span class="m">N = 8</span>, compare enforcing yield only at <span class="m">t_{\min}</span> with enforcing it over the whole window, and find a state where the first is feasible but the second is not.</p>
+<details class="sol"><summary>Hint</summary>
+<p>A fast car far away can be short of the region at <span class="m">k = 4</span> and inside it at <span class="m">k = 5</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>From <span class="m">(0, 19)</span>: the single-instant version is feasible and its plan has <span class="m">d_4, d_5, d_6 = 78.7, 98.7, 118.7</span>, driving straight through the crossing at steps 5 and 6 while the bicycle is there. The window version is infeasible: at 19 m/s with 0.981 m/s² of braking the car cannot stay short of 93.75 m until <span class="m">k = 6</span>. The grid holds 58 such states. The Part 7 widget shows the pair.</p>
+<pre><code class="language-python">x = np.array([0.0, 19.0])
+once = solve_collision_strategy(x, &quot;yield&quot;, N=8, conflict_steps=(4,), mu=0.10)
+window = solve_collision_strategy(x, &quot;yield&quot;, N=8, conflict_steps=(4, 5, 6), mu=0.10)
+print(once.success, once.X[4:7, 0].round(1), window.success)    # True [ 78.7  98.7 118.7] False
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Discretisation.</b> Repeat the feasibility map with the exact zero-order-hold discretisation and explain why the boundary moves.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Under ZOH the current acceleration already moves the next position by <span class="m">\tfrac12 T_s^2 a_k</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Under ZOH every acceleration acts on the position half a step earlier, so the reachable terminal interval widens: from <span class="m">(60, 5)</span> full throttle reaches <span class="m">d_4 = 87.85</span> instead of 85.89. On the grid, the states with no strategy fall from 7 to 1, and 14 states gain both strategies where Euler had none, because the wider interval can straddle the gap. The physics did not change; the discretisation's one-step lag in the position update did, which is why a one-second sample is coarse for this problem (chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>).</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.collision import strategy_grid
+count_zoh, best_zoh = strategy_grid(D, V, N=4, mu=0.10, discretization=&quot;zoh&quot;)
+print((count_zoh == 0).sum(), (count_zoh == 2).sum())    # 1 14, against 7 0 for Euler
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Friction uncertainty.</b> With <span class="m">\mu \in [0.05, 0.10]</span>, formulate a robust acceleration bound that guarantees admissibility for every value in the interval, and discuss its conservatism.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Plan for the worst friction.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Impose <span class="m">|a_k| \le \underline\mu g = 0.4905</span> m/s². Every such sequence is admissible for every <span class="m">\mu \ge 0.05</span>, so the plan is safe whatever the road turns out to be. The price is the <span class="m">\mu = 0.05</span> map: 36 instead of 7 grid states with no strategy, 29 states given up although most of them would be fine on the actual road. A friction estimator that narrows the interval buys those states back.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Beyond one dimension.</b> List the states, inputs and constraints needed to let the vehicle steer around the region rather than only brake or accelerate.</p>
+<details class="sol"><summary>Hint</summary>
+<p>What does a lane change need that a longitudinal model lacks?</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>States: lateral position and heading (and yaw rate for a dynamic model), so at least <span class="m">(d, y, \psi, v)</span>. Inputs: steering angle or lateral acceleration alongside <span class="m">a</span>. Constraints: lane and road boundaries on <span class="m">y</span>, a steering-rate limit, a combined tyre limit replacing the scalar bound, for instance <span class="m">a_x^2 + a_y^2 \le (\mu g)^2</span>, and a two-dimensional collision constraint, the car's rectangle against the bicycle's region, which is again disjunctive: pass in front, behind, left or right, four binaries or a convex outer approximation. The nonconvex logic multiplies; lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a> moves to the Frenet coordinates that make such constraints tractable along a track.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 14</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Geometry</strong>: safe centre positions are <span class="m">d \le 93.75</span> or <span class="m">d \ge 106.25</span>, a nonconvex union with a 12.5 m gap (chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a>).</div></li>
+<li><div><strong>Model</strong>: Euler point mass, <span class="m">0 \le v \le 32</span>, <span class="m">|a| \le \mu g</span>, speed-tracking cost with no position term.</div></li>
+<li><div><strong>Logic</strong>: each strategy is a convex QP; the choice is one binary variable; two QPs solve the MIQP exactly.</div></li>
+<li><div><strong>Nominal</strong>: from <span class="m">(60, 5)</span>, yield at cost 2582.6 with its bound inactive; pass impossible because <span class="m">d_4 \le 85.9 &lt; 106.25</span>.</div></li>
+<li><div><strong>Reachability</strong>: <span class="m">d_N = d_0 + N v_0 \pm \mu g N(N-1)/2</span>; <span class="m">\mu_{\mathrm{crit}} = 0.106</span>, just above the nominal 0.10.</div></li>
+<li><div><strong>Friction</strong>: <span class="m">\mathcal F(\mu_1) \subseteq \mathcal F(\mu_2)</span>; 7 and 36 of 660 states without a strategy at <span class="m">\mu = 0.10</span> and 0.05.</div></li>
+<li><div><strong>Weights</strong>: change preference only; at <span class="m">(30, 17)</span>, <span class="m">\mu = 0.15</span>, the choice flips from pass to yield as <span class="m">R</span> grows.</div></li>
+<li><div><strong>Yield is not stop</strong>: a full stop is infeasible from the nominal state and feasible from 75 states against 268; the window must be enforced at every conflict step.</div></li>
+<li><div><strong>Meaning</strong>: infeasibility is a statement about the model, not about the world.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Conflict region, forbidden interval</td>
+<td>Where the bicycle will be; the centre positions that would overlap it.</td>
+</tr>
+<tr>
+<td>Yield, pass</td>
+<td>Stay short of the region; be beyond it, during the occupancy.</td>
+</tr>
+<tr>
+<td>Strategy map</td>
+<td>Feasible count and cheaper strategy for every initial state.</td>
+</tr>
+<tr>
+<td>Critical friction</td>
+<td>The <span class="m">\mu</span> at which the reachable interval equals the forbidden gap.</td>
+</tr>
+<tr>
+<td>Centre-line bound</td>
+<td>The looser yield condition <span class="m">d \le d_{\mathrm{bike}}</span>, not collision-free.</td>
+</tr>
+<tr>
+<td>Occupancy window</td>
+<td>The conflict instants over which safety must hold.</td>
+</tr>
+<tr>
+<td>Set inclusion <span class="m">\mathcal F(\mu_1) \subseteq \mathcal F(\mu_2)</span></td>
+<td>Less friction, fewer feasible starts, for every state.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> A deterministic one-dimensional finite-horizon problem: longitudinal point mass under explicit Euler, symmetric friction-limited acceleration, bounded speed, a speed-tracking cost, and a bicycle whose occupancy of the crossing is known in advance (one instant in Parts 3 to 7, a window in Part 8). The disjunction is solved exactly by enumerating two convex QPs; the Big-M formulation is chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a>'s. The geometric yield bound is the default; the centre-line condition, a terminal full stop and the exact ZOH discretisation are explicit options.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Logical constraints and hybrid MPC.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>A. Bemporad and M. Morari. &quot;Control of systems integrating logic, dynamics, and constraints&quot;. <em>Automatica</em> 35(3), 407–427, 1999. <a href="https://doi.org/10.1016/S0005-1098(98)00178-2">doi:10.1016/S0005-1098(98)00178-2</a>. Mixed-integer modelling of logical decisions.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>S. Boyd and L. Vandenberghe. <em>Convex Optimization</em>. Cambridge University Press, 2004. <a href="https://doi.org/10.1017/CBO9780511804441">doi:10.1017/CBO9780511804441</a>. Why each fixed branch is easy.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>R. Rajamani. <em>Vehicle Dynamics and Control</em>, 2nd ed. Springer, 2012. <a href="https://doi.org/10.1007/978-1-4614-1433-9">doi:10.1007/978-1-4614-1433-9</a>. Vehicle and tyre modelling beyond the point mass.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Finite-horizon formulations and their numerics.</div></li>
+</ul>
+<p>Borrelli, Bemporad and Morari <a href="#ref-1">[1]</a> treat the hybrid formulation in full; Boyd and Vandenberghe <a href="#ref-3">[3]</a> is the reference for each convex branch, and Rawlings, Mayne and Diehl <a href="#ref-5">[5]</a> for the finite-horizon problems that the strategies are instances of. Lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> returns to the double integrator and lets repeated runs learn the terminal ingredients of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a15-disjunctive-constraints-and-big-m.html"><span class="lbl">Previous · A15</span><span class="t">Disjunctive constraints and Big-M</span></a>
+  <a class="next" rel="next" href="b02-learning-mpc-on-a-repeated-task.html"><span class="lbl">Next · B2</span><span class="t">Learning MPC on a repeated task</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter B1 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/b01.js?v=20261102221633"></script>
+</body>
+</html>

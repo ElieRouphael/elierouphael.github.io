@@ -48,7 +48,7 @@ $$x^+ = Ax + Bu, \qquad A = \begin{pmatrix} 1 & 1 \\ 0 & 1 \end{pmatrix}, \qquad
 | $\mathcal X_K$, where the LQR input is admissible | 6 vertices, area 12.66 | 4 vertices, area 6.35 | [[a10]] |
 | $\mathcal X_f = \mathcal O_\infty$, the LQR's invariant set | 4 vertices, area 7.31, 2 iterations | 4 vertices, area 1.83 | [[a10]] |
 | $\mathcal C_\infty$, the maximal control-invariant set | 10 vertices, area 39.25, 4 iterations | 14 vertices, area 30.29, 7 iterations | [[a10]] |
-| Zero-terminal feasible region at $N = 5$ | area 34.6 | area 17.78 | [[a11]] |
+| Zero-terminal feasible region at $N = 5$ | area 31.75 | area 15.10 | [[a11]] |
 | $\mathcal X_f$-terminal feasible region at $N = 5$ | area 39.25 (all of $\mathcal C_\infty$) | area 23.31 | [[a11]] |
 :::
 

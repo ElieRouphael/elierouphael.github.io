@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A6 · Receding horizon: from a plan to feedback · Advanced MPC and Learning MPC</title>
+<meta name="description" content="The receding-horizon law with its two-index notation, predicted against closed-loop trajectories, the four properties that must be kept apart, how feasibility is lost, and the horizon-one pathology with its Riccati repair.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A6 of 15</span>
+  <h1>Receding horizon: from a plan to feedback</h1>
+  <p class="lede">A finite-horizon problem returns a whole sequence of inputs. Model predictive control applies the first one, measures the state, and solves again. That one habit turns an open-loop plan into a feedback law, and it is also where the trouble starts: a problem that is feasible now need not be feasible after the move, and a solver that succeeds at every step is not a proof of anything. Below, the loop runs in your browser on the canonical cart under three terminal designs; drag the plan slider to see what was planned against what was done, and press the second button to watch feasibility being lost.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A5's finite-horizon problem · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a06_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Receding-horizon MPC on the canonical cart: position, velocity and input against the step</p>
+      <canvas id="mpcC" aria-label="Position, velocity and input of the double integrator under receding-horizon MPC, with the plan made at the chosen step shown dashed" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="seg stack" role="group" aria-label="Terminal design">
+      <button class="btn" type="button" data-design="PQ" aria-pressed="true">V<sub>f</sub> = x<sup>⊤</sup>Qx, no terminal set</button>
+      <button class="btn" type="button" data-design="P" aria-pressed="false">LQR terminal cost P, no terminal set</button>
+      <button class="btn" type="button" data-design="set" aria-pressed="false">LQR cost P and invariant terminal set X<sub>f</sub></button>
+    </div>
+    <label class="field"><span>Horizon <span class="m">N</span>: <b id="hNV"></b></span>
+      <span class="row"><input type="range" id="hN" min="1" max="8" step="1" value="5"></span></label>
+    <label class="field"><span>Input bound <span class="m">|u| \le u_{\max}</span>: <b id="hUV"></b></span>
+      <span class="row"><input type="range" id="hU" min="0.25" max="1" step="0.25" value="1"></span></label>
+    <label class="field"><span>Start position <span class="m">p_0</span>: <b id="hP0V"></b></span>
+      <span class="row"><input type="range" id="hP0" min="-4" max="4" step="0.1" value="-3.6"></span></label>
+    <label class="field"><span>Start velocity <span class="m">v_0</span>: <b id="hV0V"></b></span>
+      <span class="row"><input type="range" id="hV0" min="-3" max="3" step="0.1" value="2.4"></span></label>
+    <label class="field"><span>Show the plan made at step <b id="hStepV"></b></span>
+      <span class="row"><input type="range" id="hStep" min="0" max="8" step="1" value="0"></span></label>
+    <div class="readouts" aria-live="off">
+      <span>moves until <span class="m">\lVert x \rVert &lt; 10^{-3}</span></span><span class="v" id="rMoves">–</span>
+      <span>final state</span><span class="v" id="rFinal">–</span>
+      <span>closed-loop cost <span class="m">\sum q(x_t, u_t)</span></span><span class="v" id="rCost">–</span>
+      <span>steps where <span class="m">J_N^\star</span> fails to drop by <span class="m">q</span></span><span class="v" id="rLyap">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the reference run</button><button class="btn ghost" type="button" id="hLose">The run that loses feasibility</button></div>
+    <p class="hint">The canonical cart, <span class="m">Q = \mathrm{diag}(1, 0.2)</span>, <span class="m">R = 0.2</span>, box <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>. Each step solves the condensed quadratic program of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> to <span class="m">10^{-10}</span>, applies the first move and stops when the state's norm drops below <span class="m">10^{-3}</span>. The terminal set is the LQR's invariant set of chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a>.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#law"><span class="n">1</span><span class="t">From a plan to a feedback law</span><span class="d">The problem at time t, and the law</span></a>
+    <a href="#predicted"><span class="n">2</span><span class="t">Predicted against closed-loop trajectory</span><span class="d">Why re-optimise at all</span></a>
+    <a href="#properties"><span class="n">3</span><span class="t">Four properties that must be kept apart</span><span class="d">Feasibility, recursive feasibility, constraints, stability</span></a>
+    <a href="#lost"><span class="n">4</span><span class="t">Feasible now, infeasible later</span><span class="d">Feasible now, infeasible later</span></a>
+    <a href="#pathology"><span class="n">5</span><span class="t">The horizon-one pathology</span><span class="d">N = 1 and the Riccati repair</span></a>
+    <a href="#code"><span class="n">6</span><span class="t">The code behind it</span><span class="d">simulate_receding_horizon</span></a>
+    <a href="#pitfalls"><span class="n">7</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Seven questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="law">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>From a plan to a feedback law</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The ideal problem.</strong> For <span class="m">x_{k+1} = Ax_k + Bu_k</span> with the state in <span class="m">\mathcal X</span> and the input in <span class="m">\mathcal U</span>, the controller one would like is the minimiser of the infinite sum</p>
+<div class="math-block" data-narrow="\begin{aligned} &amp;J_N^\star(x(t)) = \min_{{u_{k|t}}}\ V_f(x_{t+N|t}) \ &amp;\qquad + \textstyle\sum_{k=t}^{t+N-1} q(x_{k|t}, u_{k|t}) \ &amp;\text{s.t. } x_{k+1|t} = A x_{k|t} + B u_{k|t}, \ &amp;\quad x_{k|t} \in \mathcal X,\ u_{k|t} \in \mathcal U, \ &amp;\quad x_{t+N|t} \in \mathcal X_f,\ x_{t|t} = x(t). \end{aligned}">J_\infty^\star(x(0)) = \min_{u_0, u_1, \dots} \sum_{k=0}^{\infty} q(x_k, u_k) \quad \text{subject to}\quad x_k \in \mathcal X,\ u_k \in \mathcal U,</div>
+<p>with the stage cost <span class="m">q</span> pricing state and input. It has infinitely many decisions. Chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> truncated it to a horizon of <span class="m">N</span> steps and solved that as one quadratic program; this chapter repeats the truncated problem in feedback.</p>
+<p><strong>The problem solved at real time <span class="m">t</span>.</strong> Predicted quantities carry two indices: <span class="m">x_{k|t}</span> is the state at future time <span class="m">k</span> as predicted at time <span class="m">t</span>, and <span class="m">x_{t|t} = x(t)</span> is the measurement. The horizon-<span class="m">N</span> problem at time <span class="m">t</span> is</p>
+<div class="math-block">\begin{aligned} J_N^\star(x(t)) = \min_{\{u_{k|t}\}}\ &amp; V_f(x_{t+N|t}) + \sum_{k=t}^{t+N-1} q(x_{k|t}, u_{k|t}) \\ \text{s.t. } &amp; x_{k+1|t} = A x_{k|t} + B u_{k|t}, \quad x_{k|t} \in \mathcal X, \quad u_{k|t} \in \mathcal U, \quad x_{t+N|t} \in \mathcal X_f, \quad x_{t|t} = x(t). \end{aligned}</div>
+<p><strong>The receding-horizon law.</strong> Of the optimal sequence <span class="m">(u_{t|t}^\star, \dots, u_{t+N-1|t}^\star)</span>, MPC applies only</p>
+<div class="math-block" data-narrow="\boxed{\begin{aligned} &amp;\text{optimise} \to \text{apply one move} \ &amp;\to \text{measure} \to \text{optimise again} \end{aligned}}">\boxed{u(t) = u_{t|t}^\star}\,,</div>
+<p>discards the rest, lets the system move to <span class="m">x(t+1)</span>, and solves a new problem from there.</p>
+<div class="define"><p class="define-title">What is receding-horizon control?</p>
+<p><strong>In plain words:</strong> a controller that, at every sample, uses a model to predict what a sequence of future inputs would do, picks the sequence that costs least while respecting the limits, applies its first move only, and starts over from the newly measured state.</p>
+<p><strong>More precisely:</strong> the feedback law <span class="m">\kappa_N(x) = u_0^\star(x)</span>, where <span class="m">u_0^\star(x)</span> is the first element of the minimiser of the horizon-<span class="m">N</span> problem solved at the current state <span class="m">x</span>. The optimiser is part of the controller, not an offline trajectory generator: the law is defined implicitly, by what the optimisation returns, and for a time-invariant model, cost and constraints it is itself time invariant. Chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> shows that with a suitable terminal cost <span class="m">V_f</span> and terminal set <span class="m">\mathcal X_f</span> the closed loop is recursively feasible and asymptotically stable.</p>
+<dl><dt>Horizon <span class="m">N</span></dt><dd>How many steps ahead the controller plans; it slides forward by one at every sample.</dd><dt>Stage cost <span class="m">q</span>, terminal cost <span class="m">V_f</span></dt><dd>The price of one step; the estimated price of everything after the horizon.</dd><dt>Terminal set <span class="m">\mathcal X_f</span></dt><dd>Where the plan must end so that the future can still be handled safely.</dd><dt>Implicit law</dt><dd><span class="m">\kappa_N</span> has no formula; it is evaluated by solving a QP at the current state.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="predicted">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Predicted against closed-loop trajectory</h2>
+  </div>
+  <div class="col prose">
+
+<p>At time <span class="m">t</span> the optimiser predicts <span class="m">x_{t|t}, x_{t+1|t}, \dots, x_{t+N|t}</span>. At <span class="m">t + 1</span> it predicts a new sequence <span class="m">x_{t+1|t+1}, x_{t+2|t+1}, \dots</span> from the measured state. Only the first transition of each plan is executed. MPC is not &quot;optimise once and execute the whole sequence&quot;; it is</p>
+<div class="math-block">\boxed{\text{optimise} \to \text{apply one move} \to \text{measure} \to \text{optimise again}}.</div>
+<p><strong>Why re-optimise?</strong> Because the next measured state is rarely the predicted one. Disturbances, estimation errors, model mismatch and changing references all move the system away from the plan, and re-optimising from the measured state absorbs them. In the hero demo nothing of the kind happens: the model is exact and nothing disturbs the cart, so with the LQR terminal cost the plan made at step 0 coincides with what is later applied to <span class="m">10^{-14}</span>, and every re-solve finds the previous plan still optimal. That is instructive rather than disappointing. It says that in the nominal case the loop executes its first plan, and that re-optimisation earns its keep exactly when the plant deviates from the model (chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a>). With <span class="m">V_f = x^\top Qx</span> instead, the first plan and the applied trajectory differ by up to 0.023: a terminal cost that underestimates the tail makes each solve end slightly differently from the last, so the plan changes at every step even without disturbances.</p>
+<p><strong>The reference run.</strong> From <span class="m">x_0 = (-3.6, 2.4)</span> with <span class="m">N = 5</span> and the full motor, all three designs take 9 moves to bring the state's norm under <span class="m">10^{-3}</span>, with the input saturated on one move, a velocity peak of 2.4 and a closed-loop cost <span class="m">\sum_t q(x_t, u_t)</span> of 17.639. The first plan under the terminal design predicts the states <span class="m">(-1.503, 1.794)</span>, <span class="m">(-0.209, 0.794)</span>, <span class="m">(0.162, -0.052)</span>, <span class="m">(0.083, -0.106)</span> and <span class="m">(0.013, -0.034)</span>, and those are the states the loop visits. The three designs differ in what they certify, not in what they do from this start: the readout &quot;steps where <span class="m">J_N^\star</span> fails to drop by <span class="m">q</span>&quot; is 4 of 8 for the first design and 0 of 8 for the other two, and chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> says why that distinction is the whole theory.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="properties">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Four properties that must be kept apart</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Feasibility.</strong> At state <span class="m">x</span>, the horizon-<span class="m">N</span> problem is feasible if at least one admissible input sequence satisfies all predicted constraints and the terminal constraint. The feasible set is <span class="m">\mathcal X_N = \{x : \text{feasible from } x\}</span>. A statement about the optimisation now.</p>
+<p><strong>Recursive feasibility.</strong> The law is recursively feasible if <span class="m">x(t) \in \mathcal X_N</span> implies <span class="m">x(t+1) \in \mathcal X_N</span> under the applied MPC input: feasible now implies feasible again at the next instant, so the optimisation never paints itself into a corner. Current feasibility alone does not imply it, as <a href="#lost">Part 4</a> shows.</p>
+<p><strong>Constraint satisfaction.</strong> If the model is exact, the state is known and the problem stays recursively feasible, the executed first input and state inherit the constraints imposed on the prediction. Distinct from stability: a trajectory may satisfy every constraint and never converge, and a stable unconstrained controller may violate limits.</p>
+<p><strong>Stability.</strong> Asymptotic stability of the origin means <span class="m">x(t) \to 0</span> from every initial state in some set, with small starts staying small. The region of attraction is the set of initial states from which the closed loop converges while keeping the other properties. Feasibility says a legal trajectory exists; stability speaks about where it goes. A feasible MPC controller need not stabilise anything <a href="#ref-2">[2]</a>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Question it answers</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Feasibility</td>
+<td>Is there a plan from here, now?</td>
+<td>The constraints and the horizon</td>
+</tr>
+<tr>
+<td>Recursive feasibility</td>
+<td>Will there be a plan after I move?</td>
+<td>The terminal set and the shifted sequence (chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>)</td>
+</tr>
+<tr>
+<td>Constraint satisfaction</td>
+<td>Do the executed moves obey the limits?</td>
+<td>An exact model plus recursive feasibility</td>
+</tr>
+<tr>
+<td>Stability</td>
+<td>Does the state go home and stay?</td>
+<td>The terminal cost and a Lyapunov argument (chapters <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a> and <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>)</td>
+</tr>
+</tbody>
+</table></div>
+<div class="callout warm">
+<p><strong>&quot;The optimiser solved successfully&quot; is not a stability proof.</strong> The hero's first design converges from its reference start, and its optimal value nevertheless fails to decrease by the stage cost on four of the eight steps. The convergence is a property of this run, not a theorem. Chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> gives the conditions under which it becomes one.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="lost">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Feasible now, infeasible later</h2>
+  </div>
+  <div class="col prose">
+
+<p>The numbers script searches a grid of starts under the first design, <span class="m">V_f = x^\top Qx</span> with no terminal set, for horizons of one to three steps and both motors. It finds 122 combinations of input bound, horizon and start that are feasible at the start and lose feasibility later. The longest-lived is the weaker motor, <span class="m">|u| \le 0.5</span>, with <span class="m">N = 1</span> from <span class="m">(-4, 2)</span>: the problem is feasible, and feasible again after one, two and three moves, through the states <span class="m">(-1.75, 2.5)</span>, <span class="m">(0.5, 2)</span>, <span class="m">(2.25, 1.5)</span> and <span class="m">(3.5, 1)</span>, and then no admissible plan exists. The cart has reached a position its one-step horizon never saw coming: from <span class="m">(3.5, 1)</span> even full braking lands at <span class="m">p = 4.25</span>, outside the box. The inputs were <span class="m">0.5, -0.5, -0.5, -0.5</span>: the controller pushed first, because its one-step objective saw a velocity it could still afford, and braked as hard as it could afterwards.</p>
+<p>The second button under the demo loads this run. Switch to the terminal-set design from the same start: the first problem is reported infeasible at once, which is the honest answer. A state that can satisfy the constraints now but cannot keep satisfying them is what chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> calls a state outside the control-invariant set, and the terminal set keeps the horizon from entering such states. With the full motor the same phenomenon survives at <span class="m">N = 1</span> to <span class="m">3</span> on 24 grid starts, for instance <span class="m">(-2.5, -2)</span> at <span class="m">N = 1</span>, which is feasible for one step only.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pathology">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The horizon-one pathology</h2>
+  </div>
+  <div class="col prose">
+
+<p>Reducing the horizon can destroy stability even when every finite-horizon problem is solved exactly. A scalar example shows the mechanism in one line.</p>
+<p><strong>One-step MPC without a terminal cost.</strong> Take the unstable plant <span class="m">x^+ = ax + u</span> with <span class="m">a = 1.2</span> and the stage cost <span class="m">q(x, u) = x^2 + ru^2</span>, <span class="m">r &gt; 0</span>. For <span class="m">N = 1</span> and no terminal cost the problem is <span class="m">\min_{u_0} x_0^2 + ru_0^2</span>. The future state <span class="m">x_1</span> does not appear, so <span class="m">u_0^\star = 0</span>, and the closed loop is <span class="m">x(t+1) = 1.2\,x(t)</span>: unstable, 15.4 after fifteen steps from 1. The optimiser solves its problem perfectly; the design of the problem is the issue.</p>
+<p><strong>Add the infinite-horizon LQR terminal cost.</strong> With <span class="m">V_f(x) = Px^2</span>, where <span class="m">P</span> solves the discrete algebraic Riccati equation of chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a>, the one-step problem is <span class="m">\min_u x^2 + ru^2 + P(ax + u)^2</span>. Differentiating, <span class="m">2ru + 2P(ax + u) = 0</span>, hence</p>
+<div class="math-block">u^\star = -\frac{Pa}{r + P}\, x,</div>
+<p>which is exactly the scalar LQR feedback when <span class="m">P</span> is the Riccati solution. With <span class="m">r = 4</span>: <span class="m">P = 3.8099</span>, <span class="m">K = 0.5854</span>, closed-loop eigenvalue <span class="m">a - K = 0.6146</span>. A carefully chosen terminal cost injects the infinite future into a short horizon.</p>
+<div class="widget" id="scalarW">
+  <div class="controls">
+    <label class="field"><span>Plant <span class="m">a</span>: <b id="sAV"></b></span><span class="row"><input type="range" id="sA" min="0.8" max="2" step="0.05" value="1.2"></span></label>
+    <label class="field"><span>Input weight <span class="m">r</span>: <b id="sRV"></b></span><span class="row"><input type="range" id="sR" min="0.5" max="30" step="0.5" value="4"></span></label>
+  </div>
+  <canvas id="scalarC" aria-label="The scalar closed loop with and without the Riccati terminal cost"></canvas>
+  <p class="caption" id="scalarCap"></p>
+</div>
+<p>The same pathology hides inside the hero: with <span class="m">V_f = x^\top Qx</span> and <span class="m">N = 1</span> the cart's controller sees no reason to use its motor until a bound forces it to. Set <span class="m">N = 1</span> under the first design and watch the input stay at zero while the cart coasts; then switch to the Riccati cost. The matrix version of the repair is chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a>'s Riccati recursion, and chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> turns it into a theorem.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The loop is nine lines of the course package.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/mpc.py · simulate_receding_horizon</p><pre><code class="language-python">def simulate_receding_horizon(controller: LinearMPC, x0, steps=50, tol=1e-3):
+    x=np.asarray(x0,float).copy(); xs=[x.copy()]; us=[]; costs=[]
+    warm=None
+    for _ in range(steps):
+        sol=controller.solve(x,warm=warm)
+        if not sol.success: break
+        u=sol.U[0]
+        us.append(u.copy()); costs.append(sol.objective)
+        x=controller.A@x+controller.B@u
+        xs.append(x.copy())
+        warm=np.r_[sol.U[1:].reshape(-1), sol.U[-1].reshape(-1)]
+        if np.linalg.norm(x)&lt;tol: break
+    return np.asarray(xs), np.asarray(us), np.asarray(costs)</code></pre>
+<p>Four things to read. The controller is solved at the current state, <code>controller.solve(x, warm=warm)</code>, and <code>sol.U[0]</code> is the only input ever applied: the law <span class="m">u(t) = u_{t|t}^\star</span> is that one line. The state then moves under the plant, <code>x = controller.A @ x + controller.B @ u</code>, which here is the same matrix pair the controller predicts with; a mismatch experiment would change this line and nothing else. The loop breaks on <code>not sol.success</code>, which is where a loss of recursive feasibility shows up as a shortened trajectory rather than a crash. And the warm start is the shifted sequence, <code>sol.U[1:]</code> with the last input repeated: chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> proves that the shifted sequence is always feasible under the right terminal ingredients, which is what makes it a good starting guess and, in an embedded solver, a safe fallback when time runs out. The hero demo keeps the same structure in JavaScript and additionally stores every plan, to draw it against what was applied.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;MPC executes its plan.&quot;</strong> It executes the first move of each plan and throws the rest away. With an exact model the plans happen to agree; with a disturbed plant they do not, and that disagreement is the point.</li>
+<li><strong>&quot;A feasible QP at every step so far proves recursive feasibility.&quot;</strong> No. The weaker-motor run above is feasible four times and infeasible the fifth.</li>
+<li><strong>&quot;A feasible controller is a stable controller.&quot;</strong> Feasibility and stability are different properties; a loop can be recursively feasible and circle for ever.</li>
+<li><strong>&quot;A longer horizon is always safer.&quot;</strong> It enlarges the feasible set, but without terminal ingredients the set still contains doomed states, and the objective may still rise along the loop.</li>
+<li><strong>&quot;The solver's objective is the value function.&quot;</strong> Solvers drop the constant <span class="m">x_0^\top Qx_0 + x_0^\top S_x^\top \bar Q S_x x_0</span>; the Lyapunov checks of this course always reconstruct the full <span class="m">J_N^\star</span>, as the hero does.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why is MPC a feedback controller if it solves an open-loop optimisation?</summary>
+<p>At each sampling instant the optimisation is re-solved from the newly measured state. The applied law is <span class="m">u(t) = u_{t|t}^\star(x(t))</span>: the first element of the optimiser's answer depends on the current state and so defines an implicit feedback map.</p>
+</details>
+<details class="sol"><summary>2. What do the two indices in <span class="m">x_{k|t}</span> mean?</summary>
+<p><span class="m">t</span> is when the prediction is made, <span class="m">k</span> the future time it refers to. <span class="m">x_{t|t}</span> is the measurement; <span class="m">x_{t+N|t}</span> the predicted terminal state of the plan made at <span class="m">t</span>.</p>
+</details>
+<details class="sol"><summary>3. Why does the hero's plan coincide with the applied trajectory under the Riccati terminal cost?</summary>
+<p>The model is exact, nothing disturbs the cart, and the terminal cost makes each truncated problem agree with the next one's tail, so re-solving reproduces the shifted plan. Under <span class="m">V_f = x^\top Qx</span> the tail is underestimated and the plans drift by up to 0.023.</p>
+</details>
+<details class="sol"><summary>4. What is the difference between feasible and recursively feasible?</summary>
+<p>Feasible: an admissible sequence exists at the current state. Recursively feasible: applying the controller keeps the next state inside the set of states from which the problem is still feasible.</p>
+</details>
+<details class="sol"><summary>5. Why does the one-step controller without terminal cost leave an unstable plant alone?</summary>
+<p>Its objective <span class="m">x_0^2 + ru_0^2</span> contains the input only through a penalty, and the next state not at all; the cheapest input is zero. Nothing in the problem tells it that the state will grow.</p>
+</details>
+<details class="sol"><summary>6. What does the Riccati terminal cost change in that problem?</summary>
+<p>It adds <span class="m">P(ax + u)^2</span>, the exact cost of the infinite tail, so the one-step problem is the infinite-horizon problem in disguise and its solution is the LQR law.</p>
+</details>
+<details class="sol"><summary>7. Which of the four properties does an exact model plus recursive feasibility give you?</summary>
+<p>Constraint satisfaction of the executed moves. Not stability: that needs the terminal cost and a Lyapunov argument.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Open loop against closed loop.</b> Solve the terminal-design problem once from <span class="m">x_0 = (-3.6, 2.4)</span> with <span class="m">N = 5</span> and execute all five inputs without re-solving. Compare the cost and the final state with the receding-horizon loop.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The numbers script's last section does it; <code>controller.solve(x0).U</code> is the open-loop plan.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Executed open loop, the first plan costs 17.6386 over its five moves and ends at <span class="m">(0.0129, -0.0335)</span>. The receding-horizon loop costs 17.6386 over its first five moves, exactly the same, and 17.6393 in all after nine moves, because it keeps going past the end of the plan. With an exact model and no disturbance the two agree to <span class="m">10^{-16}</span> over the planned moves: the loop re-derives the plan it already had. Add a disturbance to the plant line of <code>simulate_receding_horizon</code> and the two separate at the first step.</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.mpc import LinearMPC
+sol = ctrl.solve(x0)                 # ctrl: the terminal design of the numbers script
+x, cost = x0.copy(), 0.0
+for u in sol.U:
+    cost += float(x @ Q @ x + u @ R @ u); x = A @ x + B @ u
+print(cost, x)                       # 17.6386 [0.0129 -0.0335]
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Find your own lost feasibility.</b> With the full motor and <span class="m">N = 2</span> under <span class="m">V_f = x^\top Qx</span>, find a start on the grid of spacing 0.5 that is feasible for exactly one step. Explain from the dynamics why the second problem has no solution.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The numbers script lists six such starts; <span class="m">(-3, -1.5)</span> is one. Where is the cart after its first move?</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>From <span class="m">(-3, -1.5)</span> the two-step controller applies an input that leaves the cart at a position near <span class="m">-4</span> with a negative velocity: the next position <span class="m">p + v + u/2</span> cannot stay above <span class="m">-4</span> for any <span class="m">|u| \le 1</span> once <span class="m">p + v &lt; -4.5</span>. The first problem was feasible because its two-step prediction could still end inside the box; it ended at a state from which no two-step plan exists. The terminal-set design reports <span class="m">(-3, -1.5)</span> infeasible at once for <span class="m">N = 2</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The pathology by hand.</b> For <span class="m">x^+ = 1.1x + u</span> and <span class="m">q = x^2 + 5u^2</span>, show that horizon-one MPC with no terminal cost chooses <span class="m">u = 0</span>, and derive the feedback <span class="m">u = -K(P)\,x</span> obtained by adding the terminal cost <span class="m">Px_1^2</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Which terms of the objective depend on <span class="m">u_0</span>? Then differentiate <span class="m">x^2 + 5u^2 + P(1.1x + u)^2</span> in <span class="m">u</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The objective <span class="m">x_0^2 + 5u_0^2</span> contains <span class="m">u_0</span> only through <span class="m">5u_0^2 \ge 0</span>, minimised at <span class="m">u_0 = 0</span>; the loop is <span class="m">x^+ = 1.1x</span>, eigenvalue 1.1, unstable. With the terminal cost, <span class="m">10u + 2P(1.1x + u) = 0</span> gives <span class="m">u = -\frac{1.1P}{5 + P}\,x</span>. With the Riccati <span class="m">P = 3.4848</span>, <span class="m">K = 0.4518</span> and the eigenvalue is <span class="m">1.1 - 0.4518 = 0.6482</span>. Any <span class="m">P &gt; 0</span> lowers the eigenvalue, but the loop is stable only when <span class="m">K(P) &gt; 0.1</span>, that is <span class="m">P &gt; 0.5</span>; and only the Riccati <span class="m">P</span> makes the one-step law optimal for the infinite horizon. Set <span class="m">a = 1.1</span>, <span class="m">r = 5</span> in the widget of <a href="#pathology">Part 5</a>.</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.linear import dlqr
+K11, P11, e11 = dlqr(np.array([[1.1]]), np.array([[1.0]]), np.array([[1.0]]), np.array([[5.0]]))
+print(P11.item(), K11.item(), 1.1 * P11.item() / (5.0 + P11.item()), e11[0].real)   # 3.4848 0.4518 0.4518 0.6482
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the loop yourself.</b> Write a receding-horizon loop that stores every plan, run it under the terminal design from <span class="m">(-3.6, 2.4)</span> with <span class="m">N = 5</span>, and print the largest difference between each plan and the states that were later applied.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Follow <code>simulate_receding_horizon</code>; <code>sol.X</code> holds the predicted states <span class="m">x_{1|t}, \dots, x_{N|t}</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Every plan agrees with the applied states to <span class="m">10^{-14}</span>: with an exact model and the Riccati terminal cost, each solve returns the shifted previous plan plus one LQR move, which is the shifted sequence of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</p>
+<pre><code class="language-python">x, plans, xs = x0.copy(), [], [x0.copy()]
+for t in range(9):
+    sol = ctrl.solve(x); plans.append(sol.X)
+    u = sol.U[0]; x = A @ x + B @ u; xs.append(x.copy())
+for t, plan in enumerate(plans):
+    actual = np.array(xs[t + 1: t + 1 + len(plan)])
+    print(t, np.abs(plan[:len(actual)] - actual).max())    # all about 1e-14
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Where re-optimisation matters.</b> Add a disturbance <span class="m">w_t</span> drawn uniformly from <span class="m">[-0.1, 0.1]</span> to the velocity in the plant update of the loop, keep the controller unchanged, and compare the closed-loop cost over 20 steps with executing the first plan open loop for 5 steps and then holding <span class="m">u = 0</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Only the plant line changes: <code>x = A @ x + B @ u + np.array([0, w])</code>. Seed the generator so that both runs see the same disturbances.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The open-loop execution drifts: after the planned five moves the cart is not at rest, and holding <span class="m">u = 0</span> lets the disturbed velocity carry it away, so the cost keeps growing at the rate of the disturbance. The receding-horizon loop re-plans from each disturbed state and keeps the cart near the origin, its cost settling at a small value set by the disturbance's size. The exact numbers depend on the seed; the qualitative gap does not. This is the reason for re-optimisation that the nominal hero cannot show, and chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> asks what guarantees survive it.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The law</strong>: solve the horizon-<span class="m">N</span> problem at <span class="m">x(t)</span>, apply <span class="m">u_{t|t}^\star</span>, measure, repeat; the plan is replaced, not executed.</div></li>
+<li><div><strong>Two indices</strong>: <span class="m">x_{k|t}</span> is the prediction for time <span class="m">k</span> made at time <span class="m">t</span>; <span class="m">x_{t|t}</span> is the measurement.</div></li>
+<li><div><strong>Nominal case</strong>: with an exact model and the Riccati cost the plans coincide with the applied trajectory to <span class="m">10^{-14}</span>; with <span class="m">V_f = x^\top Qx</span> they drift by 0.023.</div></li>
+<li><div><strong>Four properties</strong>: feasibility, recursive feasibility, constraint satisfaction, stability; none implies another.</div></li>
+<li><div><strong>Lost feasibility</strong>: weaker motor, <span class="m">N = 1</span>, from <span class="m">(-4, 2)</span>: four feasible solves, then none; the terminal-set design refuses at once.</div></li>
+<li><div><strong>Horizon one</strong>: <span class="m">x^+ = 1.2x + u</span> with no terminal cost gives <span class="m">u = 0</span>; the Riccati cost <span class="m">P = 3.81</span> gives <span class="m">u = -0.585x</span> and eigenvalue 0.615.</div></li>
+<li><div><strong>The reference run</strong>: <span class="m">N = 5</span> from <span class="m">(-3.6, 2.4)</span>, 9 moves, cost 17.64 under all three designs; only the Riccati designs have a value that never rises.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$x_{k</td>
+<td>t}<span class="m">, </span>u_{k</td>
+</tr>
+<tr>
+<td>Receding-horizon law <span class="m">\kappa_N</span></td>
+<td>The first optimised input, as a function of the state.</td>
+</tr>
+<tr>
+<td>Feasible set <span class="m">\mathcal X_N</span></td>
+<td>States from which the horizon-<span class="m">N</span> problem has a solution.</td>
+</tr>
+<tr>
+<td>Recursive feasibility</td>
+<td>Feasible now implies feasible after the applied move.</td>
+</tr>
+<tr>
+<td>Region of attraction</td>
+<td>Starts from which the loop converges while keeping its properties.</td>
+</tr>
+<tr>
+<td>Doomed state</td>
+<td>Feasible now, with no admissible way to stay feasible for ever.</td>
+</tr>
+<tr>
+<td>Horizon-one pathology</td>
+<td>A short horizon with no terminal cost ignores the future entirely.</td>
+</tr>
+<tr>
+<td>Lyapunov residual</td>
+<td><span class="m">J_N^\star(x_{t+1}) - J_N^\star(x_t) + q(x_t, u_t)</span>; non-positive under the theorem of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Nominal receding-horizon control of a linear system with a measured state and an exact model: the law, the vocabulary of guarantees, and what can go wrong. The guarantees themselves are chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>'s; disturbances and mismatch are the labs'.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Receding-horizon control and its feasibility and stability vocabulary.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Chapter 2: the receding-horizon law and why feasibility is not stability.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>D. Q. Mayne, J. B. Rawlings, C. V. Rao and P. O. M. Scokaert. &quot;Constrained model predictive control: Stability and optimality&quot;. <em>Automatica</em> 36(6), 789–814, 2000. <a href="https://doi.org/10.1016/S0005-1098(99)00214-9">doi:10.1016/S0005-1098(99)00214-9</a>. The terminal ingredients that make the law a theorem.</div></li>
+</ul>
+<p>Rawlings, Mayne and Diehl <a href="#ref-2">[2]</a> is the reference for the vocabulary of this chapter. Next, chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a> builds the terminal cost that repaired the pathology: Lyapunov functions, the LQR and the one identity the whole stability theory rests on.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a05-the-finite-horizon-problem.html"><span class="lbl">Previous · A5</span><span class="t">The finite-horizon problem</span></a>
+  <a class="next" rel="next" href="a07-lyapunov-stability-and-lqr.html"><span class="lbl">Next · A7</span><span class="t">Lyapunov stability and LQR</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A6 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/a06.js?v=20261102221633"></script>
+</body>
+</html>

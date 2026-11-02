@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A15 · Disjunctive constraints and Big-M · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Why &quot;this or that&quot; is nonconvex, one binary variable, the Big-M encoding, the smallest valid M from a position envelope, what a relaxed binary allows, and when enumerating the branches beats a mixed-integer solver.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A15 of 15</span>
+  <h1>Disjunctive constraints and Big-M</h1>
+  <p class="lede">Some constraints say "this or that": stay short of the crossing, or be beyond it while the bicycle is there. Each alternative is a half-line, easy on its own; their union has a hole in the middle, and that hole is what a convex optimiser cannot see. This chapter is about the word "or": why it breaks convexity, how a binary variable and a large constant write it as linear inequalities, what that constant costs, and why, with one decision, solving the two alternatives separately is the exact and better solver. The system is lab B1's longitudinal point mass, not the canonical cart.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A3 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a15_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The road: the bicycle's region, the two safe half-lines, and what a relaxed Big-M row allows</p>
+      <canvas id="roadC" aria-label="Four rows along the road position axis: the bicycle's conflict region with the forbidden centre positions, the yield and pass half-lines, the relaxed Big-M constraint set for the chosen fractional binary and constant, and the position envelope" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Binary relaxed to <span class="m">s \in [0, 1]</span>: <b id="hSV"></b></span>
+      <span class="row"><input type="range" id="hS" min="0" max="1" step="0.05" value="0.5"></span>
+    </label>
+    <label class="field"><span>Constant <span class="m">M</span>: <b id="hMV"></b></span>
+      <span class="row"><input type="range" id="hM" min="50" max="1000" step="6.25" value="206.25"></span>
+    </label>
+    <label class="field"><span>Envelope <span class="m">d \in [0, d_{\mathrm{high}}]</span>, <span class="m">d_{\mathrm{high}}</span> = <b id="hEV"></b></span>
+      <span class="row"><input type="range" id="hE" min="150" max="300" step="10" value="300"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>smallest valid <span class="m">M</span></span><span class="v" id="rMmin">–</span>
+      <span>this <span class="m">M</span> valid</span><span class="v" id="rValid">–</span>
+      <span>relaxed set</span><span class="v" id="rRelax">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to s = 0.5, M = 206.25</button></div>
+    <p class="hint">Lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a>'s crossing: centre at 100 m, 8 m wide, car 4.5 m long. Yield means <span class="m">d \le d_{\max} = 93.75</span>, pass means <span class="m">d \ge d_{\min} = 106.25</span>, during the bicycle's presence.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#geometry"><span class="n">1</span><span class="t">The forbidden interval, and why the union is nonconvex</span><span class="d">The forbidden interval, and why the union is nonconvex</span></a>
+    <a href="#binary"><span class="n">2</span><span class="t">One decision variable, two linear rows</span><span class="d">One decision variable, two linear rows</span></a>
+    <a href="#bigm"><span class="n">3</span><span class="t">The smallest valid M, and what a huge one costs</span><span class="d">The smallest valid M, and what a huge one costs</span></a>
+    <a href="#enumerate"><span class="n">4</span><span class="t">Two QPs instead of a MIQP</span><span class="d">Two QPs instead of a MIQP</span></a>
+    <a href="#manoeuvre"><span class="n">5</span><span class="t">One binary per manoeuvre, not per step</span><span class="d">One binary per manoeuvre, not per step</span></a>
+    <a href="#code"><span class="n">6</span><span class="t">The code behind it</span><span class="d">The strategy rows and the enumeration</span></a>
+    <a href="#pitfalls"><span class="n">7</span><span class="t">Common pitfalls</span><span class="d">Four confusions</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Seven questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="geometry">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The forbidden interval, and why the union is nonconvex</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The scene.</strong> A vehicle of length <span class="m">l_{\mathrm{car}} = 4.5</span> m drives along a road towards a crossing that a bicycle will occupy; the conflict region is <span class="m">w_{\mathrm{bike}} = 8</span> m wide, centred at <span class="m">d_{\mathrm{bike}} = 100</span> m. The vehicle's centre is <span class="m">d</span>, so it occupies <span class="m">[d - l_{\mathrm{car}}/2,\ d + l_{\mathrm{car}}/2]</span> and the region is <span class="m">[d_{\mathrm{bike}} - w_{\mathrm{bike}}/2,\ d_{\mathrm{bike}} + w_{\mathrm{bike}}/2]</span>. Two ways not to overlap. Yield side: the front stays short of the near edge. Pass side: the rear has cleared the far edge. Hence</p>
+<div class="math-block" data-narrow="\boxed{d \le d_{\max} = 93.75} \ \text{or}\ \boxed{d \ge d_{\min} = 106.25}">\boxed{d \le d_{\max} = d_{\mathrm{bike}} - \tfrac{l_{\mathrm{car}} + w_{\mathrm{bike}}}{2} = 93.75} \quad\text{or}\quad \boxed{d \ge d_{\min} = d_{\mathrm{bike}} + \tfrac{l_{\mathrm{car}} + w_{\mathrm{bike}}}{2} = 106.25},</div>
+<p>and the forbidden centre positions form a gap of <span class="m">d_{\min} - d_{\max} = l_{\mathrm{car}} + w_{\mathrm{bike}} = 12.5</span> m.</p>
+<p><strong>Why the safe set is nonconvex.</strong> During the bicycle's presence the collision-free set is <span class="m">\mathcal S_{\mathrm{safe}} = (-\infty, d_{\max}] \cup [d_{\min}, \infty)</span>, the union of two half-lines. Take <span class="m">d^{(1)} = 92.75</span> and <span class="m">d^{(2)} = 107.25</span>, both safe; their midpoint is 100, the middle of the crossing. A convex combination of safe points need not be safe, and that is the whole reason a logical decision appears: every tool of chapters <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a> to <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> assumes the feasible set is convex, and a union of two convex pieces is not.</p>
+<div class="define"><p class="define-title">What is a disjunctive constraint?</p>
+<p><strong>In plain words:</strong> a requirement of the form &quot;this or that&quot;, where each alternative is easy but the choice between them is not, because the set of allowed states is two separate pieces.</p>
+<p><strong>More precisely:</strong> a constraint <span class="m">x \in \mathcal A \cup \mathcal B</span> with <span class="m">\mathcal A, \mathcal B</span> convex and disjoint. With a binary variable <span class="m">s \in \{0, 1\}</span> and a constant <span class="m">M</span> large enough, it becomes two linear inequalities, <span class="m">d \le d_{\max} + M(1 - s)</span> and <span class="m">d \ge d_{\min} - Ms</span>, and the problem a mixed-integer quadratic program. With one binary variable it is solved exactly by solving the two convex alternatives and taking the cheaper feasible one.</p>
+<dl><dt>Yield, pass</dt><dd>Stay short of the region; be beyond it, while the bicycle is present.</dd><dt>Big-M</dt><dd>A constant that switches an inequality off when its branch is not chosen.</dd><dt>MIQP</dt><dd>Quadratic objective, linear constraints, some integer variables.</dd><dt>Relaxation</dt><dd>The same problem with <span class="m">s \in [0, 1]</span> instead of <span class="m">\{0, 1\}</span>: a QP whose optimum bounds the MIQP's from below.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="binary">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>One decision variable, two linear rows</h2>
+  </div>
+  <div class="col prose">
+
+<p>Fix the strategy in advance and each problem is a convex QP: linear dynamics, linear state and input constraints, a convex quadratic objective, plus <span class="m">d_k \le d_{\max}</span> during the bicycle's presence for yield, or <span class="m">d_k \ge d_{\min}</span> for pass. The nonconvexity appears only when the optimiser is asked to choose between them.</p>
+<p><strong>The Big-M encoding.</strong> Let <span class="m">s = 1</span> mean yield and <span class="m">s = 0</span> pass. The symmetric form is</p>
+<div class="math-block">\boxed{d_k \le d_{\max} + M(1 - s), \qquad d_k \ge d_{\min} - Ms},</div>
+<p>which relaxes the branch not chosen by <span class="m">M</span>: for <span class="m">s = 1</span> the first row is the yield constraint and the second reads <span class="m">d_k \ge d_{\min} - M</span>, void if <span class="m">M</span> is large enough; for <span class="m">s = 0</span> the roles swap. With a quadratic objective and a binary <span class="m">s</span> this is a mixed-integer quadratic program <a href="#ref-2">[2]</a>. A compact one-sided variant, <span class="m">(1 - s)\, d_{\min} \le d_k \le d_{\max} + (1 - s) D</span> with a large <span class="m">D</span>, encodes the same logic with one constant and the knowledge that positions are non-negative.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="bigm">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The smallest valid M, and what a huge one costs</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Valid.</strong> &quot;Void&quot; means satisfied by every position the car could possibly be at. If the positions over the horizon lie in a known envelope <span class="m">[d_{\mathrm{low}}, d_{\mathrm{high}}]</span>, the switched-off rows need <span class="m">d_{\mathrm{high}} \le d_{\max} + M</span> and <span class="m">d_{\mathrm{low}} \ge d_{\min} - M</span>, so</p>
+<div class="math-block">\boxed{M \ge \max(d_{\mathrm{high}} - d_{\max},\ d_{\min} - d_{\mathrm{low}})}.</div>
+<p>For positions in <span class="m">[0, 300]</span> m that is <span class="m">M \ge \max(206.25, 106.25) = 206.25</span>; for <span class="m">[0, 150]</span> it is <span class="m">106.25</span>. Too small an <span class="m">M</span> invalidates the formulation: a switched-off row would still cut feasible plans, and the hero turns the relaxed set orange to show it. The lab's round <span class="m">M = 5000</span> is valid, and 24 times larger than needed.</p>
+<p><strong>Why a very large M is not free.</strong> A mixed-integer solver does not enumerate; it solves the relaxation with <span class="m">s \in [0, 1]</span>, uses its optimum as a bound, and branches on <span class="m">s</span> only where the bound is not conclusive. Drag the hero's <span class="m">s</span> to 0.5: for any valid <span class="m">M</span> the relaxed rows allow <span class="m">d \in [d_{\min} - M/2,\ d_{\max} + M/2]</span>, which contains the whole crossing, so the relaxation can place the car in the middle of the bicycle and report a cost that no real plan attains. The larger <span class="m">M</span>, the looser the relaxation, the weaker the bound, the more branching; large constants also worsen the conditioning of the QP and make integrality tolerances troublesome. Production hybrid MPC derives the smallest valid bounds from the state envelope, as <a href="#exercises">Exercise 2</a> does; the satellite course's chapter 09 meets the same weakness in a scheduling MILP.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="enumerate">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Two QPs instead of a MIQP</h2>
+  </div>
+  <div class="col prose">
+
+<p>There is exactly one binary decision, so the mixed problem is</p>
+<div class="math-block">\min\{J^\star_{\mathrm{yield}},\ J^\star_{\mathrm{pass}}\},</div>
+<p>with infeasible branches discarded: solve the yield QP, solve the pass QP, keep the cheaper feasible one. Transparent, solver-independent, and exactly equivalent to enumerating the binary variable, with no <span class="m">M</span> anywhere. From lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a>'s nominal state <span class="m">(60, 5)</span> with <span class="m">N = 4</span> and <span class="m">\mu = 0.10</span>, yield is feasible at cost 2582.56 and ends at <span class="m">(85.886, 8.924)</span>, while pass is infeasible, so yield is selected; the yield bound is not even active, since the closed-form reachable terminal positions are <span class="m">[74.11, 85.89]</span> and neither bound is within reach, so the &quot;decision&quot; was made by the dynamics. With more grip, <span class="m">\mu = 0.15</span>, from <span class="m">(30, 17)</span> both branches are feasible, and only the weights decide: at <span class="m">R = 0.1</span> and <span class="m">R = 1</span> passing is cheaper, at <span class="m">R = 1000</span> yielding, which can coast, wins. The widget solves both branches live.</p>
+<div class="widget" id="brW">
+  <div class="seg" role="group" aria-label="Preset states">
+    <button class="btn" type="button" data-preset="60,5,0.1,1">nominal (60, 5), μ = 0.10</button>
+    <button class="btn" type="button" data-preset="30,17,0.15,1">both feasible (30, 17), μ = 0.15</button>
+    <button class="btn" type="button" data-preset="30,17,0.15,4">the same with R = 1000</button>
+    <button class="btn" type="button" data-preset="85,3,0.1,1">(85, 3): the yield bound active</button>
+  </div>
+  <div class="params">
+    <label class="field"><span>Position <span class="m">d_0</span>: <b id="bDV"></b> m</span><span class="row"><input type="range" id="bD" min="0" max="95" step="5" value="60"></span></label>
+    <label class="field"><span>Speed <span class="m">v_0</span>: <b id="bVV"></b> m/s</span><span class="row"><input type="range" id="bV" min="0" max="32" step="1" value="5"></span></label>
+    <label class="field"><span>Friction <span class="m">\mu</span>: <b id="bMuV"></b></span><span class="row"><input type="range" id="bMu" min="0.05" max="0.3" step="0.01" value="0.1"></span></label>
+    <label class="field"><span>Input weight <span class="m">R</span>: <b id="bRV"></b></span><span class="row"><input type="range" id="bR" min="0" max="4" step="1" value="1"></span></label>
+  </div>
+  <div class="table-wrap"><table class="num" id="brT" aria-live="off"></table></div>
+  <p class="caption" id="brCap"></p>
+</div>
+<p><strong>When enumeration stops scaling.</strong> With <span class="m">m</span> independent binary decisions there are <span class="m">2^m</span> branches: 8 for three, 1024 for ten, a million for twenty. A mixed-integer solver's pruning, by the relaxation bounds, is what makes such problems tractable, and the quality of the bounds, hence the tightness of <span class="m">M</span>, is what decides how much pruning happens. The rule: one or two decisions, enumerate; dozens, formulate with the smallest valid constants and hand the problem to a branch-and-bound solver.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="manoeuvre">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>One binary per manoeuvre, not per step</h2>
+  </div>
+  <div class="col prose">
+
+<p>If the bicycle occupies the region over several steps, say <span class="m">k = 4, 5, 6</span>, the yield constraint must hold at every one of them, and so must the pass constraint; one strategy variable for the whole window commits to one topological manoeuvre: near side throughout, or far side throughout. Independent binaries <span class="m">s_k</span> at every step would let the optimiser be yield-side at one conflict instant and pass-side at a later one, which physically means driving through the forbidden interval while the bicycle is there. From <span class="m">(0, 19)</span> with the constraint enforced only at step 4 the plan is feasible and passes <span class="m">78.7, 98.7, 118.7</span> m at steps 4, 5, 6, straight through the crossing; enforced over the window it is infeasible, as it should be. Logical variables must encode the manoeuvre-level logic, not individual inequalities. Lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> builds the window version and maps where it bites.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The package writes the branch QPs of lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> without any <span class="m">M</span>: the strategy is an argument, and only its rows differ.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/collision.py · solve_collision_strategy</p><pre><code class="language-python">def solve_collision_strategy(
+    x0,
+    strategy,
+    *,
+    N=4,
+    Ts=1.0,
+    d_bike=100.0,
+    l_car=4.5,
+    w_bike=8.0,
+    conflict_steps=None,
+    mu=0.10,
+    g=9.81,
+    v_max=32.0,
+    v_ref=20.0,
+    Qv=3.0,
+    Ru=1.0,
+    Pv=3.0,
+    yield_boundary=&quot;geometric&quot;,
+    terminal_stop=False,
+    discretization=&quot;euler&quot;,
+    warm=None,
+):
+    &quot;&quot;&quot;
+    Solve one continuous convex QP corresponding to one logical strategy.
+
+    strategy:
+        &#x27;yield&#x27; -&gt; stay on the near side of the conflict region
+        &#x27;pass&#x27;  -&gt; clear the far side of the conflict region
+
+    The default N=4, Ts=1, Qv=3, Ru=1, Pv=3, v_ref=20, mu=0.10,
+    v_max=32 and Euler dynamics reproduce the numerical setup of the
+    supplied workshop, except that the default yield boundary uses the
+    geometrically collision-free d_max from the accompanying slides.
+
+    Parameters
+    ----------
+    conflict_steps:
+        Prediction steps (1,...,N) at which the conflict exclusion is
+        enforced.  None means terminal step N only, matching the workshop&#x27;s
+        T=t_min special case.
+    yield_boundary:
+        &#x27;geometric&#x27;       -&gt; d &lt;= d_max from vehicle/bike geometry.
+        &#x27;workshop_center&#x27; -&gt; d &lt;= d_bike, reproducing the looser modified
+                             constraint visible in the supplied notebook.
+    terminal_stop:
+        If True, additionally enforce v_N=0 for the yield strategy.
+        The supplied workshop has this constraint commented out.
+    discretization:
+        &#x27;euler&#x27; reproduces the supplied notebook; &#x27;zoh&#x27; is an explicitly
+        marked modeling extension.
+    &quot;&quot;&quot;
+    x0 = np.asarray(x0, float).reshape(2)
+    strategy = str(strategy).lower()
+
+    if strategy not in {&quot;yield&quot;, &quot;pass&quot;}:
+        raise ValueError(&quot;strategy must be &#x27;yield&#x27; or &#x27;pass&#x27;&quot;)
+
+    N = int(N)
+    if N &lt; 1:
+        raise ValueError(&quot;N must be positive&quot;)
+
+    A, B = vehicle_matrices(Ts, discretization)
+    Sx, Su = prediction_matrices(A, B, N)
+
+    d_max, d_min = conflict_bounds(d_bike, l_car, w_bike)
+    if yield_boundary == &quot;geometric&quot;:
+        d_yield = d_max
+    elif yield_boundary == &quot;workshop_center&quot;:
+        d_yield = float(d_bike)
+    else:
+        raise ValueError(
+            &quot;yield_boundary must be &#x27;geometric&#x27; or &#x27;workshop_center&#x27;&quot;
+        )
+
+    d_pass = d_min
+
+    if conflict_steps is None:
+        conflict_steps = (N,)
+    else:
+        conflict_steps = tuple(sorted(set(int(k) for k in conflict_steps)))
+
+    if any(k &lt; 1 or k &gt; N for k in conflict_steps):
+        raise ValueError(&quot;conflict_steps must lie in {1,...,N}&quot;)
+
+    # Initial state is a real state and must satisfy the speed bounds too.
+    if x0[1] &lt; -1e-10 or x0[1] &gt; v_max + 1e-10:
+        return _empty_solution(
+            strategy, x0,
+            message=&quot;initial speed violates [0,v_max]&quot;,
+            conflict_steps=conflict_steps,
+            d_yield=d_yield,
+            d_pass=d_pass,
+            terminal_stop=terminal_stop,
+            discretization=discretization,
+        )
+
+    # Cost:
+    #   sum_{k=0}^{N-1} Ru a_k^2
+    # + sum_{k=0}^{N-1} Qv (v_k-v_ref)^2
+    # + Pv (v_N-v_ref)^2
+    #
+    # x0 is fixed, so its stage term is an optimization constant.
+    q_blocks = []
+    for k in range(1, N + 1):
+        speed_weight = Pv if k == N else Qv
+        q_blocks.append(np.diag([0.0, speed_weight]))
+
+    Qbar = block_diag(*q_blocks)
+    Rbar = Ru * np.eye(N)
+
+    xref_stack = np.tile(np.array([0.0, v_ref]), N)
+    base = Sx @ x0 - xref_stack
+
+    H = 2.0 * (Su.T @ Qbar @ Su + Rbar)
+    f = 2.0 * Su.T @ Qbar @ base
+
+    Aubs = []
+    bubs = []
+
+    # Predicted speed constraints 0 &lt;= v_k &lt;= v_max, k=1,...,N.
+    for k in range(1, N + 1):
+        idx = 2 * (k - 1) + 1
+        row = Su[idx]
+        offset = Sx[idx] @ x0
+
+        Aubs.append(row)
+        bubs.append(v_max - offset)
+
+        Aubs.append(-row)
+        bubs.append(offset)
+
+    # Conflict exclusion at selected prediction steps.
+    for k in conflict_steps:
+        idx = 2 * (k - 1)
+        row = Su[idx]
+        offset = Sx[idx] @ x0
+
+        if strategy == &quot;yield&quot;:
+            # d_k &lt;= d_yield
+            Aubs.append(row)
+            bubs.append(d_yield - offset)
+        else:
+            # d_k &gt;= d_pass  &lt;=&gt;  -d_k &lt;= -d_pass
+            Aubs.append(-row)
+            bubs.append(-d_pass + offset)
+
+    A_eq = None
+    b_eq = None
+
+    if terminal_stop and strategy == &quot;yield&quot;:
+        # v_N = 0
+        idx = 2 * (N - 1) + 1
+        A_eq = np.atleast_2d(Su[idx])
+        b_eq = np.array([-Sx[idx] @ x0])
+
+    amax = float(mu) * float(g)
+
+    res = solve_qp(
+        H,
+        f,
+        A_ub=np.asarray(Aubs, float),
+        b_ub=np.asarray(bubs, float),
+        A_eq=A_eq,
+        b_eq=b_eq,
+        lb=-amax * np.ones(N),
+        ub= amax * np.ones(N),
+        x0=warm,
+        maxiter=1000,
+    )
+
+    U = np.asarray(res.x, float).reshape(N, 1)
+    Xpred = (Sx @ x0 + Su @ res.x).reshape(N, 2)
+    X = np.vstack([x0, Xpred])
+
+    objective = _full_cost(
+        X, U,
+        v_ref=v_ref,
+        Qv=Qv,
+        Ru=Ru,
+        Pv=Pv,
+    )
+
+    return CollisionSolution(
+        strategy=strategy,
+        success=bool(res.success),
+        objective=objective if res.success else np.inf,
+        X=X,
+        U=U,
+        message=res.message,
+        max_violation=float(res.max_violation),
+        conflict_steps=tuple(conflict_steps),
+        d_yield=float(d_yield),
+        d_pass=float(d_pass),
+        terminal_stop=bool(terminal_stop),
+        discretization=discretization,
+    )</code></pre>
+<p>Read only the block headed &quot;Conflict exclusion at selected prediction steps&quot;. For each conflict step <span class="m">k</span>, <code>idx</code> picks the position row of the predicted state <span class="m">x_k = S_x x_0 + S_u U</span> (chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>'s matrices), so <code>row</code> is the position's dependence on the inputs and <code>offset</code> its free motion. Yield appends <span class="m">d_k \le d_{\mathrm{yield}}</span> as <code>row @ U &lt;= d_yield - offset</code>; pass appends <span class="m">d_k \ge d_{\mathrm{pass}}</span> with the signs flipped. Everything above those lines, the speed-tracking cost and the speed bounds, is shared by both branches, and everything below hands one convex QP to <code>solve_qp</code> with the friction limit as input bounds. The <code>conflict_steps</code> argument is the window of <a href="#manoeuvre">Part 5</a>; its default, the last step only, is the single-instant version.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/collision.py · choose_collision_strategy</p><pre><code class="language-python">def choose_collision_strategy(x0, **kwargs):
+    &quot;&quot;&quot;
+    Enumerate the two logical strategies and choose the lower-cost feasible one.
+
+    With exactly one binary decision s in {0,1}, this is mathematically
+    equivalent to exhaustive enumeration of the mixed-integer alternatives:
+        min{J_yield^*, J_pass^*}.
+    &quot;&quot;&quot;
+    solutions = [
+        solve_collision_strategy(x0, &quot;yield&quot;, **kwargs),
+        solve_collision_strategy(x0, &quot;pass&quot;, **kwargs),
+    ]
+
+    feasible = [sol for sol in solutions if sol.success]
+
+    if not feasible:
+        return None, solutions
+
+    return min(feasible, key=lambda sol: sol.objective), solutions</code></pre>
+<p>The enumeration of <a href="#enumerate">Part 4</a> in four lines: both branches, the feasible ones, the cheapest. The docstring says what the function is: with one binary, this equals the mixed-integer optimum. The widget above is the same function in the browser.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The double-integrator dynamics make the problem convex.&quot;</strong> No. Each fixed strategy is a convex QP; the union &quot;<span class="m">d \le d_{\max}</span> or <span class="m">d \ge d_{\min}</span>&quot; is not. The logic, not the plant, creates the nonconvexity.</li>
+<li><strong>&quot;An enormous Big-M can only help.&quot;</strong> Too small invalidates the formulation; needlessly large weakens the relaxation, slows the search and degrades the numerics.</li>
+<li><strong>&quot;The relaxation's optimum is a plan.&quot;</strong> At a fractional <span class="m">s</span> the relaxed rows allow the car inside the crossing; the relaxation gives a bound, not a trajectory.</li>
+<li><strong>&quot;One binary per step is more flexible.&quot;</strong> It is wrong: it allows a plan that is on the near side at one conflict instant and the far side at the next, through the bicycle.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. How are <span class="m">d_{\max}</span> and <span class="m">d_{\min}</span> derived?</summary>
+<p>By preventing overlap between the vehicle interval <span class="m">[d - l_{\mathrm{car}}/2, d + l_{\mathrm{car}}/2]</span> and the conflict interval <span class="m">[d_{\mathrm{bike}} - w_{\mathrm{bike}}/2, d_{\mathrm{bike}} + w_{\mathrm{bike}}/2]</span>. The two no-overlap cases give <span class="m">d \le d_{\mathrm{bike}} - (l_{\mathrm{car}} + w_{\mathrm{bike}})/2</span> or <span class="m">d \ge d_{\mathrm{bike}} + (l_{\mathrm{car}} + w_{\mathrm{bike}})/2</span>.</p>
+</details>
+<details class="sol"><summary>2. Why is the collision-free set nonconvex?</summary>
+<p>It is a union of two separated half-lines. Two safe points on opposite sides have an unsafe midpoint inside the forbidden interval.</p>
+</details>
+<details class="sol"><summary>3. What do the two Big-M rows do at <span class="m">s = 1</span> and at <span class="m">s = 0</span>?</summary>
+<p>At <span class="m">s = 1</span> the first row is the yield constraint and the second is void; at <span class="m">s = 0</span> the second is the pass constraint and the first is void. &quot;Void&quot; requires <span class="m">M</span> to cover the whole position envelope.</p>
+</details>
+<details class="sol"><summary>4. What is the smallest valid <span class="m">M</span>, and what happens below it?</summary>
+<p><span class="m">\max(d_{\mathrm{high}} - d_{\max}, d_{\min} - d_{\mathrm{low}})</span> for positions in <span class="m">[d_{\mathrm{low}}, d_{\mathrm{high}}]</span>; below it a switched-off row still excludes feasible plans.</p>
+</details>
+<details class="sol"><summary>5. Why can we solve two QPs instead of a MIQP here?</summary>
+<p>There is one binary decision. Enumerating <span class="m">s = 0</span> and <span class="m">s = 1</span> gives exactly the minimum of the two branch-optimal costs, with no <span class="m">M</span> and no relaxation.</p>
+</details>
+<details class="sol"><summary>6. What is the main danger of a large Big-M in a mixed-integer solver?</summary>
+<p>It weakens the continuous relaxation, whose bound is what lets branch-and-bound prune; a weaker bound means more branching, and large constants also hurt conditioning and tolerances.</p>
+</details>
+<details class="sol"><summary>7. Why one binary for the whole occupancy window?</summary>
+<p>Because the decision is a manoeuvre, near side or far side throughout; per-step binaries would permit crossing the forbidden interval between two conflict instants.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Conflict geometry.</b> Derive <span class="m">d_{\max}</span> and <span class="m">d_{\min}</span> from interval non-overlap, then show <span class="m">d_{\min} - d_{\max} = l_{\mathrm{car}} + w_{\mathrm{bike}}</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Two intervals do not overlap when one ends before the other begins.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>No overlap means <span class="m">d + l_{\mathrm{car}}/2 \le d_{\mathrm{bike}} - w_{\mathrm{bike}}/2</span> or <span class="m">d - l_{\mathrm{car}}/2 \ge d_{\mathrm{bike}} + w_{\mathrm{bike}}/2</span>, which rearrange to <span class="m">d \le d_{\max}</span> and <span class="m">d \ge d_{\min}</span>. Subtracting, <span class="m">d_{\min} - d_{\max} = 2 \cdot (l_{\mathrm{car}} + w_{\mathrm{bike}})/2 = 12.5</span> m. <code>conflict_bounds()</code> returns the pair.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Big-M.</b> Starting from <span class="m">s = 1</span> for yield and <span class="m">s = 0</span> for pass, derive the symmetric Big-M constraints, and for a known envelope <span class="m">d \in [d_{\mathrm{low}}, d_{\mathrm{high}}]</span> derive valid lower bounds on <span class="m">M</span>. Evaluate them for <span class="m">[0, 300]</span> and <span class="m">[0, 1000]</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The relaxed inequality must be satisfied by every position in the envelope.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Yield must hold when <span class="m">s = 1</span> and be void when <span class="m">s = 0</span>: <span class="m">d_k \le d_{\max} + M(1 - s)</span>. Pass must hold when <span class="m">s = 0</span> and be void when <span class="m">s = 1</span>: <span class="m">d_k \ge d_{\min} - Ms</span>. &quot;Void&quot; means satisfied by every <span class="m">d \in [d_{\mathrm{low}}, d_{\mathrm{high}}]</span>: <span class="m">d_{\mathrm{high}} \le d_{\max} + M</span> and <span class="m">d_{\mathrm{low}} \ge d_{\min} - M</span>, so <span class="m">M \ge \max(d_{\mathrm{high}} - d_{\max},\ d_{\min} - d_{\mathrm{low}})</span>. For <span class="m">[0, 300]</span> that is <span class="m">\max(206.25, 106.25) = 206.25</span>; for <span class="m">[0, 1000]</span> it is <span class="m">906.25</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The relaxation.</b> With <span class="m">M = 206.25</span>, write the relaxed set of positions allowed at <span class="m">s = 0.25</span>, <span class="m">0.5</span> and <span class="m">0.75</span>. At which <span class="m">s</span> does the relaxed set first contain the whole crossing?</p>
+<details class="sol"><summary>Hint</summary>
+<p>The set is <span class="m">[d_{\min} - Ms,\ d_{\max} + M(1 - s)]</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">[54.7, 248.4]</span>, <span class="m">[3.1, 196.9]</span> and <span class="m">[0, 145.3]</span> (clipped at the road's start). The crossing <span class="m">[93.75, 106.25]</span> is contained as soon as <span class="m">d_{\min} - Ms \le 93.75</span> and <span class="m">d_{\max} + M(1 - s) \ge 106.25</span>, that is <span class="m">s \ge 0.061</span> and <span class="m">s \le 0.939</span>: almost any fractional <span class="m">s</span> lets the relaxation sit in the crossing, which is why its bound is weak. The numbers script prints the five sets.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Weights against feasibility.</b> From <span class="m">(30, 17)</span> with <span class="m">\mu = 0.15</span>, solve both branches for <span class="m">R = 0.1</span>, <span class="m">1</span> and <span class="m">1000</span>. Does feasibility change? Does the choice?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>choose_collision_strategy</code> with <code>mu=0.15</code> and <code>Ru</code> varied; the widget's second and third presets.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Both branches are feasible every time, with yield costs 220.80, 226.88, 1563.44 and pass costs 36.69, 41.76, 5165.38: the choice is pass, pass, yield. The weights change which feasible plan is cheapest and never whether a plan exists; feasibility is set by the dynamics and the constraints alone.</p>
+<pre><code class="language-python">for Ru in (0.1, 1.0, 1000.0):
+    best, sols = choose_collision_strategy(np.array([30.0, 17.0]), N=4, mu=0.15, Ru=Ru)
+    print(Ru, [s.success for s in sols], [round(s.objective, 2) for s in sols], best.strategy)
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build it: the enumeration.</b> Write your own <code>choose(x0)</code> that calls <code>solve_collision_strategy</code> for both branches and returns the cheaper feasible one, then count, on the grid <span class="m">d_0 = 0, 5, \dots, 95</span> and <span class="m">v_0 = 0, 1, \dots, 32</span>, how many states have no feasible branch at <span class="m">\mu = 0.10</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>660 states, 1320 QPs; <code>strategy_grid</code> does the same and is the check.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Seven states have no feasible branch, along the line <span class="m">d_0 + 4v_0 \approx 100</span>: too fast to stop short, too slow to clear. <code>strategy_grid</code> returns the same count; lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> draws the map and repeats it at lower friction.</p>
+<pre><code class="language-python">def choose(x0):
+    sols = [solve_collision_strategy(x0, s, N=4, mu=0.10) for s in (&quot;yield&quot;, &quot;pass&quot;)]
+    feasible = [s for s in sols if s.success]
+    return min(feasible, key=lambda s: s.objective) if feasible else None
+none = sum(choose(np.array([d, v])) is None for d in range(0, 100, 5) for v in range(0, 33))
+count, _ = strategy_grid(np.arange(0, 100, 5), np.arange(0, 33), N=4, mu=0.10)
+print(none, (count == 0).sum())
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>More decisions.</b> Two bicycles cross the road 60 m apart, each with its own occupancy window. How many manoeuvres are there, and which combination needs an extra check before it is called feasible?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Before or after each; think about the gap between &quot;after the first&quot; and &quot;before the second&quot;.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Two binaries, four combinations: before both, after both, after the first and before the second, and before the first and after the second, the last being impossible since the road is one-dimensional. &quot;After the first and before the second&quot; requires the car to fit between the two forbidden intervals during the overlap of the windows, which the two rows enforce automatically if both windows are encoded; with three bicycles the count is eight, and enumeration is still cheaper than a mixed-integer solver, which is where <a href="#enumerate">Part 4</a>'s rule of thumb starts to turn.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Geometry</strong>: safe centre positions are <span class="m">d \le 93.75</span> or <span class="m">d \ge 106.25</span>, a nonconvex union with a 12.5 m gap; the midpoint of two safe points is unsafe.</div></li>
+<li><div><strong>One binary</strong>: <span class="m">d_k \le d_{\max} + M(1 - s)</span> and <span class="m">d_k \ge d_{\min} - Ms</span> encode the disjunction; the problem becomes an MIQP.</div></li>
+<li><div><strong>The smallest valid <span class="m">M</span></strong> is <span class="m">\max(d_{\mathrm{high}} - d_{\max}, d_{\min} - d_{\mathrm{low}})</span>: 206.25 for positions within 300 m; 5000 is valid and 24 times too large.</div></li>
+<li><div><strong>A huge <span class="m">M</span> costs</strong>: at a fractional <span class="m">s</span> the relaxation allows the car inside the crossing, so its bound is weak and branch-and-bound prunes less.</div></li>
+<li><div><strong>Enumerate</strong>: with one decision, two QPs are the exact solver; from <span class="m">(60, 5)</span> only yield is feasible, cost 2582.56; from <span class="m">(30, 17)</span> with more grip the weights pick the branch.</div></li>
+<li><div><strong>One binary per manoeuvre</strong>: per-step binaries would drive through the crossing between two conflict instants.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Conflict region, forbidden interval</td>
+<td>Where the bicycle will be; the centre positions that would overlap it.</td>
+</tr>
+<tr>
+<td>Disjunctive constraint</td>
+<td>&quot;Either here or there&quot;: a nonconvex union of convex sets.</td>
+</tr>
+<tr>
+<td>Yield, pass</td>
+<td>Stay short of the region; be beyond it, during the occupancy.</td>
+</tr>
+<tr>
+<td>Big-M, MIQP</td>
+<td>A large constant switching inequalities off; the resulting mixed-integer program.</td>
+</tr>
+<tr>
+<td>Relaxation</td>
+<td>The binary allowed to be fractional; its optimum is a bound.</td>
+</tr>
+<tr>
+<td>Enumeration</td>
+<td>Solving every branch as a convex problem and keeping the cheapest feasible one.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> One logical decision on a one-dimensional point mass, lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a>'s model. Mixed-integer solvers, branch-and-bound and cutting planes are not covered; the satellite course's chapters 08 and 09 run them on a scheduling problem.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Logical constraints and hybrid MPC.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>A. Bemporad and M. Morari. &quot;Control of systems integrating logic, dynamics, and constraints&quot;. <em>Automatica</em> 35(3), 407–427, 1999. <a href="https://doi.org/10.1016/S0005-1098(98)00178-2">doi:10.1016/S0005-1098(98)00178-2</a>. Mixed-integer modelling of logical decisions.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>S. Boyd and L. Vandenberghe. <em>Convex Optimization</em>. Cambridge University Press, 2004. <a href="https://doi.org/10.1017/CBO9780511804441">doi:10.1017/CBO9780511804441</a>. Why each fixed branch is easy.</div></li>
+</ul>
+<p>Bemporad and Morari <a href="#ref-2">[2]</a> is the origin of the mixed logical dynamical framework that the Big-M rows belong to; Borrelli, Bemporad and Morari <a href="#ref-1">[1]</a> treat the hybrid formulation in full. Lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> builds the whole collision-avoidance problem on this decision: friction-limited braking, feasibility maps over 660 initial states, and the occupancy window.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a14-bellman-dynamic-programming-value-and-policy-iteration.html"><span class="lbl">Previous · A14</span><span class="t">Bellman: DP, value and policy iteration</span></a>
+  <a class="next" rel="next" href="b01-vehicle-bike-collision-avoidance.html"><span class="lbl">Next · B1</span><span class="t">Vehicle–bike collision avoidance</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A15 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/a15.js?v=20261102221633"></script>
+</body>
+</html>

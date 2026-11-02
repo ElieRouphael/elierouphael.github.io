@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A5 · The finite-horizon problem · Advanced MPC and Learning MPC</title>
+<meta name="description" content="The constrained finite-time optimal control problem, hard and soft constraints with an exact penalty, a terminal equality, one complete linear-quadratic instance with its active constraints and multipliers, a certified infeasible one, the nonlinear case on a unicycle, and the habits that go beyond &quot;solver converged&quot;.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A5 of 15</span>
+  <h1>The finite-horizon problem</h1>
+  <p class="lede">The pieces are in place: a model that predicts, a cost and constraints condensed into a quadratic program, and a solver that returns the solution with its multipliers. This chapter assembles them into the problem every predictive controller solves, the constrained finite-time optimal control problem, and reads one instance of it completely: which constraints bind, what each multiplier says, what a terminal equality costs, when the problem has no solution and what to do about it, and what breaks when the model is nonlinear. Below, the complete problem on the canonical cart is solved live, multipliers included.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A2 and A3 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a05_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The complete problem on the canonical cart, solved as one QP</p>
+      <canvas id="cftocC" aria-label="Position, velocity and input over the horizon with the bounds dashed, active constraints ringed in proportion to their multiplier, and the terminal state marked" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Horizon <span class="m">N</span>: <b id="hNV"></b></span><span class="row"><input type="range" id="hN" min="3" max="16" step="1" value="8"></span></label>
+    <label class="field"><span>Input bound <span class="m">|u_k| \le u_{\max}</span>: <b id="hUV"></b></span><span class="row"><input type="range" id="hU" min="0.25" max="1" step="0.05" value="1"></span></label>
+    <label class="field"><span>Rate bound <span class="m">|\Delta u_k| \le \Delta u_{\max}</span>: <b id="hDV"></b></span><span class="row"><input type="range" id="hD" min="0.1" max="2" step="0.05" value="0.5"></span></label>
+    <label class="field"><span>Start position <span class="m">p_0</span>: <b id="hP0V"></b></span><span class="row"><input type="range" id="hP0" min="-4" max="4" step="0.1" value="-3"></span></label>
+    <label class="field"><span>Start velocity <span class="m">v_0</span>: <b id="hV0V"></b></span><span class="row"><input type="range" id="hV0" min="-3" max="3" step="0.1" value="0"></span></label>
+    <button class="btn" type="button" id="hTerm" aria-pressed="true">terminal equality x<sub>N</sub> = 0</button>
+    <div class="readouts" aria-live="off">
+      <span>finite-horizon cost <span class="m">J</span></span><span class="v" id="rCost">–</span>
+      <span>active inequalities</span><span class="v" id="rAct">–</span>
+      <span>max <span class="m">|u|</span> / max <span class="m">|\Delta u|</span></span><span class="v" id="rMax">–</span>
+      <span>terminal state <span class="m">x_N</span></span><span class="v" id="rTerm">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the chapter's problem</button></div>
+    <p class="hint">Canonical weights <span class="m">Q = \mathrm{diag}(1, 0.2)</span>, <span class="m">R = 0.2</span>, <span class="m">P = Q</span>; box <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>; previous input <span class="m">u_{-1} = 0</span>. The condensed QP of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> is solved by the interior-point method of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>, which also returns the multipliers of chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a>.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#problem"><span class="n">1</span><span class="t">The constrained finite-time optimal control problem</span><span class="d">The CFTOC, and what it is not</span></a>
+    <a href="#hardsoft"><span class="n">2</span><span class="t">Hard and soft constraints</span><span class="d">Slacks, penalties, the exact threshold</span></a>
+    <a href="#terminal"><span class="n">3</span><span class="t">Terminal conditions</span><span class="d">A point, a set, or only a cost</span></a>
+    <a href="#instance"><span class="n">4</span><span class="t">One complete instance</span><span class="d">Cost, active rows, multipliers, x_N</span></a>
+    <a href="#infeasible"><span class="n">5</span><span class="t">When there is no plan</span><span class="d">No plan, and a certificate</span></a>
+    <a href="#nonlinear"><span class="n">6</span><span class="t">The nonlinear case: the unicycle</span><span class="d">The unicycle: convergence is not optimality</span></a>
+    <a href="#habits"><span class="n">7</span><span class="t">Beyond &quot;the solver converged&quot;</span><span class="d">What to check beyond convergence</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The code behind it</span><span class="d">LinearMPC.solve, the constraint rows</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Nine questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="problem">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The constrained finite-time optimal control problem</h2>
+  </div>
+  <div class="col prose">
+
+<div class="define"><p class="define-title">What is a CFTOC?</p>
+<p><strong>In plain words:</strong> choose a finite sequence of inputs so that the predicted trajectory of a model costs as little as possible while every state, input and terminal requirement holds. It is one optimisation, solved once, for a plan; it is not yet a controller.</p>
+<p><strong>More precisely:</strong> for a prediction model <span class="m">x_{k+1} = f(x_k, u_k)</span> and the current state <span class="m">x_0 = \bar x</span>,</p>
+<div class="math-block" data-narrow="\begin{aligned} J_N^\star(\bar x) = \min_{U}\ &amp; V_f(x_N) + \textstyle\sum_{k=0}^{N-1} q(x_k, u_k) \ \text{s.t.}\ &amp; x_{k+1} = f(x_k, u_k),\ x_k \in \mathcal X, \ &amp; u_k \in \mathcal U,\ x_N \in \mathcal X_f,\ x_0 = \bar x \end{aligned}">\begin{aligned} J_N^\star(\bar x) = \min_{u_0, \dots, u_{N-1}}\ &amp; V_f(x_N) + \sum_{k=0}^{N-1} q(x_k, u_k) \\ \text{subject to}\ &amp; x_{k+1} = f(x_k, u_k), \quad x_k \in \mathcal X, \quad u_k \in \mathcal U, \quad x_N \in \mathcal X_f, \quad x_0 = \bar x, \end{aligned}</div>
+<p>with <span class="m">q</span> the stage cost, <span class="m">V_f</span> the terminal cost, <span class="m">\mathcal X</span> and <span class="m">\mathcal U</span> the admissible sets and <span class="m">\mathcal X_f</span> a terminal set <a href="#ref-1">[1]</a>. The solution is the whole open-loop sequence <span class="m">U^\star(\bar x) = (u_0^\star, \dots, u_{N-1}^\star)</span> and the optimal value <span class="m">J_N^\star(\bar x)</span>.</p>
+<dl><dt>Stage cost <span class="m">q(x, u)</span></dt><dd>What one step costs, here <span class="m">x^\top Q x + R u^2</span>.</dd><dt>Terminal cost <span class="m">V_f(x_N)</span></dt><dd>The estimated price of everything after the horizon; <span class="m">P = Q</span> until chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a>.</dd><dt>Terminal set <span class="m">\mathcal X_f</span></dt><dd>Where the plan must end; a point, a set, or everything, chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</dd><dt>Decision variable</dt><dd><span class="m">U</span> in the condensed form, <span class="m">(X, U)</span> in the sparse form, chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>.</dd></dl>
+</div>
+<p>For linear dynamics, a quadratic cost and polyhedral sets it is the convex QP of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>: <span class="m">H</span> fixed, <span class="m">f</span> and the right-hand sides affine in <span class="m">\bar x</span>. The chapter's instance has <span class="m">N = 8</span>, so 8 decision variables, 64 inequality rows (two per predicted position and velocity, two per input, two per input change) and 2 equality rows for the terminal point. Model predictive control, chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>, is the loop that solves such a problem at every sample and applies the first input; everything the loop inherits, feasibility, cost, the meaning of the multipliers, is decided here.</p>
+<p><strong>The plant is not the prediction model.</strong> The problem is posed on <span class="m">f</span>, the optimiser's model. The real system evolves on its own. In the concept chapters the two coincide so that the theory can be checked; chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a> fixed the vocabulary, chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> counts the consequences of a gap.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="hardsoft">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Hard and soft constraints</h2>
+  </div>
+  <div class="col prose">
+
+<p>A <strong>hard</strong> constraint <span class="m">a^\top z \le b</span> must hold; if it cannot, the problem has no solution and the solver says so. A <strong>soft</strong> constraint may be violated at a price: add a slack <span class="m">\epsilon \ge 0</span>, write <span class="m">a^\top z \le b + \epsilon</span>, and add <span class="m">\rho \epsilon</span> to the cost. For a set of rows <span class="m">H_x x_k \le h_x</span> softened together, one slack per row and the penalty <span class="m">\rho \sum_k \mathbf 1^\top \epsilon_k</span> keep the problem a QP, with the slacks as extra variables bounded below by zero.</p>
+<p><strong>The threshold is the multiplier.</strong> Chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a> read the multiplier as the price of a constraint: relaxing a row by <span class="m">\delta</span> lowers the cost by <span class="m">\lambda \delta</span>. A soft constraint offers exactly that trade at the rate <span class="m">\rho</span> per unit, so the optimiser buys a violation when <span class="m">\rho &lt; \lambda^\star</span> and refuses when <span class="m">\rho \ge \lambda^\star</span>. The <span class="m">\ell_1</span> penalty is <em>exact</em>: above the threshold the soft problem returns the hard solution unchanged, and it still returns a plan, the least violating one, when the hard problem is infeasible <a href="#ref-4">[4]</a>. A purely quadratic penalty <span class="m">\rho \epsilon^2</span> never is: its marginal price vanishes at <span class="m">\epsilon = 0</span>, so a small violation is always bought.</p>
+<div class="widget" id="softW">
+  <div class="controls">
+    <label class="field"><span>Penalty <span class="m">\rho</span>: <b id="sRhoV"></b></span><span class="row"><input type="range" id="sRho" min="0" max="8" step="1" value="2"></span></label>
+  </div>
+  <canvas id="softC" aria-label="The velocity along the horizon under the hard comfort bound and under the softened one, with the limit dashed"></canvas>
+  <p class="caption" id="softCap"></p>
+</div>
+<p>The widget replaces the velocity bound of the chapter's problem by a comfort limit <span class="m">|v| \le 1</span>, which binds at step 3 with multiplier <span class="m">2.5145</span>. Softened with <span class="m">\rho = 0.63</span> the optimiser lets the velocity reach <span class="m">1.047</span>; with <span class="m">\rho = 1.26</span>, <span class="m">1.021</span>; from <span class="m">\rho = 2.5145</span> on the slack is zero and the inputs agree with the hard solution to <span class="m">10^{-14}</span>.</p>
+<p><strong>Which is which is an engineering decision.</strong> Actuator limits are hard: a motor cannot deliver more than it can. Collision constraints should be hard safety requirements, chapter <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a>. Comfort and tracking envelopes may be softened. A slack prevents numerical infeasibility; it does not make a safety violation acceptable, and a controller that relies on slacks to stay feasible is signalling that its hard constraints were wrong.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="terminal">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Terminal conditions</h2>
+  </div>
+  <div class="col prose">
+
+<p>The last predicted state can be left free, pinned to a point, or confined to a set. Each is a different problem.</p>
+<p><strong>Only a cost.</strong> With <span class="m">\mathcal X_f = \mathcal X</span> the horizon ends wherever the optimiser likes and pays <span class="m">V_f(x_N)</span> for it. The feasible set is largest, nothing is certified about what happens after step <span class="m">N</span>, and chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> shows loops built this way losing feasibility a few steps later.</p>
+<p><strong>A point.</strong> <span class="m">x_N = 0</span> is two equality rows of the condensed form, <span class="m">\mathcal S_{u,N} U = -\mathcal S_{x,N} \bar x</span>. It is the crudest terminal set: the plan must come to rest at the origin within <span class="m">N</span> steps, which makes the feasible set small for short horizons. The chapter's instance uses it. Its multipliers <span class="m">\nu</span> are unsigned, since an equality pushes from both sides; at the solution they are <span class="m">(-0.046, 0.013)</span>, small, because the cost already pulls the cart almost home.</p>
+<p><strong>A set.</strong> <span class="m">x_N \in \mathcal X_f</span> for a polytope <span class="m">\mathcal X_f = \{x : H_f x \le h_f\}</span> is a few more inequality rows, <span class="m">H_f \mathcal S_{u,N} U \le h_f - H_f \mathcal S_{x,N} \bar x</span>. When <span class="m">\mathcal X_f</span> is invariant under a local controller the plan need only reach a region from which that controller can finish, which is the whole idea of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="instance">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>One complete instance</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The problem.</strong> The canonical cart from <span class="m">\bar x = (-3, 0)</span> over <span class="m">N = 8</span> steps, with <span class="m">Q = \mathrm{diag}(1, 0.2)</span>, <span class="m">R = 0.2</span>, <span class="m">P = Q</span>, and</p>
+<div class="math-block">|p_k| \le 4, \qquad |v_k| \le 3, \qquad |u_k| \le 1, \qquad |u_k - u_{k-1}| \le 0.5 \ (u_{-1} = 0), \qquad x_N = 0 .</div>
+<p>A convex QP, smallest eigenvalue of <span class="m">H</span> equal to <span class="m">0.508</span>. The solver converges in 15 iterations with a largest constraint violation of <span class="m">6 \times 10^{-15}</span>. Its answer, which the hero reproduces:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Quantity</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Physical cost <span class="m">J</span></td>
+<td>22.2253 (the QP objective <span class="m">-58.7747</span> plus the dropped constant 81)</td>
+</tr>
+<tr>
+<td>Inputs</td>
+<td>0.5, 0.535, 0.035, −0.465, −0.632, −0.132, 0.134, 0.025</td>
+</tr>
+<tr>
+<td>Largest <span class="m">\lvert u \rvert</span>, largest <span class="m">\lvert \Delta u \rvert</span></td>
+<td>0.632, 0.500</td>
+</tr>
+<tr>
+<td>Peak velocity</td>
+<td>1.070</td>
+</tr>
+<tr>
+<td>Active inequalities</td>
+<td>4 of 64, all rate bounds</td>
+</tr>
+<tr>
+<td>Terminal state, multipliers <span class="m">\nu</span></td>
+<td><span class="m">(0, 0)</span> exactly, <span class="m">(-0.046, 0.013)</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Reading it.</strong> The input ramps up at the rate limit, <span class="m">0.5</span> then <span class="m">0.535</span>, coasts, ramps down through zero to <span class="m">-0.632</span> and ramps back to land at rest: a bang-coast-bang shape rounded by the rate bound. Neither the input bound nor the box binds; the velocity peaks at <span class="m">1.07</span> under its bound of 3. The four active rows are rate bounds, at steps 0, 2, 3 and 5, with multipliers <span class="m">9.85</span>, <span class="m">1.86</span>, <span class="m">0.88</span> and <span class="m">0.09</span>. The first is by far the most expensive: the controller would pay most for being allowed to accelerate faster than <span class="m">0.5</span> from a standstill. The numbers script checks the price: relaxing that one bound by <span class="m">0.001</span> lowers <span class="m">J</span> by <span class="m">0.00985</span>, which is <span class="m">9.848</span> per unit against the multiplier <span class="m">9.852</span>, the difference being the curvature of <span class="m">J^\star(b)</span> that chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a> described.</p>
+<p><strong>Without the terminal equality</strong> the cost falls only to <span class="m">22.2250</span> and the horizon ends at <span class="m">(-0.0135, -0.0004)</span>: the terminal weight already pulls the state nearly home, and pinning it costs <span class="m">0.0003</span>. The rate multipliers barely move. On a short horizon from a far corner the difference is large, Part 5.</p>
+<p><strong>The sparse form agrees.</strong> Solved with the states as variables, 24 unknowns and 18 equalities, the inputs agree with the condensed ones to <span class="m">7 \times 10^{-15}</span>: the same problem, as chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> promised.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="infeasible">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>When there is no plan</h2>
+  </div>
+  <div class="col prose">
+
+<p>Shorten the horizon to <span class="m">N = 4</span> and keep <span class="m">x_N = 0</span>. The solver fails after its iteration cap, and the feasibility LP of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> returns a margin of <span class="m">0.154</span>: no input sequence brings the cart from <span class="m">(-3, 0)</span> to rest at the origin in four steps when each input may change by at most <span class="m">0.5</span> per step. The inputs can only reach <span class="m">0.5, 1, 1, 1</span> in four steps, and must come back down to stop; the arithmetic does not close. From <span class="m">N = 5</span> on the margin is zero and a plan exists.</p>
+<p>Two readings of an infeasible problem, to keep apart. As a statement about the model: <em>from this state, with these limits and this horizon, no admissible plan meets the requirement.</em> That is a fact, certified by the LP. As a statement about the world: nothing. The model may be too coarse, the horizon too short, the terminal condition too strict, or the limits too conservative. A controller that meets an infeasible problem needs a fallback, chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a>, and a design that avoids meeting one is the subject of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="nonlinear">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The nonlinear case: the unicycle</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Model.</strong> <span class="m">\dot x = v \cos\theta</span>, <span class="m">\dot y = v \sin\theta</span>, <span class="m">\dot\theta = \omega</span>, with state <span class="m">z = (x, y, \theta)</span> and input <span class="m">u = (v, \omega)</span>. Forward Euler with <span class="m">T_s = 0.2</span> gives <span class="m">x_{k+1} = x_k + T_s v_k \cos\theta_k</span>, <span class="m">y_{k+1} = y_k + T_s v_k \sin\theta_k</span>, <span class="m">\theta_{k+1} = \theta_k + T_s \omega_k</span>. The prediction map contains sines and cosines, so the states are not an affine function of the inputs: there is no prediction identity, the finite-horizon problem is a nonlinear program, and it is in general nonconvex.</p>
+<p><strong>The terminal-pose problem.</strong> Drive from <span class="m">(0, 0, 0)</span> to <span class="m">(2, 1, 0)</span> in <span class="m">N = 30</span> steps with <span class="m">|v_k| \le 1</span>, <span class="m">|\omega_k| \le 1</span>, input rates bounded by <span class="m">0.2</span> per step, minimising effort and roughness, <span class="m">J = 0.05 \sum_k \lVert u_k \rVert^2 + 0.10 \sum_k \lVert u_k - u_{k-1} \rVert^2</span>, with the terminal pose as a nonlinear equality. The numbers script solves it with SciPy's SLSQP, the sequential quadratic programming method the course's own solver cannot replace here, and reports success with cost <span class="m">0.3167</span> and a terminal residual of <span class="m">5 \times 10^{-12}</span>; for the target <span class="m">(0, 1, \pi)</span>, cost <span class="m">0.4941</span>.</p>
+<div class="callout warm">
+<p><strong>Solver convergence is not a certificate of global optimality.</strong> For the linear-quadratic instance the dynamics were affine, the constraints linear, the objective convex: a convex QP, whose KKT point is the global optimum. For the unicycle the solution a local solver returns may depend on the initial guess. The numbers script restarts SLSQP from four different guesses, the course's, straight ahead, turning the other way first, and random inputs, and all four converge to the same cost to four decimals and the same inputs to <span class="m">1.5 \times 10^{-5}</span>. That is evidence about this problem, gathered by trying, not a theorem: nonconvexity makes multiple local optima possible, not certain, and a single successful run would not have shown which.</p>
+</div>
+<p>The route back to convexity is to linearise along a trajectory and solve a sequence of QPs, which is how chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> gives a nonlinear car an affine prediction model, and how real nonlinear MPC solvers work.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="habits">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Beyond &quot;the solver converged&quot;</h2>
+  </div>
+  <div class="col prose">
+
+<p>For every numerical optimal control solution, inspect at least:</p>
+<ol>
+<li><strong>the solver status and the KKT residual</strong>, chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>: <code>success</code> and <code>kkt_residual</code>, not a message;</li>
+<li><strong>the constraint violation</strong>: the largest <span class="m">Gz - g</span> and <span class="m">|Ez - e|</span>, which should be at round-off;</li>
+<li><strong>the terminal residual</strong>, if a terminal condition was imposed;</li>
+<li><strong>the active set and its multipliers</strong>: which limits bind and how much they cost, the shape of the solution;</li>
+<li><strong>the physical cost</strong>, constant included, when values at different states are compared;</li>
+<li><strong>the sensitivity to the initial guess</strong>, for nonconvex problems;</li>
+<li><strong>the scaling</strong>: if one state is in millimetres and another in hundreds of metres per second, the Hessian spans many orders of magnitude, the residuals mean different things in different rows and the active set is identified unreliably. Scale the variables so typical values are of order one, and transform weights and constraints consistently;</li>
+<li><strong>whether the prediction model matches the plant</strong>, which no residual can tell.</li>
+</ol>
+<p>A beautiful trajectory from an infeasible or unconverged solution is not a control result. The hero's readouts are this list applied to one problem.</p>
+<p><strong>Modelling decisions are optimisation decisions.</strong> Before writing code: what is the decision variable? Which model predicts the future? Which constraints are physical, which safety-critical, which can be softened? Is the terminal condition an equality, a set or only a cost? Is the formulation convex? Are there discrete decisions, chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a>? Is the model exact or approximate? Is the problem solved once, or repeatedly in feedback? These questions fix the mathematics before they fix the software.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The hero's problem is built by the same recipe as the package's MPC class, which the numbers script reproduces row for row; the class is the reference implementation of the condensed CFTOC.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/mpc.py · LinearMPC.solve</p><pre><code class="language-python">    def solve(self, x0, x_ref=None, extra_A_ub=None, extra_b_ub=None, warm=None):
+        x0=np.asarray(x0,float).reshape(self.n)
+        x_ref=np.zeros(self.n) if x_ref is None else np.asarray(x_ref,float).reshape(self.n)
+        Qbar=np.kron(np.eye(self.N),self.Q)
+        Qbar[-self.n:,-self.n:]=self.P
+        Rbar=np.kron(np.eye(self.N),self.R)
+        rstack=np.tile(x_ref,self.N)
+        base=self.Sx@x0-rstack
+        H=2*(self.Su.T@Qbar@self.Su+Rbar)
+        f=2*self.Su.T@Qbar@base
+        Aubs=[]; bubs=[]
+        if self.x_upper is not None:
+            Aubs.append(self.Su); bubs.append(np.tile(self.x_upper,self.N)-self.Sx@x0)
+        if self.x_lower is not None:
+            Aubs.append(-self.Su); bubs.append(-np.tile(self.x_lower,self.N)+self.Sx@x0)
+        if self.terminal_H is not None:
+            SuN=self.Su[-self.n:]; SxN=self.Sx[-self.n:]
+            Aubs.append(np.asarray(self.terminal_H)@SuN)
+            bubs.append(np.asarray(self.terminal_h)-np.asarray(self.terminal_H)@SxN@x0)
+        if extra_A_ub is not None:
+            Aubs.append(np.asarray(extra_A_ub,float)); bubs.append(np.asarray(extra_b_ub,float))
+        Aub=np.vstack(Aubs) if Aubs else None
+        bub=np.concatenate(bubs) if bubs else None
+        lb=np.tile(self.u_lower,self.N) if self.u_lower is not None else None
+        ub=np.tile(self.u_upper,self.N) if self.u_upper is not None else None
+        res=solve_qp(H,f,A_ub=Aub,b_ub=bub,lb=lb,ub=ub,x0=warm)
+        U=res.x.reshape(self.N,self.m)
+        X=(self.Sx@x0+self.Su@res.x).reshape(self.N,self.n)
+        return MPCSolution(res.success,U,X,res.objective,res.message)</code></pre>
+<p>After <span class="m">H</span> and <span class="m">f</span>, chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a>, the constraint rows are appended to two lists. The upper state bound is the matrix <code>Su</code> against <code>tile(x_upper, N) - Sx @ x0</code>: one row per predicted state component, every predicted step at once. The lower bound is <code>-Su</code> against <code>-tile(x_lower, N) + Sx @ x0</code>. A terminal polytope, when given, contributes <code>terminal_H @ SuN</code> against <code>terminal_h - terminal_H @ SxN @ x0</code> with the last block rows of the prediction matrices. The <code>extra_A_ub</code> hook lets a caller add rows of its own, which is how the rate bounds of this chapter and the collision rows of chapter <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> enter. The input bounds are passed as <code>lb</code> and <code>ub</code>, which the solver stacks as rows itself. Nothing in the assembly depends on the solver: the lists are the problem, and <code>solve_qp</code> could be swapped for any QP solver with the same signature, which is what chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> did.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;A CFTOC is a controller.&quot;</strong> It is one plan from one state. The controller is the loop that solves it again from the next measured state, chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>.</li>
+<li><strong>&quot;The objective the solver prints is the cost.&quot;</strong> It omits <span class="m">c(\bar x)</span>, here 81. The physical cost is <span class="m">22.2</span>, not <span class="m">-58.8</span>.</li>
+<li><strong>&quot;Softening makes the controller safe.&quot;</strong> It makes the QP feasible. A violated soft constraint is a violated constraint; the penalty only prices it.</li>
+<li><strong>&quot;A small <span class="m">\nu</span> means the terminal equality does not matter.&quot;</strong> It means it costs little <em>here</em>, because the cost already pulls the state home. From a far corner with a short horizon the same equality makes the problem infeasible.</li>
+<li><strong>&quot;Restarts agreeing proves the optimum is global.&quot;</strong> They are evidence from a sample of starts. Only convexity, or an exhaustive method, proves it.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What is a CFTOC, and what is it not?</summary>
+<p>One finite-horizon optimisation over a prediction model, returning a whole input sequence and its cost. It is not a feedback law: that is the receding-horizon loop around it.</p>
+</details>
+<details class="sol"><summary>2. Why is the chapter's instance a convex QP?</summary>
+<p>Affine dynamics, a quadratic cost with <span class="m">R &gt; 0</span>, and polyhedral constraints: the condensed Hessian is positive definite and every constraint is a linear row in <span class="m">U</span>.</p>
+</details>
+<details class="sol"><summary>3. What does the multiplier 9.85 on the first rate bound mean?</summary>
+<p>That relaxing the bound <span class="m">|u_0 - u_{-1}| \le 0.5</span> by a small <span class="m">\delta</span> would lower the optimal cost by about <span class="m">9.85\,\delta</span>: it is the most expensive limit in the problem.</p>
+</details>
+<details class="sol"><summary>4. Why does an <span class="m">\ell_1</span> penalty reproduce the hard solution above a threshold, and a quadratic one never?</summary>
+<p>The <span class="m">\ell_1</span> penalty charges <span class="m">\rho</span> per unit from the first unit, so for <span class="m">\rho \ge \lambda^\star</span> a violation never pays. A quadratic penalty charges nothing at the margin for the first unit, so a small violation always pays.</p>
+</details>
+<details class="sol"><summary>5. What does the feasibility margin <span class="m">0.154</span> for <span class="m">N = 4</span> certify?</summary>
+<p>That no input sequence satisfies the constraints as posed: the smallest uniform relaxation that would make them compatible is <span class="m">0.154</span>, computed by an LP that shares no code with the QP solver.</p>
+</details>
+<details class="sol"><summary>6. Why is the unicycle problem nonconvex?</summary>
+<p>Its predicted states depend on the inputs through <span class="m">\sin\theta</span> and <span class="m">\cos\theta</span>, so the dynamics are nonlinear equalities and the feasible set in the inputs is not convex.</p>
+</details>
+<details class="sol"><summary>7. What do agreeing restarts establish?</summary>
+<p>That several starts reached the same local optimum. They raise confidence; they do not prove the optimum is global.</p>
+</details>
+<details class="sol"><summary>8. Why reconstruct the full cost rather than trust the solver's objective?</summary>
+<p>Because the solver drops a state-dependent constant. Comparing values at different states, as a Lyapunov argument does, needs the constant back.</p>
+</details>
+<details class="sol"><summary>9. Why does scaling matter to a solver that is exact in theory?</summary>
+<p>Residuals and tolerances are absolute numbers; rows in different units make the same tolerance mean different accuracies, and badly scaled Hessians make the active set hard to identify.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Reproduce the instance with the package.</b> Build the chapter's problem with <code>LinearMPC</code>, adding the rate bounds through <code>extra_A_ub</code> and the terminal equality as two inequality pairs, and compare the inputs with the numbers script's.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>LinearMPC</code> has no equality rows: write <span class="m">x_N = 0</span> as <span class="m">\mathcal S_{u,N} U \le -\mathcal S_{x,N} x_0</span> and <span class="m">-\mathcal S_{u,N} U \le \mathcal S_{x,N} x_0</span>, four extra rows alongside the <span class="m">2N</span> rate rows.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from advanced_mpc_lmpc.mpc import LinearMPC
+N = 8; x0 = np.array([-3.0, 0.0])
+mpc = LinearMPC(A, B, Q, R, N, P=Q, x_lower=[-4, -3], x_upper=[4, 3], u_lower=[-1], u_upper=[1])
+D = np.eye(N); D[np.arange(1, N), np.arange(N - 1)] = -1.0
+SuN, SxN = mpc.Su[-2:], mpc.Sx[-2:]
+A_extra = np.vstack([D, -D, SuN, -SuN])
+b_extra = np.r_[0.5 * np.ones(2 * N), -SxN @ x0, SxN @ x0]
+sol = mpc.solve(x0, extra_A_ub=A_extra, extra_b_ub=b_extra)
+print(sol.U.ravel().round(4))     # 0.5 0.535 0.035 -0.465 -0.6316 -0.1316 0.1335 0.0249
+</code></pre>
+<p>The inputs match the table of Part 4; the two inequality pairs pin <span class="m">x_N</span> exactly as the equality did.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the soft constraint yourself.</b> Add slack variables for the velocity rows to the condensed QP, with the <span class="m">\ell_1</span> penalty <span class="m">\rho</span>, and sweep <span class="m">\rho</span> across the multiplier <span class="m">2.5145</span> of the hard comfort bound <span class="m">|v| \le 1</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Append one variable per velocity row; its column has <span class="m">-1</span> in that row; its lower bound is 0; its cost coefficient is <span class="m">\rho</span>. The numbers script's <code>build(..., soft=rho)</code> does exactly this.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">kw_hard, info = build(8, [-3.0, 0.0], vmax=1.0)          # from a05_numbers.py
+lam_v = max(solve_qp(**kw_hard).lam[i] for i, t in enumerate(info[&quot;tags&quot;]) if t[0] == &quot;velocity&quot;)
+for rho in (0.5 * lam_v, lam_v, 2 * lam_v):
+    kw, info_s = build(8, [-3.0, 0.0], vmax=1.0, soft=rho)
+    r = solve_qp(**kw); print(round(rho, 4), r.x[8:].max())  # largest slack: 0.0209, 0.0, 0.0
+</code></pre>
+<p>Below the multiplier the slack is positive and the velocity exceeds 1; at and above it the slack is zero and the hard solution is returned. The threshold is the multiplier of the hard problem, as chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a>'s price reading predicts.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The shortest feasible horizon.</b> With the rate bound <span class="m">0.5</span> and <span class="m">x_N = 0</span>, find by the feasibility LP the smallest <span class="m">N</span> from which <span class="m">(-3, 0)</span> can be brought to rest, and explain the number from the ramp arithmetic.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Count the inputs: they must ramp up by at most 0.5 per step and ramp back down to end at rest, and the velocity must return to zero.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">N = 5</span>: the margin is <span class="m">0.154</span> at <span class="m">N = 4</span> and zero from <span class="m">N = 5</span>. The velocity after <span class="m">N</span> steps is the sum of the inputs, which must be zero, so the inputs must rise and fall symmetrically; with steps of at most <span class="m">0.5</span>, a four-step sequence <span class="m">(0.5, 1, \dots)</span> cannot both reach a useful speed and return to zero while moving the cart 3 units.</p>
+<pre><code class="language-python">for N in (4, 5, 6):
+    kw, _ = build(N, [-3.0, 0.0])
+    print(N, feasibility_margin(N, A_ub=kw[&quot;A_ub&quot;], b_ub=kw[&quot;b_ub&quot;], A_eq=kw[&quot;A_eq&quot;], b_eq=kw[&quot;b_eq&quot;]))   # 0.1538, 0.0, 0.0
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Price check.</b> Relax the most expensive active bound of the instance by <span class="m">\delta = 0.001</span>, <span class="m">0.01</span> and <span class="m">0.1</span>, resolve, and compare the cost change with <span class="m">\lambda \delta</span>. Where does the linear prediction stop being accurate?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Change one entry of <code>b_ub</code>; the multiplier predicts the first-order change only.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For <span class="m">\delta = 0.001</span> the cost falls by <span class="m">0.00985</span> against the prediction <span class="m">0.00985</span>; for <span class="m">0.01</span> by <span class="m">0.0974</span> against <span class="m">0.0985</span>; for <span class="m">0.1</span> by <span class="m">0.86</span> against <span class="m">0.985</span>. The multiplier is a derivative: exact in the limit, and increasingly optimistic as the relaxation changes the active set and the curvature of <span class="m">J^\star</span> takes over.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Rate constraints.</b> Construct <span class="m">D</span> for <span class="m">N = 4</span> and a scalar input and verify that <span class="m">DU + (-u_{-1}, 0, 0, 0)</span> equals <span class="m">(u_0 - u_{-1}, u_1 - u_0, u_2 - u_1, u_3 - u_2)</span> for <span class="m">U = (0.3, 0.5, 0.4, 0.1)</span> and <span class="m">u_{-1} = 0.2</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Ones on the diagonal, minus ones on the first subdiagonal; the previous input enters only the first row.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Both sides are <span class="m">(0.1, 0.2, -0.1, -0.3)</span>.</p>
+<pre><code class="language-python">D4 = np.eye(4); D4[np.arange(1, 4), np.arange(3)] = -1.0
+print(D4 @ np.array([0.3, 0.5, 0.4, 0.1]) + np.array([-0.2, 0, 0, 0]))   # [ 0.1  0.2 -0.1 -0.3]
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The sparse form.</b> Write the chapter's instance with the states as variables, the dynamics and <span class="m">x_N = 0</span> as equalities and the rate bounds as rows, solve it, and compare with the condensed solution.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">z = (x_1, \dots, x_N, u_0, \dots, u_{N-1})</span>, 24 variables; the equality block is <span class="m">(I, -A, -B)</span> per step with <span class="m">A x_0</span> on the right of the first.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The numbers script's last section does it: the sparse inputs agree with the condensed ones to <span class="m">7 \times 10^{-15}</span>, with 24 variables against 8, 18 equalities and 16 rate rows, and the box as bounds on the state variables. Same problem, same answer, different shape.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Nonlinear CFTOC.</b> Change the unicycle target pose and initial guess in the numbers script. Do you always obtain the same local solution? What does that tell you about nonconvex optimisation?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>solve_unicycle(zf, U0)</code> takes any target and any guess; try a target behind the start.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For the targets <span class="m">(2, 1, 0)</span>, <span class="m">(0, 1, \pi)</span> and others the four guesses converge to the same inputs to <span class="m">10^{-5}</span> and the same cost. So no, different local solutions did not appear on these instances: the smooth quadratic cost and tight rate limits give a benign landscape. But the only way to learn that was to try several starts, and &quot;solver converged&quot; plus restart agreement is evidence, not a certificate; a target that requires reversing or a full turn is where multiple local optima would first show up.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The problem</strong>: minimise <span class="m">V_f(x_N) + \sum q(x_k, u_k)</span> over <span class="m">N</span> inputs subject to the model, the sets and a terminal condition; one open-loop plan, not a controller.</div></li>
+<li><div><strong>Hard and soft</strong>: a slack with an <span class="m">\ell_1</span> penalty <span class="m">\rho</span> is exact for <span class="m">\rho \ge \lambda^\star</span>; the comfort bound's multiplier <span class="m">2.51</span> is the threshold.</div></li>
+<li><div><strong>Terminal conditions</strong>: free, a point (<span class="m">x_N = 0</span>, two equality rows), or a set (a few inequality rows); the set is chapter A11's idea.</div></li>
+<li><div><strong>The instance</strong>: <span class="m">J = 22.225</span>, inputs ramped by the rate bound, four active rate rows with multipliers <span class="m">9.85, 1.86, 0.88, 0.09</span>, <span class="m">\nu = (-0.046, 0.013)</span>; without the equality, <span class="m">22.2250</span>.</div></li>
+<li><div><strong>Infeasible at <span class="m">N = 4</span></strong>: margin <span class="m">0.154</span> by an independent LP; feasible from <span class="m">N = 5</span>.</div></li>
+<li><div><strong>Nonlinear</strong>: the unicycle is a nonconvex NLP; four restarts agree to <span class="m">10^{-5}</span>, which is evidence, not proof.</div></li>
+<li><div><strong>Habits</strong>: status and residual, violation, terminal residual, active set, full cost, restarts, scaling, model against plant.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CFTOC</td>
+<td>Constrained finite-time optimal control problem, one open-loop solve.</td>
+</tr>
+<tr>
+<td>Stage cost, terminal cost, terminal set</td>
+<td><span class="m">q</span>, <span class="m">V_f</span>, <span class="m">\mathcal X_f</span>: the price per step, the price of the tail, where the plan must end.</td>
+</tr>
+<tr>
+<td>Hard and soft constraint</td>
+<td>Must hold; may be violated at a price through a slack.</td>
+</tr>
+<tr>
+<td>Exact penalty</td>
+<td>An <span class="m">\ell_1</span> penalty at least the multiplier, which reproduces the hard solution.</td>
+</tr>
+<tr>
+<td>Active set</td>
+<td>The rows that bind at the solution, with their multipliers.</td>
+</tr>
+<tr>
+<td>Terminal equality</td>
+<td><span class="m">x_N = x_f</span>; two equality rows for the cart; multipliers <span class="m">\nu</span> unsigned.</td>
+</tr>
+<tr>
+<td>Feasibility margin</td>
+<td>The LP certificate of chapter A4; zero if a plan exists.</td>
+</tr>
+<tr>
+<td>NLP</td>
+<td>A nonlinear program; the unicycle, solved by SQP, locally.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Deterministic finite-horizon problems with a known state. The linear-quadratic instance is solved exactly by the course's solver; the unicycle by SciPy's SLSQP, as a nonconvex example only. Receding-horizon feedback begins in chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>; the terminal set that makes it safe is chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Constrained finite-time optimal control and its QP formulations.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017. Finite-horizon problems, soft constraints and their numerics.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>J. Nocedal and S. J. Wright. <em>Numerical Optimization</em>, 2nd ed. Springer, 2006. <a href="https://doi.org/10.1007/978-0-387-40065-5">doi:10.1007/978-0-387-40065-5</a>. Sequential quadratic programming, the method behind the unicycle solve.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>E. C. Kerrigan and J. M. Maciejowski. &quot;Soft constraints and exact penalty functions in model predictive control&quot;. <em>Proceedings of the UKACC International Conference on Control</em>, 2000. The exact-penalty threshold for softened constraints.</div></li>
+</ul>
+<p>Borrelli, Bemporad and Morari <a href="#ref-1">[1]</a> is the reference for the problem; Kerrigan and Maciejowski <a href="#ref-4">[4]</a> for the exact penalty. Next, chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a> closes the loop: solve this problem, apply the first input, measure, solve again, and keep four properties apart that the loop can have or lack.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a04-solving-a-qp-you-can-read.html"><span class="lbl">Previous · A4</span><span class="t">Solving a QP you can read</span></a>
+  <a class="next" rel="next" href="a06-receding-horizon-from-a-plan-to-feedback.html"><span class="lbl">Next · A6</span><span class="t">Receding horizon: from a plan to feedback</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A5 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/a05.js?v=20261102221633"></script>
+</body>
+</html>

@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>B3 · Frenet coordinates and minimum-time racing · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Curvilinear coordinates, the factor 1 − Ke_y and its singularity, the progress rate, space as the independent variable, the reduced problem in squared speed, the exact segment time, the forward and backward envelopes, the closed-lap planner, and the friction-circle diagnostic that shows what the reduction leaves out.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+<style>
+.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem 0.8rem; }
+@media (max-width: 560px) { .three { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { #ratesT, #sweepT { font-size: 0.82rem; } }
+
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part B, Labs · Chapter B3 of 6</span>
+  <h1>Frenet coordinates and minimum-time racing</h1>
+  <p class="lede">A raceline is not the centre of the road driven as fast as possible. It is the solution of an optimal-control problem: stay inside the track, obey the vehicle and its tires, and minimise lap time. That problem is written most naturally in Frenet coordinates, with progress along the track as the independent variable instead of time. This lab derives the geometry carefully, the progress rate, the spatial dynamics and the shape of the full nonlinear raceline problem, and then solves a reduced piece of it exactly: the minimum-time speed profile along a fixed centreline, which needs nothing but a forward pass for acceleration and a backward pass for braking. The planner runs live below; change the grip, the brakes, the engine and the grid.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A1 and vector calculus · Every number is checked in Python</p>
+  <p class="concepts"><span class="lbl">Concepts used</span><a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">state-space models and discretisation</a>, <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">the finite-horizon problem</a>, <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">convexity, and when a problem stops being convex</a></p>
+  <div class="downloads">
+    <a class="btn" href="code/b03_numbers.py" download>The numbers script (.py)</a>
+<a class="btn" href="notebooks/06_frenet_minimum_time_racing.ipynb" download>The lab notebook (.ipynb)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The synthetic track coloured by the planned speed, and the minimum-time speed profile against the local cap</p>
+      <canvas id="mapC" aria-label="The closed track seen from above with its two edges, the centreline coloured by the planned speed, full-braking stretches in orange, and a probe point" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+      <canvas id="profC" aria-label="Speed against arc length: the dashed local curvature and top-speed cap, the planned minimum-time profile, and the full-braking stretches" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Friction <span class="m">\mu</span>: <b id="hMuV"></b></span>
+      <span class="row"><input type="range" id="hMu" min="0.3" max="1.5" step="0.05" value="1"></span>
+    </label>
+    <label class="field"><span>Acceleration limit <span class="m">a_{\max}</span> [m/s²]: <b id="hAmaxV"></b></span>
+      <span class="row"><input type="range" id="hAmax" min="0.5" max="8" step="0.5" value="3"></span>
+    </label>
+    <label class="field"><span>Braking limit <span class="m">a_{\min}</span> [m/s²]: <b id="hAminV"></b></span>
+      <span class="row"><input type="range" id="hAmin" min="-12" max="-1" step="0.5" value="-6"></span>
+    </label>
+    <label class="field"><span>Top speed <span class="m">v_{\max}</span> [m/s]: <b id="hVmaxV"></b></span>
+      <span class="row"><input type="range" id="hVmax" min="8" max="40" step="1" value="35"></span>
+    </label>
+    <div class="seg" role="group" aria-label="Grid">
+      <button class="btn" type="button" data-n="60" aria-pressed="false">60</button>
+      <button class="btn" type="button" data-n="120" aria-pressed="false">120</button>
+      <button class="btn" type="button" data-n="240" aria-pressed="true">240</button>
+      <button class="btn" type="button" data-n="480" aria-pressed="false">480</button>
+      <button class="btn" type="button" data-n="960" aria-pressed="false">960</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>lap time</span><span class="v" id="rLap">–</span>
+      <span>speed range</span><span class="v" id="rSpeed">–</span>
+      <span>accel / brake / cap</span><span class="v" id="rActive">–</span>
+      <span>friction circle</span><span class="v" id="rFric">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the lab's setting</button></div>
+    <p class="hint">Centreline speed planning: <span class="m">z = v^2</span> with <span class="m">z_{i+1} = z_i + 2\Delta s_i a_i</span>, cap <span class="m">z \le \min(v_{\max}^2, \mu g / |K|)</span>, bounds <span class="m">a_{\min} \le a_i \le a_{\max}</span>, lap time <span class="m">\sum 2\Delta s_i / (v_i + v_{i+1})</span>. The buttons set the number of samples around the lap.</p>
+  </div>
+</div>
+</div>
+<div class="col prose">
+
+<p>This lab has its own system, a closed track and a car described along it, not the course's double integrator; it needs chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>'s vocabulary of states and discretisations and nothing else from Part A.</p>
+
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#geometry"><span class="n">1</span><span class="t">The racing problem and the geometry of the centreline</span><span class="d">Raceline against tracking; tangent, normal, curvature</span></a>
+    <a href="#track"><span class="n">2</span><span class="t">The synthetic track and the Frenet position map</span><span class="d">The factor 1 − Ke_y and the singularity</span></a>
+    <a href="#space"><span class="n">3</span><span class="t">Velocity in the Frenet frame, and from time to space</span><span class="d">The progress rate, time as a state</span></a>
+    <a href="#reduced"><span class="n">4</span><span class="t">The reduced problem: speed planning in squared speed</span><span class="d">Affine dynamics, the curvature cap</span></a>
+    <a href="#envelopes"><span class="n">5</span><span class="t">Segment time, the two envelopes, and why the naive profile fails</span><span class="d">Exact segment time; why the naive profile fails</span></a>
+    <a href="#planner"><span class="n">6</span><span class="t">The closed-lap forward/backward planner</span><span class="d">Forward, backward, fixed point; the tightest corner</span></a>
+    <a href="#sweeps"><span class="n">7</span><span class="t">Friction, authority, and the spatial grid</span><span class="d">What changes where, and how fine a grid</span></a>
+    <a href="#coupling"><span class="n">8</span><span class="t">Tire-force coupling, and why a full raceline is faster</span><span class="d">The friction-circle diagnostic and the full raceline</span></a>
+    <a href="#pipeline"><span class="n">9</span><span class="t">From the offline raceline to MPC and LMPC; conventions</span><span class="d">From the offline raceline to MPC and LMPC</span></a>
+    <a href="#code"><span class="n">10</span><span class="t">The code behind it</span><span class="d">The package&#x27;s planner, line by line</span></a>
+    <a href="#pitfalls"><span class="n">11</span><span class="t">Common pitfalls</span><span class="d">Seven confusions</span></a>
+    <a href="#check"><span class="n">12</span><span class="t">Check your understanding</span><span class="d">Fourteen questions with answers</span></a>
+    <a href="#exercises"><span class="n">13</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">14</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="geometry">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The racing problem and the geometry of the centreline</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Raceline against tracking.</strong> Racing control is usually split in two. Offline: find a minimum-time trajectory that satisfies the vehicle, tire and track constraints. Online: track it with MPC or Learning MPC, reacting to deviations. This lab is about the offline viewpoint and its geometry; lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> uses the same Frenet concepts inside a data-driven prediction model for the online controller.</p>
+<p><strong>Why Cartesian coordinates are inconvenient.</strong> With the position <span class="m">p = (X, Y)</span>, &quot;remain inside the road&quot; is a geometric relation between the vehicle and two curved boundaries. If the road is parameterised by arc length <span class="m">s</span> instead, the same constraint is a box on one number:</p>
+<div class="math-block" data-narrow="\begin{aligned} \frac{de_y}{ds} &amp;= \frac{(1 - Ke_y)(v_x\sin e_\psi + v_y\cos e_\psi)}{v_x\cos e_\psi - v_y\sin e_\psi}, \ \frac{de_\psi}{ds} &amp;= \frac{r}{\dot s} - K(s), \qquad \frac{dt}{ds} = \frac{1}{\dot s}. \end{aligned}">-W(s) \le e_y(s) \le W(s).</div>
+<p>That is the main reason Frenet coordinates are so useful for racing and path following.</p>
+<div class="define"><p class="define-title">What is the Frenet frame of a centreline?</p>
+<p><strong>In plain words:</strong> at every point of the road's centre curve, a forward direction and a sideways direction, plus a number saying how fast the forward direction is turning.</p>
+<p><strong>More precisely:</strong> let <span class="m">\gamma(s) = (X_c(s), Y_c(s))</span> be the centreline with <span class="m">s</span> its arc length, so <span class="m">\|\gamma&#x27;(s)\| = 1</span>. The unit tangent is <span class="m">t(s) = \gamma&#x27;(s)</span>; for a parameter that is only approximately arc length, <span class="m">t = \gamma&#x27; / \|\gamma&#x27;\|</span>. The left normal is</p>
+<div class="math-block">n = \begin{pmatrix} -t_y \\ t_x \end{pmatrix}, \qquad t^\top n = 0, \quad \|n\| = 1,</div>
+<p>and the signed curvature of a planar curve with a generic parameter is</p>
+<div class="math-block">K(s) = \frac{X&#x27;(s) Y&#x27;&#x27;(s) - Y&#x27;(s) X&#x27;&#x27;(s)}{\big( X&#x27;(s)^2 + Y&#x27;(s)^2 \big)^{3/2}}.</div>
+<p>With exact arc length the Frenet–Serret relations are <span class="m">t&#x27; = K n</span> and <span class="m">n&#x27; = -K t</span>. The sign of <span class="m">K</span> is the turning direction: positive for a left turn, negative for a right turn (this track is driven counter-clockwise, so its corners are left turns and its two kinks right turns).</p>
+<dl><dt>Radius of curvature</dt><dd><span class="m">|R| = 1 / |K|</span> where <span class="m">K \ne 0</span>; large <span class="m">|K|</span> is a tight corner.</dd><dt>Normal convention</dt><dd>Some codes use the right normal <span class="m">(t_y, -t_x)</span> and subtract <span class="m">e_y</span> times it. The two sign changes cancel; in both conventions <span class="m">e_y &gt; 0</span> is to the left of travel. The course code returns the left normal.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="track">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The synthetic track and the Frenet position map</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Why a synthetic track.</strong> Real track maps are measured centreline points fitted by a periodic spline. Here a smooth closed curve with a closed-form expression is used instead,</p>
+<div class="math-block">X_c(\theta) = 45\cos\theta + 5\cos 2\theta, \qquad Y_c(\theta) = 30\sin\theta + 6\sin 3\theta, \qquad \theta \in [0, 2\pi),</div>
+<p>driven counter-clockwise from <span class="m">(50, 0)</span>. Heading and curvature come from the exact derivatives of the curve; the arc length is integrated numerically on a dense parameter grid, and the centreline is then sampled uniformly in arc length. The track has two tight corners, two sweeping bends and two slight reverse kinks on the long sides; the half-width is <span class="m">W = 3</span> m.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Quantity</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>length</td>
+<td>252.333 m</td>
+<td>one lap of the centreline</td>
+</tr>
+<tr>
+<td>curvature range</td>
+<td>[−0.01255, 0.12943] 1/m</td>
+<td>mild right kinks, tight left corners</td>
+</tr>
+<tr>
+<td>tightest sample</td>
+<td><span class="m">s = 99.882</span> m, <span class="m">K = 0.129430</span></td>
+<td>radius 7.726 m; its mirror image is at <span class="m">s \approx 152.5</span></td>
+</tr>
+<tr>
+<td>Frenet margin</td>
+<td><span class="m">\min_s (1 - \lvert K \rvert W) = 0.6117</span></td>
+<td>the whole corridor is on the regular side of the map</td>
+</tr>
+<tr>
+<td>samples</td>
+<td>240 (demo: 60 to 960)</td>
+<td><span class="m">\Delta s = 1.051</span> m at 240</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>The position map.</strong> A point at arc length <span class="m">s</span> and lateral offset <span class="m">e_y</span> is</p>
+<div class="math-block">p = \gamma(s) + e_y\, n(s):</div>
+<p>the centreline is <span class="m">e_y = 0</span>, the road edges are <span class="m">e_y = \pm W(s)</span>, and the two outer curves of the track figure are <span class="m">\gamma \pm W n</span>. A vehicle at <span class="m">(s, e_y)</span> lies on the normal line through <span class="m">\gamma(s)</span>.</p>
+<p><strong>Differentiating the map.</strong> With <span class="m">p(t) = \gamma(s(t)) + e_y(t)\, n(s(t))</span>,</p>
+<div class="math-block">\dot p = \gamma&#x27;(s)\dot s + \dot e_y\, n + e_y\, n&#x27;(s)\dot s = t\dot s + n\dot e_y - K e_y\, t\dot s,</div>
+<p>using <span class="m">\gamma&#x27; = t</span> and <span class="m">n&#x27; = -Kt</span>. Hence</p>
+<div class="math-block">\dot p = (1 - K e_y)\,\dot s\, t + \dot e_y\, n.</div>
+<p>This is where the geometric factor <span class="m">1 - K e_y</span> comes from: a point on the inside of a bend travels less than the centreline for the same progress <span class="m">ds</span>, a point on the outside travels more.</p>
+<p><strong>The singularity.</strong> The map is locally singular where <span class="m">1 - K(s) e_y = 0</span>, that is, when the lateral offset reaches the local centre of curvature: beyond it, different <span class="m">(s, e_y)</span> pairs give the same point. A Frenet corridor must stay away from that condition; a simple conservative check is <span class="m">1 - |K(s)| W(s) &gt; 0</span> everywhere, and on this track its minimum is 0.612. That is a geometric check, not a dynamic safety guarantee.</p>
+<div class="widget" id="frenetW">
+  <div class="two">
+    <label class="field"><span>Arc length <span class="m">s</span>: <b id="fgSV"></b></span><span class="row"><input type="range" id="fgS" min="0" max="252" step="0.5" value="99.9"></span></label>
+    <label class="field"><span>Offset <span class="m">e_y</span>: <b id="fgEV"></b></span><span class="row"><input type="range" id="fgE" min="-9" max="9" step="0.25" value="1.5"></span></label>
+  </div>
+  <canvas id="frenetC" aria-label="A zoomed view of the track around the chosen arc length, with the tangent and normal vectors, the normal line, the offset point and the centre of curvature" aria-describedby="frenetCap"></canvas>
+  <p class="caption" id="frenetCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="space">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Velocity in the Frenet frame, and from time to space</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Heading error.</strong> With the vehicle yaw <span class="m">\psi</span> and the centreline tangent angle <span class="m">\psi_c(s)</span>, define <span class="m">e_\psi = \psi - \psi_c(s)</span>; zero means aligned with the local tangent. In the body frame the vehicle has longitudinal velocity <span class="m">v_x</span> and lateral velocity <span class="m">v_y</span>. Relative to the track's tangent and normal,</p>
+<div class="math-block">v_t = v_x\cos e_\psi - v_y\sin e_\psi, \qquad v_n = v_x\sin e_\psi + v_y\cos e_\psi.</div>
+<p><strong>The progress rate.</strong> Equating the tangent component of <span class="m">\dot p</span> with <span class="m">v_t</span> and the normal component with <span class="m">v_n</span>:</p>
+<div class="math-block">\dot s = \frac{v_x\cos e_\psi - v_y\sin e_\psi}{1 - K(s)e_y}, \qquad \dot e_y = v_x\sin e_\psi + v_y\cos e_\psi.</div>
+<p>The first is the central equation of Frenet-frame racing models: it converts body-frame velocity into progress along the track. With <span class="m">e_\psi = 0</span> and <span class="m">v_y = 0</span> the lateral motion stops, as it should for perfect alignment. The centreline tangent rotates with curvature, <span class="m">d\psi_c/ds = K</span>, so <span class="m">\dot\psi_c = K\dot s</span>, and with the yaw rate <span class="m">r = \dot\psi</span>,</p>
+<div class="math-block">\dot e_\psi = r - K(s)\,\dot s.</div>
+<div class="define"><p class="define-title">From time to space</p>
+<p><strong>In plain words:</strong> if the car is always moving forward along the track, &quot;where on the track&quot; can replace &quot;when&quot; as the clock, and every rate of change becomes a rate per metre instead of per second.</p>
+<p><strong>More precisely:</strong> if a state component obeys <span class="m">\dot\xi = f_\xi(x, u)</span> and <span class="m">\dot s &gt; 0</span>, then <span class="m">s</span> can serve as the independent variable:</p>
+<div class="math-block">\frac{d\xi}{ds} = \frac{\dot\xi}{\dot s}.</div>
+<p>This chain rule is the whole transformation behind spatial raceline formulations. It needs <span class="m">\dot s &gt; 0</span>: at <span class="m">\dot s = 0</span> the quotient is undefined, and <span class="m">\dot s &lt; 0</span> means driving backwards relative to the track's orientation. Dividing the three rates above by <span class="m">\dot s</span> gives the spatial Frenet kinematics,</p>
+<div class="math-block">\frac{de_y}{ds} = \frac{(1 - Ke_y)(v_x\sin e_\psi + v_y\cos e_\psi)}{v_x\cos e_\psi - v_y\sin e_\psi}, \qquad \frac{de_\psi}{ds} = \frac{r}{\dot s} - K(s), \qquad \frac{dt}{ds} = \frac{1}{\dot s}.</div>
+<dl><dt>Time as a state</dt><dd>Once <span class="m">s</span> is the independent variable, elapsed time obeys <span class="m">t&#x27;(s) = 1/\dot s</span>, and the lap time is <span class="m">T_{\mathrm{lap}} = t(s_f) - t(0)</span>: minimising lap time is minimising a terminal state.</dd><dt>Progress rate <span class="m">\dot s</span></dt><dd>Tangential velocity divided by <span class="m">1 - Ke_y</span>; must stay positive.</dd></dl>
+</div>
+<div class="widget" id="ratesW">
+  <div class="three">
+    <label class="field"><span><span class="m">v_x</span>: <b id="rVxV"></b></span><span class="row"><input type="range" id="rVx" min="1" max="30" step="0.5" value="12"></span></label>
+    <label class="field"><span><span class="m">v_y</span>: <b id="rVyV"></b></span><span class="row"><input type="range" id="rVy" min="-3" max="3" step="0.1" value="0.4"></span></label>
+    <label class="field"><span><span class="m">r</span>: <b id="rRV"></b></span><span class="row"><input type="range" id="rR" min="-1" max="1" step="0.05" value="0.15"></span></label>
+    <label class="field"><span><span class="m">e_\psi</span>: <b id="rEV"></b></span><span class="row"><input type="range" id="rE" min="-1.5" max="1.5" step="0.05" value="0.05"></span></label>
+    <label class="field"><span><span class="m">K</span>: <b id="rKV"></b></span><span class="row"><input type="range" id="rK" min="-0.15" max="0.15" step="0.01" value="0.02"></span></label>
+    <label class="field"><span><span class="m">e_y</span>: <b id="rEyV"></b></span><span class="row"><input type="range" id="rEy" min="-3" max="3" step="0.1" value="0.5"></span></label>
+  </div>
+  <div class="table-wrap"><table class="num" id="ratesT" aria-live="off"></table></div>
+  <p class="caption" id="ratesCap" aria-live="polite"></p>
+</div>
+<p><strong>The full raceline problem, in one paragraph.</strong> With a vehicle model written in these coordinates, the six-state spatial vector <span class="m">[v_x, v_y, r, e_\psi, t, e_y]</span> and the inputs <span class="m">a_x</span> and <span class="m">\delta</span>, minimum lap time is the problem: minimise <span class="m">t(s_f)</span> subject to the spatial vehicle dynamics, tire-force constraints, the track boundaries <span class="m">|e_y(s)| \le W(s)</span>, initial conditions and terminal or periodic conditions. Trigonometric Frenet geometry, the denominator <span class="m">1 - Ke_y</span>, nonlinear tire laws, the term <span class="m">t&#x27; = 1/\dot s</span>: it is a nonlinear program, solved by direct transcription on a grid in <span class="m">s</span> with a solver such as IPOPT, as Perantoni and Limebeer <a href="#ref-1">[1]</a> do for a Formula One car. Lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> writes that vehicle model out, with its Pacejka axles, as the plant its local models are learned from. This lab does not solve the full problem; it derives the geometry it rests on and solves the reduced problem below exactly.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="reduced">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The reduced problem: speed planning in squared speed</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Assumptions.</strong> To isolate the minimum-time spatial reasoning in an executable problem, assume <span class="m">e_y = 0</span>, <span class="m">e_\psi = 0</span>, <span class="m">v_y = 0</span>, and write <span class="m">v_x = v</span>. Then <span class="m">\dot s = v</span> and only the speed along the fixed centreline is optimised. Gone from the decision problem: lateral offset, steering, yaw dynamics, tire slip, combined force allocation. Left: curvature, the lateral speed limit, acceleration and braking, total time.</p>
+<p><strong>Squared speed.</strong> In time, <span class="m">\dot v = a</span> and <span class="m">\dot s = v</span>, so <span class="m">dv/ds = a/v</span>, with an inconvenient division by <span class="m">v</span>. Define <span class="m">z = v^2</span>. Then <span class="m">dz/ds = 2v\, dv/ds</span> and</p>
+<div class="math-block">\frac{dz}{ds} = 2a:</div>
+<p>nonlinear speed dynamics in <span class="m">v</span> become affine dynamics in <span class="m">z</span>. For a segment of length <span class="m">\Delta s_i</span> with piecewise-constant acceleration <span class="m">a_i</span>,</p>
+<div class="math-block">z_{i+1} = z_i + 2\Delta s_i a_i, \qquad a_i = \frac{z_{i+1} - z_i}{2\Delta s_i},</div>
+<p>so acceleration constraints become linear difference inequalities in <span class="m">z</span>: the problem is a linear program in <span class="m">z</span>, and chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a>'s convexity is back.</p>
+<p><strong>The curvature cap.</strong> Along a path of curvature <span class="m">K</span> the lateral acceleration is <span class="m">a_{\mathrm{lat}} = v^2 K</span>. Imposing the reduced friction condition <span class="m">|a_{\mathrm{lat}}| \le \mu g</span> gives <span class="m">v^2|K| \le \mu g</span>, and with an independent top speed,</p>
+<div class="math-block">z_{\max}(s) = \min\Big( v_{\max}^2,\ \frac{\mu g}{|K(s)|} \Big).</div>
+<p>On a straight only the top-speed limit remains. With <span class="m">\mu = 1</span> the tightest corner caps the speed at <span class="m">\sqrt{9.81 / 0.12943} = 8.706</span> m/s. The local cap answers only &quot;how fast could the vehicle go here if its acceleration history were ignored?&quot;; it does not say whether it can accelerate or brake quickly enough to move between neighbouring caps. On this track the chosen <span class="m">v_{\max} = 35</span> m/s is never reached: the planned top speed is 20.9 m/s, set by the corners and the acceleration limit, so the top-speed constraint is never active (the demo confirms this for any setting you choose).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="envelopes">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Segment time, the two envelopes, and why the naive profile fails</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Exact segment time.</strong> Since <span class="m">dt = ds/v</span>, the time across segment <span class="m">i</span> is <span class="m">\int_{s_i}^{s_{i+1}} ds/v(s)</span>. Under constant acceleration <span class="m">z</span> is linear in <span class="m">s</span> and the integral is exact: from <span class="m">v_{i+1} - v_i = a_i\Delta t_i</span> and <span class="m">v_{i+1}^2 - v_i^2 = (v_{i+1} - v_i)(v_{i+1} + v_i) = 2a_i\Delta s_i</span>,</p>
+<div class="math-block">\Delta t_i = \frac{2\Delta s_i}{v_i + v_{i+1}}.</div>
+<p>Check: from 10 to 14 m/s over 30 m the acceleration is <span class="m">(196 - 100)/60 = 1.6</span> m/s², the time from <span class="m">v_1 = v_0 + a\Delta t</span> is 2.5 s, and the formula gives <span class="m">60/24 = 2.5</span> s. It is not an arbitrary trapezoidal rule: for the piecewise-constant-acceleration model it is exact. The lap time on a periodic grid is</p>
+<div class="math-block">T = \sum_i \frac{2\Delta s_i}{\sqrt{z_i} + \sqrt{z_{i+1}}},</div>
+<p>with the index wrapping at the finish line. Every term decreases when a feasible <span class="m">z</span> increases. That monotonicity is why the reduced optimum is the largest feasible speed profile.</p>
+<p><strong>Forward envelope.</strong> From <span class="m">a_i \le a_{\max}</span>:</p>
+<div class="math-block">z_{i+1} \le z_i + 2\Delta s_i a_{\max},</div>
+<p>an upper bound that a forward pass propagates around the track. <strong>Backward envelope.</strong> From <span class="m">a_i \ge a_{\min}</span> with <span class="m">a_{\min} &lt; 0</span>:</p>
+<div class="math-block">z_i \le z_{i+1} - 2\Delta s_i a_{\min},</div>
+<p>the largest speed one may have before the next point and still brake down to it. A tight corner requires a small <span class="m">z_{i+1}</span>; this inequality limits <span class="m">z_i</span>, which limits <span class="m">z_{i-1}</span>, and so on upstream. That is the mathematics behind &quot;brake before the corner, not after entering it&quot;.</p>
+<p><strong>The naive profile.</strong> Setting <span class="m">z_i = z_{\max, i}</span> respects the lateral limit at every point but implies absurd longitudinal accelerations between neighbouring samples: on the 240-sample track the implied <span class="m">a</span> ranges from −204.8 to +204.8 m/s², and 142 of 240 segments violate the bounds <span class="m">[-6, 3]</span>. (The extreme values come from the straights, where the cap jumps to <span class="m">v_{\max}^2</span> within one sample.) The longitudinal dynamics must smooth the cap through forward and backward reachability.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="planner">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The closed-lap forward/backward planner</h2>
+  </div>
+  <div class="col prose">
+
+<p>Initialise with the local cap, <span class="m">z_i^{(0)} = z_{\max, i}</span>.</p>
+<ol>
+<li><strong>Forward pass:</strong> <span class="m">z_{i+1} \leftarrow \min(z_{i+1},\ z_i + 2\Delta s_i a_{\max})</span> around the loop.</li>
+<li><strong>Backward pass:</strong> <span class="m">z_i \leftarrow \min(z_i,\ z_{i+1} - 2\Delta s_i a_{\min})</span> around the loop.</li>
+<li>Repeat until a sweep changes nothing (to <span class="m">10^{-9}</span>). Indices are circular; the code reports the number of sweeps.</li>
+</ol>
+<p>The algorithm only ever decreases values, so it converges to the greatest fixed point satisfying all the upper-envelope constraints. Why that is minimum-time: every segment time <span class="m">2\Delta s_i / (\sqrt{z_i} + \sqrt{z_{i+1}})</span> is strictly decreasing in each endpoint, so a componentwise larger feasible profile cannot be slower, and the envelope algorithm returns the largest profile compatible with the caps, the forward and the backward constraints. Hence it is the time-minimising profile for this reduced decoupled model.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>lab setting, 240 samples</th>
+<th>value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sweeps to the fixed point</td>
+<td>3</td>
+</tr>
+<tr>
+<td>lap time</td>
+<td>17.0939 s</td>
+</tr>
+<tr>
+<td>speed range</td>
+<td>8.706 to 20.914 m/s</td>
+</tr>
+<tr>
+<td>acceleration range</td>
+<td>−6.0 to 3.0 m/s²</td>
+</tr>
+<tr>
+<td>segments at <span class="m">a_{\max}</span> / at <span class="m">a_{\min}</span> / samples on the cap</td>
+<td>140 / 55 / 45</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Reading the speed figure.</strong> The upper dashed curve of the demo is the speed curvature alone would permit; the planned curve lies below it for two different reasons: before a tight corner braking must start early, after it the finite acceleration lets the speed recover only gradually. Where the two curves coincide the local cap is active. The optimal profile has the three kinds of segments typical of time-optimal path parameterisation: maximum acceleration, maximum braking, and cap saturation. The elapsed time <span class="m">t_{i+1} = t_i + \Delta t_i</span> accumulated around the lap reaches 17.0939 s at the finish line, the same number as the lap time, which is the reduced model's version of the time state of Part 3.</p>
+<p><strong>Braking preview.</strong> Around the tightest corner the optimiser is not reacting to the curvature at the current position: the backward envelope has propagated the corner's requirement upstream, a deterministic form of preview. With the lab's limits full braking starts 31.5 m before the apex, at 20.9 m/s.</p>
+<div class="widget" id="cornerW">
+  <label class="field"><span>Compare with braking limit <span class="m">a_{\min}</span>: <b id="csAV"></b></span><span class="row"><input type="range" id="csA" min="-12" max="-1" step="0.5" value="-3"></span></label>
+  <canvas id="cornerC" aria-label="Speed against distance from the tightest corner's apex: the local cap, the planned profile with the demo's braking limit, and the profile with the comparison braking limit" aria-describedby="cornerCap"></canvas>
+  <p class="caption" id="cornerCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="sweeps">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Friction, authority, and the spatial grid</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Friction.</strong> The cap is <span class="m">z \le \mu g / |K|</span>, so less grip lowers the speed in every curved region, changes how much speed must be shed before corners and how much can be carried through them. The lap times are 20.1416, 18.3589, 17.0939 and 16.1251 s for <span class="m">\mu = 0.6, 0.8, 1.0, 1.2</span>. Under this reduced model more grip cannot make the optimum worse: a larger <span class="m">\mu</span> only enlarges the feasible set, the same inclusion argument as lab <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a>'s friction maps.</p>
+<p><strong>Acceleration against braking authority.</strong> Braking authority decides how late braking may begin before a slow corner; acceleration authority decides how quickly speed is regained after it. They shape different parts of the lap: weaker braking (<span class="m">a_{\min} = -3.5</span>) costs 0.64 s and pushes the braking zones upstream; weaker acceleration (<span class="m">a_{\max} = 1.5</span>) costs 1.65 s and slows every corner exit. In a full vehicle model both are further coupled to tire loading, steering, power and aerodynamics.</p>
+<p><strong>Grid convergence.</strong> The continuous problem lives on <span class="m">s \in [0, s_f]</span>; a planner uses finitely many nodes. A grid that is too coarse misses curvature peaks, approximates braking zones poorly and biases the lap time. With 60, 120, 240 and 480 samples the lap times are 16.9383, 17.0721, 17.0939 and 17.1062 s: the lap time increases with the grid because a coarse grid steps over the apex, underestimates the peak curvature, allows a higher corner speed and so returns an optimistic time. The increments shrink; convergence need not be monotone in general, since both the curvature representation and the piecewise dynamics change with the grid. The demo also computes 960 samples, where the increment has fallen below 0.002 s; extrapolating the tail (exercise 11) puts the limit near 17.110 s, so the 240-sample lap time is about 0.016 s optimistic.</p>
+<div class="widget" id="sweepW">
+  <canvas id="sweepC" aria-label="Planned speed profiles around the lap for four friction coefficients" aria-describedby="sweepCap"></canvas>
+  <div class="table-wrap"><table class="num" id="sweepT" aria-live="off"></table></div>
+  <p class="caption" id="sweepCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="coupling">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Tire-force coupling, and why a full raceline is faster</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Separate limits are optimistic.</strong> The planner imposes <span class="m">|a_x| \le a_{x,\max}</span> and, separately, <span class="m">|a_y| = v^2|K| \le \mu g</span>. A physical tire has a limited combined force. The simplest approximation is the friction circle,</p>
+<div class="math-block">a_x^2 + a_y^2 \le (\mu g)^2, \qquad \text{with } a_y = zK:\quad a_x^2 + (zK)^2 \le (\mu g)^2.</div>
+<p>The utilisation <span class="m">\sqrt{a_x^2 + a_y^2} / (\mu g)</span> of the planner's solution is a diagnostic: a value of one is the boundary of the circle, a value above one means the reduced model allowed a combination that the friction circle forbids. For the lab's solution the maximum is 1.1708 and 66 of the 240 segments exceed one. This is not a numerical error in the planner; it is why full raceline formulations impose tire-force constraints rather than an independent curvature cap.</p>
+<div class="widget" id="fricW">
+  <canvas id="fricC" aria-label="Normalised longitudinal against lateral acceleration for every segment of the planned lap, with the friction circle and the planner's separate limits drawn" aria-describedby="fricCap"></canvas>
+  <p class="caption" id="fricCap" aria-live="polite"></p>
+</div>
+<p><strong>The centreline is not the minimum-time path.</strong> The planner fixes <span class="m">e_y = 0</span>. The full problem optimises <span class="m">e_y(s)</span> inside <span class="m">[-W, W]</span>: approach a corner on the outside, cut to the inside, exit to the outside. That lowers the curvature the vehicle actually experiences and lets it carry more speed, so</p>
+<div class="math-block">\text{centreline minimum-time speed planning} \;\text{is not}\; \text{full minimum-time raceline optimisation}.</div>
+<p>Everything that makes the full problem nonlinear was listed in Part 3; that is why it is solved as a nonlinear program rather than a QP, and why chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>'s warning about local solutions applies to it.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pipeline">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>From the offline raceline to MPC and LMPC; conventions</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The standard pipeline.</strong> Once the raceline is computed offline, store reference profiles <span class="m">e_y^\star(s)</span>, <span class="m">v_x^\star(s)</span>, <span class="m">e_\psi^\star(s)</span>, <span class="m">u^\star(s)</span>; an online MPC tracks them while reacting to deviations. Learning MPC adds a layer: successful laps become safe-set data (chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>), lap performance provides cost-to-go data (chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>), and local dynamics may be learned from stored transitions (lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>). An offline raceline is one nonlinear trajectory optimisation for the whole lap; LMPC racing (Rosolia and Borrelli <a href="#ref-2">[2]</a>) solves short-horizon problems online and learns from previous laps. Related, not interchangeable.</p>
+<p><strong>Conventions worth keeping straight.</strong> This lab's normal is the left normal <span class="m">n = (-t_y, t_x)</span> with <span class="m">p = \gamma + e_y n</span>; a code using <span class="m">n_{\mathrm{code}} = -n</span> and <span class="m">p = \gamma - e_y n_{\mathrm{code}}</span> produces the same mapping. The course code's input vector is <span class="m">u = [\delta, a]</span>, steering first; raceline papers often write <span class="m">[a_x, \delta]</span>. Use the names, not the indices.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The package ships a simpler, open-loop version of the planner on a synthetic 300 m curvature profile: the same two passes, but with a given starting speed instead of a closed lap, and a single forward and backward sweep instead of a fixed point. The page's numbers come from the lab notebook's closed-lap planner on its closed-form track, which the numbers script re-implements; the package's version is the one to read first.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · synthetic_track</p><pre><code class="language-python">def synthetic_track(s, length=300.0):
+    &quot;&quot;&quot;Smooth periodic curvature profile for an educational closed track.&quot;&quot;&quot;
+    s=np.asarray(s,float)
+    kappa=(0.010*np.sin(2*np.pi*s/length)
+           +0.018*np.sin(4*np.pi*s/length+0.5)
+           +0.008*np.sin(6*np.pi*s/length-0.8))
+    return kappa</code></pre>
+<p>Three sinusoids in the arc length on a 300 m loop, with curvature between <span class="m">-0.0228</span> and <span class="m">0.0312</span> per metre, a tightest radius of 32 m: a gentler track than the lab's, chosen so that the open-loop planner never saturates its top speed for long. The lab's track is instead a closed-form curve in the plane, with curvature computed from its exact derivatives (Part 2); the two differ in origin, not in use.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · minimum_time_speed_profile</p><pre><code class="language-python">def minimum_time_speed_profile(s, kappa, mu=1.0, g=9.81, vmax=35.0,
+                               amin=-6.0, amax=3.0, v0=12.0):
+    &quot;&quot;&quot;
+    Minimum-time centerline speed planning in the spatial domain.
+
+    Decision z_i=v_i^2. Spatial longitudinal dynamics:
+        z_{i+1} = z_i + 2 ds a_i.
+    With a pointwise lateral limit z_i |kappa_i| &lt;= mu g, the minimum-time
+    solution is the largest feasible speed-squared profile. A forward pass
+    enforces acceleration capability and a backward pass enforces braking.
+    &quot;&quot;&quot;
+    s=np.asarray(s,float); kappa=np.asarray(kappa,float)
+    ds=np.diff(s); n=len(s)
+    lat_cap=np.where(np.abs(kappa)&gt;1e-7, mu*g/np.abs(kappa), vmax**2)
+    cap=np.minimum(vmax**2,lat_cap)
+    z=np.maximum(2.0**2, cap.copy())
+    z[0]=min(float(cap[0]), max(v0**2, 2.0**2))
+    # Forward: z_{i+1}-z_i &lt;= 2 ds amax
+    for i,dsi in enumerate(ds):
+        z[i+1]=min(z[i+1], z[i]+2*dsi*amax)
+    # Backward: z_{i+1}-z_i &gt;= 2 ds amin -&gt; z_i &lt;= z_{i+1}-2 ds amin
+    for i in range(n-2,-1,-1):
+        z[i]=min(z[i], z[i+1]-2*ds[i]*amin)
+    # Re-enforce initial speed and forward acceleration once more.
+    z[0]=min(float(cap[0]), max(v0**2, 2.0**2))
+    for i,dsi in enumerate(ds):
+        z[i+1]=min(z[i+1], z[i]+2*dsi*amax, cap[i+1])
+    v=np.sqrt(np.maximum(z,1e-9))
+    a=np.diff(z)/(2*ds)
+    time=float(np.sum(ds*2.0/(v[:-1]+v[1:])))
+    feasible=bool(np.all(a&lt;=amax+1e-8) and np.all(a&gt;=amin-1e-8) and np.all(z&lt;=cap+1e-8))
+    return {&quot;success&quot;:feasible,&quot;v&quot;:v,&quot;a&quot;:a,&quot;time&quot;:time,&quot;z&quot;:z,
+            &quot;zmax&quot;:cap,&quot;message&quot;:&quot;forward-backward spatial speed planning&quot;}</code></pre>
+<p>Read it against Parts 4 to 6. <code>lat_cap</code> and <code>cap</code> are <span class="m">z_{\max}(s) = \min(v_{\max}^2, \mu g / |\kappa|)</span>, with the straight handled by the <code>1e-7</code> guard. The first loop is the forward envelope, <span class="m">z_{i+1} \le z_i + 2\Delta s_i a_{\max}</span>; the second the backward envelope, <span class="m">z_i \le z_{i+1} - 2\Delta s_i a_{\min}</span>. Two differences from the closed-lap planner: <code>z[0]</code> is pinned to the starting speed <span class="m">v_0 = 12</span> m/s, so the profile is open-loop, and the passes are run once each (plus one forward re-enforcement) rather than iterated to a fixed point, which is enough here because the backward pass cannot lower a point below the forward bound on a track this smooth. The time is the exact segment sum of Part 5, and the <code>feasible</code> check at the end asks whether the result respects the accelerations and the cap, which a converged fixed point does by construction. On the 300 m loop it reports 13.03 s with speeds from 12 to 31.2 m/s.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;Frenet coordinates constrain the vehicle to the centreline.&quot;</strong> No, they keep <span class="m">e_y</span>; only the reduced planner sets it to zero.</li>
+<li><strong>&quot;Curvature alone determines the optimal speed.&quot;</strong> No, it gives a local lateral limit; acceleration and braking couple different locations.</li>
+<li><strong>&quot;Brake where the cap becomes small.&quot;</strong> Too late; the braking constraint propagates the corner backwards.</li>
+<li><strong>&quot;<span class="m">2\Delta s/(v_i + v_{i+1})</span> is an arbitrary trapezoidal rule.&quot;</strong> For the constant-acceleration segment model it is exact.</li>
+<li><strong>&quot;<span class="m">1 - K e_y</span> is just a denominator.&quot;</strong> It comes from differentiating <span class="m">\gamma + e_y n</span> and has a genuine singularity.</li>
+<li><strong>&quot;Independent longitudinal and lateral limits equal tire-force constraints.&quot;</strong> No, a combined limit couples them, as the friction-circle diagnostic shows.</li>
+<li><strong>&quot;The reduced speed planner is the raceline optimiser.&quot;</strong> No, it fixes the path and optimises only speed.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why use Frenet coordinates for racing?</summary>
+<p>Progress along the track becomes <span class="m">s</span>, lateral road constraints become direct bounds on <span class="m">e_y</span>, and the track geometry is summarised by the curvature <span class="m">K(s)</span>.</p>
+</details>
+<details class="sol"><summary>2. Derive the factor <span class="m">1 - K e_y</span>.</summary>
+<p>Differentiate <span class="m">p = \gamma(s) + e_y n(s)</span> with <span class="m">\gamma&#x27; = t</span> and <span class="m">n&#x27; = -Kt</span>: <span class="m">\dot p = (1 - K e_y)\dot s\, t + \dot e_y\, n</span>.</p>
+</details>
+<details class="sol"><summary>3. Derive <span class="m">\dot s</span>.</summary>
+<p>The tangential velocity relative to the track is <span class="m">v_x\cos e_\psi - v_y\sin e_\psi</span>; equating tangent components gives <span class="m">\dot s = (v_x\cos e_\psi - v_y\sin e_\psi)/(1 - K e_y)</span>.</p>
+</details>
+<details class="sol"><summary>4. Why must <span class="m">\dot s &gt; 0</span>?</summary>
+<p>The spatial transformation divides every time derivative by <span class="m">\dot s</span>. Zero progress makes it singular; negative progress reverses the assumed direction of the parameterisation.</p>
+</details>
+<details class="sol"><summary>5. Why is time a state?</summary>
+<p>Because <span class="m">s</span> is the independent variable. The state <span class="m">t&#x27;(s) = 1/\dot s</span> accumulates elapsed time, and minimising <span class="m">t(s_f)</span> minimises lap time.</p>
+</details>
+<details class="sol"><summary>6. Why introduce <span class="m">z = v^2</span>?</summary>
+<p>It turns <span class="m">dv/ds = a/v</span> into <span class="m">dz/ds = 2a</span>, affine in the longitudinal acceleration.</p>
+</details>
+<details class="sol"><summary>7. Where does the curvature speed limit come from?</summary>
+<p>Lateral acceleration is <span class="m">|a_y| = v^2|K|</span>; imposing <span class="m">|a_y| \le \mu g</span> gives <span class="m">v^2 \le \mu g / |K|</span>.</p>
+</details>
+<details class="sol"><summary>8. Why is a forward pass needed?</summary>
+<p>To enforce that speed cannot increase faster than maximum longitudinal acceleration permits.</p>
+</details>
+<details class="sol"><summary>9. Why is a backward pass needed?</summary>
+<p>To propagate future low-speed corner requirements upstream according to the finite braking authority.</p>
+</details>
+<details class="sol"><summary>10. Why is the largest feasible <span class="m">z</span> profile minimum-time?</summary>
+<p>Every segment-time term decreases as either endpoint speed increases, so a componentwise larger feasible profile cannot be slower.</p>
+</details>
+<details class="sol"><summary>11. What is missing from the executable planner?</summary>
+<p>Optimised lateral offset, steering, lateral and yaw dynamics, nonlinear tire forces, combined tire-force constraints.</p>
+</details>
+<details class="sol"><summary>12. Why can a full raceline be faster than the centreline solution?</summary>
+<p>It can use the track width to reduce the effective path curvature through corners and carry more speed while staying inside the corridor.</p>
+</details>
+<details class="sol"><summary>13. What does a friction-circle utilisation above one mean here?</summary>
+<p>The decoupled reduced model allowed simultaneous longitudinal and lateral accelerations that a simple combined-friction model would forbid.</p>
+</details>
+<details class="sol"><summary>14. How does this lab connect to Learning MPC?</summary>
+<p>The offline raceline provides reference geometry and performance; repeated online laps can later supply safe-set, terminal-value and local-model data for LMPC.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Frenet-map derivative.</b> From <span class="m">p = \gamma(s) + e_y n(s)</span>, derive <span class="m">\dot p = (1 - Ke_y)\dot s\, t + \dot e_y\, n</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Chain rule in <span class="m">s(t)</span>, then Frenet–Serret for <span class="m">n&#x27;</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\dot p = \gamma&#x27;(s)\dot s + \dot e_y n + e_y n&#x27;(s)\dot s</span>. With <span class="m">\gamma&#x27; = t</span> and <span class="m">n&#x27; = -Kt</span>: <span class="m">\dot p = t\dot s + n\dot e_y - Ke_y t\dot s = (1 - Ke_y)\dot s\, t + \dot e_y\, n</span>. The coefficient of <span class="m">t</span> is the tangential speed of the offset point, the coefficient of <span class="m">n</span> its normal speed.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Progress rate.</b> Resolve the body-frame velocity into tangent and normal components and derive <span class="m">\dot s</span> and <span class="m">\dot e_y</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Rotate <span class="m">(v_x, v_y)</span> by the heading error.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The body axes are rotated by <span class="m">e_\psi</span> relative to <span class="m">(t, n)</span>, so the velocity in the track frame is <span class="m">v_t = v_x\cos e_\psi - v_y\sin e_\psi</span> and <span class="m">v_n = v_x\sin e_\psi + v_y\cos e_\psi</span>. Matching with exercise 1: <span class="m">(1 - Ke_y)\dot s = v_t</span>, hence <span class="m">\dot s = v_t/(1 - Ke_y)</span>, and <span class="m">\dot e_y = v_n</span>. The lab's example, <span class="m">v_x = 12</span>, <span class="m">v_y = 0.4</span>, <span class="m">e_\psi = 0.05</span>, <span class="m">K = 0.02</span>, <span class="m">e_y = 0.5</span>, gives <span class="m">v_t = 11.965</span>, <span class="m">\dot s = 11.965/0.99 = 12.086</span> and <span class="m">\dot e_y = 0.999</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Heading-error dynamics.</b> From <span class="m">e_\psi = \psi - \psi_c(s)</span> and <span class="m">d\psi_c/ds = K</span>, derive <span class="m">\dot e_\psi = r - K\dot s</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Differentiate in time and use the chain rule on <span class="m">\psi_c(s(t))</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\dot e_\psi = \dot\psi - \frac{d\psi_c}{ds}\dot s = r - K(s)\dot s</span>. In the example, <span class="m">0.15 - 0.02 \cdot 12.086 = -0.0917</span> rad/s: the car yaws more slowly than the track turns, so its heading error decreases.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Spatial derivatives.</b> Derive explicit formulas for <span class="m">de_y/ds</span>, <span class="m">de_\psi/ds</span> and <span class="m">dt/ds</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Divide by <span class="m">\dot s</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">de_y/ds = \dot e_y/\dot s = (1 - Ke_y)(v_x\sin e_\psi + v_y\cos e_\psi)/(v_x\cos e_\psi - v_y\sin e_\psi)</span>; <span class="m">de_\psi/ds = r/\dot s - K</span>; <span class="m">dt/ds = 1/\dot s = (1 - Ke_y)/(v_x\cos e_\psi - v_y\sin e_\psi)</span>. Example: 0.0827, −0.0076 rad/m and 0.0827 s/m.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Coordinate regularity.</b> For a constant-curvature turn of radius <span class="m">R</span>, find the lateral offset at which the Frenet map becomes singular and interpret it.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Set <span class="m">1 - Ke_y = 0</span> with <span class="m">K = 1/R</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">e_y = 1/K = R</span>, on the inside of the turn: the offset point sits at the centre of the circle, where all normal lines meet, so <span class="m">s</span> is no longer determined by the position. Beyond <span class="m">R</span> the map folds over. For the tightest corner of this track, <span class="m">R = 7.73</span> m against a half-width of 3 m, which is why the margin <span class="m">1 - |K|W</span> stays at 0.61.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Squared-speed dynamics.</b> Show that <span class="m">z = v^2</span> leads to <span class="m">z_{i+1} = z_i + 2\Delta s_i a_i</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Integrate <span class="m">dz/ds = 2a</span> over one segment.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">dz/ds = 2v\,dv/ds = 2v\cdot a/v = 2a</span>. With <span class="m">a = a_i</span> constant on <span class="m">[s_i, s_{i+1}]</span>, integrating gives <span class="m">z_{i+1} - z_i = 2a_i\Delta s_i</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Exact segment time.</b> Derive <span class="m">\Delta t_i = 2\Delta s_i/(v_i + v_{i+1})</span> for constant acceleration.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Divide <span class="m">v_{i+1}^2 - v_i^2 = 2a_i\Delta s_i</span> by <span class="m">v_{i+1} - v_i = a_i\Delta t_i</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">(v_{i+1} - v_i)(v_{i+1} + v_i) = 2a_i\Delta s_i</span> and <span class="m">v_{i+1} - v_i = a_i\Delta t_i</span>, so <span class="m">a_i\Delta t_i(v_{i+1} + v_i) = 2a_i\Delta s_i</span>, hence the formula for <span class="m">a_i \ne 0</span>; for <span class="m">a_i = 0</span> it reduces to <span class="m">\Delta s_i/v_i</span>, also correct. It is the distance divided by the mean speed, which is exact because speed is linear in time under constant acceleration.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Braking distance in spatial form.</b> From <span class="m">z_0</span> with constant braking <span class="m">a_{\min} &lt; 0</span>, derive the distance to reach <span class="m">z_f</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">z_f = z_0 + 2a_{\min}\Delta s</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\Delta s = (z_f - z_0)/(2a_{\min}) = (z_0 - z_f)/(2|a_{\min}|)</span>. From 20.91 to 8.71 m/s at −6 m/s²: <span class="m">(437.2 - 75.9)/12 = 30.1</span> m, which is why the planner's braking zone before the tightest corner starts 31.5 m upstream (the last metre follows the falling cap rather than full braking).</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Friction sweep.</b> Repeat the lap for several <span class="m">\mu</span> and explain which portions of the track change most.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Compare the <span class="m">\mu = 1.2</span> and <span class="m">\mu = 0.6</span> profiles of the Part 7 widget.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Lap times 20.14, 18.36, 17.09 and 16.13 s for <span class="m">\mu = 0.6, 0.8, 1.0, 1.2</span>. The difference between the two extreme profiles is largest in the corners and on the exits (5.8 m/s at <span class="m">s = 5.3</span>, the exit of the final bend), because the cap <span class="m">\sqrt{\mu g/|K|}</span> scales with <span class="m">\sqrt\mu</span> and the exit speed starts from the cap. It is smallest in the middle of the long sides (1.3 m/s at <span class="m">s = 203</span>), where the speed is limited by how much the car could accelerate since the last corner, not by grip. With <span class="m">\mu = 0.6</span> the cap is active on 31 percent of the samples.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Braking sweep.</b> Change <span class="m">a_{\min}</span> at fixed <span class="m">a_{\max}</span> and identify how far upstream the braking zone moves.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The Part 6 widget reports the start of full braking for any <span class="m">a_{\min}</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Before the tightest corner, full braking starts 46.3, 37.8, 31.5 and 24.2 m upstream for <span class="m">a_{\min} = -3, -4.5, -6, -9</span>, from entry speeds of 18.6, 20.1, 20.9 and 21.8 m/s, with lap times 17.97, 17.40, 17.09 and 16.80 s. The apex speed is 8.706 m/s in every case: braking authority changes where braking starts and what speed can be reached before it, never the corner speed, which belongs to <span class="m">\mu</span> and <span class="m">K</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Grid convergence.</b> Use at least four resolutions and estimate the discretisation error of the lap time.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Look at how the increments between successive doublings shrink.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Lap times 16.9383, 17.0721, 17.0939, 17.1062, 17.1081 and 17.1090 s for 60 to 1920 samples; the increments 0.134, 0.022, 0.012, 0.0019 and 0.0009 s shrink roughly by a factor two per doubling once the apex is resolved (from 480 on), which is first-order behaviour. Summing the geometric tail, the limit is near 17.110 s, so the 240-sample value is about 0.016 s (0.1 percent) optimistic and the 60-sample value 0.17 s (1 percent). The coarse grids are optimistic because they miss the apex: the maximum sampled curvature is 0.1205 at 60 samples against 0.1304 at 960.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Combined tire-force constraint.</b> Replace the decoupled condition with <span class="m">a_x^2 + (zK)^2 \le (\mu g)^2</span> and explain why the simple envelopes no longer have constant bounds.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Solve for the admissible <span class="m">a_x</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The admissible longitudinal acceleration becomes <span class="m">|a_x| \le \sqrt{(\mu g)^2 - (zK)^2}</span>, which depends on the local speed and curvature: the faster the car corners, the less it may accelerate or brake. The forward bound <span class="m">z_{i+1} \le z_i + 2\Delta s_i a_{\max}(z_i, K_i)</span> is now a nonlinear function of <span class="m">z_i</span>, and the same for the backward bound, so the passes are no longer simple minimum operations with constant increments; at the apex, where <span class="m">zK = \mu g</span>, there is no longitudinal authority at all, whereas the decoupled planner there still accelerates at 2.66 m/s². The fixed-point structure survives (the bounds are still monotone in <span class="m">z</span>), but each pass must evaluate the circle, and the result is slower: the diagnostic of Part 8 shows the decoupled solution exceeding the circle on 66 segments.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the planner yourself.</b> Implement the two passes in NumPy for an open-loop profile with a given starting speed, run it on the package's 300 m curvature profile, and compare with <code>minimum_time_speed_profile</code>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Start from the cap, pin <span class="m">z_0 = v_0^2</span>, run the forward pass then the backward pass, and compute the time with the exact segment formula.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>On the package's profile both give 13.0258 s, speeds from 12 to 31.2 m/s and accelerations within <span class="m">[-6, 3]</span>; the one-pass version agrees with the package because a single backward sweep never pulls a point below the forward envelope on a track whose caps vary slowly. On the lab's closed track the same two passes must be iterated to a fixed point (three sweeps at the lab's setting), because the loop has no start to pin and the braking zones of consecutive corners interact.</p>
+<pre><code class="language-python">import numpy as np
+from advanced_mpc_lmpc.racing import synthetic_track, minimum_time_speed_profile
+g = 9.81; s = np.linspace(0, 300, 301); kappa = synthetic_track(s); ds = np.diff(s)
+mu, vmax, amin, amax, v0 = 1.0, 35.0, -6.0, 3.0, 12.0
+z = np.minimum(vmax**2, mu * g / np.maximum(np.abs(kappa), 1e-7)); z[0] = min(z[0], v0**2)
+for i in range(len(ds)):            z[i + 1] = min(z[i + 1], z[i] + 2 * ds[i] * amax)      # forward
+for i in range(len(ds) - 1, -1, -1): z[i] = min(z[i], z[i + 1] - 2 * ds[i] * amin)          # backward
+v = np.sqrt(z); T = np.sum(2 * ds / (v[:-1] + v[1:]))
+print(round(T, 4), round(minimum_time_speed_profile(s, kappa)[&quot;time&quot;], 4))     # 13.0258 13.0258
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Offline/online architecture.</b> How could the offline raceline serve as a reference for an online MPC, and which deviations would it regulate?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Think in Frenet coordinates.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Store <span class="m">e_y^\star(s)</span>, <span class="m">v_x^\star(s)</span>, <span class="m">e_\psi^\star(s)</span> and <span class="m">u^\star(s)</span> on the spatial grid. Online, at the measured <span class="m">s</span>, the MPC penalises the deviations <span class="m">e_y - e_y^\star</span>, <span class="m">v_x - v_x^\star</span> and <span class="m">e_\psi - e_\psi^\star</span> over a short horizon, with the feedforward <span class="m">u^\star</span> and the track corridor and input bounds as constraints, using a model linearised about the raceline, which keeps the online problem a QP. It must regulate what the offline solution could not foresee: initial errors, disturbances, model mismatch, grip changes. LMPC replaces the fixed reference by data from the previous laps: safe set, cost-to-go and, in lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a>, locally learned dynamics.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 14</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Geometry</strong>: tangent <span class="m">t = \gamma&#x27;</span>, left normal <span class="m">n</span>, signed curvature <span class="m">K</span>; <span class="m">t&#x27; = Kn</span>, <span class="m">n&#x27; = -Kt</span>.</div></li>
+<li><div><strong>Track</strong>: closed-form curve, 252.3 m, two corners of radius 7.7 m, <span class="m">W = 3</span>; Frenet margin 0.61.</div></li>
+<li><div><strong>Position map</strong>: <span class="m">p = \gamma + e_y n</span>, <span class="m">\dot p = (1 - Ke_y)\dot s\, t + \dot e_y\, n</span>, singular at <span class="m">e_y = 1/K</span>.</div></li>
+<li><div><strong>Rates</strong>: <span class="m">\dot s = (v_x\cos e_\psi - v_y\sin e_\psi)/(1 - Ke_y)</span>, <span class="m">\dot e_y = v_x\sin e_\psi + v_y\cos e_\psi</span>, <span class="m">\dot e_\psi = r - K\dot s</span>.</div></li>
+<li><div><strong>Space</strong>: <span class="m">d\xi/ds = \dot\xi/\dot s</span> needs <span class="m">\dot s &gt; 0</span>; time is a state, <span class="m">t&#x27; = 1/\dot s</span>; minimise <span class="m">t(s_f)</span>; the full problem is a nonlinear program.</div></li>
+<li><div><strong>Reduced</strong>: <span class="m">z = v^2</span>, <span class="m">dz/ds = 2a</span>, cap <span class="m">\min(v_{\max}^2, \mu g/|K|)</span>, exact <span class="m">\Delta t = 2\Delta s/(v_i + v_{i+1})</span>.</div></li>
+<li><div><strong>Planner</strong>: forward and backward passes from the cap to the greatest fixed point; 3 sweeps, 17.0939 s, 8.7 to 20.9 m/s.</div></li>
+<li><div><strong>Sweeps</strong>: friction 20.14 to 16.13 s; weak brakes +0.64 s, weak engine +1.65 s; grid converges from below, about 0.016 s off at 240 samples.</div></li>
+<li><div><strong>Coupling</strong>: friction-circle use up to 1.17 on 66 segments; the full raceline uses the width and tire constraints, and is faster.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Frenet coordinates <span class="m">(s, e_y, e_\psi)</span></td>
+<td>Arc length along the centreline, signed lateral offset (left positive), heading error.</td>
+</tr>
+<tr>
+<td>Curvature <span class="m">K(s)</span></td>
+<td>Turning rate of the tangent; radius <span class="m">1/\lvert K \rvert</span>.</td>
+</tr>
+<tr>
+<td>Factor <span class="m">1 - Ke_y</span></td>
+<td>How much an offset point advances per unit centreline progress.</td>
+</tr>
+<tr>
+<td>Progress rate <span class="m">\dot s</span></td>
+<td>Tangential velocity divided by that factor; must stay positive.</td>
+</tr>
+<tr>
+<td>Spatial dynamics</td>
+<td>Time derivatives divided by <span class="m">\dot s</span>; <span class="m">s</span> is the independent variable.</td>
+</tr>
+<tr>
+<td>Time state</td>
+<td><span class="m">t&#x27; = 1/\dot s</span>; lap time is <span class="m">t(s_f)</span>.</td>
+</tr>
+<tr>
+<td>Squared speed <span class="m">z</span></td>
+<td>Makes the longitudinal dynamics affine, <span class="m">dz/ds = 2a</span>.</td>
+</tr>
+<tr>
+<td>Local cap</td>
+<td><span class="m">\min(v_{\max}^2, \mu g/\lvert K \rvert)</span>: feasible speed ignoring history.</td>
+</tr>
+<tr>
+<td>Forward / backward envelope</td>
+<td>Acceleration bound propagated downstream; braking bound propagated upstream.</td>
+</tr>
+<tr>
+<td>Friction circle</td>
+<td><span class="m">a_x^2 + a_y^2 \le (\mu g)^2</span>, the combined tire limit the planner ignores.</td>
+</tr>
+<tr>
+<td>Raceline</td>
+<td>The full minimum-time trajectory, offset included; the centreline plan is a reduction.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> The standard spatial formulation of minimum-lap-time problems, derived in full and executed only for the centreline speed-planning reduction, whose solution is exact for the piecewise-constant-acceleration model and computed here without any optimisation solver. The full raceline needs a nonlinear program and a vehicle model; lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> supplies the model and says what the problem contains.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>G. Perantoni and D. J. N. Limebeer. &quot;Optimal control for a Formula One car with variable parameters&quot;. <em>Vehicle System Dynamics</em> 52(5), 653–678, 2014. <a href="https://doi.org/10.1080/00423114.2014.889315">doi:10.1080/00423114.2014.889315</a>. The full minimum-lap-time formulation.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>U. Rosolia and F. Borrelli. &quot;Learning How to Autonomously Race a Car: A Predictive Control Approach&quot;. <em>IEEE Transactions on Control Systems Technology</em> 28(6), 2713–2719, 2020. <a href="https://doi.org/10.1109/TCST.2019.2948135">doi:10.1109/TCST.2019.2948135</a>. Racing in Frenet coordinates with a dynamic bicycle model and LMPC.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>U. Rosolia, A. Carvalho and F. Borrelli. &quot;Autonomous racing using learning Model Predictive Control&quot;. <em>2017 American Control Conference</em>, 5115–5120. <a href="https://doi.org/10.23919/ACC.2017.7963748">doi:10.23919/ACC.2017.7963748</a>. The first LMPC racing results.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>R. Rajamani. <em>Vehicle Dynamics and Control</em>, 2nd ed. Springer, 2012. <a href="https://doi.org/10.1007/978-1-4614-1433-9">doi:10.1007/978-1-4614-1433-9</a>. The bicycle model and tire basics.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. The MPC the raceline feeds.</div></li>
+</ul>
+<p>Perantoni and Limebeer <a href="#ref-1">[1]</a> is the reference for the full problem; Rosolia and Borrelli <a href="#ref-2">[2]</a> and Rosolia, Carvalho and Borrelli <a href="#ref-3">[3]</a> for racing with LMPC on the BARC car; Rajamani <a href="#ref-4">[4]</a> for the vehicle model that lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> writes out; Borrelli, Bemporad and Morari <a href="#ref-5">[5]</a> for the predictive controller that tracks the result. Lab <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> learns the car's local dynamics from recorded laps.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="b02-learning-mpc-on-a-repeated-task.html"><span class="lbl">Previous · B2</span><span class="t">Learning MPC on a repeated task</span></a>
+  <a class="next" rel="next" href="b04-data-driven-local-models-for-racing.html"><span class="lbl">Next · B4</span><span class="t">Data-driven local models for racing</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter B3 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/b03.js?v=20261102221633"></script>
+</body>
+</html>

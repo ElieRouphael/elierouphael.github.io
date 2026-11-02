@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A7 · Lyapunov stability and LQR · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Schur stability, the discrete Lyapunov condition and equation, the infinite-horizon LQR, the Riccati equation and the recursion that converges to it, and the identity that makes the LQR value a terminal cost.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A7 of 15</span>
+  <h1>Lyapunov stability and LQR</h1>
+  <p class="lede">Every stability statement in this course rests on one object: a function of the state that a closed loop can only decrease. For a linear system with a quadratic cost that function has a closed form, the infinite-horizon linear-quadratic regulator supplies it, and a single identity ties it to the stage cost. This chapter builds that identity from the ground up, from what "stable" means in discrete time to the Riccati equation and the terminal weight that chapters A6 and A11 keep reaching for. Below, the LQR loop of the canonical cart runs for any weights, and its value falls by exactly the stage cost at every step.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A1 and the eigenvalues of a matrix · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a07_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The LQR value V(x) = x<sup>⊤</sup>Px along the closed loop, and the stage cost it drops by</p>
+      <canvas id="lqrC" aria-label="The LQR value function along the closed loop on a logarithmic scale, with the stage cost" aria-describedby="heroStatus"></canvas>
+      <p class="chart-title" style="margin-top:0.6rem">The same loop in the position–velocity plane, with level sets of V</p>
+      <canvas id="planeC" aria-label="The closed-loop trajectory in the phase plane with level sets of the Lyapunov function" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Velocity weight <span class="m">Q_{22}</span>: <b id="hQV"></b></span>
+      <span class="row"><input type="range" id="hQ" min="0" max="4" step="1" value="2"></span></label>
+    <label class="field"><span>Input weight <span class="m">R</span>: <b id="hRV"></b></span>
+      <span class="row"><input type="range" id="hR" min="0" max="6" step="1" value="3"></span></label>
+    <div class="readouts" aria-live="off">
+      <span>gain <span class="m">K</span></span><span class="v" id="rK">–</span>
+      <span>spectral radius <span class="m">\rho(A - BK)</span></span><span class="v" id="rRho">–</span>
+      <span>first move <span class="m">u_0 = -Kx_0</span></span><span class="v" id="rU0">–</span>
+      <span>identity residual</span><span class="v" id="rRes">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the canonical weights</button></div>
+    <p class="hint">The canonical cart from <span class="m">x_0 = (-3.6, 2.4)</span>, <span class="m">Q = \mathrm{diag}(1, Q_{22})</span>, no constraints: the LQR is unconstrained, and chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> asks where its move respects the bound <span class="m">|u| \le 1</span>. The Riccati equation is solved by iteration in your browser to <span class="m">10^{-14}</span>.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#schur"><span class="n">1</span><span class="t">Stable in discrete time: Schur, not Hurwitz</span><span class="d">Hurwitz in continuous time, Schur in discrete</span></a>
+    <a href="#lyapunov"><span class="n">2</span><span class="t">A function the loop can only decrease</span><span class="d">A function the loop can only decrease</span></a>
+    <a href="#lqr"><span class="n">3</span><span class="t">The infinite-horizon LQR and the Riccati equation</span><span class="d">The infinite-horizon problem and the DARE</span></a>
+    <a href="#identity"><span class="n">4</span><span class="t">The identity: the value drops by exactly the stage cost</span><span class="d">The decrease by exactly the stage cost</span></a>
+    <a href="#recursion"><span class="n">5</span><span class="t">Finite horizons converging to P</span><span class="d">Finite horizons converging to P</span></a>
+    <a href="#code"><span class="n">6</span><span class="t">The code behind it</span><span class="d">dlqr, and the Riccati iteration</span></a>
+    <a href="#pitfalls"><span class="n">7</span><span class="t">Common pitfalls</span><span class="d">Four confusions</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Seven questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="schur">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Stable in discrete time: Schur, not Hurwitz</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Continuous and discrete time test differently.</strong> For <span class="m">\dot x = Ax</span>, asymptotic stability requires <span class="m">A</span> to be Hurwitz: every eigenvalue has negative real part. For <span class="m">x_{k+1} = Ax_k</span> the solution is <span class="m">x_k = A^k x_0</span>, which decays for every start exactly when every eigenvalue has modulus below one. <span class="m">A</span> must be Schur:</p>
+<div class="math-block" data-narrow="\begin{aligned} K &amp;= (R + B^\top P B)^{-1} B^\top P A, \ P &amp;= A^\top P A + Q \ &amp;\quad - A^\top P B (R + B^\top P B)^{-1} B^\top P A, \end{aligned}">\boxed{\rho(A) &lt; 1}, \qquad \rho(A) = \max_i |\lambda_i(A)| .</div>
+<p>The canonical cart is neither: both eigenvalues of <span class="m">A = \begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \end{pmatrix}</span> equal 1, and <span class="m">A^{10} = \begin{pmatrix} 1 &amp; 10 \\ 0 &amp; 1 \end{pmatrix}</span>, so a coasting cart keeps its velocity and its position grows linearly. Stability has to be made by feedback. With <span class="m">u = -Kx</span> the closed loop is <span class="m">x^+ = (A - BK)x</span>, and the question becomes whether <span class="m">A_{\mathrm{cl}} = A - BK</span> is Schur.</p>
+<div class="define"><p class="define-title">What is a Lyapunov function?</p>
+<p><strong>In plain words:</strong> a quantity, like an energy, that is positive everywhere except at the target and that the closed loop can only decrease. If such a quantity exists the state cannot wander off, because wandering would raise it.</p>
+<p><strong>More precisely:</strong> for <span class="m">x^+ = F(x)</span> with <span class="m">F(0) = 0</span>, a function <span class="m">V</span> with <span class="m">V(0) = 0</span>, <span class="m">V(x) &gt; 0</span> for <span class="m">x \ne 0</span> and <span class="m">V(F(x)) - V(x) &lt; 0</span> for <span class="m">x \ne 0</span>. Its existence proves asymptotic stability of the origin, and for linear systems with a quadratic <span class="m">V = x^\top Px</span> the three conditions become two matrix inequalities, <span class="m">P \succ 0</span> and <span class="m">A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P \prec 0</span>. Chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> uses the optimal value <span class="m">J_N^\star</span> of the MPC problem as a Lyapunov function; this chapter builds the quadratic one it borrows its terminal term from.</p>
+<dl><dt>Positive definite <span class="m">P \succ 0</span></dt><dd><span class="m">x^\top Px &gt; 0</span> for every <span class="m">x \ne 0</span>; equivalently, every eigenvalue of the symmetric <span class="m">P</span> is positive.</dd><dt>Decrease</dt><dd><span class="m">V(x^+) - V(x) = x^\top (A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P)\, x</span>, negative for all <span class="m">x \ne 0</span> when the matrix in the middle is negative definite.</dd><dt>Exponential</dt><dd>With a quadratic <span class="m">V</span> the decrease is by a fixed fraction at least, so <span class="m">\lVert x_k \rVert \le c\,\alpha^k \lVert x_0 \rVert</span> for some <span class="m">c &gt; 0</span> and <span class="m">\alpha &lt; 1</span>.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="lyapunov">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>A function the loop can only decrease</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The discrete Lyapunov condition.</strong> With <span class="m">V(x) = x^\top Px</span> and <span class="m">P \succ 0</span>, one step changes <span class="m">V</span> by</p>
+<div class="math-block">\Delta V = V(x_{k+1}) - V(x_k) = x_k^\top \big( A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P \big)\, x_k .</div>
+<p>If some <span class="m">P \succ 0</span> makes <span class="m">A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P \prec 0</span>, the origin is asymptotically stable <a href="#ref-3">[3]</a>, and in fact exponentially: <span class="m">V</span> falls by at least the fraction <span class="m">\lambda_{\min}(-\Delta) / \lambda_{\max}(P)</span> at every step.</p>
+<p><strong>The converse, and how to find <span class="m">P</span>.</strong> For a Schur matrix the certificate always exists: pick any <span class="m">W \succ 0</span> and solve the discrete Lyapunov equation <span class="m">A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P = -W</span>, a linear system in the entries of <span class="m">P</span> with a unique positive-definite solution. Conversely, if <span class="m">A_{\mathrm{cl}}</span> is not Schur, no positive-definite solution exists. The widget solves the equation for <span class="m">W = I</span> and a hand-chosen gain: for <span class="m">K = (0.5, 1)</span> the closed-loop eigenvalues are <span class="m">0.375 \pm 0.331i</span>, spectral radius 0.5, and <span class="m">P = \begin{pmatrix} 2.083 &amp; 0.625 \\ 0.625 &amp; 1.521 \end{pmatrix}</span> with eigenvalues 1.117 and 2.487. Along the loop from <span class="m">(-3.6, 2.4)</span> the value falls <span class="m">24.96, 6.24, 0.75, 0.137, \dots</span>, by varying ratios, since this <span class="m">P</span> was not built from the cost the loop minimises. Push the gain until an eigenvalue leaves the unit circle and watch the certificate fail.</p>
+<div class="widget" id="gainW">
+  <div class="controls">
+    <label class="field"><span><span class="m">k_1</span>: <b id="gK1V"></b></span><span class="row"><input type="range" id="gK1" min="-0.5" max="2.5" step="0.05" value="0.5"></span></label>
+    <label class="field"><span><span class="m">k_2</span>: <b id="gK2V"></b></span><span class="row"><input type="range" id="gK2" min="-0.5" max="3" step="0.05" value="1"></span></label>
+  </div>
+  <canvas id="gainC" aria-label="The quadratic Lyapunov function along the closed loop for a hand-chosen gain, on a logarithmic scale"></canvas>
+  <p class="caption" id="gainCap"></p>
+</div>
+<p>The eigenvalues decide stability; the Lyapunov function certifies it in a form that survives constraints, nonlinearity and optimisation, which the eigenvalues do not. That is why the MPC theory of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> is written in terms of a decreasing function and never mentions eigenvalues.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="lqr">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The infinite-horizon LQR and the Riccati equation</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The problem.</strong> For <span class="m">x_{k+1} = Ax_k + Bu_k</span> and the cost</p>
+<div class="math-block">J_\infty = \sum_{k=0}^{\infty} \big( x_k^\top Q x_k + u_k^\top R u_k \big), \qquad Q \succeq 0,\ R \succ 0,</div>
+<p>under the usual stabilisability and detectability assumptions, the optimal input is a stationary linear feedback <span class="m">u = -Kx</span> with</p>
+<div class="math-block">K = (R + B^\top P B)^{-1} B^\top P A, \qquad \boxed{P = A^\top P A - A^\top P B (R + B^\top P B)^{-1} B^\top P A + Q},</div>
+<p>the second being the discrete algebraic Riccati equation, the DARE. Its stabilising solution <span class="m">P \succ 0</span> is the matrix of the optimal cost: <span class="m">J_\infty^\star(x_0) = x_0^\top P x_0</span> <a href="#ref-4">[4]</a>. Chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> derives both formulas from Bellman's recursion; here they are used.</p>
+<p><strong>The canonical numbers.</strong> For <span class="m">Q = \mathrm{diag}(1, 0.2)</span> and <span class="m">R = 0.2</span>,</p>
+<div class="math-block" data-narrow="\begin{aligned} K &amp;= (0.7396,\ 1.2604), \quad P = \begin{pmatrix} 1.7042 &amp; 0.5 \ 0.5 &amp; 0.7021 \end{pmatrix}, \ \lambda(A_{\mathrm{cl}}) &amp;= 0.1849 \pm 0.2743,i, \quad \rho(A_{\mathrm{cl}}) = 0.3308 . \end{aligned}">K = (0.7396,\ 1.2604), \qquad P = \begin{pmatrix} 1.7042 &amp; 0.5 \\ 0.5 &amp; 0.7021 \end{pmatrix}, \qquad \lambda(A_{\mathrm{cl}}) = 0.1849 \pm 0.2743\,i, \qquad \rho(A_{\mathrm{cl}}) = 0.3308 .</div>
+<p>The eigenvalues are complex, so the loop spirals in, as the hero's plane shows; the spectral radius a third means the state shrinks by about two thirds per step once the transient is over. The eigenvalues of <span class="m">P</span> are 0.495 and 1.911: positive definite, as a cost must be.</p>
+<p><strong>Sign convention.</strong> The course writes <span class="m">u = -Kx</span>, hence <span class="m">A_{\mathrm{cl}} = A - BK</span>. Texts that write <span class="m">u = Fx</span> have <span class="m">F = -K</span> and the same loop as <span class="m">A + BF</span>. Check before copying a formula: with the canonical gain, <span class="m">A + BK</span> has eigenvalues 0.630 and 3.000, an unstable loop, which is what the wrong sign does (exercise 2).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="identity">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The identity: the value drops by exactly the stage cost</h2>
+  </div>
+  <div class="col prose">
+
+<p>Under <span class="m">u = -Kx</span> and with <span class="m">V(x) = x^\top Px</span> from the DARE, the Lyapunov decrease is not merely negative. Expanding <span class="m">(A - BK)^\top P (A - BK)</span> and using <span class="m">B^\top PA = (R + B^\top PB)K</span> gives</p>
+<div class="math-block" data-narrow="\begin{aligned} A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P &amp;= -(Q + K^\top R K), \ V(x^+) - V(x) &amp;= -,q(x, -Kx). \end{aligned}">\boxed{A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P = -(Q + K^\top R K)}, \qquad\text{so}\qquad \boxed{V(x^+) - V(x) = -\,q(x, -Kx)} \quad \text{for every } x,</div>
+<p>where <span class="m">q(x, u) = x^\top Qx + u^\top Ru</span> is the stage cost. The value decreases, at every step, by exactly the price paid at that step, which is positive for every <span class="m">x \ne 0</span> when <span class="m">Q \succ 0</span>, as it is here. Exercise 1 proves the identity; the numbers script checks it to <span class="m">8 \times 10^{-16}</span>, and on 100 random states to <span class="m">8 \times 10^{-15}</span>.</p>
+<p><strong>Read the hero.</strong> From <span class="m">x_0 = (-3.6, 2.4)</span> the value falls <span class="m">17.490, 3.352, 0.135, 0.0166, 0.0044, \dots</span>, and the stage costs are <span class="m">14.138, 3.217, 0.119, 0.0121, \dots</span>: each difference of consecutive values is the stage cost before it, to round-off. The first move is <span class="m">u_0 = -Kx_0 = -0.362</span>, within the bound <span class="m">|u| \le 1</span> from this start, but not from every start: the LQR is an unconstrained law, and <span class="m">-Kx</span> exceeds the bound on most of the box. Chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> computes exactly where it does not, and that region is chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>'s terminal set.</p>
+<p><strong>Why this identity is the heart of the course.</strong> A terminal cost <span class="m">V_f</span> in an MPC problem stands for the cost of everything after the horizon. The theorem of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> needs <span class="m">V_f</span> to decrease under some local controller by at least the stage cost; the LQR value decreases by exactly it. So the pair <span class="m">(K, P)</span> from the DARE is a terminal controller and terminal cost ready made, and the finite-horizon controller that uses them is, inside the terminal set, the LQR itself.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="recursion">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Finite horizons converging to P</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The Riccati recursion.</strong> Chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> shows that the optimal cost of a horizon-<span class="m">N</span> problem with terminal weight <span class="m">P_f</span> is quadratic, <span class="m">J_k^\star(x) = x^\top P_k x</span>, with <span class="m">P_N = P_f</span> and the backward recursion</p>
+<div class="math-block" data-narrow="\begin{aligned} P_{k} &amp;= Q + A^\top P_{k+1} A \ &amp;\quad - A^\top P_{k+1} B, (R + B^\top P_{k+1} B)^{-1} B^\top P_{k+1} A, \ K_k &amp;= (R + B^\top P_{k+1} B)^{-1} B^\top P_{k+1} A . \end{aligned}">P_{k} = Q + A^\top P_{k+1} A - A^\top P_{k+1} B\, (R + B^\top P_{k+1} B)^{-1} B^\top P_{k+1} A, \qquad K_k = (R + B^\top P_{k+1} B)^{-1} B^\top P_{k+1} A .</div>
+<p>The DARE is its fixed point. Started from <span class="m">P_f = P</span> it never moves; started from any other <span class="m">P_f \succeq 0</span> it converges to <span class="m">P</span>, and the hero's Riccati solver is exactly this recursion run until it stops changing.</p>
+<p><strong>How fast.</strong> Write <span class="m">\mathrm{Ric}(X)</span> for the map above, so that <span class="m">P_{N-j} = \mathrm{Ric}^j(P_f)</span>, and let <span class="m">K_X</span>, <span class="m">A_X = A - BK_X</span> be the gain and loop computed from <span class="m">X</span>. Evaluating the completed square at a non-optimal gain gives the sandwich</p>
+<div class="math-block">A_X^\top (X - P) A_X \;\preceq\; \mathrm{Ric}(X) - P \;\preceq\; A_{\mathrm{cl}}^\top (X - P) A_{\mathrm{cl}} .</div>
+<p>If <span class="m">P_f \succeq P</span>, every iterate stays above <span class="m">P</span> and <span class="m">\lVert \mathrm{Ric}^j(P_f) - P \rVert \le \lVert A_{\mathrm{cl}}^j \rVert^2\, \lVert P_f - P \rVert</span>: the error decays at the rate <span class="m">\rho(A_{\mathrm{cl}})^2 = 0.109</span> per step. From below the iterates rise towards <span class="m">P</span> at the same asymptotic rate, since <span class="m">K_X \to K</span>. The closed loop propagates the cost-to-go error, twice, because the value is quadratic. The numbers script runs the recursion from <span class="m">P_f \in \{0, Q, 10P\}</span>: all three reach <span class="m">P</span> to <span class="m">10^{-12}</span> in thirteen or fourteen steps; from <span class="m">Q</span> the error falls from <span class="m">3.0 \times 10^{-2}</span> after two steps to <span class="m">2.9 \times 10^{-10}</span> after ten, a factor 0.10 per step on geometric average against <span class="m">\rho^2 = 0.109</span>, with a period-three wobble from the complex eigenvalues; both sandwich inequalities hold to <span class="m">10^{-15}</span>.</p>
+<div class="widget" id="ricW">
+  <div class="controls">
+    <label class="field"><span>Terminal weight <span class="m">P_f</span></span>
+      <span class="row"><select id="pfSel"><option value="0">0</option><option value="Q" selected>Q</option><option value="10P">10 P</option><option value="P">P (the DARE solution)</option></select></span></label>
+  </div>
+  <canvas id="ricC" aria-label="The error of the Riccati recursion against the number of steps, on a logarithmic scale, with the asymptotic rate"></canvas>
+  <p class="caption" id="ricCap"></p>
+</div>
+<p><strong>What this says about horizons.</strong> A finite-horizon controller with terminal weight <span class="m">P_f</span> applies the gain <span class="m">K_0</span> of the recursion, and <span class="m">K_0 \to K</span> as the horizon grows: a long enough horizon with any terminal weight ends up applying the LQR law. With <span class="m">P_f = P</span> the horizon does not matter at all, which is the unconstrained version of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>'s statement that the LQR ingredients make the MPC exact inside the terminal set. With <span class="m">P_f = 0</span> and <span class="m">N = 1</span> the recursion gives <span class="m">K_0 = 0</span>: the horizon-one pathology of chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>, in matrix form.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The package solves the DARE with SciPy and derives the gain from it.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/linear.py · dlqr</p><pre><code class="language-python">def dlqr(A: np.ndarray, B: np.ndarray, Q: np.ndarray, R: np.ndarray):
+    &quot;&quot;&quot;Discrete-time infinite-horizon LQR with convention u = -Kx.&quot;&quot;&quot;
+    P = solve_discrete_are(A, B, Q, R)
+    K = np.linalg.solve(R + B.T @ P @ B, B.T @ P @ A)
+    eig = np.linalg.eigvals(A - B @ K)
+    return K, P, eig</code></pre>
+<p><code>solve_discrete_are</code> returns the stabilising solution <span class="m">P</span> of the DARE; SciPy solves it by a Schur decomposition rather than by iteration, which is faster and exact to round-off for any size. The gain follows from <span class="m">P</span> by one linear solve, <span class="m">K = (R + B^\top PB)^{-1} B^\top PA</span>, written as <code>np.linalg.solve</code> rather than an inverse. The returned eigenvalues are those of <span class="m">A - BK</span>, the course's sign convention, so that <code>max(abs(eig)) &lt; 1</code> is the Schur test on the closed loop. Every chapter that needs <span class="m">K</span> or <span class="m">P</span> calls this function.</p>
+</div>
+<p>The browser demos cannot call SciPy, so they run the recursion of <a href="#recursion">Part 5</a> from <span class="m">P_f = Q</span> until it stops changing, in <code>mpc-lib.js</code>:</p>
+<pre><code class="language-javascript">function dlqr(A, B, Q, R, iters = 10000) {
+  let P = Q;
+  for (let it = 0; it &lt; iters; it++) {
+    const BtP = mm(tr(B), P), S = add(R, mm(BtP, B)), K = mm(inv(S), mm(BtP, A));
+    const Pn = add(Q, sub(mm(tr(A), mm(P, A)), mm(tr(mm(BtP, A)), K)));
+    const diff = Math.max(...sub(Pn, P).flat().map(Math.abs)); P = Pn; if (diff &lt; 1e-14) break;
+  }
+  const BtP = mm(tr(B), P), K = mm(inv(add(R, mm(BtP, B))), mm(BtP, A)), Acl = sub(A, mm(B, K));
+  return { K, P, Acl, eig: eig2(Acl) };
+}
+</code></pre>
+<p>Each pass is one step of the Riccati recursion, <span class="m">P \leftarrow Q + A^\top PA - (B^\top PA)^\top K</span> with <span class="m">K</span> computed from the current <span class="m">P</span>; the loop stops when two iterates agree to <span class="m">10^{-14}</span>, which for the canonical system takes about twenty-five steps. The two implementations agree to <span class="m">10^{-14}</span> on <span class="m">K</span> and <span class="m">P</span>, which is how the pages' numbers are checked against the scripts'.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;Stable means <span class="m">\operatorname{Re}\lambda &lt; 0</span>.&quot;</strong> That is continuous time. For <span class="m">x_{k+1} = A_{\mathrm{cl}} x_k</span> the condition is <span class="m">|\lambda| &lt; 1</span>.</li>
+<li><strong>&quot;<span class="m">A - BK</span> and <span class="m">A + BK</span> are the same up to convention.&quot;</strong> They are two different loops. With the canonical gain one has spectral radius 0.33 and the other an eigenvalue of 3.</li>
+<li><strong>&quot;The LQR respects the input bound.&quot;</strong> It is an unconstrained law; <span class="m">-Kx</span> exceeds any bound far enough from the origin. Chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> computes where it does not.</li>
+<li><strong>&quot;A Lyapunov function is just a decreasing quantity.&quot;</strong> It must also be positive definite and vanish only at the target; the quadratic <span class="m">x^\top Px</span> with <span class="m">P \succ 0</span> is the simplest that qualifies, and the Lyapunov equation has no positive-definite solution when the loop is not Schur.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why does the discrete-time test look at the modulus of the eigenvalues?</summary>
+<p>Because <span class="m">x_k = A^k x_0</span> and <span class="m">A^k</span> decays exactly when every eigenvalue satisfies <span class="m">|\lambda| &lt; 1</span>. In continuous time the solution is <span class="m">e^{At}</span>, which decays when every eigenvalue has negative real part.</p>
+</details>
+<details class="sol"><summary>2. What two matrix conditions make <span class="m">x^\top Px</span> a Lyapunov function for <span class="m">x^+ = A_{\mathrm{cl}} x</span>?</summary>
+<p><span class="m">P \succ 0</span>, so that <span class="m">V</span> is positive away from the origin, and <span class="m">A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P \prec 0</span>, so that <span class="m">V</span> decreases along every nonzero trajectory.</p>
+</details>
+<details class="sol"><summary>3. How is <span class="m">P</span> found for a given stable gain?</summary>
+<p>By solving the discrete Lyapunov equation <span class="m">A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P = -W</span> for any <span class="m">W \succ 0</span>, a linear system in the entries of <span class="m">P</span> with a unique positive-definite solution when <span class="m">A_{\mathrm{cl}}</span> is Schur.</p>
+</details>
+<details class="sol"><summary>4. What is the DARE, and what does its solution mean?</summary>
+<p>The fixed point of the Riccati recursion, <span class="m">P = A^\top PA - A^\top PB(R + B^\top PB)^{-1}B^\top PA + Q</span>. Its stabilising solution is the matrix of the infinite-horizon optimal cost, <span class="m">J_\infty^\star(x) = x^\top Px</span>, and the gain <span class="m">K = (R + B^\top PB)^{-1}B^\top PA</span> attains it.</p>
+</details>
+<details class="sol"><summary>5. State the identity that makes the LQR value a terminal cost.</summary>
+<p><span class="m">A_{\mathrm{cl}}^\top P A_{\mathrm{cl}} - P = -(Q + K^\top RK)</span>, equivalently <span class="m">V(x^+) - V(x) = -q(x, -Kx)</span>: the value drops by exactly the stage cost, which is the terminal decrease condition of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> with equality.</p>
+</details>
+<details class="sol"><summary>6. At what rate does the Riccati recursion converge, and why?</summary>
+<p>At <span class="m">\rho(A_{\mathrm{cl}})^2</span> per step asymptotically, 0.109 here: the sandwich inequality shows that the closed loop propagates the error <span class="m">X - P</span>, and the value being quadratic squares the factor.</p>
+</details>
+<details class="sol"><summary>7. What happens to the LQR move far from the origin?</summary>
+<p>It grows linearly with the state and exceeds any input bound: from the corner of the box the canonical gain demands more than 1. The LQR is unconstrained, and the terminal set of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> is exactly the region where it is not.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Prove the identity.</b> From the DARE, prove <span class="m">(A - BK)^\top P(A - BK) - P = -(Q + K^\top RK)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Let <span class="m">S = R + B^\top PB</span>, so that <span class="m">K = S^{-1}B^\top PA</span> and <span class="m">B^\top PA = SK</span>. Expand the left side and use the DARE in the form <span class="m">P = A^\top PA - K^\top SK + Q</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Expand: <span class="m">(A - BK)^\top P (A - BK) = A^\top PA - A^\top PBK - K^\top B^\top PA + K^\top B^\top PBK = A^\top PA - K^\top SK - K^\top SK + K^\top (S - R)K = A^\top PA - K^\top SK - K^\top RK</span>, using <span class="m">A^\top PB = (B^\top PA)^\top = K^\top S</span> and <span class="m">B^\top PB = S - R</span>. The DARE reads <span class="m">P = A^\top PA - A^\top PB S^{-1} B^\top PA + Q = A^\top PA - K^\top SK + Q</span>. Subtracting, <span class="m">(A - BK)^\top P(A - BK) - P = -K^\top RK - Q</span>. The numbers script's residual is <span class="m">8 \times 10^{-16}</span>.</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.linear import dlqr
+K, P, eig = dlqr(A, B, Q, R); Acl = A - B @ K
+print(np.abs(Acl.T @ P @ Acl - P + Q + K.T @ R @ K).max())   # about 8e-16
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The wrong sign.</b> Compute the eigenvalues of both <span class="m">A - BK</span> and <span class="m">A + BK</span> for the canonical gain. Explain why only one corresponds to the convention <span class="m">u = -Kx</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Substitute <span class="m">u = -Kx</span> into <span class="m">x^+ = Ax + Bu</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With <span class="m">u = -Kx</span>, <span class="m">x^+ = Ax - BKx = (A - BK)x</span>: eigenvalues <span class="m">0.1849 \pm 0.2743i</span>, inside the unit circle. <span class="m">A + BK</span> is the loop for <span class="m">u = +Kx</span>, a different controller: eigenvalues 0.630 and 3.000, one outside. The wrong sign turns the optimal controller into positive feedback that blows up.</p>
+<pre><code class="language-python">print(np.linalg.eigvals(A - B @ K))   # [0.1849+0.2743j 0.1849-0.2743j]
+print(np.linalg.eigvals(A + B @ K))   # [0.6302 3.    ]  -&gt; unstable
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A scalar DARE by hand.</b> For <span class="m">x^+ = 1.2x + u</span> and <span class="m">q = x^2 + 4u^2</span>, write the DARE as a quadratic equation in the scalar <span class="m">P</span>, solve it, and derive <span class="m">K</span> and the closed-loop eigenvalue.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Multiply <span class="m">P = a^2P - \frac{a^2P^2}{r + P} + 1</span> by <span class="m">r + P</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">P(r + P) = a^2P(r + P) - a^2P^2 + (r + P)</span> simplifies to <span class="m">P^2 + (r - a^2r - 1)P - r = 0</span>, here <span class="m">P^2 - 2.76P - 4 = 0</span>, whose positive root is <span class="m">P = 3.8099</span>. Then <span class="m">K = aP/(r + P) = 0.5854</span> and the eigenvalue is <span class="m">a - K = 0.6146</span>: the numbers of chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>'s pathology widget, where this <span class="m">P</span> repaired the one-step controller.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Check the decrease everywhere.</b> Draw 100 random states and verify <span class="m">V((A - BK)x) - V(x) = -x^\top(Q + K^\top RK)\,x</span> to numerical precision.</p>
+<details class="sol"><summary>Hint</summary>
+<p>It is the identity of exercise 1 sandwiched between <span class="m">x^\top</span> and <span class="m">x</span>; random states check it in every direction.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The largest error over 100 standard-normal states is about <span class="m">8 \times 10^{-15}</span>.</p>
+<pre><code class="language-python">rng = np.random.default_rng(0)
+V = lambda x: x @ P @ x
+errs = [V(Acl @ x) - V(x) + x @ (Q + K.T @ R @ K) @ x for x in rng.normal(size=(100, 2))]
+print(max(abs(e) for e in errs))      # about 8e-15
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the Riccati recursion.</b> Implement the recursion of <a href="#recursion">Part 5</a> yourself, run it from <span class="m">P_f = 0</span>, <span class="m">Q</span> and <span class="m">10P</span>, and report after how many steps the error falls below <span class="m">10^{-12}</span> and the average rate per step; compare the limit with <code>dlqr</code>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>One line per step: <code>P = Q + A.T @ P @ A - A.T @ P @ B @ np.linalg.solve(R + B.T @ P @ B, B.T @ P @ A)</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Fourteen steps from 0, thirteen from <span class="m">Q</span> and from <span class="m">10P</span>, with the limit agreeing with <code>dlqr</code> to <span class="m">4 \times 10^{-16}</span>. The geometric-mean rate from step 2 to step 10 is 0.13, 0.10 and 0.10 against <span class="m">\rho^2 = 0.109</span>; the step-by-step ratios wobble with period three because the closed-loop eigenvalues are complex with argument near <span class="m">56°</span>, close to a third of a turn.</p>
+<pre><code class="language-python">def ric(P): return Q + A.T @ P @ A - A.T @ P @ B @ np.linalg.solve(R + B.T @ P @ B, B.T @ P @ A)
+for Pf in (np.zeros((2, 2)), Q, 10 * P):
+    Pk, errs = Pf.copy(), []
+    for k in range(30):
+        Pk = ric(Pk); errs.append(np.abs(Pk - P).max())
+    print(next(k + 1 for k, e in enumerate(errs) if e &lt; 1e-12), (errs[9] / errs[1]) ** (1 / 8))
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Lyapunov without optimality.</b> For the gain <span class="m">K = (0.5, 1)</span> solve the Lyapunov equation <span class="m">A_{\mathrm{cl}}^\top PA_{\mathrm{cl}} - P = -I</span> with <code>scipy.linalg.solve_discrete_lyapunov</code>, check that <span class="m">P \succ 0</span>, and follow <span class="m">V</span> along the loop from <span class="m">(-3.6, 2.4)</span>. Then try <span class="m">K = (0, 0.5)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>SciPy's function solves <span class="m">A X A^\top - X = -W</span>; pass <span class="m">A_{\mathrm{cl}}^\top</span> to get the course's form.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For <span class="m">K = (0.5, 1)</span>: eigenvalues <span class="m">0.375 \pm 0.331i</span>, <span class="m">P = \begin{pmatrix} 2.083 &amp; 0.625 \\ 0.625 &amp; 1.521 \end{pmatrix}</span> with eigenvalues 1.117 and 2.487, and <span class="m">V</span> falls <span class="m">24.96, 6.24, 0.75, 0.137, 0.082, 0.027</span>: always down, by ratios that vary because <span class="m">P</span> is not tied to a cost. For <span class="m">K = (0, 0.5)</span> the loop has an eigenvalue of 1 on the unit circle, the velocity feedback alone never corrects the position, and the equation's solution is not positive definite: no quadratic certificate exists, because no stability exists. The widget of <a href="#lyapunov">Part 2</a> shows both.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Schur</strong>: discrete-time stability is <span class="m">\rho(A_{\mathrm{cl}}) &lt; 1</span>, not negative real parts; the cart's <span class="m">A</span> has both eigenvalues at 1 and coasts.</div></li>
+<li><div><strong>Lyapunov</strong>: <span class="m">V = x^\top Px</span> with <span class="m">P \succ 0</span> and <span class="m">A_{\mathrm{cl}}^\top PA_{\mathrm{cl}} - P \prec 0</span> certifies stability; for any Schur loop the Lyapunov equation supplies <span class="m">P</span>.</div></li>
+<li><div><strong>LQR</strong>: <span class="m">K = (R + B^\top PB)^{-1}B^\top PA</span> with <span class="m">P</span> from the DARE; canonical <span class="m">K = (0.7396, 1.2604)</span>, <span class="m">\rho = 0.331</span>, complex eigenvalues, a spiral.</div></li>
+<li><div><strong>The identity</strong>: <span class="m">A_{\mathrm{cl}}^\top PA_{\mathrm{cl}} - P = -(Q + K^\top RK)</span>, so <span class="m">V</span> drops by exactly <span class="m">q</span>: <span class="m">17.49 \to 3.35 \to 0.135</span> from <span class="m">(-3.6, 2.4)</span>.</div></li>
+<li><div><strong>The recursion</strong>: <span class="m">P_{N-j} = \mathrm{Ric}^j(P_f) \to P</span> at the rate <span class="m">\rho^2 = 0.109</span> per step; thirteen or fourteen steps to <span class="m">10^{-12}</span> from 0, <span class="m">Q</span> or <span class="m">10P</span>.</div></li>
+<li><div><strong>The sign</strong>: <span class="m">u = -Kx</span> gives <span class="m">A - BK</span>; the other sign gives an eigenvalue of 3.</div></li>
+<li><div><strong>The bound</strong>: the LQR is unconstrained; <span class="m">-Kx</span> exceeds <span class="m">|u| \le 1</span> over most of the box, which is chapter A10's problem and chapter A11's terminal set.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hurwitz, Schur</td>
+<td>Eigenvalues with negative real part; eigenvalues inside the unit circle.</td>
+</tr>
+<tr>
+<td>Spectral radius <span class="m">\rho</span></td>
+<td>The largest eigenvalue modulus; the asymptotic shrink factor per step.</td>
+</tr>
+<tr>
+<td>Lyapunov function</td>
+<td>Positive definite, zero at the target, decreasing along the loop.</td>
+</tr>
+<tr>
+<td>Lyapunov equation</td>
+<td><span class="m">A_{\mathrm{cl}}^\top PA_{\mathrm{cl}} - P = -W</span>; solvable with <span class="m">P \succ 0</span> exactly when <span class="m">A_{\mathrm{cl}}</span> is Schur.</td>
+</tr>
+<tr>
+<td>LQR</td>
+<td>The feedback minimising <span class="m">\sum x^\top Qx + u^\top Ru</span> over an infinite horizon.</td>
+</tr>
+<tr>
+<td>DARE</td>
+<td>The discrete algebraic Riccati equation; its stabilising solution is the optimal cost matrix.</td>
+</tr>
+<tr>
+<td>Riccati recursion</td>
+<td>The backward iteration whose fixed point is the DARE; the finite-horizon cost matrices.</td>
+</tr>
+<tr>
+<td>The identity</td>
+<td><span class="m">V(x^+) - V(x) = -q(x, -Kx)</span> under the LQR: the terminal decrease with equality.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Unconstrained linear systems with quadratic costs and a measured state. Constraints enter in chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a>, where the LQR's admissible region is computed, and the identity becomes the terminal condition of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>; the derivation of the Riccati recursion from Bellman's principle is chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a>'s.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. The LQR and its role as terminal ingredient.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Lyapunov stability for discrete-time systems, appendix B.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>H. K. Khalil. <em>Nonlinear Systems</em>, 3rd ed. Prentice Hall, 2002. Lyapunov's direct method.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>D. P. Bertsekas. <em>Dynamic Programming and Optimal Control</em>, Vol. I, 4th ed. Athena Scientific, 2017. The linear-quadratic problem and the Riccati equation.</div></li>
+</ul>
+<p>Bertsekas <a href="#ref-4">[4]</a> derives the Riccati equation from dynamic programming, which chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> repeats; Khalil <a href="#ref-3">[3]</a> is the reference for Lyapunov's method. Next, chapter <a href="a08-polytopes-and-set-operations.html" title="Polytopes and set operations">A8</a> leaves costs for sets: the polytopes in which constraints, reachability and invariance are computed.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a06-receding-horizon-from-a-plan-to-feedback.html"><span class="lbl">Previous · A6</span><span class="t">Receding horizon: from a plan to feedback</span></a>
+  <a class="next" rel="next" href="a08-polytopes-and-set-operations.html"><span class="lbl">Next · A8</span><span class="t">Polytopes and set operations</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A7 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/a07.js?v=20261102221633"></script>
+</body>
+</html>

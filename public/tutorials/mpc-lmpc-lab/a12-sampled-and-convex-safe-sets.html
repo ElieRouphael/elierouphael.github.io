@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A12 · Sampled and convex safe sets · Advanced MPC and Learning MPC</title>
+<meta name="description" content="What a successful run certifies, the sampled safe set and why it is control invariant, its convex hull with barycentric coordinates, the invariance proof that uses linearity once and convexity twice, and the counter-example that shows what breaks for a nonlinear model.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A12 of 15</span>
+  <h1>Sampled and convex safe sets</h1>
+  <p class="lede">Chapters A10 and A11 computed a terminal set from the model: an invariant polytope under a designed local law. Learning MPC gets one from experience instead. If the same task has been completed before, every state an earlier successful run passed through comes with a known admissible way to the goal, the rest of that run. This chapter defines the sampled safe set those states form, convexifies it into a polytope with barycentric coordinates, and proves that the hull is control invariant for a linear system, using linearity exactly once. Below, three successful runs of the course's cart are stored; click any state to learn what, if anything, certifies it.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A10 and the receding-horizon loop of chapter A6 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a12_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Three successful runs from the repeated start, their sampled safe set, and its convex hull</p>
+      <canvas id="safeC" aria-label="The position–velocity plane with three stored trajectories from the start (−3.5, 2.5) to the origin, the convex hull of their states, and a movable probe with its one-step successor" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <span class="lbl">Runs in the database</span>
+    <div class="seg stack" role="group" aria-label="Stored runs">
+      <button class="btn" type="button" data-run="0" aria-pressed="true">plain MPC, N = 2 (slow)</button>
+      <button class="btn" type="button" data-run="1" aria-pressed="true">plain MPC, N = 3</button>
+      <button class="btn" type="button" data-run="2" aria-pressed="true">saturated LQR</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>stored states</span><span class="v" id="rStates">–</span>
+      <span>hull area</span><span class="v" id="rArea">–</span>
+      <span>steps per run</span><span class="v" id="rRuns">–</span>
+      <span>cost per run</span><span class="v" id="rCost">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the first probe</button></div>
+    <p class="hint">The canonical cart, <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>, <span class="m">|u| \le 1</span>, from <span class="m">x_S = (-3.5, 2.5)</span> to the origin. Every run is a real closed loop computed here; each ends with two deadbeat inputs that land exactly on the target. Click a stored state, a point of the hull, or a point outside it.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#repeated"><span class="n">1</span><span class="t">Repeated tasks</span><span class="d">Two indices, a target, what success means</span></a>
+    <a href="#sampled"><span class="n">2</span><span class="t">The sampled safe set</span><span class="d">The set and its one-step certificate</span></a>
+    <a href="#convex"><span class="n">3</span><span class="t">Convex safe sets and barycentric coordinates</span><span class="d">Barycentric coordinates, the row convention</span></a>
+    <a href="#proof"><span class="n">4</span><span class="t">Why the convex safe set is control invariant</span><span class="d">Linearity once, convexity twice</span></a>
+    <a href="#breaks"><span class="n">5</span><span class="t">What breaks outside the assumptions</span><span class="d">Nonlinear dynamics, nonconvex constraints</span></a>
+    <a href="#code"><span class="n">6</span><span class="t">The code behind it</span><span class="d">add_trajectory and safe_data</span></a>
+    <a href="#pitfalls"><span class="n">7</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="repeated">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Repeated tasks</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Two indices.</strong> Learning MPC keeps an iteration index <span class="m">j</span> for the repetition of the task and a time index <span class="m">t</span> inside one repetition. A trajectory of iteration <span class="m">j</span> is <span class="m">x^j[0], u^j[0], x^j[1], \ldots, x^j[T_j]</span>, generated by the plant <span class="m">x^j[t+1] = f(x^j[t], u^j[t])</span>, and every iteration starts from the same state <span class="m">x^j[0] = x_S</span>. The repetition is what makes experience from one run relevant to the next: a racing lap, a batch in a reactor, a pick-and-place cycle, or, here, the cart brought from <span class="m">x_S = (-3.5, 2.5)</span> to rest at the origin, again and again.</p>
+<p><strong>Target and success.</strong> Let <span class="m">\mathcal O</span> be the target set. An iteration is <em>successful</em> if it respects every state and input constraint and ends in the target, <span class="m">x^j[T_j] \in \mathcal O</span>. In this course <span class="m">\mathcal O = \{0\}</span>, and a run is completed exactly by two deadbeat inputs once it is within <span class="m">10^{-3}</span> of the origin (Part 6). Only successful iterations feed the construction; a run that left the box or never arrived teaches nothing here.</p>
+<p><strong>The three runs above.</strong> Plain receding-horizon MPC with <span class="m">N = 2</span> and no terminal ingredients (chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>) applies <span class="m">u = 0</span> first, coasts to <span class="m">(-1, 2.5)</span> and <span class="m">(1, 1.5)</span>, overshoots to <span class="m">p = 2</span> and spirals back: 20 inputs, cost 28.09. With <span class="m">N = 3</span> it brakes at once, <span class="m">u_0 = -0.58</span>, and needs 11 inputs at cost 17.03; the LQR law of chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a> clipped to <span class="m">|u| \le 1</span> takes 11 inputs at cost 17.12. All three are successful, and the slow one is by far the worst. It is also the one that matters most below.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="sampled">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The sampled safe set</h2>
+  </div>
+  <div class="col prose">
+
+<div class="define"><p class="define-title">What is the sampled safe set?</p>
+<p><strong>In plain words:</strong> every state that some earlier successful run passed through, plus the target. Each such state is &quot;safe&quot; because a known admissible way to the target exists from it: replay the rest of that run.</p>
+<p><strong>More precisely:</strong> after successful iterations <span class="m">0, \ldots, j</span>,</p>
+<div class="math-block" data-narrow="\begin{aligned} x^+ &amp;= A \textstyle\sum_r \lambda_r s_r + B \sum_r \lambda_r u_r^{\mathrm{safe}} \ &amp;= \textstyle\sum_r \lambda_r ( A s_r + B u_r^{\mathrm{safe}} ) = \sum_r \lambda_r s_r^+ . \end{aligned}">\boxed{SS^j = \Big( \bigcup_{i=0}^{j} \bigcup_{t=0}^{T_i} \{x^i[t]\} \Big) \cup \mathcal O.}</div>
+<p>It is finite for finitely many finite runs, and it grows as runs are added. Every non-terminal element carries three facts with it: the input that was applied there, the state that followed, and the cost that was paid from there to the end.</p>
+<dl><dt>Continuation</dt><dd>The stored input <span class="m">u^i[t]</span> and successor <span class="m">x^i[t+1]</span> kept with each stored state.</dd><dt>Control invariance</dt><dd>From every point of the set, some admissible input keeps the next state in the set.</dd><dt>&quot;Safe&quot;</dt><dd>A model- and task-specific notion: a certificate that the task can be completed from here under the conditions of the run. Not a certificate against disturbances, perception errors or model mismatch.</dd></dl>
+</div>
+<p><strong>Why the sampled safe set is control invariant.</strong> Take a stored non-terminal state <span class="m">x = x^i[t] \in SS^j</span>. Its stored input <span class="m">u^i[t]</span> was admissible and produced <span class="m">f(x^i[t], u^i[t]) = x^i[t+1] \in SS^j</span>. Hence</p>
+<div class="math-block">\boxed{x \in SS^j \;\Longrightarrow\; \exists\, u \in \mathcal U : f(x, u) \in SS^j,}</div>
+<p>with the convention that an admissible controller keeps the state inside <span class="m">\mathcal O</span> once it arrives, which for the origin of the cart is <span class="m">u = 0</span>. The stored trajectory itself is the continuation. Note the quantifiers, the same ones as in chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a>: for every state there exists an input, and each sample may use a different one. Nothing about the model was used: the certificate is the run itself. Click a stored state in the demo: the answer names the run, the step, the stored input and the successor it leads to, with its realised cost-to-go.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="convex">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Convex safe sets and barycentric coordinates</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Why convexify.</strong> A terminal constraint <span class="m">x_N \in SS^j</span> would force the prediction to end exactly on one of finitely many stored points, a combinatorial constraint that no quadratic program can hold. For a linear system with convex constraints one uses instead the convex safe set</p>
+<div class="math-block">\boxed{CS^j = \operatorname{conv}(SS^j),}</div>
+<p>which fills the space between stored states and keeps the online problem convex. In the demo it is the shaded polygon: 7 vertices, area 10.25, against 48 for the box and 39.25 for the control-invariant set <span class="m">\mathcal C_\infty</span> of chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a>.</p>
+<p><strong>Barycentric coordinates.</strong> Let the stored safe states be <span class="m">s_1, \ldots, s_M</span>. A point <span class="m">x \in CS^j</span> can be written <span class="m">x = \sum_{r=1}^{M} \lambda_r s_r</span> with <span class="m">\lambda_r \ge 0</span> and <span class="m">\sum_r \lambda_r = 1</span>. Stacking the stored states as the rows of <span class="m">S \in \mathbb R^{M \times n}</span>,</p>
+<div class="math-block">\boxed{x = S^\top \lambda, \qquad \lambda \ge 0, \qquad \mathbf 1^\top \lambda = 1.}</div>
+<p>The row convention is shared by the formulas and the code, which is why the transpose appears, both here and in the LMPC terminal constraint of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>. The weights are not unique in general: Carathéodory's theorem says that in <span class="m">\mathbb R^n</span> at most <span class="m">n + 1</span> stored points are needed, three in the plane, and a linear program picks one such representation. The default probe <span class="m">(-1, 1.8)</span> lies on no run; the demo writes it as 0.05 of <span class="m">(1, 1.5)</span>, 0.83 of <span class="m">(-1.281, 1.938)</span> and 0.12 of <span class="m">(0.156, 0.938)</span>, one state from the slow run and two from the <span class="m">N = 3</span> run.</p>
+<p><strong>Who shapes the hull.</strong> Switch the runs off one at a time: the hull does not change until the slow <span class="m">N = 2</span> run goes. Its overshoot to <span class="m">p = 2</span> and its return at <span class="m">v = -1.5</span> explore states the two good runs never visit, so it sets the whole hull on its own, and the good runs only add stored costs inside it. A worse run can be the more informative one about safety, which chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a> separates from its information about cost.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="proof">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Why the convex safe set is control invariant</h2>
+  </div>
+  <div class="col prose">
+
+<p>Assume <span class="m">x^+ = Ax + Bu</span>, convex <span class="m">\mathcal X</span> and <span class="m">\mathcal U</span>, and that every stored state <span class="m">s_r</span> comes with an admissible continuation input <span class="m">u_r^{\mathrm{safe}}</span> and safe successor <span class="m">s_r^+ \in SS^j</span>. For <span class="m">x = \sum_r \lambda_r s_r</span> choose <span class="m">u = \sum_r \lambda_r u_r^{\mathrm{safe}}</span>. By linearity,</p>
+<div class="math-block">x^+ = A \sum_r \lambda_r s_r + B \sum_r \lambda_r u_r^{\mathrm{safe}} = \sum_r \lambda_r \big( A s_r + B u_r^{\mathrm{safe}} \big) = \sum_r \lambda_r s_r^+ .</div>
+<p>The input is admissible because <span class="m">\mathcal U</span> is convex; the successor lies in <span class="m">CS^j</span> because every <span class="m">s_r^+</span> does and the hull is convex; and <span class="m">x</span> itself is admissible because <span class="m">SS^j \subseteq \mathcal X</span> and <span class="m">\mathcal X</span> is convex. Hence <span class="m">CS^j</span> is control invariant. Linearity is used exactly once, to pull the convex combination through <span class="m">f</span>; convexity is used twice, for the input and for the hull (three times, counting <span class="m">\mathcal X</span>).</p>
+<p><strong>The identity, in arithmetic.</strong> At the probe <span class="m">(-1, 1.8)</span> the mixed input is <span class="m">u = -1</span>, every one of the three contributing states having braked at full force, and <span class="m">Ax + Bu = (0.3, 0.8)</span>; the same weights on the three stored successors give <span class="m">(0.3, 0.8)</span> to <span class="m">6 \times 10^{-16}</span>. The widget below does the same with four states of the slow run and weights you can shift.</p>
+<div class="widget" id="invW">
+  <div class="controls">
+    <label class="field"><span>Shift weight onto the first chosen state: <b id="ivTV"></b></span>
+      <span class="row"><input type="range" id="ivT" min="0" max="1" step="0.05" value="0"></span></label>
+  </div>
+  <canvas id="invC" aria-label="The stored first run with four chosen states, their convex combination, its one-step successor under the combined input, and the convex combination of the stored successors, which coincide" aria-describedby="invCap"></canvas>
+  <p class="caption" id="invCap"></p>
+</div>
+<div class="callout">
+<p><strong>What the two certificates say.</strong> A stored state is safe because of what happened: the run is the proof, and the model is not needed. A hull point that is on no run is safe because of the model: linearity and convexity turn the stored facts into a prediction about a state nobody has visited. The first claim survives any model error that did not show up in the run; the second does not. Chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> asks which line of the proof fails under mismatch.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="breaks">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>What breaks outside the assumptions</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Nonlinear dynamics.</strong> For nonlinear <span class="m">f</span>, <span class="m">f(\sum_r \lambda_r s_r, \sum_r \lambda_r u_r)</span> is in general not <span class="m">\sum_r \lambda_r f(s_r, u_r)</span>, and the one line of the proof that used linearity fails. The smallest example is <span class="m">f(x, u) = x^2 + u</span> on the line, with stored states <span class="m">0</span> and <span class="m">2</span>, inputs <span class="m">0</span>, successors <span class="m">0</span> and <span class="m">4</span>: the midpoint <span class="m">1</span> with the mixed input <span class="m">0</span> goes to <span class="m">1</span>, while the mixture of successors is <span class="m">2</span>.</p>
+<div class="widget" id="nlW">
+  <div class="controls">
+    <label class="field"><span>Mixing weight <span class="m">\theta</span> on the state 2: <b id="nlTV"></b></span>
+      <span class="row"><input type="range" id="nlT" min="0" max="1" step="0.05" value="0.5"></span></label>
+  </div>
+  <canvas id="nlC" aria-label="The map x squared with two stored states and their successors, the value at a mixed state and the mixture of the successors, which differ" aria-describedby="nlCap"></canvas>
+  <p class="caption" id="nlCap"></p>
+</div>
+<p>Convexifying stored trajectories for a nonlinear task therefore needs a separate justification: a local convex safe set around the current operating point with a local affine model, which is what the racing controller of chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> does, or a sampled safe set kept as it is, at the price of a mixed-integer terminal constraint (chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a>).</p>
+<p><strong>Nonconvex constraints.</strong> Convex combinations of admissible states can be inadmissible when <span class="m">\mathcal X</span> is not convex: in the collision-avoidance lab of chapter <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a> two safe positions on either side of the crossing have a midpoint in the middle of it. The hull of stored states is then not even a subset of <span class="m">\mathcal X</span>, let alone invariant.</p>
+<p><strong>What stays true.</strong> The sampled safe set is control invariant for any <span class="m">f</span> and any <span class="m">\mathcal X</span>: its certificate is the run. Everything between the samples is the model's claim.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The course package stores runs in the <code>LMPCController</code> of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>; the two methods below are its database. The first admits a trajectory only if it ends on the target.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · LMPCController.add_trajectory</p><pre><code class="language-python">    def add_trajectory(self, X, U):
+        X = np.asarray(X, float)
+        U = np.asarray(U, float)
+
+        if len(X) != len(U) + 1:
+            raise ValueError(&quot;X must contain one more state sample than U&quot;)
+
+        if X.shape[1] != self.n or U.shape[1] != self.m:
+            raise ValueError(&quot;trajectory dimensions do not match the controller&quot;)
+
+        if np.linalg.norm(X[-1] - self.target) &gt; self.target_tolerance:
+            raise ValueError(
+                &quot;trajectory does not terminate sufficiently close to the target&quot;
+            )
+
+        J = trajectory_cost_to_go(X, U, self.Q, self.R, self.Q1)
+
+        self.trajectories.append(X.copy())
+        self.inputs.append(U.copy())
+        self.qfun.append(J.copy())
+        self.iteration_costs.append(float(J[0]))</code></pre>
+<p>A trajectory arrives as <span class="m">T + 1</span> states and <span class="m">T</span> inputs, the convention of chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>'s <code>rollout</code>, and the method refuses anything else. It then checks what &quot;successful&quot; means for the construction: the last state must be the target to within <code>target_tolerance</code>, <span class="m">10^{-7}</span> by default, which is why every run in this chapter is completed by the exact deadbeat bridge before it is stored. (Constraint satisfaction along the run is the caller's responsibility: the runs above were generated by controllers that enforce the box and the interval at every step.) The realised cost-to-go <code>J</code> is computed backwards from the end and kept with the states; <code>J[0]</code> is the iteration cost that chapter <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a>'s learning curve plots.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · LMPCController.safe_data</p><pre><code class="language-python">    def safe_data(self, last_n_trajectories=None):
+        &quot;&quot;&quot;
+        Return safe states, sampled cost-to-go, continuation inputs, and
+        successor indices.
+
+        The target is stored once explicitly at index 0. Terminal copies of
+        the target from each trajectory are omitted to reduce degeneracy.
+        &quot;&quot;&quot;
+        if last_n_trajectories is None:
+            indices = range(len(self.trajectories))
+        else:
+            q = max(int(last_n_trajectories), 1)
+            start = max(0, len(self.trajectories) - q)
+            indices = range(start, len(self.trajectories))
+
+        S = [self.target.copy()]
+        V = [0.0]
+        Usafe = [np.zeros(self.m)]
+        next_index = [0]
+
+        for it in indices:
+            X = self.trajectories[it]
+            U = self.inputs[it]
+            J = self.qfun[it]
+
+            T = len(U)
+            start_idx = len(S)
+
+            for k in range(T):
+                S.append(X[k].copy())
+                V.append(float(J[k]))
+                Usafe.append(U[k].copy())
+
+                if k &lt; T - 1:
+                    next_index.append(start_idx + k + 1)
+                else:
+                    next_index.append(0)
+
+        return (
+            np.asarray(S, float),
+            np.asarray(V, float),
+            np.asarray(Usafe, float),
+            np.asarray(next_index, int),
+        )</code></pre>
+<p>This builds the matrix <span class="m">S</span>, one stored state per row, and three parallel arrays: <code>V</code>, the cost-to-go of each row; <code>Usafe</code>, the continuation input; and <code>next_index</code>, the row of the stored successor. The target is row 0, stored once with value 0, input 0 and successor 0, so that the convention &quot;once at the target, stay there&quot; is a row like any other. Each trajectory contributes its states <span class="m">x[0], \ldots, x[T-1]</span> but not <span class="m">x[T]</span>, which is the target already stored at row 0, so the last state of every run points to row 0 as its successor. The optional <code>last_n_trajectories</code> keeps only the most recent runs, the window of chapter <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a>, which bounds the number of barycentric variables in the online problem.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;Every stored state is optimal.&quot;</strong> No. Stored states are safe because they belong to successful runs, and a successful run may be very suboptimal: the slow run above costs 65 percent more than the others.</li>
+<li><strong>&quot;The convex hull is always safe.&quot;</strong> No. The proof relies on linear dynamics and convex constraints; Part 5 shows one line failing for <span class="m">x^2 + u</span>.</li>
+<li><strong>&quot;Safety here means robust safety.&quot;</strong> No. The certificate is nominal: the stored run happened under the conditions of the run, and the hull argument uses the model exactly.</li>
+<li><strong>&quot;Control invariance means one input works for the whole set.&quot;</strong> No. <span class="m">\forall x\ \exists u</span>, and the input differs from state to state: it is the stored one at a stored state and a mixture elsewhere.</li>
+<li><strong>&quot;The hull grows with every run.&quot;</strong> Not necessarily. A better run that stays inside the explored region adds costs, not geometry; the slow run above sets the hull on its own.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What is the sampled safe set?</summary>
+<p>The union of the states visited by successful previous iterations, together with the target set.</p>
+</details>
+<details class="sol"><summary>2. Why is a sampled state safe?</summary>
+<p>Because replaying its stored continuation input takes the system to the next state of a successful trajectory and, step by step, to the target.</p>
+</details>
+<details class="sol"><summary>3. What is the convex safe set, and why is it used?</summary>
+<p>The convex hull of the sampled safe set, <span class="m">CS^j = \operatorname{conv}(SS^j)</span>. A terminal constraint on finitely many points is combinatorial; the hull is a polytope that a quadratic program can hold.</p>
+</details>
+<details class="sol"><summary>4. Why is it control invariant in the linear case?</summary>
+<p>Linearity maps convex combinations of safe state and input pairs to the same convex combinations of safe successors, and the state and input constraints are convex.</p>
+</details>
+<details class="sol"><summary>5. What is stored besides the state?</summary>
+<p>A continuation input with its successor, and a realised cost-to-go.</p>
+</details>
+<details class="sol"><summary>6. Where does the proof use linearity, and where convexity?</summary>
+<p>Linearity once, to write <span class="m">A \sum \lambda_r s_r + B \sum \lambda_r u_r</span> as <span class="m">\sum \lambda_r (A s_r + B u_r)</span>; convexity for the input set, for the hull and for the state set.</p>
+</details>
+<details class="sol"><summary>7. What does the target set have to satisfy?</summary>
+<p>It must be control invariant under an admissible input: for the origin of the cart, <span class="m">u = 0</span> keeps it there. Without that, the terminal states of the stored runs would have no continuation.</p>
+</details>
+<details class="sol"><summary>8. Can a worse run enlarge the safe set?</summary>
+<p>Yes. The slow <span class="m">N = 2</span> run explores states that the good runs never visit, and its hull contains theirs. Geometry and cost are different pieces of information.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Sampled safe-set invariance.</b> Prove <span class="m">x \in SS^j \Rightarrow \exists u \in \mathcal U : f(x, u) \in SS^j</span>, and state the required target-set assumption.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Two cases: a stored non-terminal state, and a point of the target.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>If <span class="m">x = x^i[t]</span> with <span class="m">t &lt; T_i</span>, the stored input <span class="m">u^i[t] \in \mathcal U</span> was applied in a successful, hence admissible, run and produced <span class="m">x^i[t+1]</span>, which is in <span class="m">SS^j</span> by definition. If <span class="m">x \in \mathcal O</span>, which includes every terminal state <span class="m">x^i[T_i]</span>, one must assume that <span class="m">\mathcal O</span> is itself control invariant under an admissible controller: there is <span class="m">u \in \mathcal U</span> with <span class="m">f(x, u) \in \mathcal O \subseteq SS^j</span>. For <span class="m">\mathcal O = \{0\}</span> and the double integrator, <span class="m">u = 0</span> does it, which is why <code>safe_data</code> stores the target with input 0 and itself as successor.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Convex invariance.</b> For <span class="m">x^+ = Ax + Bu</span>, prove control invariance of <span class="m">CS^j</span> under convex constraints and identify where linearity and convexity enter.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Use the mixture of stored inputs with the same weights.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Let <span class="m">x = \sum_r \lambda_r s_r</span> with <span class="m">\lambda</span> in the simplex, and <span class="m">u = \sum_r \lambda_r u_r^{\mathrm{safe}}</span>. Convexity of <span class="m">\mathcal U</span>: <span class="m">u</span> is a convex combination of admissible inputs, so <span class="m">u \in \mathcal U</span>. Linearity: <span class="m">Ax + Bu = \sum_r \lambda_r (A s_r + B u_r^{\mathrm{safe}}) = \sum_r \lambda_r s_r^+</span>. Convexity of the hull: each <span class="m">s_r^+ \in SS^j \subseteq CS^j</span>, so their convex combination is in <span class="m">CS^j</span>. Convexity of <span class="m">\mathcal X</span> is needed too: the hull of admissible states must consist of admissible states, which holds since <span class="m">SS^j \subseteq \mathcal X</span> and <span class="m">\mathcal X</span> is convex.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The identity at a probe.</b> Take the probe <span class="m">(-1, 1.8)</span> of the hero with the weights the LP chose, compute the mixed input and the successor two ways, and check that they agree.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>convex_safe_value</code> returns the weights; <code>safe_data</code> returns the stored inputs and the successor indices.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The LP gives <span class="m">\lambda = 0.0505</span> on <span class="m">(1, 1.5)</span>, <span class="m">0.834</span> on <span class="m">(-1.281, 1.938)</span> and <span class="m">0.1155</span> on <span class="m">(0.156, 0.938)</span>, which reconstruct <span class="m">(-1, 1.8)</span> exactly. All three stored inputs are <span class="m">-1</span>, so the mixed input is <span class="m">-1</span>, and <span class="m">Ax + Bu = (-1 + 1.8 - 0.5,\ 1.8 - 1) = (0.3, 0.8)</span>. The same weights on the stored successors <span class="m">(2, 0.5)</span>, <span class="m">(0.129, 0.919)</span> and <span class="m">(0.594, -0.062)</span> give <span class="m">(0.3, 0.8)</span> to <span class="m">6 \times 10^{-16}</span>.</p>
+<pre><code class="language-python">S, V, Usafe, nxt = ctrl.safe_data()               # ctrl holds the three runs
+val, lam, ok = convex_safe_value([-1.0, 1.8], S, V)
+u = lam @ Usafe[:, 0]
+print(A @ [-1.0, 1.8] + B[:, 0] * u, S[nxt].T @ lam)   # (0.3, 0.8) twice
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the database yourself.</b> Write a function that takes a list of successful runs and returns <span class="m">S</span>, the costs-to-go, the continuation inputs and the successor indices, with the target stored once. Compare it with <code>safe_data</code> on the three runs.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Loop over runs, append <span class="m">x[0], \ldots, x[T-1]</span>, point the last one at row 0; compute the costs backwards.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">def my_safe_data(runs, Q, R):
+    S, V, Us, nxt = [np.zeros(2)], [0.0], [np.zeros(1)], [0]
+    for X, U in runs:
+        J = np.zeros(len(X))
+        for k in range(len(U) - 1, -1, -1):
+            J[k] = X[k] @ Q @ X[k] + U[k] @ R @ U[k] + J[k + 1]
+        base = len(S)
+        for k in range(len(U)):
+            S.append(X[k]); V.append(J[k]); Us.append(U[k])
+            nxt.append(base + k + 1 if k &lt; len(U) - 1 else 0)
+    return np.array(S), np.array(V), np.array(Us), np.array(nxt)
+</code></pre>
+<p>On the three runs it returns 43 rows, and every array agrees with <code>safe_data</code> to round-off. The one design decision is where the target lives: once, at row 0, so that every run's last state points to the same row.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Who shapes the hull.</b> Compute the hull area with the slow run alone, with the two plain-MPC runs, and with all three.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>scipy.spatial.ConvexHull(points).volume</code> is the area in two dimensions; include the origin.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>10.25 in all three cases: the slow run's 21 states already contain the other two runs' states in their hull, because the overshoot to <span class="m">p = 2</span> and the return at <span class="m">v = -1.5</span> bound the region the good runs stay inside. Adding good runs adds 22 stored states with lower costs, and no geometry.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A nonlinear counter-example of your own.</b> Give a nonlinear <span class="m">f(x, u)</span> and two stored transitions for which the mixed successor leaves the hull of the stored states.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Make the successors of the two stored states the stored states themselves, so the hull is just the segment between them, then make <span class="m">f</span> bend away from it.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Take <span class="m">f(x, u) = x + u + x^2</span> on the line, stored states <span class="m">s_1 = 0</span> with <span class="m">u_1 = 0</span> and <span class="m">s_2 = 1</span> with <span class="m">u_2 = -1</span>: both are fixed points, so <span class="m">SS = \{0, 1\}</span> and <span class="m">CS = [0, 1]</span>. The midpoint <span class="m">0.5</span> with the mixed input <span class="m">-0.5</span> goes to <span class="m">0.5 - 0.5 + 0.25 = 0.25</span>, still inside; but <span class="m">s_2 = 2</span> with <span class="m">u_2 = -4</span> is also a fixed point, and then the midpoint <span class="m">1</span> with <span class="m">u = -2</span> goes to <span class="m">1 - 2 + 1 = 0</span>, which is the boundary, while <span class="m">x = 1.5</span> with <span class="m">u = -3</span> goes to <span class="m">1.5 - 3 + 2.25 = 0.75</span>. Pick instead <span class="m">f(x, u) = x + u - x^2</span> with the fixed points <span class="m">0</span> (<span class="m">u = 0</span>) and <span class="m">2</span> (<span class="m">u = 4</span>): the midpoint <span class="m">1</span> with <span class="m">u = 2</span> goes to <span class="m">1 + 2 - 1 = 2</span>, on the boundary, and <span class="m">x = 1.5</span> with <span class="m">u = 3</span> goes to <span class="m">1.5 + 3 - 2.25 = 2.25 &gt; 2</span>, outside the hull. The mixed input of two admissible fixed-point inputs leaves the segment.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Repetition</strong>: the same task from <span class="m">x_S</span> every time; successful runs end in <span class="m">\mathcal O = \{0\}</span> and respect the constraints.</div></li>
+<li><div><strong>Sampled safe set</strong>: all visited states of successful runs plus the target; control invariant by replaying the stored input, for any model.</div></li>
+<li><div><strong>Convex safe set</strong>: its hull, <span class="m">x = S^\top \lambda</span> on the simplex; 7 vertices and area 10.25 for the three runs, set by the slowest of them.</div></li>
+<li><div><strong>The proof</strong>: mix the stored inputs with the same weights; linearity once, convexity for <span class="m">\mathcal U</span>, the hull and <span class="m">\mathcal X</span>.</div></li>
+<li><div><strong>In numbers</strong>: the probe <span class="m">(-1, 1.8)</span> is <span class="m">0.05, 0.83, 0.12</span> of three stored states, <span class="m">u = -1</span>, successor <span class="m">(0.3, 0.8)</span> both ways.</div></li>
+<li><div><strong>What breaks</strong>: <span class="m">x^2 + u</span> sends the midpoint of <span class="m">0</span> and <span class="m">2</span> to <span class="m">1</span>, the mixed successor is <span class="m">2</span>; nonconvex <span class="m">\mathcal X</span> puts midpoints in the forbidden region.</div></li>
+<li><div><strong>Next</strong>: a value function on the same data, and the problem that uses both (chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>).</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Iteration <span class="m">j</span>, time <span class="m">t</span></td>
+<td>Which repetition of the task; where inside it.</td>
+</tr>
+<tr>
+<td>Successful iteration</td>
+<td>Constraints respected and the final state in <span class="m">\mathcal O</span>.</td>
+</tr>
+<tr>
+<td>Sampled safe set <span class="m">SS^j</span></td>
+<td>Visited states of successful runs plus the target.</td>
+</tr>
+<tr>
+<td>Convex safe set <span class="m">CS^j</span></td>
+<td>Its convex hull.</td>
+</tr>
+<tr>
+<td>Barycentric coordinates <span class="m">\lambda</span></td>
+<td>Non-negative weights summing to one; <span class="m">x = S^\top \lambda</span>.</td>
+</tr>
+<tr>
+<td>Continuation input</td>
+<td>The stored <span class="m">u_r^{\mathrm{safe}}</span> that moved <span class="m">s_r</span> to <span class="m">s_r^+</span>.</td>
+</tr>
+<tr>
+<td>Deadbeat bridge</td>
+<td>Two inputs that bring the cart exactly to the origin, so a run ends on the target.</td>
+</tr>
+<tr>
+<td>Carathéodory</td>
+<td>At most <span class="m">n + 1</span> stored points represent any hull point.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Deterministic repeated tasks with known linear dynamics and convex constraints, the setting in which the convex construction is justified; the sampled set needs neither. The runs are nominal closed loops of the model.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>U. Rosolia and F. Borrelli. &quot;Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework&quot;. <em>IEEE Transactions on Automatic Control</em> 63(7), 1883–1896, 2018. <a href="https://doi.org/10.1109/TAC.2017.2753460">doi:10.1109/TAC.2017.2753460</a>. Sampled and convex safe sets.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Control invariance and terminal sets in classical MPC.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>S. Boyd and L. Vandenberghe. <em>Convex Optimization</em>. Cambridge University Press, 2004. <a href="https://doi.org/10.1017/CBO9780511804441">doi:10.1017/CBO9780511804441</a>. Convex hulls and Carathéodory's theorem.</div></li>
+</ul>
+<p>Rosolia and Borrelli <a href="#ref-1">[1]</a> introduced the construction; the invariance argument is theirs, in the linear-convex case. Next, chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a> puts a cost on the same stored states and turns the pair into the terminal ingredients of a Learning MPC problem.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a11-terminal-ingredients-and-the-stability-theorem.html"><span class="lbl">Previous · A11</span><span class="t">Terminal ingredients and the stability theorem</span></a>
+  <a class="next" rel="next" href="a13-the-learned-terminal-value-and-the-lmpc-problem.html"><span class="lbl">Next · A13</span><span class="t">The learned terminal value and the LMPC problem</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A12 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/mpc-lmpc.js?v=20261102221633"></script>
+<script src="interactive/a12.js?v=20261102221633"></script>
+</body>
+</html>

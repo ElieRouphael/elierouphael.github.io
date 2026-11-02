@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A2 · Prediction matrices and condensing · Advanced MPC and Learning MPC</title>
+<meta name="description" content="The stacked prediction identity, the condensed quadratic program it produces (its Hessian is always positive definite), state, input, rate and terminal constraints as linear inequalities in the inputs, and the sparse form that keeps the states as variables.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+<style>
+#pMats { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
+#pMats .mat { display: grid; gap: 0.2rem; }
+#pMats .mlabel { font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+#pMats table { width: auto; font-size: 0.82rem; }
+#pMats td { padding: 0.15rem 0.45rem; border-bottom: none; font-weight: 400; }
+#structW .grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 0.6rem; }
+#structW canvas { display: block; width: 100%; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A2 of 15</span>
+  <h1>Prediction matrices and condensing</h1>
+  <p class="lede">Model predictive control needs to know what a whole sequence of inputs would do before any of them is applied. For a linear model that question has a closed form: every future state is an affine function of the current state and the inputs, and stacking those functions gives one matrix identity. This chapter derives it, shows how it turns a quadratic cost and polyhedral constraints into a quadratic program in the inputs alone, and compares that condensed form with the sparse one that keeps the states as variables. Below, the matrices are built live for any horizon and checked against a step-by-step rollout.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A1 and matrix algebra · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a02_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The prediction matrices of the canonical system, and the trajectory they predict</p>
+      <div id="pMats" aria-label="The stacked matrices S_x and S_u"></div>
+      <canvas id="predC" style="margin-top:0.6rem" aria-label="Phase plane with the step-by-step rollout and the states predicted by the stacked matrices" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Horizon <span class="m">N</span>: <b id="hNV"></b></span>
+      <span class="row"><input type="range" id="hN" min="2" max="8" step="1" value="6"></span>
+    </label>
+    <label class="field"><span>Scale the inputs by <b id="hScaleV"></b></span>
+      <span class="row"><input type="range" id="hScale" min="0.5" max="1.5" step="0.05" value="1"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>prediction − rollout</span><span class="v" id="rErr">–</span>
+      <span>smallest eigenvalue of <span class="m">H</span></span><span class="v" id="rMin">–</span>
+      <span>condition number of <span class="m">H</span></span><span class="v" id="rCond">–</span>
+      <span>unconstrained first input</span><span class="v" id="rU0">–</span>
+    </div>
+    <p class="hint">The canonical cart from <span class="m">x_0 = (-3, 0)</span> under the inputs <span class="m">(0.8, 0.2, -0.4, -0.5, 0.3, 0.1, -0.2, 0.4)</span>, cut to the horizon. The black path is the rollout of chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>; the blue rings are <span class="m">\mathcal S_x x_0 + \mathcal S_u U</span>, one matrix product. <span class="m">H</span> is the Hessian of the condensed cost of Part 3 with <span class="m">P = Q</span>.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#prediction"><span class="n">1</span><span class="t">Prediction: turning dynamics into algebra</span><span class="d">The stacked identity and causality</span></a>
+    <a href="#transcription"><span class="n">2</span><span class="t">Two ways to write the problem</span><span class="d">Keep the states, or eliminate them</span></a>
+    <a href="#cost"><span class="n">3</span><span class="t">Condensing the cost</span><span class="d">H, f, the constant, and why H ≻ 0</span></a>
+    <a href="#constraints"><span class="n">4</span><span class="t">Condensing the constraints</span><span class="d">State, input, rate and terminal rows</span></a>
+    <a href="#sparse"><span class="n">5</span><span class="t">Sparse against condensed</span><span class="d">Same problem, different structure</span></a>
+    <a href="#code"><span class="n">6</span><span class="t">The code behind it</span><span class="d">prediction_matrices and LinearMPC.solve</span></a>
+    <a href="#pitfalls"><span class="n">7</span><span class="t">Common pitfalls</span><span class="d">Four confusions</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="prediction">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Prediction: turning dynamics into algebra</h2>
+  </div>
+  <div class="col prose">
+
+<p>For the LTI model <span class="m">x_{k+1} = A x_k + B u_k</span> the first predicted states are</p>
+<div class="math-block" data-narrow="\boxed{X = \mathcal S_x x_0 + \mathcal S_u U}, \quad \mathcal S_x = \begin{pmatrix} A \ \vdots \ A^N \end{pmatrix}, \quad \mathcal S_u = \begin{pmatrix} B &amp; &amp; 0 \ \vdots &amp; \ddots &amp; \ A^{N-1} B &amp; \cdots &amp; B \end{pmatrix}">\begin{aligned} x_1 &amp;= A x_0 + B u_0, \\ x_2 &amp;= A^2 x_0 + AB u_0 + B u_1, \\ x_3 &amp;= A^3 x_0 + A^2 B u_0 + AB u_1 + B u_2 . \end{aligned}</div>
+<p>Each is affine in the inputs applied so far, with the current state <span class="m">x_0</span> as a known offset. Stack the predicted states and the inputs into <span class="m">X = (x_1, \dots, x_N)</span> and <span class="m">U = (u_0, \dots, u_{N-1})</span>. Then</p>
+<div class="math-block">\boxed{X = \mathcal S_x x_0 + \mathcal S_u U}, \qquad \mathcal S_x = \begin{pmatrix} A \\ A^2 \\ \vdots \\ A^N \end{pmatrix}, \qquad \mathcal S_u = \begin{pmatrix} B &amp; 0 &amp; \cdots &amp; 0 \\ AB &amp; B &amp; \cdots &amp; 0 \\ \vdots &amp; \vdots &amp; \ddots &amp; \vdots \\ A^{N-1} B &amp; A^{N-2} B &amp; \cdots &amp; B \end{pmatrix}.</div>
+<div class="define"><p class="define-title">What are the prediction matrices?</p>
+<p><strong>In plain words:</strong> two matrices that turn &quot;the state now and the next <span class="m">N</span> inputs&quot; into &quot;the next <span class="m">N</span> states&quot; in one multiplication, so that a question about a whole plan can be asked at once instead of step by step.</p>
+<p><strong>More precisely:</strong> <span class="m">\mathcal S_x \in \mathbb R^{Nn \times n}</span> stacks the powers of <span class="m">A</span> and <span class="m">\mathcal S_u \in \mathbb R^{Nn \times Nm}</span> is block lower-triangular with <span class="m">A^{i-1-j} B</span> in block <span class="m">(i, j)</span> for <span class="m">j &lt; i</span> and zero above the diagonal. The identity <span class="m">X = \mathcal S_x x_0 + \mathcal S_u U</span> is exact for any LTI model; for an affine model a stacked constant is added.</p>
+<dl><dt>Causality</dt><dd>Block <span class="m">(i, j)</span> of <span class="m">\mathcal S_u</span> is zero for <span class="m">j \ge i</span>: an input applied at step <span class="m">j</span> cannot move a state at step <span class="m">i \le j</span>.</dd><dt>Block-Toeplitz</dt><dd>The blocks depend only on <span class="m">i - j</span>, so the matrix has constant block diagonals.</dd><dt>Free response</dt><dd><span class="m">\mathcal S_x x_0</span> is where the system goes with no input; <span class="m">\mathcal S_u U</span> is the forced part.</dd></dl>
+</div>
+<p><strong>The cart's matrices.</strong> For the canonical system <span class="m">A^i = \begin{pmatrix} 1 &amp; i \\ 0 &amp; 1 \end{pmatrix}</span> puts the step count in the corner, and <span class="m">A^i B = (i + \tfrac12, 1)</span>: an input applied <span class="m">i</span> steps ago has added 1 to the velocity and <span class="m">i + \tfrac12</span> to the position. With <span class="m">N = 3</span>,</p>
+<div class="math-block" data-narrow="J_N = x_0^\top Q x_0 + \textstyle\sum_{k=1}^{N-1} x_k^\top Q x_k + \sum_{k=0}^{N-1} u_k^\top R u_k + x_N^\top P x_N">\mathcal S_x = \begin{pmatrix} 1 &amp; 1 \\ 0 &amp; 1 \\ 1 &amp; 2 \\ 0 &amp; 1 \\ 1 &amp; 3 \\ 0 &amp; 1 \end{pmatrix}, \qquad \mathcal S_u = \begin{pmatrix} 0.5 &amp; 0 &amp; 0 \\ 1 &amp; 0 &amp; 0 \\ 1.5 &amp; 0.5 &amp; 0 \\ 1 &amp; 1 &amp; 0 \\ 2.5 &amp; 1.5 &amp; 0.5 \\ 1 &amp; 1 &amp; 1 \end{pmatrix},</div>
+<p>which the hero shows at any horizon. The velocity rows of <span class="m">\mathcal S_u</span> are all ones below the diagonal: every past input added itself to the velocity. The position rows grow down each column: an early push moves the position more.</p>
+<p><strong>Read the hero.</strong> At <span class="m">N = 6</span> from <span class="m">(-3, 0)</span> under <span class="m">(0.8, 0.2, -0.4, -0.5, 0.3, 0.1)</span> the predicted states are <span class="m">(-2.6, 0.8)</span>, <span class="m">(-1.7, 1.0)</span>, <span class="m">(-0.9, 0.6)</span>, <span class="m">(-0.55, 0.1)</span>, <span class="m">(-0.3, 0.4)</span> and <span class="m">(0.15, 0.5)</span>, and the step-by-step rollout agrees to <span class="m">2 \times 10^{-16}</span>: the identity is an identity, and the rings sit on the path at every horizon and input scale.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="transcription">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Two ways to write the problem</h2>
+  </div>
+  <div class="col prose">
+
+<p>The optimal-control problem of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> asks for the input sequence that minimises a cost over the predicted trajectory while every predicted state and input obeys its constraints. There are two ways to hand that to a solver.</p>
+<p><strong>Direct transcription: keep the states.</strong> Take <span class="m">z = (X, U)</span> as the decision variable and impose the dynamics as equality constraints,</p>
+<div class="math-block">x_1 - B u_0 = A x_0, \qquad x_2 - A x_1 - B u_1 = 0, \qquad \dots, \qquad x_N - A x_{N-1} - B u_{N-1} = 0 .</div>
+<p>Many variables, <span class="m">Nn + Nm</span>, and <span class="m">Nn</span> equalities, but every matrix is sparse: each equality row touches two states and one input. This is the <em>sparse</em> form.</p>
+<p><strong>Condensing: eliminate the states.</strong> Substitute <span class="m">X = \mathcal S_x x_0 + \mathcal S_u U</span> everywhere. The only decision variable is <span class="m">U</span>, with <span class="m">Nm</span> entries; the dynamics are built in, and the states are recovered afterwards by the same product. This is the <em>condensed</em> form, and it is what the course package uses.</p>
+<div class="callout">
+<p><strong>Neither changes the control problem.</strong> They are two representations of the same optimisation: the same feasible trajectories, the same cost, the same minimiser (Part 5 checks it numerically). What changes is the numerical structure: the size of the matrices, their sparsity, and the solvers that suit them.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="cost">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Condensing the cost</h2>
+  </div>
+  <div class="col prose">
+
+<p>Take the horizon-<span class="m">N</span> linear-quadratic cost of the course,</p>
+<div class="math-block">J_N = x_0^\top Q x_0 + \sum_{k=1}^{N-1} x_k^\top Q x_k + \sum_{k=0}^{N-1} u_k^\top R u_k + x_N^\top P x_N, \qquad Q \succeq 0,\ R \succ 0,\ P \succeq 0 ,</div>
+<p>with the terminal weight <span class="m">P</span> on the last predicted state; until chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a> supplies the Riccati matrix, <span class="m">P = Q</span>. Define <span class="m">\bar Q = \mathrm{blkdiag}(Q, \dots, Q, P)</span>, one block per predicted state with <span class="m">P</span> for the last, and <span class="m">\bar R = I_N \otimes R</span>. Then <span class="m">J_N = x_0^\top Q x_0 + X^\top \bar Q X + U^\top \bar R U</span>, and substituting the prediction identity,</p>
+<div class="math-block" data-narrow="\boxed{H = 2 ( \mathcal S_u^\top \bar Q \mathcal S_u + \bar R )}, \quad \boxed{f = 2, \mathcal S_u^\top \bar Q \mathcal S_x x_0}, \quad c = x_0^\top ( \mathcal S_x^\top \bar Q \mathcal S_x + Q ) x_0">J_N(U; x_0) = \tfrac12 U^\top H U + f(x_0)^\top U + c(x_0),</div>
+<div class="math-block">\boxed{H = 2 \left( \mathcal S_u^\top \bar Q \mathcal S_u + \bar R \right)}, \qquad \boxed{f(x_0) = 2\, \mathcal S_u^\top \bar Q \mathcal S_x x_0}, \qquad c(x_0) = x_0^\top \left( \mathcal S_x^\top \bar Q \mathcal S_x + Q \right) x_0 .</div>
+<p><strong>The current state is a parameter.</strong> <span class="m">H</span> depends on the model, the weights and the horizon only. A new <span class="m">x_0</span> changes <span class="m">f</span> and, in Part 4, the right-hand sides of the constraints, never <span class="m">H</span>: the matrix can be built once and reused at every sample, which is what makes the receding-horizon loop of chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a> cheap.</p>
+<p><strong>The constant is dropped, and must be put back.</strong> <span class="m">c(x_0)</span> does not affect the minimiser, so a solver omits it and reports a negative objective. For optimisation that is harmless. For a Lyapunov check, chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>, the full value <span class="m">J_N^\star</span> is needed, constant included, and the hero's readout adds it back; at <span class="m">N = 6</span> from <span class="m">(-3, 0)</span>, <span class="m">c = 63</span>.</p>
+<p><strong>Is <span class="m">H</span> positive definite?</strong> Always, not just typically. For any <span class="m">U \ne 0</span>,</p>
+<div class="math-block" data-narrow="\bar H_x \mathcal S_u = \begin{pmatrix} 0.5 &amp; 0 &amp; 0 \ -0.5 &amp; 0 &amp; 0 \ 1.5 &amp; 0.5 &amp; 0 \ -1.5 &amp; -0.5 &amp; 0 \ 2.5 &amp; 1.5 &amp; 0.5 \ -2.5 &amp; -1.5 &amp; -0.5 \end{pmatrix}, \quad \text{rhs} = \begin{pmatrix} 7 \ 1 \ 7 \ 1 \ 7 \ 1 \end{pmatrix}">U^\top H U = 2\,(\mathcal S_u U)^\top \bar Q (\mathcal S_u U) + 2\, U^\top \bar R U \ge 2\, U^\top \bar R U \ge 2 \lambda_{\min}(R) \lVert U \rVert^2 &gt; 0,</div>
+<p>because <span class="m">\bar Q \succeq 0</span> and <span class="m">R \succ 0</span>. So the condensed cost is strictly convex, the unconstrained minimiser <span class="m">U^\star = -H^{-1} f(x_0)</span> is unique, and the constrained problem of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> has a unique solution whenever it has one. For the canonical system with <span class="m">N = 6</span> the eigenvalues of <span class="m">H</span> are</p>
+<div class="math-block">0.5137,\ 0.5697,\ 0.7483,\ 1.5056,\ 8.1579,\ 289.80, \qquad \text{condition number } 564,</div>
+<p>the smallest above <span class="m">2 \lambda_{\min}(R) = 0.4</span> as the bound promises. The large spread is the horizon at work: an early input moves every later state, so the first columns of <span class="m">\mathcal S_u</span> are long and the Hessian weights them heavily.</p>
+<p><strong>The unconstrained optimum ignores the limits.</strong> From <span class="m">x_0 = (-3, 0)</span>, <span class="m">U^\star = (2.219, -1.398, -0.760, -0.128, 0.034, 0.022)</span>: a first push of 2.2 and a hard brake, reaching <span class="m">(0.07, 0.06)</span> after three steps. The cart may only push with <span class="m">|u| \le 1</span>, less than half of that. Constraints are not an afterthought; they change the answer from the first move.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="constraints">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Condensing the constraints</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>State constraints.</strong> If every predicted state must satisfy <span class="m">H_x x_k \le h_x</span>, stacking gives <span class="m">\bar H_x X \le \bar h_x</span> with <span class="m">\bar H_x = I_N \otimes H_x</span> and <span class="m">\bar h_x = (h_x, \dots, h_x)</span>, and the prediction identity turns it into</p>
+<div class="math-block">\boxed{\bar H_x \mathcal S_u\, U \le \bar h_x - \bar H_x \mathcal S_x x_0} .</div>
+<p>The matrix on the left is fixed; only the right-hand side moves with <span class="m">x_0</span>. For the position bound <span class="m">|p_k| \le 4</span> alone, <span class="m">H_x = \begin{pmatrix} 1 &amp; 0 \\ -1 &amp; 0 \end{pmatrix}</span>, <span class="m">h_x = (4, 4)</span>, and with <span class="m">N = 3</span> from <span class="m">(-3, 0)</span>,</p>
+<div class="math-block">\bar H_x \mathcal S_u = \begin{pmatrix} 0.5 &amp; 0 &amp; 0 \\ -0.5 &amp; 0 &amp; 0 \\ 1.5 &amp; 0.5 &amp; 0 \\ -1.5 &amp; -0.5 &amp; 0 \\ 2.5 &amp; 1.5 &amp; 0.5 \\ -2.5 &amp; -1.5 &amp; -0.5 \end{pmatrix}, \qquad \bar h_x - \bar H_x \mathcal S_x x_0 = \begin{pmatrix} 7 \\ 1 \\ 7 \\ 1 \\ 7 \\ 1 \end{pmatrix}:</div>
+<p>the free motion from <span class="m">(-3, 0)</span> stays at <span class="m">p = -3</span>, so each predicted position may rise by 7 but fall by only 1. The odd rows are the position rows of <span class="m">\mathcal S_u</span>; the even rows are their negatives.</p>
+<p><strong>Input constraints</strong> <span class="m">H_u u_k \le h_u</span> are already linear in <span class="m">U</span>: <span class="m">\bar H_u U \le \bar h_u</span> with no substitution needed. For a box <span class="m">|u_k| \le u_{\max}</span> they are bounds on the variables, which the solver of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> handles as rows of its own.</p>
+<p><strong>Rate constraints.</strong> A limit on how fast the input may change, <span class="m">|u_k - u_{k-1}| \le \Delta u_{\max}</span>, is linear too. With the difference matrix <span class="m">D</span> and a vector <span class="m">d</span> carrying the previous input into the first row,</p>
+<div class="math-block" data-narrow="\Delta U = D U + d(u_{-1}), \quad D = \begin{pmatrix} 1 &amp; &amp; &amp; \ -1 &amp; 1 &amp; &amp; \ &amp; \ddots &amp; \ddots &amp; \ &amp; &amp; -1 &amp; 1 \end{pmatrix}">\Delta U = D U + d(u_{-1}), \qquad D = \begin{pmatrix} 1 &amp; 0 &amp; 0 &amp; 0 &amp; 0 \\ -1 &amp; 1 &amp; 0 &amp; 0 &amp; 0 \\ 0 &amp; -1 &amp; 1 &amp; 0 &amp; 0 \\ 0 &amp; 0 &amp; -1 &amp; 1 &amp; 0 \\ 0 &amp; 0 &amp; 0 &amp; -1 &amp; 1 \end{pmatrix}, \qquad d(u_{-1}) = (-u_{-1}, 0, 0, 0, 0)</div>
+<p>for <span class="m">N = 5</span>, and <span class="m">-\Delta u_{\max} \le D U + d \le \Delta u_{\max}</span> is a pair of linear inequalities. Check: <span class="m">U = (0.3, 0.5, 0.4, 0.1, -0.2)</span> with <span class="m">u_{-1} = 0.2</span> gives <span class="m">(0.1, 0.2, -0.1, -0.3, -0.3)</span>, the successive differences.</p>
+<p><strong>A terminal equality</strong> <span class="m">x_N = x_f</span> uses the last block rows: <span class="m">\mathcal S_{u,N} U = x_f - \mathcal S_{x,N} x_0</span>, two equality rows for the cart. Chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> replaces the point by a set, which is a few more inequality rows of the same kind.</p>
+<p>Hence the most useful fact of linear MPC: <strong>linear dynamics, a quadratic objective and polyhedral constraints give a convex QP</strong> in <span class="m">U</span>, with a fixed Hessian and constraint matrix and a right-hand side affine in the current state.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="sparse">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Sparse against condensed</h2>
+  </div>
+  <div class="col prose">
+
+<div class="widget" id="structW">
+  <div class="controls">
+    <label class="field"><span>Horizon <span class="m">N</span>: <b id="sNV"></b></span><span class="row"><input type="range" id="sN" min="2" max="30" step="1" value="8"></span></label>
+    <label class="field"><span>States <span class="m">n</span>: <b id="snV"></b></span><span class="row"><input type="range" id="sn" min="1" max="8" step="1" value="2"></span></label>
+    <label class="field"><span>Inputs <span class="m">m</span>: <b id="smV"></b></span><span class="row"><input type="range" id="sm" min="1" max="3" step="1" value="1"></span></label>
+  </div>
+  <div class="grid4">
+    <canvas id="sHs" aria-label="Sparsity pattern of the sparse Hessian"></canvas>
+    <canvas id="sEs" aria-label="Sparsity pattern of the sparse dynamics equalities"></canvas>
+    <canvas id="sHc" aria-label="Sparsity pattern of the condensed Hessian"></canvas>
+    <canvas id="sGc" aria-label="Sparsity pattern of the condensed state-constraint rows"></canvas>
+  </div>
+  <p class="caption" id="structCap"></p>
+</div>
+<p><strong>The same problem, solved both ways.</strong> The numbers script poses the canonical problem with <span class="m">N = 8</span> from <span class="m">(-3, 0)</span>, the box, <span class="m">|u| \le 1</span> and <span class="m">P = Q</span>, once condensed and once sparse, and solves both with the course's solver from a cold start.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Form</th>
+<th>Variables</th>
+<th>Equalities</th>
+<th>Inequalities</th>
+<th>Hessian nonzeros</th>
+<th>Iterations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Condensed</td>
+<td>8</td>
+<td>0</td>
+<td>48 state rows + 16 bounds</td>
+<td>64 of 64</td>
+<td>13</td>
+</tr>
+<tr>
+<td>Sparse</td>
+<td>24</td>
+<td>16</td>
+<td>48 bounds</td>
+<td>24 of 576</td>
+<td>13</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The inputs agree to <span class="m">2.6 \times 10^{-14}</span> and the states to <span class="m">1.8 \times 10^{-14}</span>, with cost <span class="m">J = 18.059</span> and the first moves <span class="m">(1, 0.539, -1, -0.539, \dots)</span>: a full push, a full brake, two saturated inputs. The sparse dynamics matrix has 53 nonzeros of 384; the condensed constraint rows are dense and lower-triangular.</p>
+<p><strong>There is no universal winner.</strong> Condensed: <span class="m">Nm</span> variables, the clearest view of how <span class="m">x_0</span> parameterises the problem, small dense matrices that a dense solver handles in a few milliseconds, and the form every demo in this course uses. Sparse: <span class="m">Nn + Nm</span> variables and <span class="m">Nn</span> equalities, but every matrix is banded, so a structure-exploiting solver factorises the KKT system in time linear in <span class="m">N</span>, where the dense condensed Hessian costs <span class="m">\mathcal O((Nm)^3)</span> to factorise and <span class="m">\mathcal O((Nm)^2)</span> to store. For long horizons, many states and nonlinear models, which need the states as variables anyway, the sparse form wins; for the cart it does not matter.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The identity is one function of the package.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/linear.py · prediction_matrices</p><pre><code class="language-python">def prediction_matrices(A: np.ndarray, B: np.ndarray, N: int):
+    &quot;&quot;&quot;Return Sx, Su such that [x1;...;xN] = Sx x0 + Su [u0;...;uN-1].&quot;&quot;&quot;
+    A = np.asarray(A, dtype=float)
+    B = np.asarray(B, dtype=float)
+    n, m = B.shape
+    Sx = np.zeros((N * n, n))
+    Su = np.zeros((N * n, N * m))
+    for i in range(N):
+        Sx[i*n:(i+1)*n] = np.linalg.matrix_power(A, i + 1)
+        for j in range(i + 1):
+            Su[i*n:(i+1)*n, j*m:(j+1)*m] = np.linalg.matrix_power(A, i - j) @ B
+    return Sx, Su</code></pre>
+<p>Two nested loops fill the blocks. The outer loop over <code>i</code> writes block row <span class="m">i</span>: <code>Sx[i*n:(i+1)*n] = A^{i+1}</code>, the power of <span class="m">A</span> that carries <span class="m">x_0</span> to <span class="m">x_{i+1}</span>. The inner loop over <code>j &lt;= i</code> writes block <span class="m">(i, j)</span> of <code>Su</code> as <span class="m">A^{i-j} B</span>: the input <span class="m">u_j</span> reaches <span class="m">x_{i+1}</span> through <span class="m">i - j</span> further steps of <span class="m">A</span>. Nothing is written above the diagonal, which is the causality of Part 1 made literal. <code>matrix_power</code> is called <span class="m">\mathcal O(N^2)</span> times, which is wasteful and irrelevant at the course's sizes; a production implementation would compute the powers once.</p>
+</div>
+<p>The MPC class assembles the QP from them. The lines that matter are the four after the prediction matrices are fetched.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/mpc.py · LinearMPC.solve</p><pre><code class="language-python">    def solve(self, x0, x_ref=None, extra_A_ub=None, extra_b_ub=None, warm=None):
+        x0=np.asarray(x0,float).reshape(self.n)
+        x_ref=np.zeros(self.n) if x_ref is None else np.asarray(x_ref,float).reshape(self.n)
+        Qbar=np.kron(np.eye(self.N),self.Q)
+        Qbar[-self.n:,-self.n:]=self.P
+        Rbar=np.kron(np.eye(self.N),self.R)
+        rstack=np.tile(x_ref,self.N)
+        base=self.Sx@x0-rstack
+        H=2*(self.Su.T@Qbar@self.Su+Rbar)
+        f=2*self.Su.T@Qbar@base
+        Aubs=[]; bubs=[]
+        if self.x_upper is not None:
+            Aubs.append(self.Su); bubs.append(np.tile(self.x_upper,self.N)-self.Sx@x0)
+        if self.x_lower is not None:
+            Aubs.append(-self.Su); bubs.append(-np.tile(self.x_lower,self.N)+self.Sx@x0)
+        if self.terminal_H is not None:
+            SuN=self.Su[-self.n:]; SxN=self.Sx[-self.n:]
+            Aubs.append(np.asarray(self.terminal_H)@SuN)
+            bubs.append(np.asarray(self.terminal_h)-np.asarray(self.terminal_H)@SxN@x0)
+        if extra_A_ub is not None:
+            Aubs.append(np.asarray(extra_A_ub,float)); bubs.append(np.asarray(extra_b_ub,float))
+        Aub=np.vstack(Aubs) if Aubs else None
+        bub=np.concatenate(bubs) if bubs else None
+        lb=np.tile(self.u_lower,self.N) if self.u_lower is not None else None
+        ub=np.tile(self.u_upper,self.N) if self.u_upper is not None else None
+        res=solve_qp(H,f,A_ub=Aub,b_ub=bub,lb=lb,ub=ub,x0=warm)
+        U=res.x.reshape(self.N,self.m)
+        X=(self.Sx@x0+self.Su@res.x).reshape(self.N,self.n)
+        return MPCSolution(res.success,U,X,res.objective,res.message)</code></pre>
+<p><code>Qbar</code> is <span class="m">\bar Q</span>: <span class="m">N</span> copies of <span class="m">Q</span> on the diagonal, with the last block overwritten by <span class="m">P</span>. <code>Rbar</code> is <span class="m">\bar R</span>. <code>base</code> is the predicted free response <span class="m">\mathcal S_x x_0</span> shifted by a stacked reference, zero in this chapter, which is how the same code tracks a setpoint. Then <code>H = 2*(Su.T@Qbar@Su + Rbar)</code> and <code>f = 2*Su.T@Qbar@base</code> are the boxed formulas of Part 3. The constraint block follows the recipe of Part 4: the upper state bound is the row <code>Su</code> against <code>tile(x_upper) - Sx@x0</code>, the lower bound its negative, the terminal rows use the last <code>n</code> rows of <code>Su</code> and <code>Sx</code>, and the input bounds go to the solver as <code>lb</code> and <code>ub</code>. The solver returns <span class="m">U</span>; the predicted states are recovered by the identity once more, <code>Sx@x0 + Su@res.x</code>, and reshaped to one row per step. The objective reported is the solver's, constant dropped; chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> adds it back where it matters.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The prediction matrices depend on the state.&quot;</strong> They depend on <span class="m">A</span>, <span class="m">B</span> and <span class="m">N</span> only. The state enters through <span class="m">\mathcal S_x x_0</span>, which shifts the right-hand sides; <span class="m">H</span> and the constraint matrix are built once.</li>
+<li><strong>&quot;The condensed and sparse problems are different problems.&quot;</strong> They are the same optimisation written in different variables; their minimisers coincide to round-off. Only their size and sparsity differ.</li>
+<li><strong>&quot;A negative objective means something is wrong.&quot;</strong> The solver minimises <span class="m">\tfrac12 U^\top H U + f^\top U</span> without the constant <span class="m">c(x_0)</span>, which is often large and positive. The physical cost is the objective plus the constant.</li>
+<li><strong>&quot;<span class="m">H</span> might be singular for a long horizon.&quot;</strong> Never, for <span class="m">R \succ 0</span>: the input penalty alone gives <span class="m">U^\top H U \ge 2 \lambda_{\min}(R) \lVert U \rVert^2</span>. It can be badly conditioned, which is a different matter and one reason to prefer the sparse form for long horizons.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why is <span class="m">\mathcal S_u</span> lower block-triangular?</summary>
+<p>Because <span class="m">x_i</span> depends only on <span class="m">u_0, \dots, u_{i-1}</span>: an input applied at step <span class="m">j \ge i</span> has not happened yet when <span class="m">x_i</span> is reached. Block <span class="m">(i, j)</span> is <span class="m">A^{i-1-j} B</span> for <span class="m">j &lt; i</span> and zero otherwise.</p>
+</details>
+<details class="sol"><summary>2. What does condensing eliminate, and what remains?</summary>
+<p>The predicted states, replaced by <span class="m">\mathcal S_x x_0 + \mathcal S_u U</span>. The inputs <span class="m">U</span> remain as the only decision variables; the states are recovered afterwards.</p>
+</details>
+<details class="sol"><summary>3. Which quantities of the condensed QP depend on the current state?</summary>
+<p>The linear term <span class="m">f(x_0)</span>, the constant <span class="m">c(x_0)</span> and the right-hand sides of the constraints. <span class="m">H</span> and the constraint matrices do not.</p>
+</details>
+<details class="sol"><summary>4. Why is <span class="m">H</span> positive definite?</summary>
+<p>Because <span class="m">U^\top H U = 2 (\mathcal S_u U)^\top \bar Q (\mathcal S_u U) + 2 U^\top \bar R U</span>, the first term is nonnegative and the second is at least <span class="m">2 \lambda_{\min}(R) \lVert U \rVert^2 &gt; 0</span> for <span class="m">U \ne 0</span>.</p>
+</details>
+<details class="sol"><summary>5. How does a state constraint become a constraint on the inputs?</summary>
+<p>Stack it over the horizon, <span class="m">\bar H_x X \le \bar h_x</span>, and substitute the prediction: <span class="m">\bar H_x \mathcal S_u U \le \bar h_x - \bar H_x \mathcal S_x x_0</span>. The matrix is fixed, the right-hand side moves with <span class="m">x_0</span>.</p>
+</details>
+<details class="sol"><summary>6. Why is a rate constraint linear?</summary>
+<p>Because <span class="m">u_k - u_{k-1}</span> is a linear function of <span class="m">U</span>: the rows of a difference matrix <span class="m">D</span>, with the previous input entering the first row as a constant.</p>
+</details>
+<details class="sol"><summary>7. What does the sparse form keep that the condensed form drops?</summary>
+<p>The states as variables and the dynamics as equality constraints. Its matrices are banded and grow linearly with <span class="m">N</span>; the condensed matrices are dense and grow quadratically.</p>
+</details>
+<details class="sol"><summary>8. Why can sparse and condensed solutions agree to round-off?</summary>
+<p>They are algebraically the same problem: every feasible <span class="m">(X, U)</span> of the sparse form corresponds to exactly one feasible <span class="m">U</span> of the condensed form with the same cost, so the unique minimiser is the same.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Derive the prediction matrices by hand.</b> For the canonical <span class="m">A</span> and <span class="m">B</span>, write <span class="m">x_1, x_2, x_3</span> explicitly and construct <span class="m">\mathcal S_x</span> and <span class="m">\mathcal S_u</span> for <span class="m">N = 3</span>. Verify numerically against <code>prediction_matrices</code>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>You need <span class="m">A^2</span>, <span class="m">A^3</span>, <span class="m">AB</span> and <span class="m">A^2 B</span>. For this <span class="m">A</span>, <span class="m">A^i</span> just puts <span class="m">i</span> in the top-right corner.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">A^2 = \begin{pmatrix} 1 &amp; 2 \\ 0 &amp; 1 \end{pmatrix}</span>, <span class="m">A^3 = \begin{pmatrix} 1 &amp; 3 \\ 0 &amp; 1 \end{pmatrix}</span>, <span class="m">AB = (1.5, 1)</span>, <span class="m">A^2 B = (2.5, 1)</span>, so <span class="m">x_1 = Ax_0 + Bu_0</span>, <span class="m">x_2 = A^2 x_0 + AB u_0 + B u_1</span>, <span class="m">x_3 = A^3 x_0 + A^2 B u_0 + AB u_1 + B u_2</span>, and the matrices are those of Part 1.</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.linear import prediction_matrices
+Sx3, Su3 = prediction_matrices(A, B, 3)
+Sx_hand = np.array([[1, 1], [0, 1], [1, 2], [0, 1], [1, 3], [0, 1]], float)
+Su_hand = np.array([[0.5, 0, 0], [1, 0, 0], [1.5, 0.5, 0], [1, 1, 0], [2.5, 1.5, 0.5], [1, 1, 1]])
+print(np.allclose(Sx3, Sx_hand), np.allclose(Su3, Su_hand))   # True True
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build it yourself.</b> Write your own <code>prediction_matrices</code> with a single loop over the block rows, reusing the previous row's blocks, and compare it with the package's for <span class="m">N = 10</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Block row <span class="m">i</span> is <span class="m">A</span> times block row <span class="m">i - 1</span>, with a fresh <span class="m">B</span> appended in column <span class="m">i</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Row block <span class="m">i</span> of <span class="m">\mathcal S_u</span> equals <span class="m">A</span> times row block <span class="m">i - 1</span>, shifted, plus <span class="m">B</span> in the new column; the same for <span class="m">\mathcal S_x</span> with <span class="m">A</span> times the previous power.</p>
+<pre><code class="language-python">def prediction_matrices_fast(A, B, N):
+    n, m = B.shape
+    Sx = np.zeros((N * n, n)); Su = np.zeros((N * n, N * m))
+    Ap = np.eye(n)
+    for i in range(N):
+        Ap = A @ Ap                                  # A^{i+1}
+        Sx[i*n:(i+1)*n] = Ap
+        if i:
+            Su[i*n:(i+1)*n, :i*m] = A @ Su[(i-1)*n:i*n, :i*m]
+        Su[i*n:(i+1)*n, i*m:(i+1)*m] = B
+    return Sx, Su
+Sx, Su = prediction_matrices(A, B, 10); Sxf, Suf = prediction_matrices_fast(A, B, 10)
+print(np.abs(Sx - Sxf).max(), np.abs(Su - Suf).max())      # 0.0 0.0
+</code></pre>
+<p>One matrix product per block row instead of <span class="m">i</span> matrix powers: the same matrices in <span class="m">\mathcal O(N)</span> products.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The fourth block row.</b> Write <span class="m">x_4</span> explicitly as a function of <span class="m">x_0, u_0, \dots, u_3</span> and identify the fourth block row of <span class="m">\mathcal S_x</span> and <span class="m">\mathcal S_u</span> for the canonical system.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Apply the recursion four times and collect the powers of <span class="m">A</span> in front of each input.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">x_4 = A^4 x_0 + A^3 B u_0 + A^2 B u_1 + AB u_2 + B u_3</span>. The block row of <span class="m">\mathcal S_x</span> is <span class="m">A^4 = \begin{pmatrix} 1 &amp; 4 \\ 0 &amp; 1 \end{pmatrix}</span> and that of <span class="m">\mathcal S_u</span> is
+<span class="m">\begin{pmatrix} 3.5 &amp; 2.5 &amp; 1.5 &amp; 0.5 \\ 1 &amp; 1 &amp; 1 &amp; 1 \end{pmatrix}</span>: every input adds 1 to the velocity, and an input applied earlier moves the position more.</p>
+<pre><code class="language-python">Sx4, Su4 = prediction_matrices(A, B, 4)
+print(Sx4[-2:]); print(Su4[-2:])     # A^4 and (A^3 B, A^2 B, AB, B)
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Condense a state constraint.</b> Suppose <span class="m">|v_k| \le 3</span> for every predicted state. Write it as <span class="m">H_x x_k \le h_x</span>, stack it over the horizon and derive the inequality in <span class="m">U</span> for <span class="m">N = 3</span> from <span class="m">(-3, 0)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Only the velocity row of each predicted state is involved, and the free response has zero velocity.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">H_x = \begin{pmatrix} 0 &amp; 1 \\ 0 &amp; -1 \end{pmatrix}</span>, <span class="m">h_x = (3, 3)</span>, <span class="m">\bar H_x = I_3 \otimes H_x</span>. The left matrix <span class="m">\bar H_x \mathcal S_u</span> picks the velocity rows of <span class="m">\mathcal S_u</span> with alternating sign, all ones below the diagonal, and since the free response from <span class="m">(-3, 0)</span> keeps <span class="m">v = 0</span> the right-hand side is <span class="m">(3, 3, 3, 3, 3, 3)</span>: the cumulative input may not exceed 3 in either direction at any step.</p>
+<pre><code class="language-python">Hx = np.array([[0.0, 1.0], [0.0, -1.0]]); hx = np.array([3.0, 3.0])
+Hbar = np.kron(np.eye(3), Hx); hbar = np.tile(hx, 3)
+print(Hbar @ Su3, hbar - Hbar @ Sx3 @ np.array([-3.0, 0.0]))
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Rate constraints.</b> Construct <span class="m">D</span> for <span class="m">N = 4</span> and a scalar input, and verify that <span class="m">DU + (-u_{-1}, 0, 0, 0)</span> equals <span class="m">(u_0 - u_{-1}, u_1 - u_0, u_2 - u_1, u_3 - u_2)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Ones on the diagonal, minus ones on the first subdiagonal; the previous input enters only the first row.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With <span class="m">U = (0.3, 0.5, 0.4, 0.1)</span> and <span class="m">u_{-1} = 0.2</span> both sides are <span class="m">(0.1, 0.2, -0.1, -0.3)</span>.</p>
+<pre><code class="language-python">D4 = np.eye(4); D4[np.arange(1, 4), np.arange(3)] = -1.0
+U4 = np.array([0.3, 0.5, 0.4, 0.1]); u_prev = 0.2
+print(D4 @ U4 + np.array([-u_prev, 0, 0, 0]))   # [ 0.1  0.2 -0.1 -0.3]
+print(np.diff(np.r_[u_prev, U4]))               # the same
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Sparse against condensed size.</b> For <span class="m">n = 8</span>, <span class="m">m = 2</span> and <span class="m">N = 30</span>, compare the number of decision variables in the two forms. What property can make the larger sparse problem faster anyway?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Count <span class="m">Nn + Nm</span> against <span class="m">Nm</span>, then think about what a factorisation costs on a banded matrix against a dense one.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Sparse: <span class="m">300</span> variables and <span class="m">240</span> equalities. Condensed: <span class="m">60</span> variables. The sparse problem is five times larger, but its KKT matrix is banded, so a structure-exploiting solver factorises it in time linear in <span class="m">N</span> (a Riccati-like recursion), whereas the condensed Hessian is dense, with <span class="m">(Nm)^2 = 3600</span> entries to form and <span class="m">\mathcal O((Nm)^3)</span> work to factorise. The widget of Part 5 draws both patterns at these sizes.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The identity</strong>: <span class="m">X = \mathcal S_x x_0 + \mathcal S_u U</span>, exact for any LTI model; <span class="m">\mathcal S_u</span> is block lower-triangular because inputs act causally.</div></li>
+<li><div><strong>Two forms</strong>: sparse keeps <span class="m">(X, U)</span> with the dynamics as equalities; condensed keeps <span class="m">U</span> only. Same problem, different structure.</div></li>
+<li><div><strong>The cost</strong>: <span class="m">H = 2(\mathcal S_u^\top \bar Q \mathcal S_u + \bar R) \succ 0</span> always, <span class="m">f = 2 \mathcal S_u^\top \bar Q \mathcal S_x x_0</span>, a dropped constant <span class="m">c(x_0)</span>; at <span class="m">N = 6</span> the eigenvalues run from 0.51 to 290.</div></li>
+<li><div><strong>The unconstrained optimum</strong> from <span class="m">(-3, 0)</span> pushes with 2.22 first: the limits change the answer from the first move.</div></li>
+<li><div><strong>The constraints</strong>: <span class="m">\bar H_x \mathcal S_u U \le \bar h_x - \bar H_x \mathcal S_x x_0</span>; input bounds stay as they are; rates through <span class="m">D</span>; a terminal point through the last block rows.</div></li>
+<li><div><strong>Sparse against condensed</strong> at <span class="m">N = 8</span>: 24 against 8 variables, agreement to <span class="m">3 \times 10^{-14}</span>, 13 iterations each; banded matrices scale, dense ones are simple.</div></li>
+<li><div><strong>In code</strong>: <code>prediction_matrices</code> fills the blocks, <code>LinearMPC.solve</code> assembles <span class="m">H</span>, <span class="m">f</span> and the rows.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prediction matrices <span class="m">\mathcal S_x</span>, <span class="m">\mathcal S_u</span></td>
+<td>Powers of <span class="m">A</span> stacked; <span class="m">A^{i-1-j} B</span> in block <span class="m">(i, j)</span> below the diagonal.</td>
+</tr>
+<tr>
+<td>Free and forced response</td>
+<td><span class="m">\mathcal S_x x_0</span>, where the system goes alone; <span class="m">\mathcal S_u U</span>, what the inputs add.</td>
+</tr>
+<tr>
+<td>Condensing</td>
+<td>Substituting the dynamics so only the inputs remain as variables.</td>
+</tr>
+<tr>
+<td>Direct transcription, sparse form</td>
+<td>States kept as variables, dynamics as equality rows.</td>
+</tr>
+<tr>
+<td><span class="m">\bar Q</span>, <span class="m">\bar R</span></td>
+<td>Block-diagonal weights over the horizon, <span class="m">P</span> in the last block of <span class="m">\bar Q</span>.</td>
+</tr>
+<tr>
+<td><span class="m">H</span>, <span class="m">f</span>, <span class="m">c</span></td>
+<td>Hessian, linear term and dropped constant of the condensed cost.</td>
+</tr>
+<tr>
+<td>Difference matrix <span class="m">D</span></td>
+<td>Turns <span class="m">U</span> into the sequence of input changes.</td>
+</tr>
+<tr>
+<td>Banded, dense</td>
+<td>The sparse form's structure; the condensed form's.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Linear time-invariant models with quadratic costs and polyhedral constraints. An affine model adds a stacked constant to the identity; a time-varying model replaces the powers of <span class="m">A</span> by products of the <span class="m">A_k</span>, which chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> does; a nonlinear model has no such identity and needs the sparse form with the dynamics as nonlinear equalities, chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. The condensed and sparse QP formulations of constrained finite-time optimal control.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017. Chapter 8 on numerical optimal control: structure-exploiting solvers for the sparse form.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>G. Frison and J. B. Jørgensen. &quot;Efficient implementation of the Riccati recursion for solving linear-quadratic control problems&quot;. 2013 IEEE International Conference on Control Applications, 1117–1122. <a href="https://doi.org/10.1109/CCA.2013.6662901">doi:10.1109/CCA.2013.6662901</a>. Why the banded KKT system of the sparse form factorises in time linear in the horizon.</div></li>
+</ul>
+<p>Borrelli, Bemporad and Morari <a href="#ref-1">[1]</a> is the reference for both forms; Frison and Jørgensen <a href="#ref-3">[3]</a> for the linear-time factorisation that makes the sparse form fast. Next, chapter <a href="a03-convexity-qps-and-kkt.html" title="Convexity, quadratic programs and the KKT conditions">A3</a> asks what a solver is actually handed: what makes the problem convex, and what a solution certifies.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a01-state-space-models-and-the-double-integrator.html"><span class="lbl">Previous · A1</span><span class="t">State-space models and the double integrator</span></a>
+  <a class="next" rel="next" href="a03-convexity-qps-and-kkt.html"><span class="lbl">Next · A3</span><span class="t">Convexity, QPs and KKT</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A2 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/a02.js?v=20261102221633"></script>
+</body>
+</html>

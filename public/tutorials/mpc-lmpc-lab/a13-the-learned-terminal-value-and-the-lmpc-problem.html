@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A13 · The learned terminal value and the LMPC problem · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Realised costs-to-go, the sampled value and its convex extension by a barycentric linear program, the decrease it satisfies, the Learning MPC problem, its recursive feasibility, and the classical and learned terminal ingredients side by side.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A13 of 15</span>
+  <h1>The learned terminal value and the LMPC problem</h1>
+  <p class="lede">Chapter A12 stored the states of successful runs and convexified them into a terminal set. The same runs carry a second fact: what it cost to finish from each state. This chapter turns those realised costs into a terminal value, extends it between the samples by a linear program, proves that it decreases by the stage cost under the mixed input, exactly the condition chapter A11 asked of a terminal cost, and writes the Learning MPC problem as one quadratic program that is recursively feasible by the shifted sequence. Below, the one-dimensional example that shows every piece of it on a line.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A11 and A12 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a13_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Stored costs-to-go of the scalar integrator and their lower convex envelope, with a probe and its successor</p>
+      <canvas id="scalarC" aria-label="Stored cost-to-go samples of the scalar integrator as dots, their lower convex envelope as a curve, a movable probe with its barycentric value, and the probe's successor under the mixed input" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Probe <span class="m">x</span>: <b id="hProbeV"></b> (click the chart)</span></label>
+    <button class="btn" type="button" id="scExtra" aria-pressed="false">add a worse third run through 2, 1.6, 1.0, 0.4</button>
+    <div class="readouts" aria-live="off">
+      <span><span class="m">V_c(x)</span></span><span class="v" id="rVal">–</span>
+      <span>weights</span><span class="v" id="rLam">–</span>
+      <span>mixed input</span><span class="v" id="rU">–</span>
+      <span>decrease residual</span><span class="v" id="rRes">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to x = 2.5</button></div>
+    <p class="hint"><span class="m">x^+ = x + u</span> on <span class="m">[-5, 5]</span>, <span class="m">|u| \le 1</span>, target <span class="m">\{0\}</span>, stage cost <span class="m">q(x, u) = x^2 + 0.1u^2</span>. Two successful runs are stored; the curve is computed by the barycentric linear program at 141 points, and the residual is <span class="m">V_c(x^+) - V_c(x) + q(x, u)</span> at the probe.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#costtogo"><span class="n">1</span><span class="t">Realised costs-to-go and the sampled value</span><span class="d">The roll-out cost and the sampled value</span></a>
+    <a href="#envelope"><span class="n">2</span><span class="t">The envelope on a line</span><span class="d">The barycentric LP, dominated data</span></a>
+    <a href="#decrease"><span class="n">3</span><span class="t">Why the learned value decreases</span><span class="d">Why the learned value is a terminal Lyapunov function</span></a>
+    <a href="#problem"><span class="n">4</span><span class="t">The LMPC problem</span><span class="d">One QP with barycentric terminal variables</span></a>
+    <a href="#feasibility"><span class="n">5</span><span class="t">Recursive feasibility by the shifted sequence</span><span class="d">The shifted sequence, with data</span></a>
+    <a href="#compare"><span class="n">6</span><span class="t">Classical against learned terminal ingredients</span><span class="d">Classical against learned terminal ingredients</span></a>
+    <a href="#code"><span class="n">7</span><span class="t">The code behind it</span><span class="d">trajectory_cost_to_go, convex_safe_value, solve</span></a>
+    <a href="#pitfalls"><span class="n">8</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">9</span><span class="t">Check your understanding</span><span class="d">Nine questions with answers</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">11</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="costtogo">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Realised costs-to-go and the sampled value</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Roll-out cost-to-go.</strong> For a successful iteration <span class="m">i</span> with stage cost <span class="m">q</span>,</p>
+<div class="math-block" data-narrow="\begin{aligned} q(x, u) + V_c^j(x^+) &amp;\le \textstyle\sum_r \lambda_r [ q(s_r, u_r) + J_r^+ ] \ &amp;= \textstyle\sum_r \lambda_r J_r . \end{aligned}">\boxed{J_t^i = \sum_{k=t}^{T_i - 1} q\big(x^i[k], u^i[k]\big)}, \qquad J_{T_i}^i = 0 :</div>
+<p>the remaining cost actually incurred if the stored continuation is replayed from time <span class="m">t</span>. In the code it is computed by the backward recursion <span class="m">J_t = q(x_t, u_t) + J_{t+1}</span>, which resembles dynamic programming but over realised trajectories, not over the whole state space (chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> does it over the whole space). On the scalar run <span class="m">4 \to 3 \to 2 \to 1 \to 0</span> with inputs <span class="m">-1</span>, the costs-to-go are <span class="m">30.4, 14.3, 5.2, 1.1, 0</span>: for instance <span class="m">J(2) = (4 + 0.1) + (1 + 0.1) = 5.2</span>.</p>
+<p><strong>The sampled value.</strong> If a state appears in several runs, keep the best stored cost-to-go, <span class="m">V^j(x) = \min\{ J_t^i : x^i[t] = x \}</span>, with <span class="m">V^j = 0</span> on <span class="m">\mathcal O</span>. It is defined only at the sampled states, and that is the difficulty: a terminal state that lands between samples has no value yet.</p>
+<div class="define"><p class="define-title">What is the convex terminal value?</p>
+<p><strong>In plain words:</strong> the cheapest way to write <span class="m">x</span> as a mixture of stored states, charging each stored state its stored cost. It is the lower convex envelope of the stored (state, value) pairs, and it costs one linear program.</p>
+<p><strong>More precisely:</strong></p>
+<div class="math-block">\boxed{V_c^j(x) = \min_{\lambda} \sum_{r=1}^{M} \lambda_r V_r} \quad \text{s.t.} \quad S^\top \lambda = x, \quad \mathbf 1^\top \lambda = 1, \quad \lambda \ge 0,</div>
+<p>where <span class="m">V_r</span> is the cost-to-go stored with row <span class="m">r</span> of <span class="m">S</span>, the stored states of chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>. For fixed data this is a linear program in <span class="m">\lambda</span>; it is finite exactly on the convex safe set <span class="m">CS^j</span>, and <span class="m">+\infty</span> outside.</p>
+<dl><dt>Dominated sample</dt><dd>A stored pair lying above the envelope. The LP never selects it, and <span class="m">V_c^j</span> need not reproduce its value.</dd><dt>Carathéodory</dt><dd>In <span class="m">\mathbb R^n</span> at most <span class="m">n + 1</span> stored points are needed to represent any hull point, so a sparse <span class="m">\lambda</span> always exists.</dd><dt>Pessimism</dt><dd>Each <span class="m">V_r</span> is the cost of an admissible run, so <span class="m">V_r \ge J_\infty^\star(s_r)</span>: the learned value is an upper bound of the true one, which chapter <a href="b05-mpc-lmpc-and-reinforcement-learning.html" title="MPC, Learning MPC and reinforcement learning">B5</a> uses.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="envelope">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The envelope on a line</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Read the hero.</strong> Two runs of the scalar integrator, <span class="m">4 \to 3 \to 2 \to 1 \to 0</span> and <span class="m">-3 \to -2 \to -1 \to 0</span>, give <span class="m">SS = \{-3, \ldots, 4\}</span>, <span class="m">CS = [-3, 4]</span>, and the stored pairs <span class="m">(1, 1.1)</span>, <span class="m">(2, 5.2)</span>, <span class="m">(3, 14.3)</span>, <span class="m">(4, 30.4)</span> and their mirror images. The dots are values known from previous executions. The curve is not new data: for each intermediate <span class="m">x</span> it answers &quot;what is the cheapest convex combination of stored pairs that represents this state?&quot; In one dimension that is a convex, piecewise-affine lower envelope. At <span class="m">x = 2.5</span> the LP puts <span class="m">\lambda = 0.5</span> on <span class="m">x = 2</span> and <span class="m">0.5</span> on <span class="m">x = 3</span>, so <span class="m">V_c(2.5) = 0.5 \cdot 5.2 + 0.5 \cdot 14.3 = 9.75</span>; at <span class="m">x = 3.7</span> it is <span class="m">0.3</span> of <span class="m">14.3</span> and <span class="m">0.7</span> of <span class="m">30.4</span>, <span class="m">25.57</span>.</p>
+<p><strong>Dominated data.</strong> Press the button: a slower third run through <span class="m">2, 1.6, 1.0, 0.4</span> with inputs <span class="m">-0.4, -0.6, -0.6, -0.4</span> costs <span class="m">7.824</span> from <span class="m">x = 2</span> against the stored <span class="m">5.2</span>. Its pairs at 2, 1.6 and 1.0 lie above the envelope, dominated and never selected, and the curve there does not move. But its last pair <span class="m">(0.4, 0.176)</span> lies below the old chord from <span class="m">(0, 0)</span> to <span class="m">(1, 1.1)</span>, whose value at 0.4 was 0.44, so the envelope drops near the origin: <span class="m">V_c(0.4)</span> falls from 0.44 to 0.176 and <span class="m">V_c(0.7)</span> from 0.77 to 0.638. A worse run overall can still contain a better partial continuation, and the LP keeps exactly the part that helps. Worse data never raise the terminal value.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="decrease">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Why the learned value decreases</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The data recursion.</strong> For a stored state <span class="m">s_r</span> with input <span class="m">u_r</span> and successor <span class="m">s_r^+</span>, the stored costs satisfy <span class="m">J_r = q(s_r, u_r) + J_r^+</span>. For <span class="m">x = \sum_r \lambda_r s_r</span> use <span class="m">u = \sum_r \lambda_r u_r</span>, so that <span class="m">x^+ = \sum_r \lambda_r s_r^+</span> by the linearity argument of chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>.</p>
+<p><strong>The decrease.</strong> Convexity of <span class="m">q</span> gives <span class="m">q(x, u) \le \sum_r \lambda_r q(s_r, u_r)</span>. The definition of <span class="m">V_c^j</span> as a minimum gives <span class="m">V_c^j(x^+) \le \sum_r \lambda_r J_r^+</span>, since the weights <span class="m">\lambda</span> on the successors are one feasible choice at <span class="m">x^+</span>. Adding,</p>
+<div class="math-block">q(x, u) + V_c^j(x^+) \le \sum_r \lambda_r \big[ q(s_r, u_r) + J_r^+ \big] = \sum_r \lambda_r J_r .</div>
+<p>If <span class="m">\lambda</span> is the minimiser defining <span class="m">V_c^j(x)</span>, the right side is <span class="m">V_c^j(x)</span>, and</p>
+<div class="math-block" data-narrow="\begin{aligned} \min_{{u_k}, \lambda}\ &amp; \textstyle\sum_{k=0}^{N-1} q(x_k, u_k) + \sum_r \lambda_r V_r \ \text{s.t. } &amp; x_{k+1} = A x_k + B u_k,\ x_k \in \mathcal X,\ u_k \in \mathcal U, \ &amp; x_N = S^\top \lambda,\ \lambda \ge 0,\ \mathbf 1^\top \lambda = 1. \end{aligned}">\boxed{V_c^j(x^+) - V_c^j(x) \le -q(x, u).}</div>
+<p>This is the terminal-cost condition of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>, <span class="m">V_f(Ax + B\kappa_f(x)) - V_f(x) \le -q(x, \kappa_f(x))</span>, with the terminal value built from data instead of a Riccati equation. The convex hull plays the role of <span class="m">\mathcal X_f</span>, and the convex combination of stored inputs plays the role of the terminal controller <span class="m">\kappa_f</span>.</p>
+<p><strong>Worked instance.</strong> At <span class="m">x = 2.5</span> with <span class="m">\lambda = (0.5, 0.5)</span> on <span class="m">2, 3</span> and stored inputs <span class="m">-1, -1</span>: <span class="m">u = -1</span>, <span class="m">x^+ = 1.5</span>, <span class="m">V_c(1.5) = 0.5 \cdot 1.1 + 0.5 \cdot 5.2 = 3.15</span>, <span class="m">q(2.5, -1) = 6.25 + 0.1 = 6.35</span>, and <span class="m">V_c(1.5) - V_c(2.5) = 3.15 - 9.75 = -6.6 \le -6.35</span>. The slack of 0.25 is the convexity gap of <span class="m">x^2</span> between <span class="m">2.5^2</span> and the average of <span class="m">2^2</span> and <span class="m">3^2</span>. The hero's residual readout is this number for whatever probe you choose.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="problem">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>The LMPC problem</h2>
+  </div>
+  <div class="col prose">
+
+<p>At the current state <span class="m">x_0</span>, with stored data <span class="m">(S, V)</span> and their continuation inputs, solve</p>
+<div class="math-block">\begin{aligned} \min_{\{u_k\}, \lambda}\quad &amp; \sum_{k=0}^{N-1} q(x_k, u_k) + \sum_{r=1}^{M} \lambda_r V_r \\ \text{s.t.}\quad &amp; x_{k+1} = A x_k + B u_k, \qquad x_k \in \mathcal X, \quad u_k \in \mathcal U, \\ &amp; x_N = S^\top \lambda, \qquad \lambda \ge 0, \qquad \mathbf 1^\top \lambda = 1. \end{aligned}</div>
+<p><strong>Geometric meaning.</strong> The equality <span class="m">x_N = S^\top \lambda</span> lets the optimiser reconnect to any point in the convex hull of successful experience; the cost <span class="m">\lambda^\top V</span> tells it how expensive the stored continuation from that point is. The two constraints on <span class="m">\lambda</span> and the linear cost are the data-driven terminal ingredients; everything else is the finite-horizon problem of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>. The decision vector is <span class="m">(u_0, \ldots, u_{N-1}, \lambda_1, \ldots, \lambda_M)</span>: <span class="m">N</span> inputs plus one weight per stored state, which is why the online problem grows with experience and why chapter <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> keeps a window of recent runs.</p>
+<p><strong>The first solve on the cart.</strong> Store the slow <span class="m">N = 2</span> seed of chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>, 20 inputs at cost 28.087, and solve the LMPC problem from <span class="m">x_S = (-3.5, 2.5)</span> with <span class="m">N = 3</span>. The seed had applied <span class="m">u_0 = 0</span>; LMPC applies <span class="m">u_0 = -0.839</span>. Its objective, three stage costs plus <span class="m">\lambda^\top V</span>, is 16.661, below the stored cost 28.087 because the seed's own continuation is a feasible candidate. The terminal state is <span class="m">(0.061, -0.023)</span>, which is exactly stored state 11 of the seed with weight 1 and value 0.006: the three-step plan reaches a point eleven steps down the slow run, and the learned cost tells it that finishing from there is almost free. With <span class="m">N = 2</span> the plan cannot get that far: it ends at <span class="m">(-0.303, 0.631)</span>, a mixture of 0.166 of <span class="m">(-1, 2.5)</span> and 0.834 of <span class="m">(-0.164, 0.26)</span>, at objective 18.906.</p>
+<div class="widget" id="lmpcW">
+  <div class="controls">
+    <label class="field"><span>Horizon <span class="m">N</span>: <b id="lmNV"></b></span>
+      <span class="row"><input type="range" id="lmN" min="2" max="6" step="1" value="3"></span></label>
+  </div>
+  <canvas id="lmpcC" aria-label="The stored seed run and its hull, the LMPC plan from the start, the stored states selected by the terminal weights, and the appended continuation" aria-describedby="lmpcCap"></canvas>
+  <p class="caption" id="lmpcCap"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="feasibility">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Recursive feasibility by the shifted sequence</h2>
+  </div>
+  <div class="col prose">
+
+<p>Suppose the solution ends at <span class="m">x_N^\star = \sum_r \lambda_r^\star s_r</span>. At the next time, shift the optimised inputs and append</p>
+<div class="math-block">\boxed{u_N^{\mathrm{safe}} = \sum_r \lambda_r^\star u_r^{\mathrm{safe}}.}</div>
+<p>Then <span class="m">x_{N+1} = A \sum_r \lambda_r^\star s_r + B \sum_r \lambda_r^\star u_r^{\mathrm{safe}} = \sum_r \lambda_r^\star s_r^+ \in CS^j</span>: the shifted sequence is feasible for the new problem, exactly as in chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>'s terminal-set proof, with the stored continuation inputs in place of the terminal controller. The optimal value at the next state is therefore at most the shifted sequence's cost, and by the decrease of Part 3 it is at most <span class="m">J(x_0) - q(x_0, u_0^\star)</span>: the Lyapunov argument of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> goes through unchanged.</p>
+<p>On the cart with <span class="m">N = 3</span>: the appended input is <span class="m">-0.022</span>, the stored input at state 11, and it lands at <span class="m">(0.027, -0.045)</span>, the stored successor. The next problem, from <span class="m">x_1 = (-1.420, 1.661)</span>, is feasible with value <span class="m">3.019106</span>, against <span class="m">J(x_0) - q(x_0, u_0) = 3.019919</span>: a decrease with a slack of <span class="m">8 \times 10^{-4}</span>. The code's warm start is this shifted sequence, and chapter <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> runs the loop to the target and back again, nine times.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="compare">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Classical against learned terminal ingredients</h2>
+  </div>
+  <div class="col prose">
+
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Classical MPC (chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>)</th>
+<th>Learning MPC (this chapter)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Terminal set</td>
+<td><span class="m">\mathcal X_f</span>, an invariant polytope computed from the model</td>
+<td><span class="m">CS^j</span>, the hull of states visited by successful runs</td>
+</tr>
+<tr>
+<td>Terminal cost</td>
+<td><span class="m">V_f(x) = x^\top P x</span> from the Riccati equation</td>
+<td><span class="m">V_c^j(x) = \lambda^\top V</span>, barycentric in stored costs-to-go</td>
+</tr>
+<tr>
+<td>Terminal controller</td>
+<td><span class="m">\kappa_f(x) = -Kx</span></td>
+<td><span class="m">\sum_r \lambda_r u_r^{\mathrm{safe}}</span>, a mixture of stored inputs</td>
+</tr>
+<tr>
+<td>Decrease condition</td>
+<td><span class="m">V_f(x^+) - V_f(x) \le -q</span>, by design</td>
+<td><span class="m">V_c^j(x^+) - V_c^j(x) \le -q</span>, by convexity and the data recursion</td>
+</tr>
+<tr>
+<td>Source of information</td>
+<td>The model and the designer</td>
+<td>The model and successful closed-loop data</td>
+</tr>
+<tr>
+<td>What improves with use</td>
+<td>Nothing</td>
+<td>The set grows and the values fall as runs accumulate</td>
+</tr>
+</tbody>
+</table></div>
+<p>Both need the model: the LMPC of this course is data-driven, not model-free. What the data replace is the design of the terminal ingredients, which for constrained nonlinear systems is the hard part.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · trajectory_cost_to_go</p><pre><code class="language-python">def trajectory_cost_to_go(X, U, Q, R, Q1=None):
+    &quot;&quot;&quot;
+    Roll-out cost-to-go for a successful finite trajectory.
+
+    X = [x_0,...,x_T], U = [u_0,...,u_{T-1}]
+    J_t = sum_{k=t}^{T-1} h(x_k,u_k), J_T=0.
+    &quot;&quot;&quot;
+    X = np.asarray(X, float)
+    U = np.asarray(U, float)
+
+    if len(X) != len(U) + 1:
+        raise ValueError(&quot;X must contain one more state sample than U&quot;)
+
+    J = np.zeros(len(X))
+
+    for k in range(len(U) - 1, -1, -1):
+        J[k] = stage_cost(X[k], U[k], Q, R, Q1) + J[k + 1]
+
+    return J</code></pre>
+<p>The backward loop is Part 1's recursion: <code>J[k]</code> is the stage cost at step <code>k</code> plus <code>J[k + 1]</code>, starting from <code>J[T] = 0</code> for the terminal state. The length check enforces the course's convention of <span class="m">T + 1</span> states for <span class="m">T</span> inputs. The optional <code>Q1</code> adds an <span class="m">\ell_1</span> term <span class="m">\|Q_1 x\|_1</span> to the stage cost, which the package supports through epigraph variables (exercise 6); the canonical task of this course sets it to zero.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · convex_safe_value</p><pre><code class="language-python">def convex_safe_value(x, safe_states, safe_values):
+    &quot;&quot;&quot;
+    Convex-envelope terminal value
+
+        V_c(x) = min lambda&#x27; V
+        s.t. S&#x27; lambda = x,
+             1&#x27; lambda = 1,
+             lambda &gt;= 0.
+
+    Returns (value, lambda, success).
+    &quot;&quot;&quot;
+    x = np.asarray(x, float).reshape(-1)
+    S = np.asarray(safe_states, float)
+    V = np.asarray(safe_values, float).reshape(-1)
+
+    if len(S) != len(V):
+        raise ValueError(&quot;safe_states and safe_values must have the same length&quot;)
+
+    A_eq = np.vstack([S.T, np.ones((1, len(S)))])
+    b_eq = np.r_[x, 1.0]
+
+    res = linprog(
+        c=V,
+        A_eq=A_eq,
+        b_eq=b_eq,
+        bounds=[(0.0, None)] * len(S),
+        method=&quot;highs&quot;,
+    )
+
+    if not res.success:
+        return np.inf, np.zeros(len(S)), False
+
+    return float(res.fun), np.asarray(res.x, float), True</code></pre>
+<p>This is Part 2's linear program, written for SciPy's HiGHS: the objective vector is the stored values <code>V</code>, the equalities stack <span class="m">S^\top \lambda = x</span> and <span class="m">\mathbf 1^\top \lambda = 1</span>, and the bounds keep <span class="m">\lambda \ge 0</span>. An infeasible LP means <span class="m">x</span> is outside the hull, and the function returns <span class="m">+\infty</span>. The weights it returns are the ones the hero draws; they are one valid representation among possibly many, chosen to minimise the cost.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · LMPCController.solve</p><pre><code class="language-python">    def solve(
+        self,
+        x0,
+        *,
+        last_n_trajectories=None,
+        warm=None,
+    ):
+        x0 = np.asarray(x0, float).reshape(self.n)
+
+        S, V, Usafe, nxt = self.safe_data(last_n_trajectories)
+
+        M = len(S)
+        nu = self.N * self.m
+        p = self.Q1.shape[0]
+        ne = max(self.N - 1, 0) * p
+        nz = nu + M + ne
+
+        Qbar = np.kron(np.eye(self.N), self.Q)
+        Qbar[-self.n:, -self.n:] = 0.0
+        Rbar = np.kron(np.eye(self.N), self.R)
+
+        H = np.zeros((nz, nz))
+        f = np.zeros(nz)
+
+        H[:nu, :nu] = 2.0 * (
+            self.Su.T @ Qbar @ self.Su
+            + Rbar
+        )
+        f[:nu] = 2.0 * self.Su.T @ Qbar @ (self.Sx @ x0)
+
+        f[nu:nu+M] = V
+
+        if ne:
+            f[nu+M:] = 1.0
+
+        A_ub = []
+        b_ub = []
+
+        A_state = np.zeros((2 * self.N * self.n, nz))
+        A_state[:self.N*self.n, :nu] = self.Su
+        A_state[self.N*self.n:, :nu] = -self.Su
+
+        b_state = np.r_[
+            np.tile(self.x_upper, self.N) - self.Sx @ x0,
+            -np.tile(self.x_lower, self.N) + self.Sx @ x0,
+        ]
+
+        A_ub.append(A_state)
+        b_ub.append(b_state)
+
+        for k in range(1, self.N):
+            row_x = self.Su[(k-1)*self.n:k*self.n, :]
+            offset_x = self.Sx[(k-1)*self.n:k*self.n, :] @ x0
+
+            for i in range(p):
+                e_idx = nu + M + (k - 1) * p + i
+
+                row = np.zeros(nz)
+                row[:nu] = self.Q1[i] @ row_x
+                row[e_idx] = -1.0
+                A_ub.append(row[None, :])
+                b_ub.append(np.array([-self.Q1[i] @ offset_x]))
+
+                row = np.zeros(nz)
+                row[:nu] = -self.Q1[i] @ row_x
+                row[e_idx] = -1.0
+                A_ub.append(row[None, :])
+                b_ub.append(np.array([self.Q1[i] @ offset_x]))
+
+        A_eq = np.zeros((self.n + 1, nz))
+        b_eq = np.zeros(self.n + 1)
+
+        A_eq[:self.n, :nu] = self.Su[-self.n:, :]
+        A_eq[:self.n, nu:nu+M] = -S.T
+        b_eq[:self.n] = -self.Sx[-self.n:, :] @ x0
+
+        A_eq[self.n, nu:nu+M] = 1.0
+        b_eq[self.n] = 1.0
+
+        lb = np.r_[
+            np.tile(self.u_lower, self.N),
+            np.zeros(M),
+            np.zeros(ne),
+        ]
+
+        ub = np.r_[
+            np.tile(self.u_upper, self.N),
+            np.ones(M),
+            np.full(ne, np.inf),
+        ]
+
+        if warm is None:
+            warm = self.warm_start_from_stored_path(
+                x0,
+                last_n_trajectories=last_n_trajectories,
+            )
+
+        if warm is None or len(np.asarray(warm).reshape(-1)) != nz:
+            lam0 = np.zeros(M)
+            nearest = int(np.argmin(np.linalg.norm(S - x0, axis=1)))
+            lam0[nearest] = 1.0
+
+            warm = self._pack_warm(
+                x0,
+                np.zeros((self.N, self.m)),
+                lam0,
+                S,
+            )
+
+        res = solve_qp(
+            H,
+            f,
+            A_ub=np.vstack(A_ub),
+            b_ub=np.concatenate(b_ub),
+            A_eq=A_eq,
+            b_eq=b_eq,
+            lb=lb,
+            ub=ub,
+            x0=np.asarray(warm, float).reshape(-1),
+            tol=1e-8,
+            maxiter=3000,
+        )
+
+        U = res.x[:nu].reshape(self.N, self.m)
+        lam = res.x[nu:nu+M]
+
+        Xpred = (
+            self.Sx @ x0
+            + self.Su @ res.x[:nu]
+        ).reshape(self.N, self.n)
+
+        Xfull = np.vstack([x0, Xpred])
+
+        objective = sum(
+            stage_cost(
+                Xfull[k],
+                U[k],
+                self.Q,
+                self.R,
+                self.Q1,
+            )
+            for k in range(self.N)
+        )
+        objective += float(lam @ V)
+
+        terminal_state = S.T @ lam
+
+        return LMPCSolution(
+            success=bool(res.success),
+            U=U,
+            X=Xpred,
+            lambdas=lam,
+            objective=float(objective),
+            terminal_state=terminal_state,
+            message=res.message,
+            max_violation=float(res.max_violation),
+            raw_decision=res.x.copy(),
+            safe_states=S,
+            safe_values=V,
+            safe_inputs=Usafe,
+            next_index=nxt,
+        )</code></pre>
+<p>Read it from the decision vector outward: <code>nu</code> inputs, then <code>M</code> weights, then the epigraph variables when an <span class="m">\ell_1</span> term is present. The Hessian block <code>H[:nu, :nu]</code> and the linear term <code>f[:nu]</code> are the condensed quadratic cost of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> with the terminal state unweighted (<code>Qbar[-n:, -n:] = 0</code>), because <span class="m">x_N</span> is priced by <code>f[nu:nu+M] = V</code>, the stored values. The state bounds are the stacked inequalities of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>. The two equality rows <code>A_eq</code> are Part 4's terminal constraint: <code>Su[-n:] @ U - S.T @ lam = -Sx[-n:] @ x0</code>, which is <span class="m">x_N = S^\top \lambda</span> with <span class="m">x_N</span> expanded by the prediction identity, and <code>1 @ lam = 1</code>. The bounds <code>0 &lt;= lam &lt;= 1</code> complete the simplex. After the solve, the objective is reassembled from the stage costs and <code>lam @ V</code>, and the terminal state <code>S.T @ lam</code> is returned with the data that the shifted warm start needs.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The terminal value is a neural network.&quot;</strong> Not here. It is barycentric interpolation of stored roll-out costs, one linear program.</li>
+<li><strong>&quot;The envelope is measured.&quot;</strong> The dots are measured; the curve between them is the LP's lower bound built from the dots and the convexity assumptions.</li>
+<li><strong>&quot;Stored values are optimal values.&quot;</strong> They are upper bounds: realised costs of admissible runs. Chapter <a href="b05-mpc-lmpc-and-reinforcement-learning.html" title="MPC, Learning MPC and reinforcement learning">B5</a> shows value iteration approaching the optimum from below and data from above.</li>
+<li><strong>&quot;Hull growth is the learning.&quot;</strong> The set is half of it. Once the hull stops growing, better stored values still change the short-horizon decision, which chapter <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> measures.</li>
+<li><strong>&quot;The decrease needs the exact minimiser.&quot;</strong> It needs the weights that define <span class="m">V_c(x)</span> at the current terminal state; any feasible weights give the inequality with <span class="m">\sum \lambda_r J_r</span> in place of <span class="m">V_c(x)</span>, which is weaker but still a feasible candidate.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What is the roll-out cost-to-go?</summary>
+<p>The sum of the realised stage costs from time <span class="m">t</span> to the end of a successful run, <span class="m">J_t^i = \sum_{k \ge t} q(x^i[k], u^i[k])</span>, computed backwards.</p>
+</details>
+<details class="sol"><summary>2. What does <span class="m">\lambda^\top V</span> mean?</summary>
+<p>The learned terminal value: barycentric interpolation of the stored costs-to-go at the terminal state <span class="m">S^\top \lambda</span>.</p>
+</details>
+<details class="sol"><summary>3. Why is <span class="m">V_c</span> a lower convex envelope?</summary>
+<p>It is the minimum of <span class="m">\lambda^\top V</span> over all representations of <span class="m">x</span>, so it lies below every chord between stored pairs and is convex as the value of a linear program with a right-hand side affine in <span class="m">x</span>.</p>
+</details>
+<details class="sol"><summary>4. Which stored pairs does the LP ignore?</summary>
+<p>Dominated ones: pairs that lie above the envelope. A worse run can still lower the envelope where one of its pairs lies below the old chord.</p>
+</details>
+<details class="sol"><summary>5. Why does the learned value decrease by at least the stage cost?</summary>
+<p>Mix the stored inputs with the weights that define <span class="m">V_c(x)</span>; linearity sends <span class="m">x</span> to the same mixture of successors, convexity of <span class="m">q</span> bounds the stage cost, and the definition of <span class="m">V_c</span> as a minimum bounds the next value by the mixture of the stored next values.</p>
+</details>
+<details class="sol"><summary>6. What does <span class="m">x_N = S^\top \lambda</span> with <span class="m">\lambda</span> in the simplex mean?</summary>
+<p>That the terminal prediction lies in the convex hull of the stored states, the rows of <span class="m">S</span>.</p>
+</details>
+<details class="sol"><summary>7. Why is the LMPC problem recursively feasible?</summary>
+<p>The shifted inputs plus the mixture of the stored continuation inputs reach a mixture of stored successors, which is in the hull, so the next problem has a feasible point.</p>
+</details>
+<details class="sol"><summary>8. Why can a horizon-three LMPC outperform a horizon-three plain MPC?</summary>
+<p>The learned terminal set and value carry information beyond the explicit window: from <span class="m">x_S</span> the seed applies 0 and LMPC applies <span class="m">-0.839</span>, because the stored costs say that reaching a state down the seed quickly is cheap.</p>
+</details>
+<details class="sol"><summary>9. Is LMPC model-free?</summary>
+<p>No. <span class="m">A</span> and <span class="m">B</span> appear in every online problem; the data replace the terminal ingredients, not the model.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Barycentric LP by hand.</b> Compute <span class="m">V_c(2.5)</span> by hand in the one-dimensional example.</p>
+<details class="sol"><summary>Hint</summary>
+<p>In one dimension the cheapest representation of a point between two consecutive samples uses those two samples, provided the stored values are convex in <span class="m">x</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The stored pairs are <span class="m">(2, 5.2)</span> and <span class="m">(3, 14.3)</span>, and the sequence of values <span class="m">0, 1.1, 5.2, 14.3, 30.4</span> has increasing increments, so it is convex and no farther pair can do better. <span class="m">2.5 = 0.5 \cdot 2 + 0.5 \cdot 3</span> gives <span class="m">V_c(2.5) = 0.5 \cdot 5.2 + 0.5 \cdot 14.3 = 9.75</span>, with <span class="m">\lambda = (0.5, 0.5)</span>, which is what <code>convex_safe_value([2.5], S, V)</code> returns.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The decrease at every probe.</b> Show that on the scalar example the residual <span class="m">V_c(x^+) - V_c(x) + q(x, u)</span> with the mixed input is never positive, and compute it at <span class="m">x = 3.7</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>At <span class="m">x = 3.7</span> the weights are 0.3 on 4 and 0.7 on 3, both with input <span class="m">-1</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">u = -1</span>, <span class="m">x^+ = 2.7</span>, <span class="m">V_c(2.7) = 0.3 \cdot 14.3 + 0.7 \cdot 5.2 = 7.93</span>, <span class="m">V_c(3.7) = 25.57</span>, <span class="m">q = 3.7^2 + 0.1 = 13.79</span>, residual <span class="m">7.93 - 25.57 + 13.79 = -3.85</span>. In general the residual is <span class="m">-</span>(the convexity gap of <span class="m">x^2</span> at the weights), which is zero at stored states and negative between them; the hero's readout confirms it wherever you click.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Dominated data.</b> Add the worse trajectory through an already sampled state and explain how the sampled minimum and the convex envelope treat it.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The hero's button adds the run <span class="m">2 \to 1.6 \to 1.0 \to 0.4 \to 0</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The slow run stores <span class="m">J(2) = 4.016 + 2.596 + 1.036 + 0.176 = 7.824</span> (stage costs <span class="m">x^2 + 0.1u^2</span> with inputs <span class="m">-0.4, -0.6, -0.6, -0.4</span>), worse than the existing 5.2 at <span class="m">x = 2</span>. The sampled value function keeps the minimum, 5.2. The convex extension ignores the dominated pairs: <span class="m">(1.6, 3.808)</span> lies above the chord from <span class="m">(1, 1.1)</span> to <span class="m">(2, 5.2)</span>, which has value 3.56 there, and <span class="m">(1.0, 1.212)</span> is above the existing 1.1. But <span class="m">(0.4, 0.176)</span> lies below the chord from <span class="m">(0, 0)</span> to <span class="m">(1, 1.1)</span>, whose value there is 0.44, so the envelope drops near <span class="m">x = 0.4</span>: <span class="m">V_c(0.4) = 0.176</span>, <span class="m">V_c(0.2) = 0.088</span>, <span class="m">V_c(0.7) = 0.638</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The stage cost by hand.</b> For <span class="m">x = (-2, 1)</span> and <span class="m">u = 0.5</span> on the canonical cart, compute <span class="m">q(x, u)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">x^\top Q x</span> with <span class="m">Q = \mathrm{diag}(1, 0.2)</span>, plus <span class="m">0.2 u^2</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">x^\top Q x = 4 + 0.2 = 4.2</span>, <span class="m">R u^2 = 0.2 \cdot 0.25 = 0.05</span>, total <span class="m">4.25</span>, which <code>stage_cost([-2, 1], [0.5], Q, R)</code> confirms.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the terminal value yourself.</b> Write the barycentric LP with <code>scipy.optimize.linprog</code> and compare it with <code>convex_safe_value</code> at ten random points of the cart's hull.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Objective <span class="m">V</span>, equalities <span class="m">S^\top \lambda = x</span> and <span class="m">\mathbf 1^\top \lambda = 1</span>, bounds <span class="m">\lambda \ge 0</span>; sample points as random convex combinations of stored states.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from scipy.optimize import linprog
+def my_value(x, S, V):
+    A_eq = np.vstack([S.T, np.ones((1, len(S)))]); b_eq = np.r_[x, 1.0]
+    r = linprog(V, A_eq=A_eq, b_eq=b_eq, bounds=[(0, None)] * len(S), method=&quot;highs&quot;)
+    return r.fun if r.success else np.inf
+rng = np.random.default_rng(0)
+for _ in range(10):
+    w = rng.dirichlet(np.ones(len(S))); x = S.T @ w
+    assert abs(my_value(x, S, V) - convex_safe_value(x, S, V)[0]) &lt; 1e-9
+</code></pre>
+<p>The values agree to round-off. The weights need not: when a point has several cheapest representations, the two solvers may return different ones, but the value is unique.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The epigraph trick.</b> The package allows an <span class="m">\ell_1</span> term <span class="m">\|Q_1 x\|_1</span> in the stage cost. Prove that <span class="m">\|z\|_1</span> can be replaced by <span class="m">\sum_i e_i</span> with the linear constraints <span class="m">-e_i \le z_i \le e_i</span>, so the problem stays a QP.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Show that the feasible set in <span class="m">e</span> is <span class="m">e_i \ge |z_i|</span> and that minimising makes it tight.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For fixed <span class="m">z</span>, the constraints <span class="m">z_i \le e_i</span> and <span class="m">-z_i \le e_i</span> are equivalent to <span class="m">e_i \ge |z_i|</span>, which also implies <span class="m">e_i \ge 0</span>. Hence <span class="m">\min_e \{ \sum_i e_i : e_i \ge |z_i| \} = \sum_i |z_i| = \|z\|_1</span>, attained at <span class="m">e_i = |z_i|</span>. Inside a larger minimisation over <span class="m">(z, e)</span> the same holds for whatever <span class="m">z</span> is chosen, so replacing <span class="m">\|z\|_1</span> by <span class="m">\sum_i e_i</span> with these linear constraints changes neither the optimal value nor the optimal <span class="m">z</span>, and the problem stays a QP. In <code>solve</code>, the block after the weights holds these <span class="m">e</span> variables for <span class="m">x_1, \ldots, x_{N-1}</span>, with <span class="m">x_0</span> a constant and <span class="m">x_N</span> priced by the terminal value.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Classical against learned.</b> Compare <span class="m">(\mathcal X_f, V_f)</span> with <span class="m">(CS^j, V_c^j)</span>: which roles are analogous, and where does the information come from?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Part 6's table.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\mathcal X_f</span> and <span class="m">CS^j</span> are both control-invariant terminal sets that make the shifted sequence feasible; <span class="m">V_f</span> and <span class="m">V_c^j</span> are both terminal costs satisfying a one-step decrease, <span class="m">V_f(x^+) - V_f(x) \le -q</span> from the Riccati construction and <span class="m">V_c^j(x^+) - V_c^j(x) \le -q</span> from convexity and the stored data recursion; <span class="m">\kappa_f = -Kx</span> and <span class="m">\sum_r \lambda_r u_r^{\mathrm{safe}}</span> are the terminal controllers that realise the decrease. The classical pair is computed from the model offline by the designer; the learned pair is computed from the model and from successful closed-loop data, and it improves as data accumulate. Both need the model.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Cost-to-go</strong>: <span class="m">J_t = q(x_t, u_t) + J_{t+1}</span> backwards along a stored run; <span class="m">J_0</span> is the run's cost.</div></li>
+<li><div><strong>Convex terminal value</strong>: the cheapest barycentric mixture of stored costs, one LP; <span class="m">V_c(2.5) = 9.75</span> on the line.</div></li>
+<li><div><strong>Dominated data</strong> never raise the envelope; a worse run can still lower it where one pair lies below the old chord.</div></li>
+<li><div><strong>Decrease</strong>: <span class="m">V_c(x^+) - V_c(x) \le -q(x, u)</span> under the mixed input, the terminal-cost condition of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> obtained from data.</div></li>
+<li><div><strong>The problem</strong>: chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>'s QP plus <span class="m">x_N = S^\top \lambda</span>, the simplex and <span class="m">\lambda^\top V</span> in the cost; <span class="m">N + M</span> variables.</div></li>
+<li><div><strong>On the cart</strong>: from the slow seed, <span class="m">N = 3</span> applies <span class="m">-0.839</span> instead of 0, ends on stored state 11, objective 16.661 below the stored 28.087.</div></li>
+<li><div><strong>Recursive feasibility</strong>: the shifted sequence plus the mixed stored input lands on a mixture of stored successors; the next value is 3.0191 against 3.0199.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cost-to-go <span class="m">J_t</span></td>
+<td>Realised remaining cost of a stored run from time <span class="m">t</span>.</td>
+</tr>
+<tr>
+<td>Sampled value <span class="m">V^j</span></td>
+<td>The best stored cost-to-go at a sampled state.</td>
+</tr>
+<tr>
+<td>Convex terminal value <span class="m">V_c^j</span></td>
+<td>Cheapest barycentric mixture of stored costs; a linear program.</td>
+</tr>
+<tr>
+<td>Dominated sample</td>
+<td>A pair above the envelope, never selected.</td>
+</tr>
+<tr>
+<td>Decrease residual</td>
+<td><span class="m">V_c(x^+) - V_c(x) + q(x, u)</span>, at most zero under the mixed input.</td>
+</tr>
+<tr>
+<td>LMPC problem</td>
+<td>The finite-horizon QP with <span class="m">x_N = S^\top \lambda</span>, the simplex and <span class="m">\lambda^\top V</span>.</td>
+</tr>
+<tr>
+<td>Shifted sequence</td>
+<td>Old inputs minus the first, plus the mixed stored input: the feasibility witness.</td>
+</tr>
+<tr>
+<td>Epigraph variable</td>
+<td><span class="m">e \ge \lvert z \rvert</span>, turning an <span class="m">\ell_1</span> term into linear constraints.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Deterministic repeated tasks with known linear dynamics, convex constraints and a convex stage cost. The decrease needs convexity of <span class="m">q</span> and linearity of the model; the sampled value needs neither but is defined only at samples.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>U. Rosolia and F. Borrelli. &quot;Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework&quot;. <em>IEEE Transactions on Automatic Control</em> 63(7), 1883–1896, 2018. <a href="https://doi.org/10.1109/TAC.2017.2753460">doi:10.1109/TAC.2017.2753460</a>. The learned terminal value and the LMPC problem.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). The stability theory the learned ingredients plug into.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>S. Boyd and L. Vandenberghe. <em>Convex Optimization</em>. Cambridge University Press, 2004. <a href="https://doi.org/10.1017/CBO9780511804441">doi:10.1017/CBO9780511804441</a>. Linear programs, convex envelopes and the epigraph form.</div></li>
+</ul>
+<p>Rosolia and Borrelli <a href="#ref-1">[1]</a> introduced the construction. Next, lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> runs the loop: the seed, the database, nine learning iterations, and what is guaranteed against what is observed.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a12-sampled-and-convex-safe-sets.html"><span class="lbl">Previous · A12</span><span class="t">Sampled and convex safe sets</span></a>
+  <a class="next" rel="next" href="a14-bellman-dynamic-programming-value-and-policy-iteration.html"><span class="lbl">Next · A14</span><span class="t">Bellman: DP, value and policy iteration</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A13 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/mpc-lmpc.js?v=20261102221633"></script>
+<script src="interactive/a13.js?v=20261102221633"></script>
+</body>
+</html>

@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A14 · Bellman: DP, value and policy iteration · Advanced MPC and Learning MPC</title>
+<meta name="description" content="The principle of optimality and its proof, the backward recursion and its domains as controllable sets, the Riccati recursion as its linear-quadratic case, the Bellman operator&#x27;s contraction, value and policy iteration, and the constrained double integrator solved exactly on a lattice.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+<style>
+#piT { font-size: 0.82rem; }
+@media (max-width: 480px) { #piT, #curseT { font-size: 0.74rem; } }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A14 of 15</span>
+  <h1>Bellman: dynamic programming, value and policy iteration</h1>
+  <p class="lede">Every controller in this course rests on one object: the optimal cost-to-go, the price of acting optimally from a state onward. Dynamic programming computes it for every state at once, by one backward recursion that Bellman wrote down in 1957. This chapter proves the principle behind that recursion, applies it to an integer chain small enough to check by brute force, shows it collapse to the Riccati equation in the linear-quadratic case, and turns it into an operator whose contraction gives value iteration and policy iteration their guarantees. Below, the course's double integrator is restricted to a lattice that its own dynamics map into itself, so that every cost-to-go on the page is exact.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A5, A7 and A10 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a14_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The constrained double integrator on the lattice: cost-to-go, optimal input, and the polytopes of chapters A9 and A10</p>
+      <canvas id="latC" aria-label="The lattice states of the double integrator coloured by cost-to-go or optimal input, with the maximal control-invariant set and the LQR invariant set drawn, and the optimal trajectory from the probe" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="seg" role="group" aria-label="What the colour shows">
+      <button class="btn" type="button" data-view="value" aria-pressed="true">cost-to-go <span class="m">J_k</span></button>
+      <button class="btn" type="button" data-view="policy" aria-pressed="false">optimal input <span class="m">\mu^\star</span></button>
+    </div>
+    <label class="field"><span>Value-iteration step <span class="m">k</span>: <b id="hKV"></b></span>
+      <span class="row"><input type="range" id="hK" min="0" max="10" step="1" value="10"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>finite states / in <span class="m">\mathcal C_k</span></span><span class="v" id="rDom">–</span>
+      <span>viable states</span><span class="v" id="rFin">–</span>
+      <span><span class="m">J^\star</span> at the probe</span><span class="v" id="rJ">–</span>
+      <span><span class="m">\mu^\star</span> at the probe</span><span class="v" id="rU">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the fixed point</button></div>
+    <p class="hint">The canonical system, <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>, <span class="m">|u| \le 1</span>, cost <span class="m">x^\top \operatorname{diag}(1, 0.2)\, x + 0.2 u^2</span>, no discount, hard constraints, lattice step 0.25 (813 states, 9 inputs). The slider shows <span class="m">J_k = T^k 0</span>; tap a state to move the probe.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#optimality"><span class="n">1</span><span class="t">Bellman's principle of optimality</span><span class="d">The principle, its proof, the recursion</span></a>
+    <a href="#lq"><span class="n">2</span><span class="t">The linear-quadratic case</span><span class="d">The Riccati recursion and its rate</span></a>
+    <a href="#operator"><span class="n">3</span><span class="t">Infinite horizon: the Bellman operator</span><span class="d">Contraction, fixed point, stopping rule</span></a>
+    <a href="#lattice"><span class="n">4</span><span class="t">A finite test problem: the lattice</span><span class="d">A finite test problem with a crash state</span></a>
+    <a href="#policy"><span class="n">5</span><span class="t">Policy iteration</span><span class="d">Evaluate, improve, terminate</span></a>
+    <a href="#constrained"><span class="n">6</span><span class="t">The constrained double integrator, without discount</span><span class="d">Monotone value iteration, the viable states</span></a>
+    <a href="#code"><span class="n">7</span><span class="t">The code behind it</span><span class="d">bellman, valueIteration, policyIteration, dlqr</span></a>
+    <a href="#pitfalls"><span class="n">8</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">9</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">11</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="optimality">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Bellman's principle of optimality</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The finite-horizon problem.</strong> For <span class="m">x_{k+1} = f(x_k, u_k)</span> with <span class="m">x_k \in \mathcal X</span>, <span class="m">u_k \in \mathcal U</span> and <span class="m">x_N \in \mathcal X_f</span>, an input sequence costs <span class="m">J(x_0; \mathbf u) = \sum_{k=0}^{N-1} q(x_k, u_k) + V_f(x_N)</span>, the problem of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>. Fold the constraints into the costs: <span class="m">\bar q = q</span> on <span class="m">\mathcal X \times \mathcal U</span> and <span class="m">+\infty</span> elsewhere, <span class="m">\bar V_f = V_f</span> on <span class="m">\mathcal X_f</span> and <span class="m">+\infty</span> elsewhere. A sequence is admissible exactly when its extended cost is finite. The <em>tail problem</em> at stage <span class="m">k</span> optimises the remaining inputs from <span class="m">x_k = x</span>, with value <span class="m">J_k^\star(x)</span> and <span class="m">J_N^\star = \bar V_f</span>. Minima are assumed attained, which is automatic for the finite input sets used in every computation here.</p>
+<div class="define"><p class="define-title">The principle of optimality</p>
+<p><strong>In plain words:</strong> whatever the first moves of an optimal plan were, the rest of the plan is itself optimal from wherever it has got to. A route that is the fastest from A to C through B contains the fastest route from B to C.</p>
+<p><strong>More precisely:</strong> if <span class="m">\mathbf u^\star</span> is optimal from <span class="m">x_0</span> with finite cost and trajectory <span class="m">x_0^\star, \ldots, x_N^\star</span>, then for every <span class="m">k</span> the tail <span class="m">(u_k^\star, \ldots, u_{N-1}^\star)</span> is optimal for the tail problem from <span class="m">x_k^\star</span>. <em>Proof.</em> If a tail from <span class="m">x_k^\star</span> were strictly cheaper, splicing it onto the head <span class="m">(u_0^\star, \ldots, u_{k-1}^\star)</span> would give an admissible sequence (the head still reaches <span class="m">x_k^\star</span>, and each constraint involves a single stage) with strictly lower total cost, contradicting optimality.</p>
+<dl><dt>Additive cost</dt><dd>The proof needs the total to be a sum of stage costs, so that a cheaper tail lowers the total.</dd><dt>A state that summarises the past</dt><dd>The head and the new tail meet at <span class="m">x_k^\star</span>, and nothing before it matters to the tail.</dd><dt>Stage-wise constraints</dt><dd>A constraint coupling all stages, such as <span class="m">\sum_k \|u_k\|^2 \le E</span>, breaks the splice until the state is augmented with the remaining budget.</dd></dl>
+</div>
+<p><strong>The recursion.</strong> Split the minimisation into the first input and the tail. The first stage cost does not depend on the tail inputs, and the tail depends on <span class="m">u_k</span> only through <span class="m">x_{k+1}</span>, so</p>
+<div class="math-block" data-narrow="\boxed{\begin{aligned} J_N &amp;= \bar V_f, \ J_k(x) &amp;= \min_u \big{ \bar q(x, u) + J_{k+1}( f(x, u) ) \big} \end{aligned}}">\boxed{J_N = \bar V_f, \qquad J_k(x) = \min_u \big\{ \bar q(x, u) + J_{k+1}\big( f(x, u) \big) \big\}, \quad k = N-1, \ldots, 0,}</div>
+<p>and any minimiser <span class="m">\mu_k(x)</span> is an optimal feedback law: by backward induction every sequence from <span class="m">x</span> at stage <span class="m">k</span> costs at least <span class="m">J_k(x)</span>, and <span class="m">\mu_k, \mu_{k+1}, \ldots</span> attains it. The recursion uses no linearity and no convexity, only evaluations of <span class="m">f</span> and <span class="m">q</span>. Its price is a table over all states.</p>
+<p><strong>The domains are the controllable sets.</strong> If <span class="m">q</span> is finite on <span class="m">\mathcal X \times \mathcal U</span>, the states of finite cost obey <span class="m">\operatorname{dom} J_k = \mathcal X \cap \operatorname{Pre}(\operatorname{dom} J_{k+1})</span> with <span class="m">\operatorname{dom} J_N = \mathcal X_f</span>: this is chapter <a href="a09-pre-post-and-controllable-sets.html" title="Pre, Post and controllable sets">A9</a>'s recursion for the controllable set <span class="m">\mathcal K_{N-k}(\mathcal X_f)</span>. Set computations are dynamic programming applied to functions with values in <span class="m">\{0, +\infty\}</span>.</p>
+<p><strong>An integer chain, checked by brute force.</strong> Positions <span class="m">x \in \{-10, \ldots, 10\}</span>, moves <span class="m">u \in \{-2, \ldots, 2\}</span> with <span class="m">x^+ = x + u</span>, cost <span class="m">x^2 + u^2</span>, horizon <span class="m">N = 5</span> and the terminal constraint <span class="m">x_N = 0</span>. Enumerating all <span class="m">5^5 = 3125</span> input sequences from every initial state and comparing with the recursion, the two agree on every state, including the infeasible ones, with 525 stage-cost evaluations against 328 125: linear rather than exponential in <span class="m">N</span>. The values at <span class="m">x = 0, \ldots, 10</span> are <span class="m">0, 2, 7, 15, 27, 44, 67, 97, 135, 182, 240</span>, and the domains shrink as the constraint propagates backwards, <span class="m">|x| \le 2(N - k)</span>. From <span class="m">x = 2</span> the optimal move is <span class="m">-1</span> at stages 0 to 3 and <span class="m">-2</span> at stage 4: the policy is time varying, saving the big move for the last step, because arriving early and waiting at the origin would pay <span class="m">u^2</span> later.</p>
+<div class="widget" id="chainW">
+  <label class="field"><span>Horizon <span class="m">N</span>: <b id="chNV"></b></span><span class="row"><input type="range" id="chN" min="1" max="8" step="1" value="5"></span></label>
+  <canvas id="chainC" aria-label="Cost-to-go against state for every stage of the integer chain problem" aria-describedby="chainCap"></canvas>
+  <p class="caption" id="chainCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="lq">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The linear-quadratic case</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>A quadratic cost-to-go is preserved by the Bellman step.</strong> Let <span class="m">f = Ax + Bu</span>, <span class="m">q = x^\top Q x + u^\top R u</span> with <span class="m">Q \succeq 0</span>, <span class="m">R \succ 0</span>, <span class="m">V_f = x^\top P_f x</span> and no constraints. If <span class="m">J_{k+1} = x^\top P_{k+1} x</span>, completing the square in <span class="m">u</span> gives</p>
+<div class="math-block" data-narrow="\begin{aligned} \varphi(u) &amp;= (u + K_k x)^\top H_k (u + K_k x) + x^\top P_k x, \ H_k &amp;= R + B^\top P_{k+1} B, \quad K_k = H_k^{-1} B^\top P_{k+1} A, \end{aligned}">\varphi(u) = (u + K_k x)^\top H_k (u + K_k x) + x^\top P_k x, \qquad H_k = R + B^\top P_{k+1} B \succ 0, \quad K_k = H_k^{-1} B^\top P_{k+1} A,</div>
+<p>with</p>
+<div class="math-block" data-narrow="\begin{aligned} (TJ)(x) &amp;= \min_{u \in \mathcal U(x)} { q(x, u) + \gamma J( f(x, u) ) }, \ (T_\mu J)(x) &amp;= q( x, \mu(x) ) + \gamma J( f(x, \mu(x)) ). \end{aligned}">\boxed{P_k = Q + A^\top P_{k+1} A - A^\top P_{k+1} B\, (R + B^\top P_{k+1} B)^{-1} B^\top P_{k+1} A.}</div>
+<p>So <span class="m">\mu_k = -K_k x</span> and <span class="m">J_k = x^\top P_k x</span>: dynamic programming over functions collapses to the Riccati recursion over matrices, whose fixed point is the DARE of chapter <a href="a07-lyapunov-stability-and-lqr.html" title="Lyapunov stability and LQR">A7</a>. Evaluating <span class="m">\varphi</span> at <span class="m">u = -Kx</span> for any other gain gives the inequality <span class="m">(\star)</span>: <span class="m">P_k \preceq Q + K^\top R K + (A - BK)^\top P_{k+1}(A - BK)</span>, with equality at <span class="m">K = K_k</span>. With constraints this structure is lost, <span class="m">J_k</span> becomes piecewise quadratic, which is one reason MPC optimises online for the current state only (chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>).</p>
+<p><strong>Why the recursion converges.</strong> Write <span class="m">\operatorname{Ric}(X)</span> for the boxed map, so that <span class="m">P_{N-j} = \operatorname{Ric}^j(P_f)</span>; let <span class="m">P</span> be the stabilising DARE solution with gain <span class="m">K</span> and <span class="m">A_{\mathrm{cl}} = A - BK</span>, and <span class="m">K_X</span>, <span class="m">A_X</span> the gain and closed loop computed from <span class="m">X</span>. Applying <span class="m">(\star)</span> twice gives the sandwich</p>
+<div class="math-block">A_X^\top (X - P) A_X \;\preceq\; \operatorname{Ric}(X) - P \;\preceq\; A_{\mathrm{cl}}^\top (X - P) A_{\mathrm{cl}}.</div>
+<p>If <span class="m">P_f \succeq P</span>, every iterate stays above <span class="m">P</span> and <span class="m">\|\operatorname{Ric}^j(P_f) - P\|_2 \le \|A_{\mathrm{cl}}^j\|_2^2\, \|P_f - P\|_2</span>: the closed loop propagates the cost-to-go error, at the asymptotic rate <span class="m">\rho(A_{\mathrm{cl}})^2</span> per step. For the canonical system <span class="m">\rho(A_{\mathrm{cl}}) = 0.3308</span> and <span class="m">\rho^2 = 0.1094</span>; from <span class="m">P_f \in \{0, Q, 10P\}</span> the recursion reaches the DARE solution to about <span class="m">10^{-15}</span> in 25 steps, gains included, with mean rates per step of 0.114, 0.112 and 0.104 over <span class="m">j = 2, \ldots, 12</span>. Starting at <span class="m">P_f = P</span> it never moves, which is why an unconstrained MPC with the Riccati terminal weight is the LQR at every horizon.</p>
+<div class="widget" id="ricW">
+  <label class="field"><span>Terminal weight <span class="m">P_f</span></span><span class="row"><select id="ricPf" class="sel"><option value="zero">0</option><option value="Q">Q</option><option value="tenP" selected>10 P</option><option value="half">P / 2</option><option value="P">P (the DARE solution)</option></select></span></label>
+  <canvas id="ricC" aria-label="Logarithm of the Riccati error against backward steps for the chosen terminal weight, with the closed-loop bound" aria-describedby="ricCap"></canvas>
+  <p class="caption" id="ricCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="operator">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Infinite horizon: the Bellman operator</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The Bellman equation.</strong> Let <span class="m">f</span> and <span class="m">q</span> be stationary, <span class="m">\mathcal U(x) \ne \emptyset</span> the admissible inputs at <span class="m">x</span>, and discount by <span class="m">\gamma \in [0, 1)</span>. A stationary policy <span class="m">\mu</span> costs <span class="m">J_\mu(x) = \sum_{k \ge 0} \gamma^k q(x_k, \mu(x_k))</span>, and <span class="m">J^\star</span> is the infimum over input sequences. The Bellman operators are</p>
+<div class="math-block">(TJ)(x) = \min_{u \in \mathcal U(x)} \big\{ q(x, u) + \gamma J\big( f(x, u) \big) \big\}, \qquad (T_\mu J)(x) = q\big( x, \mu(x) \big) + \gamma J\big( f(x, \mu(x)) \big).</div>
+<p><a href="#optimality">Part 1</a> is <span class="m">J_k = T J_{k+1}</span> with <span class="m">\gamma = 1</span>, so <em>value iteration</em> <span class="m">J_{k+1} = TJ_k</span> is dynamic programming with an ever longer horizon, and <span class="m">J^\star</span> satisfies <span class="m">J^\star = TJ^\star</span>. Assumptions: (A1) bounded costs, <span class="m">|q| \le M</span>; (A2) <span class="m">\gamma &lt; 1</span>; (A3) the minimum is attained. We work in the space <span class="m">\mathcal B</span> of bounded functions with the sup-norm.</p>
+<div class="define"><p class="define-title">Why T is a γ-contraction</p>
+<p><strong>In plain words:</strong> applying one Bellman step to two guesses of the cost-to-go brings them closer by the factor <span class="m">\gamma</span>, uniformly over all states. Everything else in the chapter follows from that one fact.</p>
+<p><strong>More precisely:</strong> two properties suffice. Monotonicity: <span class="m">J \le J&#x27;</span> implies <span class="m">TJ \le TJ&#x27;</span>. The constant shift: <span class="m">T(J + c\mathbf 1) = TJ + \gamma c\mathbf 1</span>. Under (A1) to (A3), <span class="m">T</span> maps <span class="m">\mathcal B</span> into itself and <span class="m">\|TJ - TJ&#x27;\|_\infty \le \gamma \|J - J&#x27;\|_\infty</span>; the same holds for <span class="m">T_\mu</span>. <em>Proof.</em> <span class="m">|(TJ)(x)| \le M + \gamma\|J\|_\infty</span>. With <span class="m">c = \|J - J&#x27;\|_\infty</span> we have <span class="m">J&#x27; - c\mathbf 1 \le J \le J&#x27; + c\mathbf 1</span>, and monotonicity and the shift give <span class="m">TJ&#x27; - \gamma c\mathbf 1 \le TJ \le TJ&#x27; + \gamma c\mathbf 1</span>. Boundedness makes <span class="m">J - J&#x27;</span> meaningful (with <span class="m">+\infty</span> constraint costs it is not), and <span class="m">\gamma &lt; 1</span> is the contraction factor: for <span class="m">\gamma = 1</span> the proof only gives non-expansiveness, and fixed points can be non-unique.</p>
+<dl><dt>Unique fixed point</dt><dd>By Banach, <span class="m">J^\star</span> is the unique fixed point of <span class="m">T</span> in <span class="m">\mathcal B</span>, bounded by <span class="m">M / (1 - \gamma)</span>.</dd><dt>Convergence and stopping rule</dt><dd><span class="m">\|J_k - J^\star\| \le \gamma^k \|J_0 - J^\star\|</span> from any bounded start, and <span class="m">\|J_k - J^\star\| \le \frac{\gamma}{1 - \gamma}\|J_k - J_{k-1}\|</span>: a computable certificate.</dd><dt>Greedy policies</dt><dd>A greedy policy for <span class="m">J^\star</span> is optimal; one greedy for an approximation <span class="m">\tilde J</span> satisfies <span class="m">\|J_{\tilde\mu} - J^\star\| \le \frac{2\gamma}{1 - \gamma}\|\tilde J - J^\star\|</span>. Good approximate costs-to-go, terminal costs or learned values, give good policies.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="lattice">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>A finite test problem: the lattice</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>A grid the dynamics map into itself.</strong> Choose <span class="m">h</span> with <span class="m">1/h</span> an integer and keep only the states with <span class="m">v \in h\mathbb Z</span> and <span class="m">p + v/2 \in h\mathbb Z</span>, and the inputs <span class="m">u \in h\mathbb Z</span>, within the canonical bounds. Since <span class="m">x^+ = (p + v + u/2,\ v + u)</span>, the successor has <span class="m">v^+ \in h\mathbb Z</span> and <span class="m">p^+ + v^+/2 = (p + v/2) + v + u \in h\mathbb Z</span>: the lattice is mapped into itself exactly, so every lattice trajectory is a true trajectory of the double integrator and every lattice result is an exact statement about a restricted problem. With <span class="m">h = 0.5</span> there are 215 states and 5 inputs; the numbers script checks that the successor table equals <span class="m">Ax + Bu</span> to the last bit and is empty exactly where <span class="m">Ax + Bu</span> leaves the box.</p>
+<p><strong>The discounted crash problem.</strong> To satisfy (A1), leaving the box costs <span class="m">c_{\mathrm{crash}} = 100</span> and ends in an absorbing, cost-free crash state, the usual reinforcement-learning encoding of a constraint, with <span class="m">\gamma = 0.95</span> and the canonical stage cost. Value iteration from <span class="m">J_0 = 0</span> certifies <span class="m">J^\star</span> after 11 iterations by the stopping rule <span class="m">\frac{\gamma}{1-\gamma}\|J_{k+1} - J_k\| &lt; 10^{-12}</span>. Of the 215 states, 171 are <em>viable</em>, some input sequence keeps them in the box for ever; there <span class="m">J^\star \le 47.06</span>, elsewhere <span class="m">J^\star \ge 101.85</span>, and the optimal policy keeps every viable state viable, so the penalty does not alter the constrained behaviour on this problem. From three starts, <span class="m">J_0 = 0</span>, <span class="m">J_0 = 2000</span> and a random <span class="m">J_0</span> in <span class="m">[0, 2000]</span>, the error stays within the bound <span class="m">\gamma^k \|J_0 - J^\star\|</span> (largest ratio 0.895, 1.000 and 0.553), and the greedy policy is optimal from step 6, 6 and 8, long before the values are exact (step 10 from zero, never within 150 steps from the other two): a constant offset in <span class="m">J</span> does not change the minimiser, which is why policies converge before values. The bound is tight from the constant 2000, because at the absorbing, cost-free origin <span class="m">T</span> acts as <span class="m">J \mapsto \gamma J</span>.</p>
+<div class="widget" id="viW">
+  <div class="two">
+    <label class="field"><span>Discount <span class="m">\gamma</span>: <b id="viGV"></b></span><span class="row"><input type="range" id="viG" min="0.5" max="0.99" step="0.01" value="0.95"></span></label>
+    <label class="field"><span>Crash cost: <b id="viCV"></b></span><span class="row"><input type="range" id="viCr" min="0" max="300" step="10" value="100"></span></label>
+  </div>
+  <canvas id="viC" aria-label="Logarithm of the value-iteration error against the step, from three initial guesses, each with its contraction bound" aria-describedby="viCap"></canvas>
+  <div class="table-wrap"><table class="num" id="piT" aria-live="off"></table></div>
+  <p class="caption" id="viCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="policy">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Policy iteration</h2>
+  </div>
+  <div class="col prose">
+
+<p>From an initial policy, alternate two steps. <em>Evaluation:</em> solve <span class="m">(I - \gamma P_{\mu_k}) J = q_{\mu_k}</span> for <span class="m">J_{\mu_k}</span>, where <span class="m">P_\mu</span> is the 0/1 closed-loop transition matrix, invertible because <span class="m">\|\gamma P_\mu\|_\infty = \gamma &lt; 1</span>. <em>Improvement:</em> <span class="m">\mu_{k+1}(x) \in \arg\min_u \{ q(x, u) + \gamma J_{\mu_k}(f(x, u)) \}</span>, keeping <span class="m">\mu_k(x)</span> on ties.</p>
+<p><strong>Why it terminates.</strong> Since <span class="m">T_{\mu_{k+1}} J_{\mu_k} = T J_{\mu_k} \le J_{\mu_k}</span>, applying the monotone <span class="m">T_{\mu_{k+1}}</span> repeatedly gives <span class="m">J_{\mu_{k+1}} \le J_{\mu_k}</span>, strictly at some state whenever an action changes. No policy can repeat and there are finitely many, so the algorithm stops; then <span class="m">TJ_{\mu_k} = J_{\mu_k}</span>, that is, <span class="m">J_{\mu_k} = J^\star</span>. The table in the widget above shows the run from &quot;coast&quot;, <span class="m">u = 0</span> everywhere: four improvement steps changing 140, 120, 46 and 6 actions, and a fifth evaluation equal to <span class="m">J^\star</span> to rounding error, <span class="m">1.4 \times 10^{-14}</span>, in a policy space of <span class="m">5^{215} \approx 10^{150}</span>. Each iteration costs a linear solve instead of a sweep, but very few are needed.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="constrained">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The constrained double integrator, without discount</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Hard constraints and no discount break the contraction twice.</strong> MPC problems are undiscounted with hard constraints, so (A1) and (A2) both fail. Take the lattice with <span class="m">h = 0.25</span>, 813 states and 9 inputs, no crash state (inputs that leave the box are simply inadmissible), <span class="m">\gamma = 1</span>, and iterate <span class="m">J_{k+1} = TJ_k</span> from <span class="m">J_0 = 0</span>. <em>Monotonicity replaces contraction:</em> since <span class="m">q \ge 0</span>, <span class="m">J_1 \ge J_0</span>, and by induction <span class="m">J_{k+1} \ge J_k</span>, so <span class="m">J_k</span> is the optimal <span class="m">k</span>-step cost, a lower bound on <span class="m">J^\star</span>. <em>Finite convergence:</em> off the origin <span class="m">q \ge x^\top Q x \ge c_{\min} = 0.0281</span> on the lattice, so a finite-cost trajectory must reach the origin, and a <span class="m">k</span>-step path that has not reached it costs at least <span class="m">k c_{\min}</span>; hence <span class="m">J_k(x) = J^\star(x)</span> once <span class="m">k &gt; J^\star(x) / c_{\min}</span>, which is at most 2031 here.</p>
+<p><strong>The landscape.</strong> The exact fixed point is reached after 10 iterations, and the finite-cost set shrinks from 813 to 703, 661 and 655 states. <span class="m">J^\star</span> is largest at large <span class="m">|p|</span> and along the slanted edges of the finite-cost set, where the state moves away from the origin almost as fast as can still be braked; the largest finite value is 57.12. The policy is at the input bound on 476 of the 655 viable states, bang-bang except near the origin, and from <span class="m">(-4, 0)</span> the optimal trajectory costs 34.500 and reaches the origin in 4 steps. Everywhere <span class="m">J^\star \ge x^\top P x</span>, the unconstrained optimum of <a href="#lq">Part 2</a>; inside <span class="m">\mathcal O_\infty</span> (117 lattice states), where the LQR solves the continuous constrained problem, the lattice value exceeds it by a median of 0.6 percent (mean 1.9, maximum 16.7): the price of rounding the inputs to the lattice. The hero demo is this computation.</p>
+<p><strong>The domain of <span class="m">J^\star</span> and the sets of chapters <a href="a09-pre-post-and-controllable-sets.html" title="Pre, Post and controllable sets">A9</a> and <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a>.</strong> Whatever finite values <span class="m">q</span> takes, the Bellman step acts on domains as <span class="m">\operatorname{dom}(TJ) = \mathcal X \cap \operatorname{Pre}(\operatorname{dom} J)</span>. From <span class="m">J_0 = 0</span> the domains are therefore the outer iterates <span class="m">\mathcal C_{k+1} = \mathcal X \cap \operatorname{Pre}(\mathcal C_k)</span>, <span class="m">\mathcal C_0 = \mathcal X</span>, that chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> uses to compute the maximal control-invariant set; from <span class="m">J_0 = \bar V_f</span> they are the controllable sets <span class="m">\mathcal K_k(\mathcal X_f)</span>. The counts agree at every iteration, 813, 703, 661, 655, 655, and since the lattice inputs form a subset of <span class="m">[-1, 1]</span> each lattice domain lies inside the polytope, so the sets agree state for state: the finite-cost states are exactly the lattice points of <span class="m">\mathcal C_\infty</span>, and the set recursions are the <span class="m">\{0, \infty\}</span> shadow of value iteration. The grey states of the demo satisfy the constraints now but are doomed to leave <span class="m">\mathcal X</span>: 110 at the next step, 42 after one more, 6 after two.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th><span class="m">n</span></th>
+<th>values at 30 points per axis</th>
+<th>one float64 table</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>900</td>
+<td>7 kB</td>
+</tr>
+<tr>
+<td>4</td>
+<td>810 000</td>
+<td>6.5 MB</td>
+</tr>
+<tr>
+<td>6</td>
+<td><span class="m">7.29 \times 10^{8}</span></td>
+<td>5.8 GB</td>
+</tr>
+<tr>
+<td>8</td>
+<td><span class="m">6.56 \times 10^{11}</span></td>
+<td>5.2 TB</td>
+</tr>
+<tr>
+<td>12</td>
+<td><span class="m">5.31 \times 10^{17}</span></td>
+<td><span class="m">4.3 \times 10^{9}</span> GB</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>The curse of dimensionality.</strong> A table with <span class="m">n_g</span> points per axis in <span class="m">n</span> dimensions holds <span class="m">n_g^{\,n}</span> values, and each sweep evaluates all of them against every input. At about 30 points per axis, the resolution of this chapter, a cart in a plane with four states already needs nearly a million, a six-state model a table of six gigabytes, and the twelve states of a rigid body in space more values than there are atoms in a grain of sand. Two escapes structure the rest of the course: do not tabulate, but optimise only at the current state over a finite horizon with an approximate tail, which is MPC, or do not grid, but fit a parametric approximator to samples, which is reinforcement learning. Lab <a href="b05-mpc-lmpc-and-reinforcement-learning.html" title="MPC, Learning MPC and reinforcement learning">B5</a> puts the two side by side on this very lattice.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The course package contains no dynamic programming, since every controller in it optimises online; the lattice routines live in the course's browser toolkit, <code>interactive/mpc-dp.js</code>, and the numbers script repeats them in NumPy. They are short enough to read whole. The Bellman operator is one loop over states and one over inputs:</p>
+<pre><code class="language-js">function bellman(Pb, J) {
+  const TJ = new Array(Pb.n + 1), act = new Array(Pb.n + 1);
+  for (let i = 0; i &lt;= Pb.n; i++) {
+    let best = Infinity, ba = 0;
+    for (let a = 0; a &lt; Pb.m; a++) {
+      const v = Pb.cost[i][a] + Pb.gamma * J[Pb.succ[i][a]];
+      if (v &lt; best) { best = v; ba = a; }
+    }
+    TJ[i] = best; act[i] = ba;
+  }
+  return { TJ, act };
+}
+</code></pre>
+<p><code>Pb.succ[i][a]</code> is the successor index of state <code>i</code> under input <code>a</code>, and <code>Pb.cost[i][a]</code> the stage cost with the crash penalty folded in; the crash state is index <code>n</code>, with successors all equal to itself and zero cost, which is what &quot;absorbing and cost-free&quot; means in a table. The operator returns the greedy action with the value, so a policy is read off the same sweep. Value iteration applies it until the a-posteriori stopping rule of <a href="#operator">Part 3</a> holds:</p>
+<pre><code class="language-js">function valueIteration(Pb, J0, tol = 1e-12, maxIter = 5000) {
+  let J = J0.slice(), k;
+  for (k = 1; k &lt; maxIter; k++) {
+    const { TJ } = bellman(Pb, J);
+    let d = 0; for (let i = 0; i &lt;= Pb.n; i++) d = Math.max(d, Math.abs(TJ[i] - J[i]));
+    if (Pb.gamma / (1 - Pb.gamma) * d &lt; tol) { J = TJ; break; }
+    J = TJ;
+  }
+  return { J, iterations: k };
+}
+</code></pre>
+<p>The test <code>gamma / (1 - gamma) * d &lt; tol</code> is the certificate, not a heuristic: when it fires, the last iterate is within <code>tol</code> of <span class="m">J^\star</span> in the sup-norm. Policy iteration alternates an exact evaluation, a linear solve of <span class="m">(I - \gamma P_\mu) J = q_\mu</span> by the toolkit's Gaussian elimination, with a greedy improvement that keeps the old action on ties, the detail that makes the termination proof work:</p>
+<pre><code class="language-js">function policyIteration(Pb, mu0, Jstar) {
+  let mu = mu0.slice(); const trace = [];
+  for (let k = 0; k &lt; 50; k++) {
+    const Jmu = evaluatePolicy(Pb, mu);
+    const Qsa = Pb.cost.map((r, i) =&gt; r.map((c, a) =&gt; c + Pb.gamma * Jmu[Pb.succ[i][a]]));
+    const muNew = mu.map((a, i) =&gt; { const best = Math.min(...Qsa[i]);
+      return Qsa[i][a] &lt;= best + 1e-10 ? a : Qsa[i].indexOf(best); });
+    const changed = muNew.filter((a, i) =&gt; a !== mu[i]).length;
+    trace.push({ k, changed, Jmu });
+    if (!changed) break;
+    mu = muNew;
+  }
+  return trace;
+}
+</code></pre>
+<p>The linear-quadratic case needs no table at all. The package's <code>dlqr</code> is the Riccati fixed point of <a href="#lq">Part 2</a> computed directly:</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/linear.py · dlqr</p><pre><code class="language-python">def dlqr(A: np.ndarray, B: np.ndarray, Q: np.ndarray, R: np.ndarray):
+    &quot;&quot;&quot;Discrete-time infinite-horizon LQR with convention u = -Kx.&quot;&quot;&quot;
+    P = solve_discrete_are(A, B, Q, R)
+    K = np.linalg.solve(R + B.T @ P @ B, B.T @ P @ A)
+    eig = np.linalg.eigvals(A - B @ K)
+    return K, P, eig</code></pre>
+<p>SciPy's <code>solve_discrete_are</code> returns the stabilising solution <span class="m">P</span> of the DARE, the limit of the Riccati recursion from any <span class="m">P_f \succeq 0</span> under stabilisability and detectability. The gain is then one linear solve, <span class="m">K = (R + B^\top P B)^{-1} B^\top P A</span>, the sign convention being <span class="m">u = -Kx</span>, and the eigenvalues of <span class="m">A - BK</span> are returned so that the caller can check <span class="m">\rho &lt; 1</span>. The browser toolkit computes the same <span class="m">P</span> by iterating the recursion until it stops changing, which <a href="#lq">Part 2</a> showed takes about 25 steps here.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The contraction proof covers MPC.&quot;</strong> No. It needs bounded costs and <span class="m">\gamma &lt; 1</span>; MPC is undiscounted with infinite constraint costs, and rests on monotonicity and the terminal decrease of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> instead.</li>
+<li><strong>&quot;Value iteration has converged when the policy stops changing.&quot;</strong> The policy is optimal from step 6 on the lattice while the values are still off by tens of units. A policy certificate and a value certificate are different things; the stopping rule bounds the value.</li>
+<li><strong>&quot;A finite cost and control invariance are the same.&quot;</strong> <span class="m">\operatorname{dom} J^\star \subseteq \mathcal C_\infty</span> always, but equality also needs every viable state to reach the target: for <span class="m">x^+ = 2x + u</span> with integer <span class="m">|x| \le 10</span> and <span class="m">|u| \le 3</span>, the state 3 can stay put for ever but never go lower, viable yet infinitely costly.</li>
+<li><strong>&quot;A penalty is a constraint.&quot;</strong> The crash cost leaves the optimal policy unchanged only if it is large enough, and a learner respects it only after violating it. Lab <a href="b05-mpc-lmpc-and-reinforcement-learning.html" title="MPC, Learning MPC and reinforcement learning">B5</a> counts the crashes.</li>
+<li><strong>&quot;Dynamic programming is impractical, so it does not matter.&quot;</strong> Every terminal cost in the course approximates a cost-to-go, every learned value in Learning MPC is a sampled cost-to-go, and every Q-function is one. The table is impractical; the object is everywhere.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. State the principle of optimality. What does its proof use?</summary>
+<p>The tail of an optimal input sequence is optimal for the tail problem from the state it reaches. The proof splices a cheaper tail onto the optimal head; it needs an additive cost, a state that summarises the past, and constraints that act stage by stage.</p>
+</details>
+<details class="sol"><summary>2. Why is the controllable-set recursion of chapter A9 a special case of dynamic programming?</summary>
+<p>With constraints as infinite costs, the Bellman step maps a function with domain <span class="m">\mathcal S</span> to one with domain <span class="m">\mathcal X \cap \operatorname{Pre}(\mathcal S)</span>. For functions with values in <span class="m">\{0, +\infty\}</span>, the recursion on values is the recursion on sets.</p>
+</details>
+<details class="sol"><summary>3. In the linear-quadratic problem, why does a matrix recursion suffice, and what sets its convergence rate?</summary>
+<p>Minimising a strictly convex quadratic in <span class="m">u</span> leaves a quadratic in <span class="m">x</span>, so <span class="m">J_k = x^\top P_k x</span> for all <span class="m">k</span>. The sandwich inequality shows that the closed loop propagates the error, at the asymptotic rate <span class="m">\rho(A_{\mathrm{cl}})^2</span> per step, 0.109 on the canonical system.</p>
+</details>
+<details class="sol"><summary>4. Which assumptions make the Bellman operator a contraction, and where do they enter?</summary>
+<p>Bounded costs keep <span class="m">TJ</span> bounded and <span class="m">\|J - J&#x27;\|_\infty</span> finite. The factor <span class="m">\gamma &lt; 1</span> enters through the constant shift <span class="m">T(J + c\mathbf 1) = TJ + \gamma c\mathbf 1</span>, which together with monotonicity is the whole proof. With <span class="m">\gamma = 1</span>, <span class="m">T</span> is only non-expansive.</p>
+</details>
+<details class="sol"><summary>5. Why does policy iteration terminate on a finite problem?</summary>
+<p>Each improvement gives <span class="m">J_{\mu_{k+1}} \le J_{\mu_k}</span>, strictly at some state whenever an action changes, so no policy repeats and there are finitely many. When nothing changes, <span class="m">TJ_{\mu_k} = J_{\mu_k}</span>, hence <span class="m">J_{\mu_k} = J^\star</span>.</p>
+</details>
+<details class="sol"><summary>6. Why does undiscounted value iteration with hard constraints still converge, and in finitely many steps?</summary>
+<p>Monotonicity: from <span class="m">J_0 = 0</span> the iterates increase and each is the optimal <span class="m">k</span>-step cost, a lower bound on <span class="m">J^\star</span>. A positive stage cost off the origin forces finite-cost trajectories to reach the origin, so <span class="m">J_k = J^\star</span> once <span class="m">k</span> exceeds <span class="m">J^\star / c_{\min}</span>; on the lattice the fixed point arrives at <span class="m">k = 10</span>, far below the bound of 2031.</p>
+</details>
+<details class="sol"><summary>7. What does the lattice make exact that a grid would not?</summary>
+<p>The dynamics map the lattice into itself, so successors are lattice states and no interpolation is needed. Every lattice trajectory is a true trajectory of the double integrator, and every lattice value is the exact optimum of the restricted problem.</p>
+</details>
+<details class="sol"><summary>8. What is the curse of dimensionality, and what are the two ways out?</summary>
+<p>A table over <span class="m">n_g</span> points per axis in <span class="m">n</span> dimensions has <span class="m">n_g^{\,n}</span> entries and each sweep visits them all. Either optimise online from the current state over a finite horizon with an approximate tail (MPC), or approximate the cost-to-go from samples with a parametric model (reinforcement learning).</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed, after the numbers script's definitions. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>The chain by hand.</b> For the integer chain with <span class="m">N = 2</span>, compute <span class="m">J_1</span> and <span class="m">J_0</span> at <span class="m">x = 0, 1, 2, 3, 4</span> by hand and read off <span class="m">\mu_0</span> and <span class="m">\mu_1</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">J_2</span> is 0 at the origin and <span class="m">+\infty</span> elsewhere, so <span class="m">J_1(x)</span> is the cost of the one move that reaches the origin, if it exists.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">J_1(x) = x^2 + x^2 = 2x^2</span> for <span class="m">|x| \le 2</span> (the move <span class="m">u = -x</span>), infinite beyond: <span class="m">0, 2, 8, \infty, \infty</span>. Then <span class="m">J_0(x) = \min_u \{x^2 + u^2 + J_1(x + u)\}</span>: <span class="m">J_0(0) = 0</span> with <span class="m">u = 0</span>; <span class="m">J_0(1) = 1 + \min(0 + 2, 1 + 0, 1 + 8, 4 + 2) = 2</span> with <span class="m">u = -1</span>; <span class="m">J_0(2) = 4 + \min(1 + 2, 4 + 0, 0 + 8) = 7</span> with <span class="m">u = -1</span>; <span class="m">J_0(3) = 9 + \min(4 + 2, 1 + 8) = 15</span> with <span class="m">u = -2</span>; <span class="m">J_0(4) = 16 + (4 + 8) = 28</span> with <span class="m">u = -2</span>. Set <span class="m">N = 2</span> in the chain widget to check.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The sandwich inequality.</b> Prove <span class="m">A_X^\top (X - P) A_X \preceq \operatorname{Ric}(X) - P \preceq A_{\mathrm{cl}}^\top (X - P) A_{\mathrm{cl}}</span> from <span class="m">(\star)</span>, and deduce the bound on <span class="m">\|\operatorname{Ric}^j(P_f) - P\|_2</span> for <span class="m">P_f \succeq P</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Write <span class="m">\operatorname{Ric}(X) = Q + K_X^\top R K_X + A_X^\top X A_X</span> and <span class="m">P = Q + K^\top R K + A_{\mathrm{cl}}^\top P A_{\mathrm{cl}}</span>, then apply <span class="m">(\star)</span> once with each gain in the other's recursion.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">(\star)</span> at the matrix <span class="m">X</span> with the gain <span class="m">K</span> gives <span class="m">\operatorname{Ric}(X) \preceq Q + K^\top R K + A_{\mathrm{cl}}^\top X A_{\mathrm{cl}}</span>; subtracting the DARE identity for <span class="m">P</span> gives the right inequality. <span class="m">(\star)</span> at the matrix <span class="m">P</span> with the gain <span class="m">K_X</span> gives <span class="m">P = \operatorname{Ric}(P) \preceq Q + K_X^\top R K_X + A_X^\top P A_X</span>; subtracting it from the exact expression of <span class="m">\operatorname{Ric}(X)</span> gives the left one. If <span class="m">X \succeq P</span> the left side is <span class="m">\succeq 0</span>, so the iterates stay above <span class="m">P</span>, and the right side bounds the 2-norm by <span class="m">\|A_{\mathrm{cl}}\|_2^2 \|X - P\|_2</span>; iterating <span class="m">j</span> times and keeping the product of the closed loops gives <span class="m">\|A_{\mathrm{cl}}^j\|_2^2 \|P_f - P\|_2</span>. The numbers script checks both inequalities from <span class="m">P_f = 10P</span> for <span class="m">j = 1, \ldots, 10</span>: the smallest eigenvalue of each difference is non-negative to rounding, <span class="m">2.4 \times 10^{-3}</span> and <span class="m">6 \times 10^{-17}</span> relative to the error's norm.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build value iteration yourself.</b> Write the discounted Bellman operator for the crash problem on the <span class="m">h = 0.5</span> lattice in NumPy, run value iteration with the stopping rule, and compare with the numbers script: 11 iterations, 171 viable states, largest viable value 47.06.</p>
+<details class="sol"><summary>Hint</summary>
+<p>With <code>succ_c</code> the successor table (crash state last) and <code>cost_c</code> the costs, one sweep is <code>(cost_c + gamma * J[succ_c]).min(axis=1)</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">def bellman(J):
+    Qsa = cost_c + gamma * J[succ_c]          # q(x,u) + gamma J(f(x,u)) for every (state, input)
+    return Qsa.min(axis=1), Qsa.argmin(axis=1)
+
+J = np.zeros(n3 + 1)
+for k in range(1, 5000):
+    J_new, _ = bellman(J)
+    if gamma / (1 - gamma) * np.max(np.abs(J_new - J)) &lt; 1e-12:
+        break
+    J = J_new
+print(k, J_new[:n3][viable3].max())           # 11, 47.06
+</code></pre>
+<p>The fancy index <code>J[succ_c]</code> gathers the successor values for all 216 by 5 pairs at once, so a sweep is three vectorised lines. The crash row of <code>succ_c</code> points to itself and its cost row is zero, which makes the crash state absorbing and free.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build policy iteration yourself.</b> Implement the evaluation step as a linear solve and the improvement step with ties kept, start from the coasting policy, and reproduce the action-change counts 140, 120, 46, 6, 0.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">P_\mu</span> has a single 1 per row, at the successor under <span class="m">\mu</span>; evaluation is <code>np.linalg.solve(np.eye(n) - gamma * P_mu, q_mu)</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">def evaluate(mu):
+    rows = np.arange(n3 + 1)
+    P_mu = np.zeros((n3 + 1, n3 + 1)); P_mu[rows, succ_c[rows, mu]] = 1.0
+    return np.linalg.solve(np.eye(n3 + 1) - gamma * P_mu, cost_c[rows, mu])
+
+mu = np.full(n3 + 1, m3 // 2)                 # u = 0 everywhere
+for k in range(50):
+    J_mu = evaluate(mu)
+    Qsa = cost_c + gamma * J_mu[succ_c]
+    keep = Qsa[np.arange(n3 + 1), mu] &lt;= Qsa.min(axis=1) + 1e-10
+    mu_new = np.where(keep, mu, Qsa.argmin(axis=1))
+    print(k, int(np.sum(mu_new != mu)))       # 140, 120, 46, 6, 0
+    if not np.any(mu_new != mu): break
+    mu = mu_new
+</code></pre>
+<p>Without <code>keep</code>, an action tied with the best could flip back and forth and the termination argument would not apply; with it, the evaluated cost strictly decreases whenever anything changes.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The domains against the polytopes.</b> Count the lattice states inside each <span class="m">\mathcal C_k</span> of chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> and compare with the finite-cost states of each value-iteration step. Why do they agree exactly, and why is that not a coincidence of this grid?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>maximal_control_invariant</code> returns the history of iterates; <code>inside(poly, S4)</code> tests all lattice states at once.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Both sequences are 813, 703, 661, 655, 655. The Bellman step acts on domains as <span class="m">\mathcal X \cap \operatorname{Pre}(\cdot)</span> whatever the finite values, so the <span class="m">k</span>-th domain is the <span class="m">k</span>-th iterate of the set recursion, restricted to the lattice. Because the lattice inputs are a subset of the interval <span class="m">[-1, 1]</span>, a lattice state with a finite value has a lattice input into the previous domain, which is in particular an admissible input into the previous polytope, so the lattice domain lies inside the polytope; and here the converse holds too, since a lattice state inside a polytope iterate has a lattice input that stays inside (checked: no lattice state of <span class="m">\mathcal C_\infty</span> has infinite cost). The second half is the part that could fail on a coarser lattice, where the admissible interval of inputs might contain no lattice point.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A viable state of infinite cost.</b> For <span class="m">x^+ = 2x + u</span> with integer <span class="m">|x| \le 10</span>, <span class="m">|u| \le 3</span>, cost <span class="m">x^2 + u^2</span> and no discount, show that <span class="m">x = 3</span> is viable but <span class="m">J^\star(3) = \infty</span>, and find the largest state from which the origin is reachable.</p>
+<details class="sol"><summary>Hint</summary>
+<p>From 3 the move <span class="m">u = -3</span> stays at 3; which moves go lower?</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>From <span class="m">x = 3</span> the successors are <span class="m">6 + u \in \{3, \ldots, 9\}</span>: the state can stay at 3 for ever with <span class="m">u = -3</span> (viable), but never go below 3, so the origin is unreachable and every trajectory pays at least <span class="m">9</span> per step for ever: <span class="m">J^\star(3) = \infty</span>. The origin is reachable only from <span class="m">|x| \le 1</span>: from <span class="m">x = 1</span> the move <span class="m">u = -2</span> reaches 0, from <span class="m">x = 2</span> the best successor is <span class="m">4 - 3 = 1</span>, and from <span class="m">x = 2</span> one reaches 1 and then 0, so the reachable set is <span class="m">|x| \le 2</span> (<span class="m">J^\star(2) = 4 + 9 + 1 + 4 = 18</span>); from <span class="m">|x| \ge 3</span> the dynamics outrun the input. Viability and finite cost part ways exactly where the input can hold but not win.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The principle</strong>: the tail of an optimal plan is optimal; the proof splices a cheaper tail onto the head and needs an additive cost, a summarising state and stage-wise constraints.</div></li>
+<li><div><strong>The recursion</strong>: <span class="m">J_k = \min_u\{\bar q + J_{k+1}(f)\}</span>, <span class="m">J_N = \bar V_f</span>, for any model and cost; its domains are chapter A9's controllable sets. The chain: 525 evaluations against 328 125, same answer.</div></li>
+<li><div><strong>Linear-quadratic</strong>: the Riccati recursion, converging at the rate <span class="m">\rho(A_{\mathrm{cl}})^2 = 0.109</span>; starting at <span class="m">P</span> it never moves.</div></li>
+<li><div><strong>Contraction</strong>: bounded costs and <span class="m">\gamma &lt; 1</span> make <span class="m">T</span> a sup-norm contraction; value iteration converges at the rate <span class="m">\gamma^k</span> with a computable stopping rule, and the greedy policy is optimal long before the values are exact.</div></li>
+<li><div><strong>Policy iteration</strong>: evaluate, improve keeping ties, stop; 4 improvement steps on the lattice against <span class="m">10^{150}</span> policies.</div></li>
+<li><div><strong>Constrained, undiscounted</strong>: monotone, finitely convergent value iteration, fixed point at <span class="m">k = 10</span>; 655 viable states, exactly the lattice points of <span class="m">\mathcal C_\infty</span>; the LQR cost is a lower bound, exceeded by 0.6 percent in the median inside <span class="m">\mathcal O_\infty</span>.</div></li>
+<li><div><strong>The curse</strong>: <span class="m">n_g^{\,n}</span> table entries; the ways out are MPC and learning, side by side in lab B5.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cost-to-go <span class="m">J^\star</span></td>
+<td>Cost of acting optimally from a state onward.</td>
+</tr>
+<tr>
+<td>Tail problem</td>
+<td>The remaining optimisation from stage <span class="m">k</span>.</td>
+</tr>
+<tr>
+<td>Extended cost <span class="m">\bar q</span>, <span class="m">\bar V_f</span></td>
+<td>The stage and terminal costs with <span class="m">+\infty</span> outside the constraints.</td>
+</tr>
+<tr>
+<td>Bellman operator <span class="m">T</span></td>
+<td>One backward step: minimise stage cost plus discounted next value.</td>
+</tr>
+<tr>
+<td>Contraction</td>
+<td><span class="m">|TJ - TJ&#x27;| \le \gamma|J - J&#x27;|</span>; needs bounded costs and <span class="m">\gamma &lt; 1</span>.</td>
+</tr>
+<tr>
+<td>Value iteration</td>
+<td>Repeated application of <span class="m">T</span>; dynamic programming with an ever longer horizon.</td>
+</tr>
+<tr>
+<td>Policy iteration</td>
+<td>Alternate exact evaluation and greedy improvement.</td>
+</tr>
+<tr>
+<td>Lattice</td>
+<td>A grid the dynamics map into itself exactly; results are exact for the restricted problem.</td>
+</tr>
+<tr>
+<td>Crash state</td>
+<td>An absorbing, cost-free state that a penalty sends constraint violations to.</td>
+</tr>
+<tr>
+<td>Viable, doomed</td>
+<td>Can stay in the box for ever; must leave it within a few steps.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Deterministic, discrete-time problems with finite input sets in the computations; with noise, <span class="m">J(f(x, u))</span> becomes an expectation and the same operators apply to expected costs. All lattice computations on this page are exact and run in the browser with the same code as the numbers script.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>R. Bellman. <em>Dynamic Programming</em>. Princeton University Press, 1957. The principle of optimality and the curse of dimensionality.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>D. P. Bertsekas. <em>Dynamic Programming and Optimal Control</em>, Vol. I (4th ed., 2017) and Vol. II (4th ed., 2012). Athena Scientific. Contraction arguments, value and policy iteration.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>D. P. Bertsekas. <em>Abstract Dynamic Programming</em>, 2nd ed. Athena Scientific, 2018. Monotonicity and contraction as the two properties behind the theory.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Dynamic programming for constrained linear systems and its set-theoretic shadow.</div></li>
+</ul>
+<p>Bellman <a href="#ref-1">[1]</a> and Bertsekas <a href="#ref-2">[2]</a> are the references for the theory; the two-property proof of the contraction follows Bertsekas <a href="#ref-3">[3]</a>. Lab <a href="b05-mpc-lmpc-and-reinforcement-learning.html" title="MPC, Learning MPC and reinforcement learning">B5</a> reads MPC, Learning MPC and Q-learning as three ways of handling the same cost-to-go on this lattice. Next, chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a> returns to a single optimisation and asks what happens when a constraint says &quot;this or that&quot;.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a13-the-learned-terminal-value-and-the-lmpc-problem.html"><span class="lbl">Previous · A13</span><span class="t">The learned terminal value and the LMPC problem</span></a>
+  <a class="next" rel="next" href="a15-disjunctive-constraints-and-big-m.html"><span class="lbl">Next · A15</span><span class="t">Disjunctive constraints and Big-M</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A14 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/mpc-dp.js?v=20261102221633"></script>
+<script src="interactive/a14.js?v=20261102221633"></script>
+</body>
+</html>

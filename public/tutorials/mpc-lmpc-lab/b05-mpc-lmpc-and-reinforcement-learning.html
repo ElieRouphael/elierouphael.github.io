@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>B5 · MPC, LMPC and reinforcement learning · Advanced MPC and Learning MPC</title>
+<meta name="description" content="MPC as truncated dynamic programming, what a terminal cost buys, three terminal designs run from every feasible lattice state, Learning MPC as a learned upper bound of the value, tabular Q-learning against the model-based solution, and what the contraction no longer covers once a network replaces the table.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+<style>
+#desT, #rlT, #methT { font-size: 0.82rem; }
+@media (max-width: 480px) { #desT, #rlT, #methT { font-size: 0.72rem; } #desT th, #desT td { padding-inline: 0.2rem; } }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part B, Labs · Chapter B5 of 6</span>
+  <h1>MPC, Learning MPC and reinforcement learning</h1>
+  <p class="lede">Chapter A14 computed the optimal cost-to-go of the constrained double integrator for every lattice state. MPC approximates that function online at the current state, with a finite horizon and a terminal cost on a terminal set. Learning MPC learns the terminal cost from its own trajectories. Reinforcement learning estimates it, or its state-input version, from sampled transitions without a model. This lab puts the three side by side on the same lattice, where every number is exact: which terminal designs certify a closed loop, how much a learned upper bound of the value is worth, what a model-free learner pays in crashes, and why the contraction argument of chapter A14 no longer covers a neural network.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A11, A13 and A14 · Every number is checked in Python</p>
+  <p class="concepts"><span class="lbl">Concepts used</span><a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html#operator" title="Bellman: dynamic programming, value and policy iteration">the Bellman operator</a>, <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html#constrained" title="Bellman: dynamic programming, value and policy iteration">the lattice</a>, <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">terminal ingredients</a>, <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">the learned terminal value</a>, <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">invariant sets</a></p>
+  <div class="downloads">
+    <a class="btn" href="code/b05_numbers.py" download>The numbers script (.py)</a>
+<a class="btn" href="notebooks/08_dynamic_programming_to_rl.ipynb" download>The lab notebook (.ipynb)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Receding-horizon closed loops from every feasible lattice state, for one terminal design and horizon</p>
+      <canvas id="desPlane" aria-label="The lattice coloured by the outcome of the closed loop from each state under the chosen design and horizon: optimal, suboptimal, lost feasibility, or infeasible at the start; with the probe's trajectory" aria-describedby="heroStatus" style="cursor:crosshair"></canvas>
+      <p class="chart-title" style="margin-top:0.6rem">Fraction of viable states whose closed loop is feasible and exactly optimal, against the horizon</p>
+      <canvas id="desC" aria-label="Fraction of viable states from which the receding-horizon closed loop is feasible and exactly optimal, against the horizon, for the three terminal designs" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="seg stack" role="group" aria-label="Terminal design">
+      <button class="btn" type="button" data-design="A" aria-pressed="true">A: no terminal ingredients, <span class="m">V_f = 0</span></button>
+      <button class="btn" type="button" data-design="B" aria-pressed="false">B: <span class="m">V_f = x^\top P x</span> on <span class="m">\mathcal O_\infty</span></button>
+      <button class="btn" type="button" data-design="C" aria-pressed="false">C: <span class="m">V_f = J^\star</span> on <span class="m">\mathcal O_\infty</span></button>
+    </div>
+    <label class="field"><span>Horizon <span class="m">N</span>: <b id="hNV"></b></span>
+      <span class="row"><input type="range" id="hN" min="1" max="12" step="1" value="1"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>feasible starts</span><span class="v" id="rFeas">–</span>
+      <span>doomed among them</span><span class="v" id="rDoom">–</span>
+      <span>lost feasibility</span><span class="v" id="rFail">–</span>
+      <span>exactly optimal</span><span class="v" id="rOpt">–</span>
+      <span>worst cost / <span class="m">J^\star</span></span><span class="v" id="rWorst">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to design A, N = 1</button></div>
+    <p class="hint">Chapter A14's lattice: the canonical system with <span class="m">h = 0.25</span>, 813 states, 655 of them viable. The MPC law is the greedy policy of <span class="m">T^{N-1} \bar V_f</span>, a table; each closed loop runs 80 steps and must reach the origin without ever meeting an infeasible problem. Tap a state to follow its closed loop.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#truncated"><span class="n">1</span><span class="t">MPC is truncated dynamic programming</span><span class="d">J_N = T^N V_f, the greedy law</span></a>
+    <a href="#terminal"><span class="n">2</span><span class="t">What a good terminal cost buys</span><span class="d">Exact tail, decrease, discounting</span></a>
+    <a href="#designs"><span class="n">3</span><span class="t">Three designs on the lattice</span><span class="d">Three designs, every start, every horizon</span></a>
+    <a href="#lmpc"><span class="n">4</span><span class="t">Learning MPC learns an upper bound of the value</span><span class="d">Realised costs are upper bounds</span></a>
+    <a href="#rl"><span class="n">5</span><span class="t">Control vocabulary, reinforcement-learning vocabulary</span><span class="d">Control against RL, the Q-function</span></a>
+    <a href="#qlearning"><span class="n">6</span><span class="t">Model-free: tabular Q-learning</span><span class="d">Samples instead of a model</span></a>
+    <a href="#dqn"><span class="n">7</span><span class="t">Function approximation, DQN and what the contraction no longer covers</span><span class="d">Why the contraction no longer covers it</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The code behind it</span><span class="d">designTable, qLearning, trajectory_cost_to_go</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Six confusions</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The course's methods on one page</span><span class="d">Summary, the four methods, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="truncated">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>MPC is truncated dynamic programming</h2>
+  </div>
+  <div class="col prose">
+
+<p>The MPC problem of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a> at the state <span class="m">x</span> is the finite-horizon problem of chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a>, so its value and its law are</p>
+<div class="math-block" data-narrow="\begin{aligned} J_N(x) &amp;= ( T^N \bar V_f )(x), \ \kappa_N(x) &amp;\in \arg\min_u { \bar q(x, u) + ( T^{N-1} \bar V_f )( f(x, u) ) }, \end{aligned}">J_N(x) = \big( T^N \bar V_f \big)(x), \qquad \kappa_N(x) \in \arg\min_u \big\{ \bar q(x, u) + \big( T^{N-1} \bar V_f \big)\big( f(x, u) \big) \big\},</div>
+<p>with <span class="m">T</span> the undiscounted constrained Bellman operator and <span class="m">\bar V_f</span> the terminal cost, infinite outside <span class="m">\mathcal X_f</span>. MPC is the greedy policy with respect to <span class="m">T^{N-1}\bar V_f</span>, evaluated only at the current state by solving an optimisation over <span class="m">N</span> inputs instead of tabulating; its feasible set is the controllable set <span class="m">\mathcal K_N(\mathcal X_f)</span> of chapter <a href="a09-pre-post-and-controllable-sets.html" title="Pre, Post and controllable sets">A9</a>. On the lattice the law can be tabulated after all, and that is what makes this lab exact: <span class="m">T^{N-1}\bar V_f</span> is computed by <span class="m">N - 1</span> sweeps, the greedy policy is read off one more, and the closed loop is run from every feasible state.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="terminal">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>What a good terminal cost buys</h2>
+  </div>
+  <div class="col prose">
+
+<div class="define"><p class="define-title">What a good terminal cost buys</p>
+<p><strong>In plain words:</strong> the horizon only has to reach the terminal set; if the terminal cost tells the truth about what the rest of the journey costs, the finite-horizon plan is the infinite-horizon plan.</p>
+<p><strong>More precisely, an exact tail gives exact MPC.</strong> If <span class="m">V_f = J^\star</span> on <span class="m">\mathcal X_f</span>, then <span class="m">\bar V_f \ge J^\star</span> and monotonicity gives <span class="m">T^N\bar V_f \ge T^N J^\star = J^\star</span>, with equality wherever an optimal trajectory enters <span class="m">\mathcal X_f</span> within <span class="m">N</span> steps.</p>
+<p><strong>And a terminal decrease gives a monotone value and stability.</strong> The terminal assumptions of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>, for every <span class="m">x \in \mathcal X_f</span> an admissible <span class="m">u</span> with <span class="m">f(x, u) \in \mathcal X_f</span> and <span class="m">V_f(f(x, u)) - V_f(x) \le -q(x, u)</span>, say exactly <span class="m">\bar V_f \ge T\bar V_f</span>. Applying the monotone <span class="m">T^N</span> gives <span class="m">J_N \ge J_{N+1}</span>, and with <span class="m">x^+ = f(x, \kappa_N(x))</span>,
+<div class="math-block" data-narrow="\begin{aligned} Q^\star(x, u) &amp;= q(x, u) + \gamma J^\star( f(x, u) ), \ J^\star(x) &amp;= \min_u Q^\star(x, u), \quad \mu^\star(x) \in \arg\min_u Q^\star(x, u). \end{aligned}">J_N(x) = q\big( x, \kappa_N(x) \big) + J_{N-1}(x^+) \;\ge\; q\big( x, \kappa_N(x) \big) + J_N(x^+).</div>
+So <span class="m">J_N</span> is a Lyapunov function, <span class="m">x^+ \in \operatorname{dom} J_{N-1} \subseteq \operatorname{dom} J_N</span> gives recursive feasibility, and the closed-loop cost is at most <span class="m">J_N(x_0)</span>: chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>'s theorem in two lines of operator algebra.</p>
+<dl><dt>Without terminal ingredients</dt><dd>With <span class="m">V_f = 0</span> and <span class="m">\mathcal X_f = \mathcal X</span>, <span class="m">T^N 0 \le J^\star</span> underestimates the tail, the feasible set <span class="m">\mathcal C_N</span> contains doomed states for small <span class="m">N</span>, and the decrease is unavailable.</dd><dt>With discounting</dt><dd>The effect is quantitative: the greedy policy of <span class="m">T^{N-1} V_f</span> is within <span class="m">\frac{2\gamma^N}{1 - \gamma}\|V_f - J^\star\|_\infty</span> of optimal, so a longer horizon or a better terminal cost both help, and either can compensate the other.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="designs">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Three designs on the lattice</h2>
+  </div>
+  <div class="col prose">
+
+<p>Design A: <span class="m">V_f = 0</span>, <span class="m">\mathcal X_f = \mathcal X</span>, the textbook MPC without terminal ingredients. Design B: <span class="m">V_f = x^\top P x</span> on <span class="m">\mathcal X_f = \mathcal O_\infty</span>, the LQR ingredients of chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>. Design C: <span class="m">V_f = J^\star</span> on the same set, the exact tail. A closed loop <em>fails</em> if the MPC problem becomes infeasible at some visit or the origin is not reached within 80 steps.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>design</th>
+<th><span class="m">N</span></th>
+<th>feasible</th>
+<th>doomed</th>
+<th>failed</th>
+<th>optimal</th>
+<th>mean subopt. %</th>
+<th>max subopt. %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>1</td>
+<td>703</td>
+<td>48</td>
+<td>702</td>
+<td>1</td>
+<td>–</td>
+<td>–</td>
+</tr>
+<tr>
+<td>A</td>
+<td>2</td>
+<td>661</td>
+<td>6</td>
+<td>6</td>
+<td>41</td>
+<td>11.169</td>
+<td>146.589</td>
+</tr>
+<tr>
+<td>A</td>
+<td>3</td>
+<td>655</td>
+<td>0</td>
+<td>0</td>
+<td>509</td>
+<td>0.413</td>
+<td>8.837</td>
+</tr>
+<tr>
+<td>A</td>
+<td>4</td>
+<td>655</td>
+<td>0</td>
+<td>0</td>
+<td>637</td>
+<td>0.002</td>
+<td>0.160</td>
+</tr>
+<tr>
+<td>A</td>
+<td>5</td>
+<td>655</td>
+<td>0</td>
+<td>0</td>
+<td>655</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>B</td>
+<td>1</td>
+<td>313</td>
+<td>0</td>
+<td>0</td>
+<td>241</td>
+<td>0.328</td>
+<td>2.568</td>
+</tr>
+<tr>
+<td>B</td>
+<td>2</td>
+<td>449</td>
+<td>0</td>
+<td>0</td>
+<td>425</td>
+<td>0.048</td>
+<td>1.424</td>
+</tr>
+<tr>
+<td>B</td>
+<td>3</td>
+<td>561</td>
+<td>0</td>
+<td>0</td>
+<td>561</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>B</td>
+<td>4</td>
+<td>629</td>
+<td>0</td>
+<td>0</td>
+<td>629</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>B</td>
+<td>5</td>
+<td>655</td>
+<td>0</td>
+<td>0</td>
+<td>655</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>C</td>
+<td>1</td>
+<td>313</td>
+<td>0</td>
+<td>0</td>
+<td>245</td>
+<td>0.324</td>
+<td>2.568</td>
+</tr>
+<tr>
+<td>C</td>
+<td>2</td>
+<td>449</td>
+<td>0</td>
+<td>0</td>
+<td>429</td>
+<td>0.047</td>
+<td>1.424</td>
+</tr>
+<tr>
+<td>C</td>
+<td>3</td>
+<td>561</td>
+<td>0</td>
+<td>0</td>
+<td>561</td>
+<td>0</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Reading the table.</strong> Design A at <span class="m">N = 1</span> sees only the stage cost and coasts: <span class="m">u = 0</span> minimises <span class="m">q(x, u)</span> whenever <span class="m">Ax \in \mathcal X</span>, so from <span class="m">(-1, 2)</span> the controller drifts to <span class="m">(1, 2)</span> and <span class="m">(3, 2)</span> and then finds no admissible input, and the closed loop fails from 702 of its 703 feasible starts, all but the origin. At <span class="m">N = 2</span> the six doomed feasible states, those outside <span class="m">\mathcal C_\infty</span> that the two-step problem still accepts, fail, and the rest converge at up to 2.47 times the optimal cost. From <span class="m">N = 3</span> on nothing visibly goes wrong, and from <span class="m">N = 5</span> the closed loop is optimal everywhere, but nothing certifies that threshold: it was found by running every start. Designs B and C never fail, because <span class="m">\mathcal X_f = \mathcal O_\infty</span> is control invariant on the lattice (all 117 of its lattice states have a lattice input that stays inside); their feasible set grows through 313, 449, 561, 629 to all 655 viable states at <span class="m">N = 5</span>, and at <span class="m">N = 1</span> the closed loop is already within 0.33 percent of optimal on average.</p>
+<p><strong>What the certificate needs.</strong> The guarantees rest on the decrease condition <span class="m">\bar V_f \ge T\bar V_f</span>, and on the lattice only design C passes the three checks that follow from it: <span class="m">J_N \ge J^\star</span> for every <span class="m">N</span>, <span class="m">J_N</span> non-increasing in <span class="m">N</span>, and every closed-loop cost at most <span class="m">J_N(x_0)</span>. Design B fails all three, although its closed loops are almost identical to C's: rounding the LQR input to the lattice breaks the exact decrease <span class="m">V_f(A_{\mathrm{cl}} x) - V_f(x) = -q(x, -Kx)</span> at 114 of the 117 terminal states, by at most 0.0432. A terminal cost valid for the model is not automatically valid for the implementation; here the implementation is the lattice, on a real system it is the quantised actuator. The terminal set buys safety; the terminal cost buys performance at short horizons; the decrease condition is what turns observations into theorems.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="lmpc">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Learning MPC learns an upper bound of the value</h2>
+  </div>
+  <div class="col prose">
+
+<p>Chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a> stores the realised cost-to-go <span class="m">J_t^i = \sum_{k \ge t} q(x^i[k], u^i[k])</span> of every state visited in a successful iteration <span class="m">i</span>. The visited states form the sampled safe set <span class="m">SS^j</span>, and <span class="m">V^j(x) = \min\{J_t^i : x^i[t] = x\}</span> is the terminal cost on <span class="m">\mathcal X_f = SS^j</span>. Two facts place it in the dynamic-programming picture.</p>
+<p><strong>Realised costs are upper bounds.</strong> <span class="m">J_t^i</span> is the cost of an admissible trajectory to the target, so <span class="m">V^j \ge J^\star</span> on <span class="m">SS^j</span>. Data approach <span class="m">J^\star</span> from above; value iteration from <span class="m">J_0 = 0</span> approaches it from below.</p>
+<p><strong>The data satisfy the terminal decrease.</strong> If <span class="m">V^j(x) = J_t^i</span>, the stored successor <span class="m">x^i[t+1] \in SS^j</span> gives <span class="m">V^j(x) = q(x, u^i[t]) + J_{t+1}^i \ge q(x, u^i[t]) + V^j(x^i[t+1]) \ge (T\bar V^j)(x)</span>. The decrease fact of <a href="#terminal">Part 2</a> then gives recursive feasibility and a closed-loop cost at most <span class="m">J_N(x_S) \le V^j(x_S)</span>, the previous iteration's cost: iteration costs never increase, chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>'s main result in operator form.</p>
+<p><strong>On the lattice.</strong> From <span class="m">x_S = (-4, 0)</span>, where <span class="m">J^\star(x_S) = 34.500</span>, a sluggish feasible trajectory seeds the iterations: the optimal policy for the energy-dominated cost <span class="m">0.005\, x^\top Q x + u^2</span>, 10 steps long and costing 66.456, 92.6 percent above <span class="m">J^\star</span>. LMPC is then the greedy policy of <span class="m">T^{N-1}\bar V^j</span> with the sampled, not convexified, safe set.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th><span class="m">N</span></th>
+<th>iteration 0 (seed)</th>
+<th>iteration 1</th>
+<th>iterations 2 to 8</th>
+<th>final gap to <span class="m">J^\star</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>66.456</td>
+<td>66.456</td>
+<td>66.456</td>
+<td>92.6 %</td>
+</tr>
+<tr>
+<td>2</td>
+<td>66.456</td>
+<td>38.369</td>
+<td>38.369</td>
+<td>11.2 %</td>
+</tr>
+<tr>
+<td>3</td>
+<td>66.456</td>
+<td>34.500</td>
+<td>34.500</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With <span class="m">N = 1</span> nothing beats replaying the seed; with <span class="m">N = 2</span> the cost stalls at 38.369; with <span class="m">N = 3</span> the first iteration is already optimal, and its stored costs-to-go lie on the diagonal <span class="m">J_t^j = J^\star(x^j[t])</span> to the last bit, the principle of optimality visible in the data. No stored cost ever lies below <span class="m">J^\star</span> (the smallest difference over all runs is exactly zero) and no iteration cost ever increases. On this lattice, with its sampled safe set, the horizon decides how much of the data is usable; the convex safe set of chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a> gives short horizons more room, which lab <a href="b02-learning-mpc-on-a-repeated-task.html" title="Learning MPC on a repeated task">B2</a> shows on the same system.</p>
+<div class="widget" id="lmWidget">
+  <label class="field"><span>Seed sluggishness: weight of <span class="m">x^\top Q x</span> in the seed's cost: <b id="lmWV"></b></span><span class="row"><input type="range" id="lmW" min="0.001" max="0.1" step="0.001" value="0.005"></span></label>
+  <canvas id="lmC" aria-label="Closed-loop cost from the start state against the LMPC iteration for horizons one to four, with the optimal cost as a dashed line" aria-describedby="lmCap"></canvas>
+  <p class="caption" id="lmCap" aria-live="polite"></p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="rl">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Control vocabulary, reinforcement-learning vocabulary</h2>
+  </div>
+  <div class="col prose">
+
+<p>So far the model was used either to tabulate <span class="m">J</span> or to predict over a horizon. Reinforcement learning works from sampled transitions. The vocabulary differs, the objects do not.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Reinforcement learning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>plant, controller <span class="m">\mu</span></td>
+<td>environment, agent with policy <span class="m">\pi</span></td>
+</tr>
+<tr>
+<td>input <span class="m">u</span></td>
+<td>action <span class="m">a</span></td>
+</tr>
+<tr>
+<td>stage cost <span class="m">q(x, u)</span></td>
+<td>negative reward <span class="m">-r</span></td>
+</tr>
+<tr>
+<td>cost-to-go <span class="m">J</span> (minimised)</td>
+<td>value <span class="m">V = -J</span> (maximised)</td>
+</tr>
+<tr>
+<td>state-input cost-to-go <span class="m">Q</span></td>
+<td>action value <span class="m">Q</span></td>
+</tr>
+<tr>
+<td>system identification</td>
+<td>model learning</td>
+</tr>
+<tr>
+<td>solve DP with a known model</td>
+<td>planning</td>
+</tr>
+<tr>
+<td>infer a value or a policy from data</td>
+<td>learning</td>
+</tr>
+<tr>
+<td>repeated task, iteration</td>
+<td>episode</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>The Q-function.</strong> Define the state-input cost-to-go and read off the value and the policy:</p>
+<div class="math-block">Q^\star(x, u) = q(x, u) + \gamma J^\star\big( f(x, u) \big), \qquad J^\star(x) = \min_u Q^\star(x, u), \qquad \mu^\star(x) \in \arg\min_u Q^\star(x, u).</div>
+<p>With <span class="m">Q^\star</span> in hand, acting optimally needs no model, only a minimisation over inputs. Substituting <span class="m">J^\star = \min_{u&#x27;} Q^\star(\cdot, u&#x27;)</span> gives the Bellman equation for <span class="m">Q</span>, <span class="m">Q^\star(x, u) = q(x, u) + \gamma \min_{u&#x27;} Q^\star(f(x, u), u&#x27;) =: (FQ^\star)(x, u)</span>, and <span class="m">F</span> is a <span class="m">\gamma</span>-contraction by the two-property proof of chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a>: it is monotone and shifts constants by <span class="m">\gamma</span>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="qlearning">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Model-free: tabular Q-learning</h2>
+  </div>
+  <div class="col prose">
+
+<p>After observing one transition <span class="m">(x, u, c, x^+)</span> of the real system, update a table:</p>
+<div class="math-block" data-narrow="\mathcal L(\theta) = \mathbb E_{\mathcal D} \big[ ( c + \gamma \min_{u'} Q_{\theta^-}(x^+, u') - Q_\theta(x, u) )^2 \big]">\boxed{Q(x, u) \leftarrow Q(x, u) + \alpha \Big[ c + \gamma \min_{u&#x27;} Q(x^+, u&#x27;) - Q(x, u) \Big].}</div>
+<p>The bracket is the <em>temporal-difference error</em>; its target is a sample of <span class="m">(FQ)(x, u)</span>, exact for deterministic transitions, and just <span class="m">c</span> after a crash. Convergence (Watkins and Dayan <a href="#ref-4">[4]</a>, Tsitsiklis <a href="#ref-5">[5]</a>): with finite sets, bounded costs and <span class="m">\gamma &lt; 1</span>, if every pair is updated infinitely often with step sizes satisfying <span class="m">\sum \alpha_t = \infty</span>, <span class="m">\sum \alpha_t^2 &lt; \infty</span>, then <span class="m">Q \to Q^\star</span> with probability one, as a noisy asynchronous iteration of <span class="m">F</span>. Exploration is thus an assumption, met by <span class="m">\varepsilon</span>-greedy inputs or by optimistic initialisation (<span class="m">Q_0 = 0</span> lies below every <span class="m">Q^\star</span> here, so untried inputs look attractive). Learning is off-policy: the limit is <span class="m">Q^\star</span> whatever policy generated the data.</p>
+<p><strong>On the lattice.</strong> The learner faces the discounted crash problem of chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a>, <span class="m">h = 0.5</span>, <span class="m">\gamma = 0.95</span>, crash cost 100, but only sees transitions. Episodes start at random states, a luxury that real systems rarely allow, and end after 30 steps or at a crash. The score is the fraction of the 171 viable states at which the greedy input is optimal. The widget runs five configurations with its own random stream; the numbers script's runs with NumPy's stream, seed 0, are drawn dotted for comparison.</p>
+<div class="widget" id="qW">
+  <div class="seg stack" role="group" aria-label="Q-learning configuration">
+    <button class="btn" type="button" data-cfg="0" aria-pressed="true">α = 1, ε = 0.1</button>
+    <button class="btn" type="button" data-cfg="1" aria-pressed="false">α = 0.1, ε = 0.1</button>
+    <button class="btn" type="button" data-cfg="2" aria-pressed="false">α = n<sup>−0.6</sup>, ε = 0.1</button>
+    <button class="btn" type="button" data-cfg="3" aria-pressed="false">α = 1, ε = 0, Q₀ = 0 (optimistic)</button>
+    <button class="btn" type="button" data-cfg="4" aria-pressed="false">α = 1, ε = 0, Q₀ = 200 (pessimistic)</button>
+  </div>
+  <canvas id="qC" aria-label="Fraction of viable states at which the greedy input of the learned Q-table is optimal, against transitions sampled, for five Q-learning configurations, with the numbers script's run of the selected one dotted" aria-describedby="qCap"></canvas>
+  <p class="caption" id="qCap" aria-live="polite"></p>
+</div>
+<p><strong>The script's runs.</strong> With <span class="m">\alpha = 1</span> and <span class="m">\varepsilon = 0.1</span> the greedy policy is optimal everywhere after 40 000 transitions and 972 crashes; value iteration needed 6 sweeps, 6 450 backups, and no crash. The decaying <span class="m">\alpha = n^{-0.6}</span> needs 68 000 transitions; the constant <span class="m">\alpha = 0.1</span> is still at 93 percent after 200 000. With <span class="m">\varepsilon = 0</span> the optimistic <span class="m">Q_0 = 0</span> succeeds after 52 000 transitions, while the pessimistic <span class="m">Q_0 = 200</span> fails with 70 217 crashes, a score stuck at 0.327 and a greedy input that crashes from 29 viable states: a crash target is only its one-step cost, at most 118, while other targets bootstrap from successors still valued near 200, so crashing looks cheap. After the first run, <span class="m">Q = Q^\star</span> at the optimal input of every viable state, while other pairs are off by up to 95.0: accurate only where it matters.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="dqn">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Function approximation, DQN and what the contraction no longer covers</h2>
+  </div>
+  <div class="col prose">
+
+<p>DQN (Mnih et al. <a href="#ref-7">[7]</a>) replaces the table by a network <span class="m">Q_\theta</span> over a finite input set and minimises the squared temporal-difference error</p>
+<div class="math-block">\mathcal L(\theta) = \mathbb E_{(x, u, c, x^+) \sim \mathcal D} \Big[ \big( c + \gamma \min_{u&#x27;} Q_{\theta^-}(x^+, u&#x27;) - Q_\theta(x, u) \big)^2 \Big].</div>
+<p>The replay buffer <span class="m">\mathcal D</span> decorrelates the samples and reuses costly data; the target network <span class="m">\theta^-</span>, refreshed only occasionally, makes each phase a regression towards a fixed target. <strong>Why the contraction argument no longer applies.</strong> With exact regressions DQN would iterate <span class="m">Q_{k+1} = \Pi F Q_k</span>, where <span class="m">\Pi</span> projects onto the network class in a norm weighted by the replay distribution. <span class="m">F</span> contracts in the sup-norm, but <span class="m">\Pi</span> is non-expansive only in its weighted <span class="m">L^2</span> norm, so <span class="m">\Pi F</span> need not contract in any norm; with bootstrapping and off-policy data, divergence is possible (Tsitsiklis and Van Roy <a href="#ref-6">[6]</a>). The minimum over noisy estimates is also biased low, which double Q-learning corrects <a href="#ref-8">[8]</a>. Chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> says what is approximated, not that the approximation converges.</p>
+<div class="callout warm">
+<p><strong>Compared with MPC and LMPC.</strong> DQN learns a global <span class="m">Q</span> and meets constraints only through penalties, by violating them during learning. MPC keeps the model, enforces the constraints online and needs only a local tail approximation, which Learning MPC learns from its own data as a guaranteed upper bound. The lattice makes the trade explicit: 6 450 backups and no crash, or 40 000 transitions and 972 crashes, for the same policy.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The closed loops of the hero come from two routines of the course's browser toolkit, <code>interactive/mpc-dp.js</code>, repeated in the numbers script. The first runs a policy table from every state of a feasible set and records whether the loop reached the origin without ever meeting an infeasible problem:</p>
+<pre><code class="language-js">function recedingHorizon(L, kappa, F, steps = 80) {
+  const out = [];
+  for (let s0 = 0; s0 &lt; L.n; s0++) {
+    if (!F[s0]) continue;
+    let s = s0, cost = 0, ok = true;
+    for (let t = 0; t &lt; steps; t++) {
+      ok = ok &amp;&amp; F[s];                       // the MPC problem must be feasible at every visit
+      const a = kappa[s];
+      if (ok) cost += L.q[s][a];
+      const sn = L.succ[s][a];
+      ok = ok &amp;&amp; sn &gt;= 0;
+      if (sn &gt;= 0) s = sn;
+    }
+    out.push({ start: s0, cost, ok: ok &amp;&amp; s === L.origin });
+  }
+  return out;
+}
+</code></pre>
+<p><code>F[s]</code> is the feasible set of the <span class="m">N</span>-step problem, the finite-cost states of <span class="m">T^N \bar V_f</span>; <code>kappa</code> its greedy policy. The line <code>ok = ok &amp;&amp; F[s]</code> is recursive feasibility checked by brute force, and the final <code>s === L.origin</code> is convergence. The second routine builds <span class="m">J_N</span> for every horizon by repeated Bellman steps, runs the loops, and evaluates the three checks that the decrease condition implies:</p>
+<pre><code class="language-js">function designTable(L, Vf, Jstar, fin, Nmax = 12) {
+  let Jprev = Vf.slice(); const rows = []; let upper = true, mono = true, bounded = true;
+  for (let N = 1; N &lt;= Nmax; N++) {
+    const { TJ, act } = bellmanHard(L, Jprev), F = TJ.map(Number.isFinite);
+    const rh = recedingHorizon(L, act, F);
+    rows.push({ N, feasible: F.filter(Boolean).length,
+      doomed: F.filter((f, i) =&gt; f &amp;&amp; !fin[i]).length, failed: rh.filter(r =&gt; !r.ok).length,
+      optimal: rh.filter(r =&gt; r.ok &amp;&amp; Math.abs(r.cost - Jstar[r.start]) &lt; 1e-9).length });
+    upper = upper &amp;&amp; TJ.every((v, i) =&gt; !F[i] || v &gt;= Jstar[i] - 1e-9);       // J_N &gt;= J*
+    mono = mono &amp;&amp; TJ.every((v, i) =&gt; v &lt;= Jprev[i] + 1e-9);                   // J_N non-increasing in N
+    bounded = bounded &amp;&amp; rh.every(r =&gt; !r.ok || r.cost &lt;= TJ[r.start] + 1e-9); // closed-loop cost &lt;= J_N(x0)
+    Jprev = TJ;
+  }
+  return { rows, upper, mono, bounded };
+}
+</code></pre>
+<p><code>Jprev</code> carries <span class="m">T^{N-1}\bar V_f</span> from one horizon to the next, so the whole table costs twelve sweeps. The Q-learning runner is the update rule of <a href="#qlearning">Part 6</a> inside an episode loop:</p>
+<pre><code class="language-js">const target = s2 &lt; 0 ? c : c + Pb.gamma * Math.min(...Qt[s2]);   // the temporal-difference target
+visits[s][a]++;
+const step = cfg.alpha === &quot;decay&quot; ? visits[s][a] ** -0.6 : cfg.alpha;
+row[a] += step * (target - row[a]);
+if (s2 &lt; 0 || tEp === 30) { s = Math.floor(r() * n); tEp = 0; } else s = s2;
+</code></pre>
+<p>A crash (<code>s2 &lt; 0</code>) has the target <code>c</code> alone, since the crash state is free and absorbing, and restarts the episode at a random state, as does the 30-step limit. The decaying step size <code>visits ** -0.6</code> satisfies the two convergence conditions; the constant ones do not, which is harmless on a deterministic problem with <span class="m">\alpha = 1</span> and slow with <span class="m">\alpha = 0.1</span>. Finally, the stored costs-to-go of <a href="#lmpc">Part 4</a> are the package's own recursion:</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · trajectory_cost_to_go</p><pre><code class="language-python">def trajectory_cost_to_go(X, U, Q, R, Q1=None):
+    &quot;&quot;&quot;
+    Roll-out cost-to-go for a successful finite trajectory.
+
+    X = [x_0,...,x_T], U = [u_0,...,u_{T-1}]
+    J_t = sum_{k=t}^{T-1} h(x_k,u_k), J_T=0.
+    &quot;&quot;&quot;
+    X = np.asarray(X, float)
+    U = np.asarray(U, float)
+
+    if len(X) != len(U) + 1:
+        raise ValueError(&quot;X must contain one more state sample than U&quot;)
+
+    J = np.zeros(len(X))
+
+    for k in range(len(U) - 1, -1, -1):
+        J[k] = stage_cost(X[k], U[k], Q, R, Q1) + J[k + 1]
+
+    return J</code></pre>
+<p>The backward loop <code>J[k] = stage_cost(...) + J[k + 1]</code> with <code>J[T] = 0</code> is dynamic programming along one realised trajectory instead of over the whole state space: it needs <span class="m">T</span> evaluations rather than a table, and it produces an upper bound of <span class="m">J^\star</span> at every visited state, since the trajectory it sums is admissible but not necessarily optimal. The check <code>len(X) != len(U) + 1</code> enforces the convention of chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>, one more state than inputs.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The contraction proof covers MPC.&quot;</strong> No. It needs bounded costs and <span class="m">\gamma &lt; 1</span>; MPC is undiscounted with infinite constraint costs, and rests on monotonicity and the terminal decrease.</li>
+<li><strong>&quot;A long horizon without terminal ingredients is a safe default.&quot;</strong> <span class="m">T^N 0</span> underestimates <span class="m">J^\star</span> and its domain contains doomed states: 48 at <span class="m">N = 1</span>, 6 at <span class="m">N = 2</span>. It works eventually, but nothing certifies when.</li>
+<li><strong>&quot;A terminal cost valid for the model is valid for the implementation.&quot;</strong> <span class="m">x^\top P x</span> on <span class="m">\mathcal O_\infty</span> is exact for the continuous problem, but restricting the inputs to the lattice broke its decrease at 114 of 117 states. A quantised actuator does the same.</li>
+<li><strong>&quot;LMPC's terminal cost is a Q-function.&quot;</strong> It is a state function, an upper bound of <span class="m">J^\star</span> built from realised costs, not a state-input function learned by bootstrapping.</li>
+<li><strong>&quot;A penalty is a constraint.&quot;</strong> It leaves the optimal policy unchanged only if it is large enough, and a learner respects it only after violating it: 972 crashes before the policy became optimal.</li>
+<li><strong>&quot;Q-learning converged, so the network will too.&quot;</strong> The tabular proof is a stochastic approximation of a sup-norm contraction; a projected iteration need not contract in any norm. Replay and target networks are remedies, not guarantees.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Describe MPC in dynamic-programming terms. Why does <span class="m">V_f = x^\top P x</span> on <span class="m">\mathcal O_\infty</span> allow a short horizon?</summary>
+<p>MPC is greedy with respect to <span class="m">T^{N-1}\bar V_f</span>, evaluated at the current state. If <span class="m">V_f = J^\star</span> on <span class="m">\mathcal X_f</span>, as <span class="m">x^\top P x</span> is on <span class="m">\mathcal O_\infty</span> for the constrained linear-quadratic problem, then <span class="m">T^N\bar V_f = J^\star</span> wherever an optimal trajectory enters <span class="m">\mathcal X_f</span> within <span class="m">N</span> steps. The decrease <span class="m">\bar V_f \ge T\bar V_f</span> then gives recursive feasibility and a Lyapunov function.</p>
+</details>
+<details class="sol"><summary>2. Why does design A fail from almost every state at <span class="m">N = 1</span>?</summary>
+<p>With <span class="m">V_f = 0</span> the one-step problem sees only <span class="m">q(x, u)</span>, minimised by <span class="m">u = 0</span> whenever coasting stays in the box. The controller coasts until a bound forces it to brake, then brakes as little as possible, and from most states that is too late: 702 of 703 feasible starts lose feasibility.</p>
+</details>
+<details class="sol"><summary>3. Design B's closed loops are almost identical to design C's. Why does only C carry a certificate?</summary>
+<p>The certificate needs <span class="m">\bar V_f \ge T\bar V_f</span>. Design C's terminal cost is the exact <span class="m">J^\star</span>, which satisfies it by definition. Design B's is the continuous LQR cost, whose decrease holds for the continuous input <span class="m">-Kx</span> but fails once the input is rounded to the lattice, at 114 of 117 terminal states.</p>
+</details>
+<details class="sol"><summary>4. Why are LMPC's stored costs-to-go upper bounds of <span class="m">J^\star</span>, and why does that matter?</summary>
+<p>Each is the realised cost of an admissible trajectory to the target, so it is at least optimal. Each also comes with a stored feasible continuation, so <span class="m">\bar V^j \ge T\bar V^j</span>, which yields recursive feasibility and non-increasing iteration costs. A lower bound such as <span class="m">T^N 0</span> gives neither.</p>
+</details>
+<details class="sol"><summary>5. Why does the horizon decide what LMPC can learn on the lattice?</summary>
+<p>The sampled safe set is a finite set of points; a plan must end exactly on one of them. With <span class="m">N = 1</span> the only reachable stored state is the seed's next state, so the seed is replayed; with <span class="m">N = 3</span> enough stored states are reachable that the optimal path can be assembled from the first iteration.</p>
+</details>
+<details class="sol"><summary>6. What is the temporal-difference error, and why is its target exact here?</summary>
+<p>The bracket <span class="m">c + \gamma \min_{u&#x27;} Q(x^+, u&#x27;) - Q(x, u)</span>. Its target is a sample of <span class="m">(FQ)(x, u)</span>; with deterministic transitions the sample is the expectation, so <span class="m">\alpha = 1</span> is admissible and fastest.</p>
+</details>
+<details class="sol"><summary>7. Why does the pessimistic initialisation fail without exploration?</summary>
+<p>A crash target is the one-step cost alone, at most 118, while every other target bootstraps from successors still valued near 200. Crashing therefore looks cheaper than staying, the greedy policy keeps crashing, and without exploration nothing corrects the values along the way: 70 217 crashes and a policy that crashes from 29 viable states.</p>
+</details>
+<details class="sol"><summary>8. What does a DQN target network do, and why does the tabular convergence proof not carry over?</summary>
+<p>It freezes the parameters used in the targets, so each phase is a regression towards a fixed target. With function approximation the update is <span class="m">\Pi F</span>, and since <span class="m">\Pi</span> is non-expansive only in a weighted <span class="m">L^2</span> norm, <span class="m">\Pi F</span> need not contract and can diverge.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs after the numbers script's definitions. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Coasting into a wall.</b> Follow design A with <span class="m">N = 1</span> from <span class="m">(-1, 2)</span> by hand: which input does the one-step problem choose at each step, and where does it lose feasibility?</p>
+<details class="sol"><summary>Hint</summary>
+<p>The one-step cost <span class="m">x^\top Q x + 0.2 u^2</span> is minimised by <span class="m">u = 0</span> whenever <span class="m">Ax</span> stays in the box.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>From <span class="m">(-1, 2)</span> coasting gives <span class="m">(1, 2)</span>, still in the box, so <span class="m">u = 0</span>; from <span class="m">(1, 2)</span> coasting gives <span class="m">(3, 2)</span>, in the box, so <span class="m">u = 0</span> again; from <span class="m">(3, 2)</span> the next position is <span class="m">3 + 2 + u/2 \le 4</span> only if <span class="m">u \le -2</span>, outside <span class="m">|u| \le 1</span>, so no admissible input exists and the problem is infeasible. The numbers script prints the path <span class="m">(-1, 2) \to (1, 2) \to (3, 2) \to</span> infeasible. With <span class="m">N \ge 2</span> the second state's predicament is visible one step earlier and the controller brakes at <span class="m">(1, 2)</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the three checks.</b> Starting from the lattice and <code>bellman_hard</code>, implement the three checks of the decrease condition for design B (<span class="m">J_N \ge J^\star</span>, <span class="m">J_N</span> non-increasing in <span class="m">N</span>, closed-loop cost at most <span class="m">J_N(x_0)</span>) and find the first horizon at which each one fails.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Keep <span class="m">T^{N-1}\bar V_f</span> from one horizon to the next; the closed-loop costs come from <code>receding_horizon</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">Vf = np.where(in_O, xPx4, np.inf)            # design B
+J_prev = Vf.copy()
+for N in range(1, 13):
+    J_N, a_N = bellman_hard(J_prev)
+    F = np.isfinite(J_N)
+    start, cost, ok = receding_horizon(a_N, F)
+    print(N, bool(np.all(J_N[F] &gt;= J_star4[F] - 1e-9)), bool(np.all(J_N &lt;= J_prev + 1e-9)),
+          bool(np.all(cost[ok] &lt;= J_N[start[ok]] + 1e-9)))
+    J_prev = J_N
+</code></pre>
+<p>All three fail already at <span class="m">N = 1</span>: at the 114 terminal states where the rounded LQR input breaks the decrease, <span class="m">T\bar V_f</span> exceeds <span class="m">\bar V_f</span> by up to 0.0432, so <span class="m">J_1 &gt; J_0 = V_f</span> there (monotonicity fails), and since <span class="m">V_f = x^\top P x &lt; J^\star</span> on the lattice (the lattice value exceeds the continuous one), <span class="m">J_1 \ge J^\star</span> fails too, and the closed-loop cost bound fails with it. Replacing <code>xPx4</code> by <code>J_star4</code> (design C) makes all three hold at every horizon.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>LMPC with a longer horizon.</b> Run the lattice LMPC with <span class="m">N = 4</span> from the same seed and compare with <span class="m">N = 3</span>. Then change the seed's sluggishness to <span class="m">0.05</span> and repeat for <span class="m">N = 1, 2, 3</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>The widget's slider sets the seed cost's weight; the numbers script's loop takes <code>N_L</code> from a list.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With <span class="m">N = 4</span> the first iteration is optimal, as with <span class="m">N = 3</span>: the iteration costs are <span class="m">66.456, 34.5, 34.5, \ldots</span>. A longer horizon cannot do better than optimal, and here cannot do worse, since the stored seed remains a feasible candidate. With a less sluggish seed (weight 0.05 instead of 0.005) the seed itself is closer to optimal, so the first-iteration cost is lower for every horizon and the <span class="m">N = 2</span> plateau moves; the widget reports the numbers for any weight. What never changes: the costs never increase, and every stored cost-to-go stays at or above <span class="m">J^\star</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build Q-learning yourself.</b> Implement the tabular update with <span class="m">\alpha = 1</span>, <span class="m">\varepsilon = 0.1</span>, episodes of at most 30 steps from random starts, and NumPy's <code>default_rng(0)</code> drawn exactly as in the numbers script (exploration flags, random actions and starts drawn in advance). Reproduce: optimal everywhere from step 40 000, 972 crashes by then, 2 776 in all.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Draw <code>explore</code>, <code>rand_a</code> and <code>starts</code> as three arrays before the loop; the order of the draws fixes the stream.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">rng = np.random.default_rng(0)
+explore = rng.random(n_steps) &lt; 0.1
+rand_a = rng.integers(m3, size=n_steps)
+starts = rng.integers(n3, size=n_steps)
+Q = [[0.0] * m3 for _ in range(n3)]
+s, t_ep, crashes = int(starts[0]), 0, 0
+for t in range(n_steps):
+    row = Q[s]
+    a = int(rand_a[t]) if explore[t] else row.index(min(row))
+    s2, c = succ3[s, a], cost_c[s, a]
+    target = c if s2 &lt; 0 else c + gamma * min(Q[s2])
+    row[a] += 1.0 * (target - row[a])
+    crashes += s2 &lt; 0; t_ep += 1
+    if s2 &lt; 0 or t_ep == 30: s, t_ep = int(starts[t]), 0
+    else: s = s2
+</code></pre>
+<p>Plain lists are deliberate: the updates are scalar and a NumPy row would cost more per step than it saves. The browser's run uses its own generator, so its step counts differ from these while the conclusions, and the final <span class="m">Q</span> at the optimal inputs, do not.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A penalty that is too small.</b> Lower the crash cost in the value-iteration widget of chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> (or in the numbers script) until the optimal policy of the crash problem crashes from some viable state. What is the mechanism, and what does it say about penalties as constraints?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Compare the crash cost with the discounted cost of staying in the box for ever from a fast state near the edge.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Below a crash cost of about 40 the optimal policy prefers to leave the box from some viable states: from a fast state near a wall, braking hard and then paying <span class="m">x^\top Q x</span> for many steps costs more than <span class="m">c_{\mathrm{crash}}</span> once and nothing after, since the crash state is free. A penalty encodes a constraint only when it exceeds the worst admissible cost-to-go; at 100 it does (the largest viable value is 47.06), at 40 it does not. The hard-constrained formulation of chapter <a href="a14-bellman-dynamic-programming-value-and-policy-iteration.html" title="Bellman: dynamic programming, value and policy iteration">A14</a> needs no such tuning, because an inadmissible input is simply not an option.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Where is Q accurate?.</b> After the <span class="m">\alpha = 1</span>, <span class="m">\varepsilon = 0.1</span> run, compare the learned <span class="m">Q</span> with <span class="m">Q^\star</span> at the optimal input of each viable state and over all pairs. Explain the two numbers.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>Q_star3 = cost_c + gamma * J_star3[succ_c]</code>; the optimal input is <code>Q_star3.argmin(axis=1)</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>At the optimal input of every viable state the error is exactly zero; over all pairs it is up to 95.0. The greedy policy follows the optimal inputs almost always, so those pairs are updated with exact targets until they settle; inputs that the greedy policy never selects are updated only by exploration, from successors whose values may still be wrong, and inputs that crash are visited rarely and from few states. Q-learning is accurate where it acts, which is enough for the policy and not enough for a value table.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The course's methods on one page</h2>
+  </div>
+  <div class="col prose">
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Computes</th>
+<th>Where</th>
+<th>Model</th>
+<th>Guarantees from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dynamic programming (VI, PI)</td>
+<td><span class="m">J^\star</span>, <span class="m">\mu^\star</span> exactly</td>
+<td>every state, offline</td>
+<td>yes</td>
+<td>contraction or monotonicity</td>
+</tr>
+<tr>
+<td>MPC</td>
+<td>the greedy policy of <span class="m">T^{N-1}\bar V_f</span></td>
+<td>current state, online</td>
+<td>yes</td>
+<td>terminal set and decrease</td>
+</tr>
+<tr>
+<td>Learning MPC</td>
+<td>MPC with <span class="m">V_f</span> from realised costs</td>
+<td>current state, online</td>
+<td>yes</td>
+<td>the data satisfy the decrease</td>
+</tr>
+<tr>
+<td>Q-learning</td>
+<td><span class="m">Q^\star</span> from samples</td>
+<td>visited pairs</td>
+<td>no</td>
+<td>stochastic approximation</td>
+</tr>
+<tr>
+<td>DQN</td>
+<td><span class="m">Q_\theta \approx Q^\star</span></td>
+<td>wherever the network generalises</td>
+<td>no</td>
+<td>no general guarantee</td>
+</tr>
+</tbody>
+</table>
+</div>
+<ol class="steps">
+<li><div><strong>MPC</strong> is greedy with respect to <span class="m">T^{N-1}\bar V_f</span>; <span class="m">\bar V_f \ge T\bar V_f</span> is its stability proof in one line. The set buys safety, the cost buys short-horizon performance.</div></li>
+<li><div><strong>Three designs</strong>: without terminal ingredients, 702 of 703 starts fail at <span class="m">N = 1</span> and doomed states are accepted at <span class="m">N = 2</span>; with them, no start ever fails and the feasible set reaches all 655 viable states at <span class="m">N = 5</span>. Only the exact tail carries the certificate on the lattice.</div></li>
+<li><div><strong>Learning MPC</strong> stores realised costs-to-go: upper bounds of <span class="m">J^\star</span> that satisfy the decrease automatically, so iteration costs never increase; from 92.6 percent above optimal, <span class="m">N = 3</span> reaches the optimum in one iteration.</div></li>
+<li><div><strong>Q-learning</strong>: samples and exploration instead of a model; 40 000 transitions and 972 crashes against 6 450 backups and none; accurate where it acts.</div></li>
+<li><div><strong>DQN</strong>: a projected contraction need not contract; replay and a target network are remedies, not a proof.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Truncated dynamic programming</td>
+<td>MPC: greedy with respect to <span class="m">T^{N-1}\bar V_f</span> at the current state.</td>
+</tr>
+<tr>
+<td>Terminal decrease</td>
+<td><span class="m">\bar V_f \ge T\bar V_f</span>: the stability condition of chapter A11 in operator form.</td>
+</tr>
+<tr>
+<td>Doomed state</td>
+<td>Feasible for the plain problem now, outside <span class="m">\mathcal C_\infty</span>, bound to leave <span class="m">\mathcal X</span>.</td>
+</tr>
+<tr>
+<td>Sampled safe set</td>
+<td>The states of successful runs, with their realised costs-to-go as a terminal cost.</td>
+</tr>
+<tr>
+<td>Q-function</td>
+<td>State-input cost-to-go; the greedy policy needs no model.</td>
+</tr>
+<tr>
+<td>Temporal-difference error</td>
+<td>The sampled Bellman residual used by Q-learning and DQN.</td>
+</tr>
+<tr>
+<td>Off-policy</td>
+<td>The limit is <span class="m">Q^\star</span> whatever policy generated the data.</td>
+</tr>
+<tr>
+<td>Replay buffer, target network</td>
+<td>DQN's remedies for correlated samples and moving targets.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Deterministic, discrete-time problems on an exact lattice; with noise, <span class="m">J(f(x, u))</span> becomes an expectation and MPC needs the robust or stochastic formulations of lab <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a>. All lattice computations on this page run in the browser with the same code as the numbers script; only the Q-learning random stream differs, and the script's logs are shipped for comparison.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>R. Bellman. <em>Dynamic Programming</em>. Princeton University Press, 1957. The principle of optimality and the curse of dimensionality.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>D. P. Bertsekas. <em>Dynamic Programming and Optimal Control</em>, Vol. I (4th ed., 2017) and Vol. II (4th ed., 2012). Athena Scientific. Contraction arguments, value and policy iteration, approximate dynamic programming.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>R. S. Sutton and A. G. Barto. <em>Reinforcement Learning: An Introduction</em>, 2nd ed. MIT Press, 2018. The reinforcement-learning vocabulary and tabular methods.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>C. J. C. H. Watkins and P. Dayan. &quot;Q-learning&quot;. <em>Machine Learning</em> 8, 279–292, 1992. <a href="https://doi.org/10.1007/BF00992698">doi:10.1007/BF00992698</a>. Convergence of tabular Q-learning.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>J. N. Tsitsiklis. &quot;Asynchronous stochastic approximation and Q-learning&quot;. <em>Machine Learning</em> 16, 185–202, 1994. <a href="https://doi.org/10.1007/BF00993306">doi:10.1007/BF00993306</a>. The stochastic-approximation view.</div></li>
+<li id="ref-6"><span class="rn">[6]</span><div>J. N. Tsitsiklis and B. Van Roy. &quot;An analysis of temporal-difference learning with function approximation&quot;. <em>IEEE Transactions on Automatic Control</em> 42(5), 674–690, 1997. <a href="https://doi.org/10.1109/9.580874">doi:10.1109/9.580874</a>. Why projected Bellman iterations can diverge.</div></li>
+<li id="ref-7"><span class="rn">[7]</span><div>V. Mnih et al. &quot;Human-level control through deep reinforcement learning&quot;. <em>Nature</em> 518, 529–533, 2015. <a href="https://doi.org/10.1038/nature14236">doi:10.1038/nature14236</a>. DQN, replay buffer, target network.</div></li>
+<li id="ref-8"><span class="rn">[8]</span><div>H. van Hasselt. &quot;Double Q-learning&quot;. <em>Advances in Neural Information Processing Systems</em> 23, 2010. The low bias of the minimum over noisy estimates and its correction.</div></li>
+<li id="ref-9"><span class="rn">[9]</span><div>U. Rosolia and F. Borrelli. &quot;Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework&quot;. <em>IEEE Transactions on Automatic Control</em> 63(7), 1883–1896, 2018. <a href="https://doi.org/10.1109/TAC.2017.2753460">doi:10.1109/TAC.2017.2753460</a>. LMPC's stored costs as a terminal value.</div></li>
+</ul>
+<p>Bellman <a href="#ref-1">[1]</a> and Bertsekas <a href="#ref-2">[2]</a> are the references for Parts 1 to 4; Sutton and Barto <a href="#ref-3">[3]</a>, Watkins and Dayan <a href="#ref-4">[4]</a>, Tsitsiklis <a href="#ref-5">[5]</a>, Tsitsiklis and Van Roy <a href="#ref-6">[6]</a>, Mnih et al. <a href="#ref-7">[7]</a> and van Hasselt <a href="#ref-8">[8]</a> for Parts 5 to 7; Rosolia and Borrelli <a href="#ref-9">[9]</a> for Part 4. Lab <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> closes the course with one design followed end to end, with every guarantee of this page checked on the continuous problem rather than the lattice.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="b04-data-driven-local-models-for-racing.html"><span class="lbl">Previous · B4</span><span class="t">Data-driven local models for racing</span></a>
+  <a class="next" rel="next" href="b06-capstone-one-design-end-to-end.html"><span class="lbl">Next · B6</span><span class="t">Capstone: one design, end to end</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter B5 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/mpc-dp.js?v=20261102221633"></script>
+<script src="interactive/b05-data.js?v=20261102221633"></script>
+<script src="interactive/b05.js?v=20261102221633"></script>
+</body>
+</html>

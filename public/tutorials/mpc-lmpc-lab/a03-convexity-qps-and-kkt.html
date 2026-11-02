@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A3 · Convexity, QPs and KKT · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Convex sets and functions, the problem classes, the Lagrangian, weak and strong duality, the four KKT conditions with a QP solved by hand, and multipliers as the price of a constraint.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part A, Concepts · Chapter A3 of 15</span>
+  <h1>Convexity, quadratic programs and the KKT conditions</h1>
+  <p class="lede">Optimisation is the engine under predictive control, and the quadratic program of chapter A2 is handed to a solver at every sample. Before trusting what comes back, one has to know what makes such a problem tractable, what a solution certifies, and what the extra numbers a solver returns, the multipliers, mean. This chapter is the geometry and the optimality theory: convex sets and functions, the Lagrangian and its dual, and the four KKT conditions, each read on a two-variable problem small enough to solve by hand. Below, that problem is solved live: move the target and the bound and watch the multiplier appear, as a force and as a price.</p>
+  <p class="byline">Elie Rouphael · Needs linear algebra and multivariable calculus · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a03_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div class="two">
+      <div>
+        <p class="chart-title">The hand QP: min ‖z − c‖² subject to z₁ + z₂ ≤ b</p>
+        <canvas id="kktC" aria-label="The feasible half-plane, the level sets of the objective around c, the optimiser on the boundary, and the gradient and constraint normal that cancel there" aria-describedby="heroStatus"></canvas>
+      </div>
+      <div>
+        <p class="chart-title">The dual function d(λ) and the primal optimum</p>
+        <canvas id="dualC" aria-label="The concave dual function with its maximum marked at the optimal multiplier, and the primal optimum as a dashed line" aria-describedby="heroStatus"></canvas>
+      </div>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span><span class="m">c_1</span>: <b id="kC1V"></b></span><span class="row"><input type="range" id="kC1" min="-0.5" max="2" step="0.05" value="1.2"></span></label>
+    <label class="field"><span><span class="m">c_2</span>: <b id="kC2V"></b></span><span class="row"><input type="range" id="kC2" min="-0.5" max="2" step="0.05" value="0.8"></span></label>
+    <label class="field"><span>Bound <span class="m">b</span> in <span class="m">z_1 + z_2 \le b</span>: <b id="kBV"></b></span><span class="row"><input type="range" id="kB" min="0" max="2" step="0.05" value="1"></span></label>
+    <div class="readouts" aria-live="off">
+      <span><span class="m">z^\star</span></span><span class="v" id="rZ">–</span>
+      <span><span class="m">\lambda^\star</span></span><span class="v" id="rLam">–</span>
+      <span><span class="m">f^\star</span></span><span class="v" id="rF">–</span>
+      <span>KKT residuals (stat. / primal / compl.)</span><span class="v" id="rKKT">–</span>
+      <span>the course's solver</span><span class="v" id="rSolver">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to c = (1.2, 0.8), b = 1</button></div>
+    <p class="hint">The KKT conditions solve this problem in closed form: <span class="m">\lambda^\star = \max(c_1 + c_2 - b, 0)</span> and <span class="m">z^\star = c - \tfrac{\lambda^\star}{2}(1, 1)</span>. The readout also runs the toolkit's interior-point solver of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> on the same problem.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#geometry"><span class="n">1</span><span class="t">Optimisation as geometry</span><span class="d">Feasible sets, optimisers, convex sets</span></a>
+    <a href="#functions"><span class="n">2</span><span class="t">Convex functions and the quadratic</span><span class="d">Convex functions, Hessians, the quadratic</span></a>
+    <a href="#classes"><span class="n">3</span><span class="t">Problem classes</span><span class="d">LP, QP, NLP, mixed-integer</span></a>
+    <a href="#kkt"><span class="n">4</span><span class="t">Optimality, duality and the KKT conditions</span><span class="d">Lagrangian, duality, the four conditions</span></a>
+    <a href="#prices"><span class="n">5</span><span class="t">Multipliers as prices</span><span class="d">Multipliers as sensitivities</span></a>
+    <a href="#code"><span class="n">6</span><span class="t">The code behind it</span><span class="d">The KKT residuals in qp.py</span></a>
+    <a href="#pitfalls"><span class="n">7</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">8</span><span class="t">Check your understanding</span><span class="d">Nine questions with answers</span></a>
+    <a href="#exercises"><span class="n">9</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">10</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="geometry">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Optimisation as geometry</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The generic constrained problem.</strong> A broad class of problems reads</p>
+<div class="math-block" data-narrow="\begin{aligned} &amp;1.\ \nabla f + \textstyle\sum_i \lambda_i \nabla g_i + \sum_j \nu_j \nabla h_j = 0 \ &amp;2.\ g_i(z^\star) \le 0,\ h_j(z^\star) = 0 \ &amp;3.\ \lambda_i^\star \ge 0 \ &amp;4.\ \boxed{\lambda_i^\star g_i(z^\star) = 0} \end{aligned}">\min_{z \in \mathbb R^n}\ f(z) \quad \text{subject to}\quad g_i(z) \le 0,\ i = 1, \dots, m, \qquad h_j(z) = 0,\ j = 1, \dots, p.</div>
+<p><span class="m">z</span> holds the decision variables; in chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> it is the whole input sequence <span class="m">U</span>, or <span class="m">(X, U)</span>. The <em>feasible set</em> is <span class="m">\mathcal F = \{z : g_i(z) \le 0,\ h_j(z) = 0\}</span>; an <em>optimiser</em> is a point <span class="m">z^\star \in \arg\min_{z \in \mathcal F} f(z)</span>, and the <em>optimal value</em> is the scalar <span class="m">f^\star = f(z^\star)</span>. The distinction matters: a point can be feasible without being optimal, and a problem can be infeasible, unbounded, or have several minimisers.</p>
+<div class="define"><p class="define-title">What is a convex set?</p>
+<p><strong>In plain words:</strong> a set with no dents and no holes, so that the straight segment between any two of its points stays inside. Boxes, half-planes, discs and their intersections are convex; an L-shape, a ring, or two separate pieces are not.</p>
+<p><strong>More precisely:</strong> <span class="m">\mathcal C \subseteq \mathbb R^n</span> is convex if <span class="m">\theta x + (1 - \theta) y \in \mathcal C</span> for every <span class="m">x, y \in \mathcal C</span> and every <span class="m">\theta \in [0, 1]</span>. The sets that recur in MPC are all convex: the affine set <span class="m">\{z : Az = b\}</span>, the half-space <span class="m">\{z : a^\top z \le b\}</span>, and the polyhedron <span class="m">\{z : Gz \le h\}</span>, an intersection of finitely many half-spaces; a bounded polyhedron is a polytope, chapter <a href="a08-polytopes-and-set-operations.html" title="Polytopes and set operations">A8</a>.</p>
+<dl><dt>Intersection</dt><dd>An intersection of convex sets is convex: stacking the rows of many constraints keeps the feasible set convex.</dd><dt>Affine image</dt><dd><span class="m">\{Mz + c : z \in \mathcal C\}</span> is convex when <span class="m">\mathcal C</span> is: the prediction identity maps a convex set of inputs to a convex set of states.</dd><dt>Cartesian product</dt><dd><span class="m">\mathcal C_1 \times \mathcal C_2</span> is convex: a box on every state and an interval on every input together form one convex set over the horizon.</dd></dl>
+</div>
+<div class="widget" id="setW">
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Set">
+      <button class="btn" type="button" data-shape="polytope" aria-pressed="true">a polytope</button>
+      <button class="btn" type="button" data-shape="notch" aria-pressed="false">an L-shaped set</button>
+    </div>
+  </div>
+  <canvas id="setC" aria-label="A set with a movable segment between two points, coloured where the segment leaves the set" style="cursor:crosshair"></canvas>
+  <p class="caption" id="setCap"></p>
+</div>
+<p><strong>Why convexity matters geometrically.</strong> A convex feasible set has no disconnected islands and no pockets a search can get trapped in. That alone does not make optimisation easy, the objective matters too, but it is the geometry the theory needs, and the closure properties in the box are why stacking many linear state and input constraints over a horizon, as chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> does, still yields a convex feasible set.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="functions">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Convex functions and the quadratic</h2>
+  </div>
+  <div class="col prose">
+
+<p>A function <span class="m">f</span> on a convex domain is convex if</p>
+<div class="math-block">f(\theta x + (1 - \theta) y) \le \theta f(x) + (1 - \theta) f(y) \qquad \text{for all } x, y \text{ and } \theta \in [0, 1]:</div>
+<p>the chord lies above the graph. For a differentiable convex function, <span class="m">f(y) \ge f(x) + \nabla f(x)^\top (y - x)</span>: every tangent plane is a global lower bound, which is what makes a zero gradient a global certificate. For a twice differentiable function, <span class="m">\nabla^2 f(z) \succeq 0</span> everywhere is sufficient. For the quadratic <span class="m">f(z) = \tfrac12 z^\top P z + q^\top z + r</span> the Hessian is just <span class="m">P</span>, so</p>
+<div class="math-block">\boxed{f \text{ is convex} \iff P \succeq 0}, \qquad \text{and strictly convex if } P \succ 0.</div>
+<div class="widget" id="quadW">
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Matrix">
+      <button class="btn" type="button" data-q="alpha" aria-pressed="true">P with entries 2, α, α, 1</button>
+      <button class="btn" type="button" data-q="convex" aria-pressed="false">a convex example</button>
+      <button class="btn" type="button" data-q="indef" aria-pressed="false">an indefinite example</button>
+    </div>
+    <label class="field"><span>Off-diagonal <span class="m">\alpha</span>: <b id="qAV"></b></span><span class="row"><input type="range" id="qA" min="0" max="2" step="0.05" value="0.8"></span></label>
+  </div>
+  <canvas id="quadC" aria-label="Level sets of a quadratic form: ellipses when the matrix is positive definite, a saddle when it is indefinite"></canvas>
+  <p class="caption" id="quadCap"></p>
+</div>
+<p>The widget's family <span class="m">P = \begin{pmatrix} 2 &amp; \alpha \\ \alpha &amp; 1 \end{pmatrix}</span> has trace 3 and determinant <span class="m">2 - \alpha^2</span>: convex exactly for <span class="m">|\alpha| \le \sqrt 2</span>, with eigenvalues <span class="m">0.0134</span> and <span class="m">2.987</span> at <span class="m">\alpha = 1.4</span> and <span class="m">-0.081</span> and <span class="m">3.081</span> at <span class="m">\alpha = 1.5</span>, where the ellipses open into a saddle. The condensed Hessian of chapter <a href="a02-prediction-matrices-and-condensing.html" title="Prediction matrices and condensing">A2</a> is positive definite for every horizon, so the MPC cost is always strictly convex.</p>
+<p><strong>Convex optimisation problems.</strong> The standard form is <span class="m">\min_z f_0(z)</span> subject to <span class="m">f_i(z) \le 0</span> and <span class="m">Az = b</span>, with <span class="m">f_0</span> and every <span class="m">f_i</span> convex and the equalities affine <a href="#ref-1">[1]</a>. The consequence that makes it valuable:</p>
+<div class="math-block">\boxed{\text{every local optimum is a global optimum,}}</div>
+<p>and if the objective is strictly convex on the feasible set, there is at most one optimiser. Convexity turns &quot;search for a good local solution&quot; into &quot;solve a problem with global optimality structure&quot;. It is not elegance for its own sake: it decides what can be solved reliably online, at every sampling instant, with a bound on the time it takes.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="classes">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Problem classes</h2>
+  </div>
+  <div class="col prose">
+
+<p>The structure of the problem determines the solver, and the solver's name matters less than knowing what it is given.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Structure</th>
+<th>Class</th>
+<th>Where the course meets it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linear objective, linear constraints</td>
+<td>LP</td>
+<td>The feasibility certificate of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>, the learned terminal value of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a></td>
+</tr>
+<tr>
+<td>Convex quadratic objective, linear constraints</td>
+<td>Convex QP</td>
+<td>Every linear MPC problem: chapters <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>, <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>, <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>, <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a></td>
+</tr>
+<tr>
+<td>Indefinite quadratic objective</td>
+<td>Nonconvex QP</td>
+<td>Never, by design: <span class="m">R \succ 0</span> keeps <span class="m">H \succ 0</span></td>
+</tr>
+<tr>
+<td>Nonlinear smooth objective or constraints</td>
+<td>NLP</td>
+<td>The unicycle of chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>, the raceline of chapter <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a></td>
+</tr>
+<tr>
+<td>Integer or binary decisions</td>
+<td>MILP, MIQP</td>
+<td>The yield-or-pass choice of chapters <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a> and <a href="b01-vehicle-bike-collision-avoidance.html" title="Vehicle–bike collision avoidance">B1</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>A nonlinear equality <span class="m">h(z) = 0</span> generally describes a curved set, which is why the standard convex form requires the equalities to be affine; the dynamics of a nonlinear model are exactly such equalities, and that is the moment a control problem stops being convex.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="kkt">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Optimality, duality and the KKT conditions</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Unconstrained optimality.</strong> For <span class="m">\min_z f(z)</span>, a differentiable local optimum in the interior satisfies <span class="m">\nabla f(z^\star) = 0</span>. For a convex differentiable <span class="m">f</span> that is not merely local: it is sufficient for global optimality. For a strictly convex quadratic, <span class="m">z^\star = -P^{-1} q</span> is the unique minimiser.</p>
+<p><strong>The Lagrangian.</strong> For <span class="m">\min f(z)</span> subject to <span class="m">g(z) \le 0</span> and <span class="m">h(z) = 0</span>, introduce multipliers <span class="m">\lambda \ge 0</span> and <span class="m">\nu \in \mathbb R^p</span> and define</p>
+<div class="math-block">\boxed{L(z, \lambda, \nu) = f(z) + \lambda^\top g(z) + \nu^\top h(z)}.</div>
+<p>The multipliers quantify how strongly the active constraints shape the optimum. In control, a multiplier on an input bound says how costly that limit is, one on a state boundary how strongly it bends the trajectory, and a zero multiplier says the inequality is locally irrelevant. Chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> reads them off a complete control problem.</p>
+<p><strong>The dual function and weak duality.</strong> The Lagrange dual function is <span class="m">d(\lambda, \nu) = \inf_z L(z, \lambda, \nu)</span>. For any <span class="m">\lambda \ge 0</span> and any feasible <span class="m">z</span>, <span class="m">L(z, \lambda, \nu) \le f(z)</span>, so</p>
+<div class="math-block">d(\lambda, \nu) \le f^\star :</div>
+<p>every dual-feasible point is a lower bound on the primal optimum. The dual problem <span class="m">\max_{\lambda \ge 0, \nu} d(\lambda, \nu)</span> is concave whatever the primal is; if its optimum <span class="m">d^\star</span> equals <span class="m">f^\star</span> we have <em>strong duality</em>. For convex problems a standard sufficient condition is Slater's: a feasible point exists that satisfies every non-affine inequality strictly. For a QP with affine constraints strong duality holds whenever the problem is feasible. With it, primal and dual solutions certify each other through the gap <span class="m">f(z) - d(\lambda, \nu)</span>, which the interior-point method of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> drives to zero.</p>
+<div class="define"><p class="define-title">What are the KKT conditions?</p>
+<p><strong>In plain words:</strong> the four facts that hold at the solution of a constrained problem: the objective's pull is exactly balanced by the constraints that are active; the point is feasible; the constraints only push, never pull; and a constraint that is not touched exerts no force at all.</p>
+<p><strong>More precisely:</strong> under the usual differentiability assumptions, and for convex problems with a constraint qualification such as Slater's, an optimum satisfies</p>
+<div class="math-block">\begin{aligned} &amp;\text{1. stationarity: } \nabla f(z^\star) + \textstyle\sum_{i} \lambda_i^\star \nabla g_i(z^\star) + \sum_{j} \nu_j^\star \nabla h_j(z^\star) = 0, \\ &amp;\text{2. primal feasibility: } g_i(z^\star) \le 0,\ h_j(z^\star) = 0, \qquad \text{3. dual feasibility: } \lambda_i^\star \ge 0, \\ &amp;\text{4. complementary slackness: } \boxed{\lambda_i^\star g_i(z^\star) = 0}. \end{aligned}</div>
+<p>For differentiable convex problems the KKT conditions are also sufficient: any point satisfying them is a global optimum, with no further assumption. A constraint qualification is what makes them necessary as well.</p>
+<dl><dt>Active constraint</dt><dd>An inequality that holds with equality at the optimum; it may carry a positive multiplier.</dd><dt>Complementary slackness</dt><dd>If <span class="m">g_i(z^\star) &lt; 0</span> then <span class="m">\lambda_i^\star = 0</span>; if <span class="m">\lambda_i^\star &gt; 0</span> then <span class="m">g_i(z^\star) = 0</span>. Both can be zero at once: a weakly active constraint.</dd><dt>Multiplier of an equality</dt><dd><span class="m">\nu_j</span> has no sign restriction, since an equality pushes from both sides.</dd></dl>
+</div>
+<p><strong>A QP solved by hand.</strong> Minimise <span class="m">\lVert z - c \rVert_2^2</span> with <span class="m">c = (1.2, 0.8)</span> subject to <span class="m">z_1 + z_2 \le 1</span>. The unconstrained minimiser is <span class="m">c</span>, but <span class="m">1.2 + 0.8 = 2 &gt; 1</span>, so the constraint must be active. With <span class="m">a = (1, 1)</span>, stationarity reads <span class="m">2(z - c) + \lambda a = 0</span>, so <span class="m">z = c - \tfrac{\lambda}{2} a</span>. Since the inequality is active, <span class="m">a^\top z = 1</span>, hence <span class="m">2 - \lambda = 1</span> and</p>
+<div class="math-block">\lambda^\star = 1, \qquad \boxed{z^\star = (0.7,\ 0.3)}, \qquad f^\star = 0.5 .</div>
+<p>The gradient of the objective at <span class="m">z^\star</span> is <span class="m">(-1, -1) = -\lambda^\star a</span>: the objective would like to move along <span class="m">(1, 1)</span>, straight out of the half-plane, and the constraint's normal holds it back with exactly the force <span class="m">\lambda^\star</span>. That is stationarity, and the hero draws the two arrows cancelling. The course's solver returns <span class="m">(0.7, 0.3)</span> and <span class="m">\lambda = 1</span> with every residual at zero, in ten iterations.</p>
+<p><strong>The dual of a strictly convex QP.</strong> For <span class="m">\min \tfrac12 z^\top P z + q^\top z</span> subject to <span class="m">Az \le b</span> with <span class="m">P \succ 0</span>, minimising the Lagrangian over <span class="m">z</span> gives <span class="m">z(\lambda) = -P^{-1}(q + A^\top \lambda)</span> and</p>
+<div class="math-block">\boxed{d(\lambda) = -\tfrac12 (q + A^\top \lambda)^\top P^{-1} (q + A^\top \lambda) - b^\top \lambda},</div>
+<p>to be maximised over <span class="m">\lambda \ge 0</span>. For the example, with <span class="m">P = 2I</span> and <span class="m">q = -2c</span>, the dual maximum is <span class="m">-1.58</span> at <span class="m">\lambda = 1</span>, the primal optimum with the constant <span class="m">c^\top c</span> dropped is <span class="m">0.5 - 2.08 = -1.58</span>, and the gap is zero: strong duality, as the hero's right panel shows for every <span class="m">c</span> and <span class="m">b</span>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="prices">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Multipliers as prices</h2>
+  </div>
+  <div class="col prose">
+
+<p>Replace the bound 1 by a parameter <span class="m">b</span>. While the constraint stays active, <span class="m">\lambda^\star(b) = 2 - b</span> and <span class="m">f^\star(b) = \lambda^{\star 2} / 2</span>, so</p>
+<div class="math-block">\frac{d f^\star}{d b} = -\lambda^\star :</div>
+<p>the multiplier is a <em>shadow price</em>, how much the optimal cost would improve if the constraint were relaxed by one unit. The numbers script differentiates <span class="m">f^\star(b)</span> numerically and finds <span class="m">-1.200, -1.000, -0.500, -0.100</span> at <span class="m">b = 0.8, 1.0, 1.5, 1.9</span>, the multipliers exactly, and <span class="m">0</span> at <span class="m">b = 2.1</span> where the constraint has gone inactive and <span class="m">\lambda^\star = 0</span>. The same holds for every constraint of every QP in the course: when chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> reports that the first rate bound has multiplier 9.85, it means that relaxing that bound by <span class="m">\delta</span> would lower the cost by about <span class="m">9.85\,\delta</span>, and chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> uses the same reading to size penalties.</p>
+<p><strong>Two constraints, one active.</strong> Add <span class="m">z_1 - z_2 \le 2</span> to the hand problem. The solver returns the same <span class="m">z^\star = (0.7, 0.3)</span>, multipliers <span class="m">(1, 0)</span> and slacks <span class="m">(0, 1.6)</span>: the second row is not touched, so its multiplier is zero, which is complementary slackness read in the other direction. Replace the inequality <span class="m">z_1 + z_2 \le 1</span> by the equality <span class="m">z_1 + z_2 = 1</span> and the solver returns <span class="m">\nu = 1</span>: the same force, now from a constraint that could have pushed either way.</p>
+<p><strong>Hard and soft constraints.</strong> A hard constraint <span class="m">a^\top z \le b</span> must always hold. When feasibility matters more than exact enforcement, add a slack <span class="m">\epsilon \ge 0</span>, write <span class="m">a^\top z \le b + \epsilon</span> and penalise it, <span class="m">f + \rho \epsilon</span>: a soft constraint. The multiplier says how large <span class="m">\rho</span> must be: for <span class="m">\rho \ge \lambda^\star</span> the slack stays at zero and the soft problem reproduces the hard solution, which chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a> demonstrates. Which constraints are hard is an engineering decision: actuator limits always; collision constraints should be; comfort envelopes may be softened.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The package's solver, chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>, is built on the KKT conditions. Its residuals are the four conditions written as vectors, which is all this chapter needs from it.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/qp.py · solve_qp</p><pre><code class="language-python">def solve_qp(H, f=None, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
+             lb=None, ub=None, x0=None, tol=1e-9, maxiter=100, sigma=0.1, trace=None):
+    &quot;&quot;&quot;Solve the convex QP by a primal-dual interior-point method.
+
+    H must be positive semidefinite (it is symmetrised).  `x0` is accepted for
+    API compatibility and used as the starting primal point after projection
+    into the bounds; an interior-point method does not need a warm start.
+
+    The iteration solves the perturbed KKT system
+        H z + f + G&#x27; lam + E&#x27; nu = 0,      G z + s = g,   s &gt; 0,  lam &gt; 0,
+        E z = e,                           s_i lam_i = sigma * mu,
+    by Newton&#x27;s method, with the step shortened so that s and lam stay
+    positive, and sigma = 0.1 pulling the complementarity products towards
+    zero.  It stops when every residual is below `tol`, then polishes the
+    answer: the constraints the iterate presses against (lam_i &gt; s_i) are
+    taken as the active set and the equality-constrained QP on that set is
+    solved exactly; the polished point is kept if it is feasible and its
+    multipliers are non-negative, which brings the solution to round-off.
+    If `trace` is a list, every iterate (z, s, lam, residual, mu) is appended to it.
+    &quot;&quot;&quot;
+    H = np.asarray(H, float)
+    H = 0.5 * (H + H.T)
+    n = H.shape[0]
+    f = np.zeros(n) if f is None else np.asarray(f, float).reshape(n)
+    G, g = stack_inequalities(n, A_ub, b_ub, lb, ub)
+    if A_eq is not None:
+        E = np.asarray(A_eq, float).reshape(-1, n); e = np.asarray(b_eq, float).reshape(-1)
+    else:
+        E = np.zeros((0, n)); e = np.zeros(0)
+    m, p = len(g), len(e)
+
+    # starting point: z inside the bounds, slacks and multipliers strictly positive
+    z = np.zeros(n) if x0 is None else np.asarray(x0, float).reshape(n).copy()
+    if lb is not None:
+        lo = np.asarray(lb, float).reshape(-1); z = np.where(np.isfinite(lo), np.maximum(z, lo), z)
+    if ub is not None:
+        hi = np.asarray(ub, float).reshape(-1); z = np.where(np.isfinite(hi), np.minimum(z, hi), z)
+    lam = np.ones(m)
+    s = np.maximum(g - G @ z, 1.0)
+    nu = np.zeros(p)
+
+    nit, resid, mu = 0, np.inf, 0.0
+    for nit in range(1, maxiter + 1):
+        rd = H @ z + f + G.T @ lam + E.T @ nu          # dual residual: stationarity of the Lagrangian
+        rp = G @ z + s - g                             # primal residual of the inequalities
+        re = E @ z - e                                 # primal residual of the equalities
+        mu = (s @ lam) / m if m else 0.0               # average complementarity s_i * lam_i
+        rc = sigma * mu - s * lam                      # centred complementarity residual
+        resid = max(np.abs(rd).max(initial=0.0), np.abs(rp).max(initial=0.0), np.abs(re).max(initial=0.0))
+        if trace is not None:
+            trace.append((z.copy(), s.copy(), lam.copy(), resid, mu))
+        if resid &lt; tol and mu &lt; tol:
+            break
+        # Newton step on the reduced system: s and lam are eliminated, leaving (dz, dnu)
+        D = lam / s
+        M = np.zeros((n + p, n + p))
+        M[:n, :n] = H + G.T @ (D[:, None] * G)
+        M[:n, n:] = E.T
+        M[n:, :n] = E
+        t = (rc + lam * rp) / s
+        rhs = np.r_[-rd - G.T @ t, -re]
+        try:
+            sol = np.linalg.solve(M, rhs)
+        except np.linalg.LinAlgError:
+            sol = np.linalg.lstsq(M + 1e-12 * np.eye(n + p), rhs, rcond=None)[0]
+        dz, dnu = sol[:n], sol[n:]
+        ds = -rp - G @ dz
+        dl = (rc - lam * ds) / s
+        # fraction-to-the-boundary rule: keep s and lam strictly positive
+        a = 1.0
+        if m:
+            neg_s, neg_l = ds &lt; 0, dl &lt; 0
+            if neg_s.any(): a = min(a, float(np.min(-0.99 * s[neg_s] / ds[neg_s])))
+            if neg_l.any(): a = min(a, float(np.min(-0.99 * lam[neg_l] / dl[neg_l])))
+        zn, sn, ln, nn = z + a * dz, s + a * ds, lam + a * dl, nu + a * dnu
+        if not (np.all(np.isfinite(zn)) and np.all(np.isfinite(sn)) and np.all(np.isfinite(ln)) and np.all(np.isfinite(nn))):
+            break                                      # keep the last finite iterate for the polish
+        z, s, lam, nu = zn, sn, ln, nn
+        if a &lt; 1e-12:
+            break                                      # stalled at the boundary (a degenerate optimum): polish
+
+    # polish: solve the equality-constrained QP on the active set, accept it if it is feasible and dual feasible.
+    # It runs whenever the primal residuals are small, even if the dual ones are not: when more constraints are
+    # active than there are variables (a degenerate optimum) the multipliers are not unique and the interior
+    # point drifts among them, so the polish recovers one set by least squares, then non-negative least squares.
+    prim = max((np.abs(G @ z + s - g).max() if m else 0.0), (np.abs(E @ z - e).max() if p else 0.0))
+    if np.all(np.isfinite(z)) and prim &lt; 1e-6:
+        act = np.where((lam &gt; s) | (s &lt;= 1e-7 * (1.0 + np.abs(g))))[0] if m else np.zeros(0, int)   # pressed against, or touched
+        Ga = G[act]
+        k = len(act)
+        Mp = np.zeros((n + k + p, n + k + p))
+        Mp[:n, :n] = H; Mp[:n, n:n + k] = Ga.T; Mp[n:n + k, :n] = Ga
+        Mp[:n, n + k:] = E.T; Mp[n + k:, :n] = E
+        sol = np.linalg.lstsq(Mp, np.r_[-f, g[act], e], rcond=None)[0]
+        zp, lp, nup = sol[:n], sol[n:n + k], sol[n + k:]
+        if np.all(np.isfinite(zp)) and (not m or np.max(G @ zp - g) &lt;= 1e-9) and (not p or np.max(np.abs(E @ zp - e)) &lt;= 1e-9):
+            grad = H @ zp + f
+            if np.any(lp &lt; -1e-9) or np.abs(grad + Ga.T @ lp + E.T @ nup).max(initial=0.0) &gt; 1e-8:
+                from scipy.optimize import nnls
+                C = np.hstack([Ga.T, E.T, -E.T]) if (k or p) else np.zeros((n, 0))
+                coef = nnls(C, -grad)[0] if C.shape[1] else np.zeros(0)
+                lp, nup = coef[:k], coef[k:k + p] - coef[k + p:]
+            rd = grad + Ga.T @ lp + E.T @ nup
+            if np.all(lp &gt;= -1e-9) and np.abs(rd).max(initial=0.0) &lt;= 1e-7:
+                z, nu = zp, nup
+                lam = np.zeros(m); lam[act] = np.maximum(lp, 0.0)
+                s = g - G @ z
+                resid = max(np.abs(rd).max(initial=0.0), (np.abs(E @ z - e).max() if p else 0.0))
+                mu = 0.0
+
+    viol = [0.0]
+    if m: viol.append(float(np.max(G @ z - g)))
+    if p: viol.append(float(np.max(np.abs(E @ z - e))))
+    max_v = max(viol)
+    converged = bool(resid &lt; 10 * tol and mu &lt; 10 * tol and max_v &lt;= 1e-7)
+    message = &quot;KKT conditions satisfied&quot; if converged else f&quot;not converged: residual {resid:.1e}, violation {max_v:.1e}&quot;
+    return QPResult(z, converged, float(0.5 * z @ H @ z + f @ z), message, max_v, nit, lam, nu, float(resid))</code></pre>
+<p>Read only the five lines after <code>for nit in range(...)</code>. <code>rd = H @ z + f + G.T @ lam + E.T @ nu</code> is condition 1, stationarity, for the QP: the gradient <span class="m">Hz + f</span> plus each active row's normal times its multiplier. <code>rp = G @ z + s - g</code> is condition 2 for the inequalities with a slack <span class="m">s = g - Gz</span> that must stay positive, and <code>re = E @ z - e</code> for the equalities. Condition 3 is not a residual but an invariant: the fraction-to-the-boundary step keeps <code>lam &gt; 0</code> and <code>s &gt; 0</code> at every iterate. Condition 4, complementary slackness <span class="m">s_i \lambda_i = 0</span>, is approached rather than imposed: <code>mu</code> is the average product and <code>rc</code> the residual of <span class="m">s_i \lambda_i = \sigma \mu</span>, driven to zero as <span class="m">\mu</span> shrinks. The method is therefore a Newton iteration on the KKT system, and <code>kkt_residual</code> in the result is the largest of those residuals at the end: the number to look at before trusting a solution. The rest of the function is chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;A zero gradient is a minimum.&quot;</strong> Only for a convex function. For the indefinite quadratic of the widget the origin has zero gradient and is a saddle; the function is unbounded below.</li>
+<li><strong>&quot;A positive multiplier means the constraint is violated.&quot;</strong> It means the constraint is active and pushing: the optimum sits on it. A violated constraint is infeasibility, which no multiplier describes.</li>
+<li><strong>&quot;An inactive constraint can be deleted.&quot;</strong> Only at this <span class="m">x_0</span>. In MPC the right-hand sides move with the state, and a row that is slack now binds later; the solver must see all of them.</li>
+<li><strong>&quot;The dual is just a trick.&quot;</strong> Its value is a certificate: any <span class="m">\lambda \ge 0</span> bounds the optimum from below, and a zero gap proves optimality without trusting the solver's own word.</li>
+<li><strong>&quot;Solver converged, so the answer is optimal.&quot;</strong> For a convex problem, yes, if the KKT residuals are small; check them. For a nonconvex one convergence certifies a local optimum at best, chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What makes a quadratic program convex?</summary>
+<p>A positive semidefinite Hessian and a convex feasible set. With affine constraints this reduces to <span class="m">P \succeq 0</span>; the MPC Hessian satisfies <span class="m">H \succ 0</span> because <span class="m">R \succ 0</span>.</p>
+</details>
+<details class="sol"><summary>2. Why must equality constraints be affine in the standard convex form?</summary>
+<p>A nonlinear equality <span class="m">h(z) = 0</span> describes a curved, in general nonconvex set. An affine equality preserves convexity; nonlinear dynamics do not.</p>
+</details>
+<details class="sol"><summary>3. Why is &quot;every local optimum is global&quot; so valuable online?</summary>
+<p>Because a solver can stop as soon as it finds a stationary point and the result is the best plan, with a predictable amount of work: what a controller that must answer every sample needs.</p>
+</details>
+<details class="sol"><summary>4. What does complementary slackness tell you?</summary>
+<p><span class="m">\lambda_i^\star g_i(z^\star) = 0</span> for each inequality: an inactive inequality has zero multiplier, and a positive multiplier implies the constraint is active.</p>
+</details>
+<details class="sol"><summary>5. What is the engineering meaning of a Lagrange multiplier?</summary>
+<p>A local shadow price: the sensitivity of the optimal value to a small relaxation of its constraint, <span class="m">df^\star / db = -\lambda^\star</span>.</p>
+</details>
+<details class="sol"><summary>6. What is the difference between weak and strong duality?</summary>
+<p>Weak duality always holds: <span class="m">d^\star \le f^\star</span>. Strong duality is equality, so the dual optimum certifies the primal one; it holds for every feasible QP with affine constraints.</p>
+</details>
+<details class="sol"><summary>7. Why does the sign of <span class="m">\nu</span> not matter but the sign of <span class="m">\lambda</span> does?</summary>
+<p>An equality can be violated in two directions and its multiplier balances the gradient from either side; an inequality only pushes inward, so its multiplier is nonnegative.</p>
+</details>
+<details class="sol"><summary>8. Why is the KKT system of a QP almost linear?</summary>
+<p>Stationarity and feasibility are linear in <span class="m">(z, \lambda, \nu, s)</span>; only complementary slackness, the products <span class="m">s_i \lambda_i</span>, is not. That one nonlinearity is what an interior-point method handles.</p>
+</details>
+<details class="sol"><summary>9. How large must a soft-constraint penalty be to change nothing?</summary>
+<p>At least the constraint's multiplier in the hard problem. Below it the optimiser buys a violation; at or above it the slack stays at zero.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Convexity of a quadratic.</b> For <span class="m">P = \begin{pmatrix} 2 &amp; \alpha \\ \alpha &amp; 1 \end{pmatrix}</span>, find the range of <span class="m">\alpha</span> for which <span class="m">f(z) = \tfrac12 z^\top P z</span> is convex.</p>
+<details class="sol"><summary>Hint</summary>
+<p>A symmetric <span class="m">2 \times 2</span> matrix is positive semidefinite exactly when its trace and determinant are both nonnegative.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The trace is 3, always positive, and the determinant is <span class="m">2 - \alpha^2</span>, so <span class="m">P \succeq 0</span> exactly when <span class="m">|\alpha| \le \sqrt 2 \approx 1.414</span>, strictly convex for <span class="m">|\alpha| &lt; \sqrt 2</span>. At <span class="m">\alpha = 1.4</span> the eigenvalues are <span class="m">0.0134</span> and <span class="m">2.987</span>; at <span class="m">\sqrt 2</span>, <span class="m">0</span> and <span class="m">3</span>; at <span class="m">1.5</span>, <span class="m">-0.081</span> and <span class="m">3.081</span>.</p>
+<pre><code class="language-python">for alpha in (1.4, np.sqrt(2.0), 1.5):
+    print(alpha, np.linalg.eigvalsh(np.array([[2.0, alpha], [alpha, 1.0]])))
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>KKT by hand.</b> Solve <span class="m">\min (z_1 - 3)^2 + (z_2 - 1)^2</span> subject to <span class="m">z_1 + z_2 \le 2</span>. Derive <span class="m">z^\star</span> and <span class="m">\lambda^\star</span> from the KKT conditions.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Same structure as the hero with <span class="m">c = (3, 1)</span> and <span class="m">b = 2</span>. Is the constraint active?</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The unconstrained minimiser <span class="m">c = (3, 1)</span> has <span class="m">z_1 + z_2 = 4 &gt; 2</span>, so the constraint is active. Stationarity <span class="m">2(z - c) + \lambda a = 0</span> gives <span class="m">z = c - \tfrac{\lambda}{2} a</span>; the active constraint <span class="m">a^\top z = 4 - \lambda = 2</span> gives <span class="m">\lambda^\star = 2 \ge 0</span> and <span class="m">z^\star = (2, 0)</span>, with <span class="m">f^\star = 1 + 1 = 2 = \lambda^{\star 2} / 2</span>.</p>
+<pre><code class="language-python">from advanced_mpc_lmpc.qp import solve_qp
+c2 = np.array([3.0, 1.0])
+r = solve_qp(2 * np.eye(2), -2 * c2, A_ub=[[1.0, 1.0]], b_ub=[2.0])
+print(r.x, r.lam)        # [2. 0.] [2.]
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build the KKT check yourself.</b> Write a function that takes <span class="m">(H, f, G, g)</span> and a candidate <span class="m">(z, \lambda)</span> and returns the four KKT residuals. Run it on the solver's answer to the hero problem and on the wrong point <span class="m">z = c</span> with <span class="m">\lambda = 0</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Stationarity is <span class="m">Hz + f + G^\top \lambda</span>; primal feasibility is <span class="m">\max(Gz - g, 0)</span>; dual feasibility <span class="m">\max(-\lambda, 0)</span>; complementary slackness <span class="m">\lambda \odot (Gz - g)</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">def kkt_residuals(H, f, G, g, z, lam):
+    G, g = np.atleast_2d(G), np.atleast_1d(g)
+    return dict(stationarity=np.abs(H @ z + f + G.T @ lam).max(),
+                primal=np.maximum(G @ z - g, 0).max(), dual=np.maximum(-lam, 0).max(),
+                complementarity=np.abs(lam * (G @ z - g)).max())
+H, f, G, g = 2 * np.eye(2), -2 * np.array([1.2, 0.8]), [[1.0, 1.0]], [1.0]
+r = solve_qp(H, f, A_ub=G, b_ub=g)
+print(kkt_residuals(H, f, G, g, r.x, r.lam))                         # all zero
+print(kkt_residuals(H, f, G, g, np.array([1.2, 0.8]), np.zeros(1)))  # primal 1.0: the unconstrained point is infeasible
+</code></pre>
+<p>The second call shows the unconstrained minimiser failing exactly one condition, primal feasibility, by <span class="m">a^\top c - b = 1</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Shadow prices.</b> Compute <span class="m">f^\star(b)</span> for <span class="m">b</span> from 0.5 to 2.5 in steps of 0.1, differentiate it numerically, and compare with <span class="m">-\lambda^\star(b)</span>. Where does the derivative jump?</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">\lambda^\star(b) = \max(2 - b, 0)</span>; the derivative is continuous but its slope changes at <span class="m">b = 2</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For <span class="m">b &lt; 2</span> the constraint is active, <span class="m">f^\star = (2 - b)^2 / 2</span> and the derivative is <span class="m">-(2 - b) = -\lambda^\star</span>; for <span class="m">b \ge 2</span> the constraint is inactive and <span class="m">f^\star = 0</span>. At <span class="m">b = 2</span> the derivative is continuous (zero from both sides) but <span class="m">f^\star</span> stops curving: the kink is in the second derivative, which is where the active set changes.</p>
+<pre><code class="language-python">def fstar(b): r = solve_qp(H, f, A_ub=G, b_ub=[b]); return float((r.x - np.array([1.2, 0.8])) @ (r.x - np.array([1.2, 0.8])))
+for b in np.arange(0.5, 2.6, 0.5):
+    print(b, (fstar(b + 1e-6) - fstar(b - 1e-6)) / 2e-6, -max(2 - b, 0))
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The unconstrained minimiser.</b> For <span class="m">P = \begin{pmatrix} 3 &amp; 0.8 \\ 0.8 &amp; 1.5 \end{pmatrix}</span> and <span class="m">q = (-1, 2)</span>, find the minimiser of <span class="m">\tfrac12 z^\top P z + q^\top z</span> and verify that the gradient vanishes there. Why is it unique?</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">\nabla f = Pz + q</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">z^\star = -P^{-1} q = (0.8031, -1.7617)</span>, where the gradient is zero to round-off and the value is <span class="m">-2.163</span>. It is unique because <span class="m">P \succ 0</span> (eigenvalues 1.153 and 3.347): the function is strictly convex, so the stationary point is its only minimiser.</p>
+<pre><code class="language-python">P5 = np.array([[3.0, 0.8], [0.8, 1.5]]); q5 = np.array([-1.0, 2.0])
+z5 = -np.linalg.solve(P5, q5); print(z5, P5 @ z5 + q5)
+</code></pre>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A nonconvex union.</b> The set <span class="m">\{z : z_1 \le -1\} \cup \{z : z_1 \ge 1\}</span> is a union of two convex sets. Show it is not convex, and explain why &quot;stay on the near side or on the far side of a crossing&quot; cannot be a single linear constraint.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Take one point in each piece and look at their midpoint.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">(-1, 0)</span> and <span class="m">(1, 0)</span> are both in the set; their midpoint <span class="m">(0, 0)</span> is not. A convex combination of feasible points is infeasible, so the set is not convex, and no finite set of linear inequalities describes it, since an intersection of half-spaces is convex. The choice between the two pieces is a discrete decision, which chapter <a href="a15-disjunctive-constraints-and-big-m.html" title="Disjunctive constraints and Big-M">A15</a> encodes with a binary variable.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Geometry</strong>: feasible set, optimiser, optimal value; convex sets have no islands, and half-spaces, polyhedra, their intersections, images and products are convex.</div></li>
+<li><div><strong>Convex functions</strong>: chords above the graph, tangents below; a quadratic is convex iff <span class="m">P \succeq 0</span>, which for <span class="m">\begin{pmatrix} 2 &amp; \alpha \\ \alpha &amp; 1 \end{pmatrix}</span> means <span class="m">|\alpha| \le \sqrt 2</span>.</div></li>
+<li><div><strong>Why it matters</strong>: every local optimum of a convex problem is global, with at most one optimiser when the objective is strictly convex.</div></li>
+<li><div><strong>Classes</strong>: LP, convex QP, NLP, mixed-integer; the course's MPC problems are convex QPs because <span class="m">R \succ 0</span>.</div></li>
+<li><div><strong>Duality</strong>: <span class="m">d(\lambda, \nu) \le f^\star</span> always; equality for feasible QPs; the gap certifies a solution.</div></li>
+<li><div><strong>KKT</strong>: stationarity, primal and dual feasibility, complementary slackness; necessary with a constraint qualification, sufficient for convex problems.</div></li>
+<li><div><strong>By hand</strong>: <span class="m">z^\star = (0.7, 0.3)</span>, <span class="m">\lambda^\star = 1</span>, <span class="m">f^\star = 0.5</span>, gap zero; the gradient and <span class="m">\lambda^\star a</span> cancel.</div></li>
+<li><div><strong>Prices</strong>: <span class="m">df^\star / db = -\lambda^\star</span>, numerically <span class="m">-1.000</span> at <span class="m">b = 1</span>; a soft penalty needs <span class="m">\rho \ge \lambda^\star</span>.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Feasible set, optimiser, optimal value</td>
+<td>Where the constraints hold; the best point in it; the cost there.</td>
+</tr>
+<tr>
+<td>Convex set, convex function</td>
+<td>Segments stay inside; chords lie above the graph.</td>
+</tr>
+<tr>
+<td>LP, QP, NLP, MIQP</td>
+<td>Linear, convex quadratic, nonlinear, mixed-integer quadratic programs.</td>
+</tr>
+<tr>
+<td>Lagrangian, multiplier</td>
+<td>Objective plus priced constraints; the price of one constraint.</td>
+</tr>
+<tr>
+<td>KKT conditions</td>
+<td>Stationarity, primal and dual feasibility, complementary slackness.</td>
+</tr>
+<tr>
+<td>Weak and strong duality</td>
+<td>The dual bounds the primal from below; the bound is tight.</td>
+</tr>
+<tr>
+<td>Shadow price</td>
+<td>The multiplier as sensitivity of the optimal cost to the bound.</td>
+</tr>
+<tr>
+<td>Active, inactive, weakly active</td>
+<td>Touched with a positive multiplier; not touched; touched with a zero multiplier.</td>
+</tr>
+<tr>
+<td>Hard and soft constraint</td>
+<td>Must hold; may be violated at a price through a slack.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Finite-dimensional differentiable optimisation with a few variables, read on one two-variable problem. The algorithms that find KKT points are chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a>; the control problems they are applied to begin in chapter <a href="a05-the-finite-horizon-problem.html" title="The finite-horizon problem">A5</a>.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>S. Boyd and L. Vandenberghe. <em>Convex Optimization</em>. Cambridge University Press, 2004. <a href="https://doi.org/10.1017/CBO9780511804441">doi:10.1017/CBO9780511804441</a>. Convex sets and functions, duality, KKT conditions, sensitivity.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>J. Nocedal and S. J. Wright. <em>Numerical Optimization</em>, 2nd ed. Springer, 2006. <a href="https://doi.org/10.1007/978-0-387-40065-5">doi:10.1007/978-0-387-40065-5</a>. The KKT theory with constraint qualifications, and the algorithms of chapter A4.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. The optimisation background of predictive control, including multiparametric programming.</div></li>
+</ul>
+<p>Boyd and Vandenberghe <a href="#ref-1">[1]</a> is the reference for everything here, with the shadow-price interpretation in its chapter 5. Next, chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> opens the solver: the KKT system of a QP, solved by Newton's method from inside the feasible set, in a hundred lines of NumPy read one by one.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a02-prediction-matrices-and-condensing.html"><span class="lbl">Previous · A2</span><span class="t">Prediction matrices and condensing</span></a>
+  <a class="next" rel="next" href="a04-solving-a-qp-you-can-read.html"><span class="lbl">Next · A4</span><span class="t">Solving a QP you can read</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A3 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/a03.js?v=20261102221633"></script>
+</body>
+</html>

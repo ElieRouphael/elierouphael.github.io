@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>B2 · Learning MPC on a repeated task · Advanced MPC and Learning MPC</title>
+<meta name="description" content="A short-horizon MPC produces a poor first run; Learning MPC learns the terminal ingredients from it and improves, iteration after iteration: the seed, the database, the first learned move, the iteration table, what is guaranteed against observed, hull growth against value learning, the window, and the plateau that a short horizon cannot leave.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261102221633">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part B, Labs · Chapter B2 of 6</span>
+  <h1>Learning MPC on a repeated task</h1>
+  <p class="lede">Chapter A11 designed the terminal set and terminal cost by hand, from a Riccati equation and an invariant polytope. Chapters A12 and A13 showed how successful runs supply them instead. This lab runs the loop. A two-step MPC with no terminal ingredients produces a feasible but poor first run of the course's cart: it coasts, overshoots and costs 69 percent more than the optimum. Learning MPC stores it, learns from it, and with a four-step horizon reaches the long-horizon optimum to nine decimals in three iterations; with a two-step horizon it stops short, and the lab shows why. Below, the whole experiment runs live.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A12 and A13 · Every number is checked in Python</p>
+  <p class="concepts"><span class="lbl">Concepts used</span><a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">the receding-horizon loop</a>, <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">sampled and convex safe sets</a>, <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">the learned terminal value and the LMPC problem</a>, <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">terminal ingredients and the stability theorem</a></p>
+  <div class="downloads">
+    <a class="btn" href="code/b02_numbers.py" download>The numbers script (.py)</a>
+<a class="btn" href="notebooks/05_learning_mpc_double_integrator.ipynb" download>The lab notebook (.ipynb)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Phase plane: the seed run, the learning iterations and the long-horizon reference; below, the learning curve</p>
+      <canvas id="phaseC" aria-label="Position against velocity for the seed MPC trajectory, each LMPC iteration in progressively darker blue, and the dashed long-horizon reference" aria-describedby="heroStatus"></canvas>
+      <canvas id="curveC" aria-label="The gap between each iteration's complete task cost and the long-horizon reference, on a logarithmic scale, against the iteration index" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Seed MPC horizon: <b id="hSV"></b></span>
+      <span class="row"><input type="range" id="hS" min="2" max="5" step="1" value="2"></span>
+    </label>
+    <label class="field"><span>LMPC horizon <span class="m">N</span>: <b id="hNV"></b></span>
+      <span class="row"><input type="range" id="hN" min="2" max="6" step="1" value="4"></span>
+    </label>
+    <label class="field"><span>Trajectories in the online safe set: <b id="hWV"></b></span>
+      <span class="row"><input type="range" id="hW" min="0" max="9" step="1" value="4"></span>
+    </label>
+    <label class="field"><span>Learning iterations: <b id="hIV"></b></span>
+      <span class="row"><input type="range" id="hI" min="1" max="9" step="1" value="9"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>seed run</span><span class="v" id="rSeed">–</span>
+      <span>last iteration</span><span class="v" id="rLast">–</span>
+      <span>reference cost</span><span class="v" id="rRef">–</span>
+      <span>final gap</span><span class="v" id="rGap">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the lab's setting</button></div>
+    <p class="hint">The canonical cart from <span class="m">x_S = (-3.5, 2.5)</span> to the origin, <span class="m">|p| \le 4</span>, <span class="m">|v| \le 3</span>, <span class="m">|u| \le 1</span>, <span class="m">q = x^\top \mathrm{diag}(1, 0.2)\, x + 0.2u^2</span>. Window 0 means every stored trajectory. Each iteration is a full closed loop of quadratic programs, solved here in your browser.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#task"><span class="n">1</span><span class="t">The task, the reference and the seed</span><span class="d">Model, cost, reference, the seed</span></a>
+    <a href="#first"><span class="n">2</span><span class="t">The first LMPC solve</span><span class="d">The first LMPC solve, and why the move changes</span></a>
+    <a href="#iterations"><span class="n">3</span><span class="t">The learning iterations</span><span class="d">The table, for three horizons</span></a>
+    <a href="#anatomy"><span class="n">4</span><span class="t">Anatomy of the learning</span><span class="d">Hulls, inputs, stored costs-to-go</span></a>
+    <a href="#window"><span class="n">5</span><span class="t">Data growth and the window</span><span class="d">Data growth and the online problem</span></a>
+    <a href="#plateau"><span class="n">6</span><span class="t">The plateau, checked by brute force</span><span class="d">Why a short horizon stalls, checked by brute force</span></a>
+    <a href="#guaranteed"><span class="n">7</span><span class="t">What is guaranteed, what is observed</span><span class="d">What is guaranteed, what is observed</span></a>
+    <a href="#learned"><span class="n">8</span><span class="t">What is learned, and what is not</span><span class="d">Not the model, not RL, not ILC</span></a>
+    <a href="#code"><span class="n">9</span><span class="t">The code behind it</span><span class="d">The shifted warm start</span></a>
+    <a href="#pitfalls"><span class="n">10</span><span class="t">Common pitfalls</span><span class="d">Seven confusions</span></a>
+    <a href="#check"><span class="n">11</span><span class="t">Check your understanding</span><span class="d">Ten questions with answers</span></a>
+    <a href="#exercises"><span class="n">12</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">13</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="task">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The task, the reference and the seed</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The task.</strong> The canonical cart of chapter <a href="a01-state-space-models-and-the-double-integrator.html" title="State-space models and the double integrator">A1</a>, repeated from <span class="m">x_S = (-3.5, 2.5)</span>: moving right at 2.5 near the left wall, to be brought to rest at the origin. Every run stops once <span class="m">\|x\| \le 10^{-3}</span> and is completed by the two deadbeat inputs of chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>, so that it ends exactly on the target. The stage cost is the course's, <span class="m">q(x, u) = x^\top Q x + R u^2</span>; there is no <span class="m">\ell_1</span> term, so the online problems are plain quadratic programs.</p>
+<p><strong>Long-horizon reference.</strong> A common benchmark is one open-loop solve with a very long horizon as a proxy for the infinite-horizon optimum. Here the computation is kept light by checking convergence in the horizon instead:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th><span class="m">N_{\mathrm{ref}}</span></th>
+<th>open-loop cost</th>
+<th>terminal norm</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10</td>
+<td>16.636214648</td>
+<td><span class="m">7 \times 10^{-4}</span></td>
+</tr>
+<tr>
+<td>20</td>
+<td>16.636214709</td>
+<td><span class="m">7 \times 10^{-9}</span></td>
+</tr>
+<tr>
+<td>30</td>
+<td>16.636214709</td>
+<td><span class="m">6 \times 10^{-12}</span></td>
+</tr>
+<tr>
+<td>40</td>
+<td>16.636214709</td>
+<td><span class="m">1 \times 10^{-11}</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The value has converged to nine decimals, so <span class="m">N_{\mathrm{ref}} = 30</span> is the reference for the rest of the lab: <span class="m">J^\star = 16.636215</span>. It is a numerical reference, not a proof that a finite horizon equals the exact infinite-horizon optimum; with <span class="m">N = 10</span> the plan cannot quite reach the origin, which is why its cost is a hair lower.</p>
+<p><strong>A feasible but suboptimal seed.</strong> LMPC needs one successful trajectory. Plain receding-horizon MPC with horizon 2 and no terminal cost or constraint provides it: 20 inputs, cost 28.087, 68.8 percent above the reference. Its first input is 0. With two steps and no terminal cost the objective contains <span class="m">q(x_0, u_0) + q(x_1, u_1)</span>, and <span class="m">x_1</span>'s position does not depend on <span class="m">u_0</span> at all for this discretisation's first step beyond the <span class="m">u_0 / 2</span> term, so braking buys almost nothing the horizon can see: the cart coasts to <span class="m">(-1, 2.5)</span>, overshoots to <span class="m">p = 2</span>, and spirals back. That is the horizon-one pathology of chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a> in a milder form. With horizon 3 the seed would cost 17.028, only 2.4 percent above; with horizon 5, 16.636235, within <span class="m">2 \times 10^{-5}</span>. The lab keeps the two-step seed because it leaves something to learn, and chapter <a href="a06-receding-horizon-from-a-plan-to-feedback.html" title="Receding horizon: from a plan to feedback">A6</a>'s point stands: the horizon is a lever, and this seed has it set short on purpose.</p>
+<p><strong>Complete task cost against open-loop objective.</strong> One <span class="m">N = 2</span> solve prices two stages. The seed's closed-loop cost accumulates the whole repeated execution until the target. Learning curves compare complete iteration costs, never open-loop objectives.</p>
+<p><strong>The database.</strong> The controller stores, for every successful run, the states, the applied inputs and the backward costs-to-go, with the target stored once with value zero. After the seed: 1 trajectory, 21 safe samples (the target plus 20 states), stored cost 28.087, costs-to-go along it 28.087, 14.587, 12.137, 10.487, 6.237, 1.987, 0.393, … The database is chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>'s <code>add_trajectory</code> and <code>safe_data</code>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="first">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The first LMPC solve</h2>
+  </div>
+  <div class="col prose">
+
+<p>The explicit horizon is now 4, but the terminal set and value carry information beyond those four steps. From <span class="m">x_S</span> the first LMPC input is <span class="m">u_0 = -0.794</span>, where the seed chose 0. The predicted terminal state, <span class="m">(0.061, -0.023)</span>, is exactly stored state 11 of the seed, weight 1 and stored value 0.006: the four-step plan brakes hard and reaches a point eleven steps down the slow run from which the stored continuation costs almost nothing. The objective, four stage costs plus <span class="m">\lambda^\top V</span>, is 16.644, against the stored 28.087.</p>
+<p><strong>Why braking is suddenly worth it.</strong> The seed judged <span class="m">u_0 = 0</span> best because its two-step objective charged the input and credited nothing for arriving earlier. LMPC charges the same stage costs and adds <span class="m">\lambda^\top V</span>, the stored cost of finishing the task from <span class="m">x_N</span>: landing far along the seed path buys a much cheaper continuation, and the price of the braking is nothing compared to it. The information came entirely from one slow run.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="iterations">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The learning iterations</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each iteration resets to <span class="m">x_S</span>, solves the LMPC problem at every step with the shifted warm start of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>, reaches the target, closes with the exact bridge, appends the new successful trajectory and updates the costs-to-go. The online QP uses the target plus the most recent four trajectories; the full history is kept for analysis. Nine iterations, three horizons:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>iteration</th>
+<th><span class="m">N = 2</span>: cost</th>
+<th>gap to <span class="m">J^\star</span></th>
+<th><span class="m">N = 3</span>: cost</th>
+<th>gap</th>
+<th><span class="m">N = 4</span>: cost</th>
+<th>gap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 (seed)</td>
+<td>28.086690</td>
+<td><span class="m">6.9 \times 10^{-1}</span></td>
+<td>28.086690</td>
+<td><span class="m">6.9 \times 10^{-1}</span></td>
+<td>28.086690</td>
+<td><span class="m">6.9 \times 10^{-1}</span></td>
+</tr>
+<tr>
+<td>1</td>
+<td>16.685473</td>
+<td><span class="m">3.0 \times 10^{-3}</span></td>
+<td>16.657259</td>
+<td><span class="m">1.3 \times 10^{-3}</span></td>
+<td>16.636970</td>
+<td><span class="m">4.5 \times 10^{-5}</span></td>
+</tr>
+<tr>
+<td>2</td>
+<td>16.685473</td>
+<td><span class="m">3.0 \times 10^{-3}</span></td>
+<td>16.657259</td>
+<td><span class="m">1.3 \times 10^{-3}</span></td>
+<td>16.636224</td>
+<td><span class="m">5.4 \times 10^{-7}</span></td>
+</tr>
+<tr>
+<td>3</td>
+<td>16.685473</td>
+<td><span class="m">3.0 \times 10^{-3}</span></td>
+<td>16.657259</td>
+<td><span class="m">1.3 \times 10^{-3}</span></td>
+<td>16.636215</td>
+<td><span class="m">6.7 \times 10^{-9}</span></td>
+</tr>
+<tr>
+<td>5</td>
+<td>16.685473</td>
+<td><span class="m">3.0 \times 10^{-3}</span></td>
+<td>16.657258</td>
+<td><span class="m">1.3 \times 10^{-3}</span></td>
+<td>16.636215</td>
+<td><span class="m">5.8 \times 10^{-10}</span></td>
+</tr>
+<tr>
+<td>9</td>
+<td>16.685473</td>
+<td><span class="m">3.0 \times 10^{-3}</span></td>
+<td>16.657258</td>
+<td><span class="m">1.3 \times 10^{-3}</span></td>
+<td>16.636215</td>
+<td><span class="m">5.3 \times 10^{-10}</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The gap is relative, <span class="m">(J^j - J^\star) / J^\star</span>. The seed is iteration 0; every later row is the complete cost of one new LMPC execution. For every horizon the first iteration removes almost all of the excess, 99.7 percent of it for <span class="m">N = 2</span> and 99.9996 percent for <span class="m">N = 4</span>, because the stored seed already contains a whole safe path and its costs-to-go. Then the horizons part ways. With <span class="m">N = 4</span> the gap keeps falling, by a factor of about a hundred per iteration, to the solver's floor of <span class="m">5 \times 10^{-10}</span> by iteration 4, and the first input settles from <span class="m">-0.794</span> to <span class="m">-0.783</span>; the trajectory joins the reference. With <span class="m">N = 3</span> and <span class="m">N = 2</span> the cost stops after the first iteration, 0.13 and 0.30 percent above the optimum, and the first input never moves again. Part 6 shows that the plateau is real.</p>
+<p><strong>Never an increase.</strong> Over all 27 iterations the largest iteration-to-iteration change in the wrong direction is <span class="m">+8 \times 10^{-8}</span> for <span class="m">N = 2</span> and <span class="m">+6 \times 10^{-10}</span> for <span class="m">N = 4</span>, the solver's tolerance on a cost of 16.6 and not a counter-example to the non-increase result of Part 7. Every iteration takes 9 inputs for <span class="m">N = 2</span> and 11 for the other two, the last two being the bridge.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="anatomy">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Anatomy of the learning</h2>
+  </div>
+  <div class="col prose">
+
+<div class="widget" id="detW">
+  <div class="btn-row">
+    <button class="btn" type="button" data-view="hull" aria-pressed="true">safe-set hulls</button>
+    <button class="btn" type="button" data-view="ctrl" aria-pressed="false">input sequences</button>
+    <button class="btn" type="button" data-view="ctg" aria-pressed="false">stored costs-to-go</button>
+  </div>
+  <canvas id="detC" aria-label="One of three views of the learning: the convex hulls of the stored states after the seed, after a few iterations and after all; the input sequences of the seed, the last iteration and the reference; the stored costs-to-go along the seed and the last iteration" aria-describedby="detCap"></canvas>
+  <p class="caption" id="detCap"></p>
+</div>
+<p><strong>Phase plane and inputs.</strong> The seed curls slowly across the plane, saturates on 4 of its 20 inputs and spends most of its cost after the overshoot. The first LMPC iteration already lies close to the reference: it brakes at once, <span class="m">-0.794</span>, and from then on the learned trajectories are visually indistinguishable from the reference and from each other, consistent with costs differing in the sixth decimal. The last iteration saturates on 1 of its 11 inputs, like the reference.</p>
+<p><strong>Safe-set growth, or rather the lack of it.</strong> Every successful run adds its states to the database and can enlarge or reshape the convex hull. Here it never does: the hull has area 10.25 after the seed and 10.25 after nine iterations, because the slow seed's overshoot to <span class="m">p = 2</span> already encloses every faster run (chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a> made the same observation). Yet the cost falls from 28.09 to 16.636215. The hull is only half of the learning, and on this task none of it: LMPC also learns better costs-to-go, and even when the geometry is fixed from the start, improved terminal values alter the short-horizon decision.</p>
+<p><strong>Stored costs-to-go.</strong> The cost-to-go along each stored trajectory is computed backwards, <span class="m">J_T = 0</span>, <span class="m">J_t = q(x_t, u_t) + J_{t+1}</span>. The recursion residual on the last iteration is <span class="m">3 \times 10^{-17}</span>, round-off. The curve <span class="m">t \mapsto J_t</span> is the learned value function sampled along one run; <span class="m">J_0</span> is the iteration cost that the learning curve plots. The seed keeps half of its cost for after the overshoot; the learned run pays almost all of it in the first braking steps.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="window">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Data growth and the window</h2>
+  </div>
+  <div class="col prose">
+
+<p>If every state of every run is kept, the number of barycentric variables grows with the total sample count: each active safe-state sample is one <span class="m">\lambda_r</span> in the QP. One remedy is a time-varying subset,</p>
+<div class="math-block">TS_t^{l,j} = \Big( \bigcup_{i=l}^{j} \bigcup_{s=t}^{T_i} \{x^i[s]\} \Big) \cup \mathcal O,</div>
+<p>which keeps only iterations <span class="m">l, \ldots, j</span> and, from each, only the states visited at time <span class="m">t</span> or later. The lab's controller uses the iteration window alone, the most recent four trajectories, and keeps all time indices. The previous iteration is always retained, which the cost-improvement argument of Part 7 needs.</p>
+<div class="widget" id="growW">
+  <canvas id="growC" aria-label="The number of stored safe states after each trajectory, all data as a dashed line and the online window as a solid line" aria-describedby="growCap"></canvas>
+  <p class="caption" id="growCap"></p>
+</div>
+<p><strong>Same costs, smaller problem.</strong> With every stored trajectory active, the five first iteration costs for <span class="m">N = 4</span> agree with the window's to the last printed decimal (the first four are identical by construction, since until then the window holds every trajectory). The number of barycentric variables grows from 32 to 76 by iteration 5 instead of staying at 45, and the mean solve time per QP in Python grows from 1.9 to 5.6 ms instead of staying near 3. Nothing is lost by the window here, and the online problem is bounded. The lab keeps the full history for analysis; the controller never sees it.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="plateau">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>The plateau, checked by brute force</h2>
+  </div>
+  <div class="col prose">
+
+<p>For <span class="m">N = 2</span> and <span class="m">N = 3</span> the cost stops after one iteration. The guarantees of Part 7 say nothing about the limit; chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a> already warned that the learned value is pessimistic between data, an upper bound of the true cost-to-go built from runs that were not optimal. The question is whether the plateau is a property of the controller or an artefact of the solver.</p>
+<p><strong>A search that uses no solver.</strong> Take the data after the last <span class="m">N = 2</span> iteration, grid the two inputs <span class="m">(u_0, u_1)</span> over <span class="m">[-1, 1]^2</span> at 41 by 41 points, evaluate the two stage costs plus the learned terminal value <span class="m">V_c(x_2)</span> at every admissible grid point by its linear program, and refine the grid three times around the best point. The best plan the grid finds costs 16.685571 at <span class="m">(u_0, u_1) = (-0.8686, -1)</span>, against the stored run's 16.685473 with its first two inputs <span class="m">-0.8686</span> and <span class="m">-1</span>: the same plan to the grid's resolution, one part in <span class="m">10^5</span> above it. So with the data it has, the two-step controller cannot do better than what the solver returns: the plateau 0.30 percent above <span class="m">J^\star</span> is a property of the pessimistic learned value, not of the optimiser. A longer horizon escapes it because it can reach stored states that are further along, and cheaper, than any two steps can; <span class="m">N = 4</span> reaches the optimum, and a different seed does too (exercise 7).</p>
+<p><strong>Reading it as a theorem and an observation.</strong> The theory promises that the cost never increases and that every iteration is feasible; it does not promise convergence to <span class="m">J^\star</span>, and this lab shows both halves at once: non-increase for every horizon, convergence for one of them. Even so, the <span class="m">N = 2</span> limit is only 0.30 percent above the optimum, against 69 percent for the trajectory that produced the first data.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="guaranteed">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>What is guaranteed, what is observed</h2>
+  </div>
+  <div class="col prose">
+
+<div class="callout">
+<p><strong>Guaranteed</strong> (under the deterministic repeated-task assumptions of chapters <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a> and <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>): every iteration is recursively feasible and reaches the target; the previous successful trajectory remains a feasible candidate for the next iteration, since its terminal state is in the hull and its continuation is stored, so the LMPC objective at <span class="m">x_S</span> is at most the stored cost and <span class="m">J^{j+1}(x_S) \le J^j(x_S)</span>; and since each iteration is admissible, <span class="m">J^j(x_S) \ge J^\star(x_S)</span>. The costs therefore converge.</p>
+<p><strong>Observed, not promised</strong>: that the <span class="m">N = 4</span> trajectories approach the long-horizon reference to <span class="m">5 \times 10^{-10}</span>; that the first iteration removes almost all of the gap; that the hull never changes; that the <span class="m">N = 2</span> limit is within 0.30 percent. A different task, cost or seed could change every one of these numbers without touching the guarantees.</p>
+</div>
+<p><strong>Do different seeds converge to the same solution?</strong> LMPC only needs an initial feasible successful trajectory, from plain MPC, a saturated LQR, a demonstration or anything else. From the three-step seed, 2.4 percent above the optimum, <span class="m">N = 4</span> reaches <span class="m">16.636227</span> after one iteration and <span class="m">16.636215</span> from the second on: the same limit to nine decimals as from the two-step seed (exercise 7). That is evidence of initialisation independence for this convex task and this horizon, not a theorem: nothing in the theory says that different seeds must meet, and the <span class="m">N = 2</span> controller shows that the same data can lead to different limits for different horizons.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="learned">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>What is learned, and what is not</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The plant model is not learned.</strong> <span class="m">A</span> and <span class="m">B</span> are known and used explicitly in every online QP. What is learned: safe terminal geometry, successful continuation inputs, and terminal cost-to-go information. Data-driven, not model-free; chapter <a href="b04-data-driven-local-models-for-racing.html" title="Data-driven local models for racing">B4</a> adds model learning on top, for a car whose model is not known.</p>
+<p><strong>LMPC is not DQN.</strong> A deep Q-network learns an action-value approximation with a neural network and temporal-difference updates (chapter <a href="b05-mpc-lmpc-and-reinforcement-learning.html" title="MPC, Learning MPC and reinforcement learning">B5</a>). This LMPC keeps an explicit model and explicit constraints, solves an optimisation online, and uses data only to build terminal ingredients. The two are related through value information, not through the algorithm.</p>
+<p><strong>LMPC against iterative learning control.</strong> Both exploit repetition. Classical ILC updates a trial-indexed input signal from one execution to the next; LMPC inserts learned trajectory information into a constrained receding-horizon problem. Its distinctive object is the learned terminal set and value pair.</p>
+<p><strong>What the experiment establishes.</strong> The short-horizon seed is feasible but expensive; successful data provide terminal geometry and cost-to-go; the LMPC terminal state satisfies a barycentric safe-set constraint; repeated executions reduce the complete task cost; the learned trajectories approach the long-horizon reference for a long enough horizon; the modelled constraints are satisfied throughout. What it does not establish: robustness to disturbances or model mismatch, safety of arbitrary nonlinear convexification, global-optimality convergence for every LMPC problem, model-free learning, or transfer to other initial conditions without further analysis.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>Every step of every iteration starts the solver from the shifted sequence of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a>, which the package builds from the previous solution.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/lmpc.py · LMPCController.shifted_warm_start</p><pre><code class="language-python">    def shifted_warm_start(self, x_next, solution):
+        lam = solution.lambdas
+        Usafe = solution.safe_inputs
+        nxt = solution.next_index
+        S = solution.safe_states
+
+        u_terminal = lam @ Usafe
+
+        U_shift = np.vstack([
+            solution.U[1:],
+            u_terminal.reshape(1, -1),
+        ])
+
+        lam_shift = np.zeros(len(S))
+        np.add.at(lam_shift, nxt, lam)
+
+        return self._pack_warm(
+            np.asarray(x_next, float),
+            U_shift,
+            lam_shift,
+            S,
+        )</code></pre>
+<p>The appended input is <code>lam @ Usafe</code>, the mixture of the stored continuation inputs with the terminal weights of the last solve, and the new input sequence is the old one shifted by one with that input at the end. The new weights are built by <code>np.add.at(lam_shift, nxt, lam)</code>: each old weight moves from its stored state to that state's stored successor, so the new terminal guess is exactly the mixture of stored successors that the recursive-feasibility proof names. The interior-point solver of chapter <a href="a04-solving-a-qp-you-can-read.html" title="Solving a QP you can read">A4</a> does not need a warm start to converge, but the shifted point is also the proof's feasible candidate, which is why the loop keeps it: if the solver ever failed, this sequence could be applied as it is.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;Every stored state is optimal.&quot;</strong> No: stored states are safe because they belong to successful runs, and the seed is very suboptimal.</li>
+<li><strong>&quot;The convex hull is always safe.&quot;</strong> No: the proof relies on linear dynamics and convex constraints (chapter <a href="a12-sampled-and-convex-safe-sets.html" title="Sampled and convex safe sets">A12</a>).</li>
+<li><strong>&quot;The terminal value is a neural network.&quot;</strong> Not here: barycentric interpolation of stored roll-out costs.</li>
+<li><strong>&quot;Hull growth explains the learning.&quot;</strong> On this task the hull never grows and the cost falls by 41 percent: the learned values do the work.</li>
+<li><strong>&quot;The long-horizon reference proves the exact infinite-horizon optimum.&quot;</strong> It is a finite-horizon proxy whose convergence was checked to nine decimals.</li>
+<li><strong>&quot;A two-step horizon only sees two steps ahead.&quot;</strong> Only the explicit prediction is two steps long; the terminal constraint links it to stored continuations that reach the target and the terminal cost prices the remainder, which is why LMPC with <span class="m">N = 2</span> beats the seed with the same horizon by 41 percent.</li>
+<li><strong>&quot;Non-increasing cost means convergence to the optimum.&quot;</strong> No: <span class="m">N = 2</span> and <span class="m">N = 3</span> never increase and never reach it.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why does the two-step seed apply <span class="m">u_0 = 0</span> first?</summary>
+<p>Its objective prices only two stages and has no terminal cost, so braking is charged now and credited nothing later; the cheapest two-step plan coasts.</p>
+</details>
+<details class="sol"><summary>2. Why can a horizon-four LMPC outperform the horizon-two seed from the same start?</summary>
+<p>The learned terminal set and value communicate information about safe and costly behaviour beyond the explicit window. From <span class="m">x_S</span> the seed applies 0 and LMPC applies <span class="m">-0.794</span> for exactly that reason.</p>
+</details>
+<details class="sol"><summary>3. What is compared on the learning curve?</summary>
+<p>Complete closed-loop task costs of whole iterations, never the open-loop objective of one solve.</p>
+</details>
+<details class="sol"><summary>4. Why does the first iteration remove almost all of the gap?</summary>
+<p>Because the stored seed already contains an entire safe path to the target with its costs-to-go; the horizon only has to reach it.</p>
+</details>
+<details class="sol"><summary>5. Why is the previous iteration a feasible candidate for the next?</summary>
+<p>Its terminal state is in the hull, its continuation inputs are stored, and the shifted sequence of chapter <a href="a13-the-learned-terminal-value-and-the-lmpc-problem.html" title="The learned terminal value and the LMPC problem">A13</a> reaches a mixture of stored successors.</p>
+</details>
+<details class="sol"><summary>6. Does monotone iteration cost imply global optimality?</summary>
+<p>No. Performance improvement and convergence to a global optimum are different statements; <span class="m">N = 2</span> shows the first without the second.</p>
+</details>
+<details class="sol"><summary>7. Why does the QP grow with experience, and what bounds it?</summary>
+<p>Each active safe-state sample contributes one barycentric variable; a window of recent trajectories bounds the count while keeping the previous iteration, which the improvement argument needs.</p>
+</details>
+<details class="sol"><summary>8. Why did the hull never change here?</summary>
+<p>The slow seed overshoots to <span class="m">p = 2</span> and returns at <span class="m">v = -1.5</span>, exploring more of the plane than any faster run; the good runs lie inside its hull.</p>
+</details>
+<details class="sol"><summary>9. What did the brute-force search establish?</summary>
+<p>That with the learned value after the last <span class="m">N = 2</span> iteration, no admissible two-step plan from <span class="m">x_S</span> costs less than the stored run: the plateau is in the data and the horizon, not in the solver.</p>
+</details>
+<details class="sol"><summary>10. Is the model learned?</summary>
+<p>No. <span class="m">A</span> and <span class="m">B</span> enter every online QP; only the terminal ingredients are learned.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>The seed by hand.</b> Show that from <span class="m">x_S = (-3.5, 2.5)</span> the two-step MPC with no terminal cost applies <span class="m">u_0 = 0</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Write the two-step objective <span class="m">q(x_0, u_0) + q(x_1, u_1)</span> with <span class="m">x_1 = (-3.5 + 2.5 + u_0/2,\ 2.5 + u_0)</span> and minimise over <span class="m">u_1</span> first.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">x_0</span> is a constant, so the objective is <span class="m">0.2u_0^2 + (-1 + u_0/2)^2 + 0.2(2.5 + u_0)^2 + 0.2u_1^2</span>, minimised over <span class="m">u_1</span> at <span class="m">u_1 = 0</span>. In <span class="m">u_0</span> the derivative is <span class="m">0.4u_0 + (-1 + u_0/2) + 0.4(2.5 + u_0) = 1.05u_0</span>, zero at <span class="m">u_0 = 0</span>, and the constraints <span class="m">|x_1| \le (4, 3)</span> hold there. The horizon sees the position improve by moving right (it is at <span class="m">-3.5</span>) and the velocity cost barely weighted, so the cheapest move is to do nothing. The lab's first stored states, <span class="m">(-1, 2.5)</span> then <span class="m">(1, 1.5)</span>, follow.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Horizon of the seed.</b> Repeat the seed experiment with plain MPC horizons 2, 3 and 5 and compare complete closed-loop task costs.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Set the seed horizon in the demo; the numbers script prints the three.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">N = 2</span>: cost 28.087, gap 68.8 percent. <span class="m">N = 3</span>: 17.028, 2.4 percent. <span class="m">N = 5</span>: 16.636235, within <span class="m">2 \times 10^{-5}</span> of the reference: plain MPC with five steps is essentially optimal on this task, which is why the lab seeds with two. The horizon is a lever on the seed as on everything else.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The first learned move.</b> With the two-step seed stored, solve the LMPC problem once from <span class="m">x_S</span> for <span class="m">N = 2, 3, 4</span> and report the first input, the terminal state and the active weights.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>LMPCController.solve(x_S)</code> returns <code>U</code>, <code>terminal_state</code> and <code>lambdas</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">N = 2</span>: <span class="m">u_0 = -0.869</span>, terminal state <span class="m">(-0.303, 0.631)</span>, two weights, 0.166 on <span class="m">(-1, 2.5)</span> and 0.834 on <span class="m">(-0.164, 0.26)</span>. <span class="m">N = 3</span>: <span class="m">u_0 = -0.839</span>, terminal state <span class="m">(0.061, -0.023)</span>, stored state 11 with weight 1. <span class="m">N = 4</span>: <span class="m">u_0 = -0.794</span>, the same terminal state and weight. The longer the horizon, the further down the seed its plan can reach, and the more gently it needs to brake.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Database size.</b> Compare all-data against windowed safe sets for <span class="m">N = 4</span>: iteration costs, barycentric variables and solve time.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>last_n_trajectories=None</code> against <code>4</code>; time each <code>solve</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Five iterations: the costs agree to the sixth decimal (16.636970, 16.636224, 16.636215, …), the number of barycentric variables grows 32, 43, 54, 65, 76 against 32, 43, 54, 45, 45, and the mean solve time per QP in Python grows from 1.9 to 5.6 ms against about 3 ms with the window. The window costs nothing here and bounds the online problem.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Hull growth.</b> Compute the hull area of the stored states after the seed, after one, three and nine iterations.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>scipy.spatial.ConvexHull(points).volume</code> is the area in the plane; stack the stored states of the first <span class="m">k</span> trajectories with the origin.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>10.25, 10.25, 10.25 and 10.25. The seed's overshoot encloses every later run, so the terminal set is complete after one trajectory and the learning is entirely in the stored values, which fall from 28.09 to 16.636215 at <span class="m">x_S</span> and correspondingly along the path.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The plateau.</b> Reproduce the brute-force check for <span class="m">N = 2</span> and explain what it does and does not show.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Grid <span class="m">(u_0, u_1)</span>, evaluate the two stage costs plus <code>convex_safe_value</code> at <span class="m">x_2</span>, refine around the best.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The search finds no admissible two-step plan from <span class="m">x_S</span> cheaper than the stored run with the learned value after iteration 9, to the grid's resolution of <span class="m">10^{-3}</span> in each input. It shows that the solver returned the true minimiser of the problem it was given; it does not show that the plateau is a feature of Learning MPC in general. With <span class="m">N = 4</span> the same data support a plan that reaches the optimum, because a four-step plan can land on stored states that two steps cannot.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A different seed.</b> Seed with the three-step plain MPC run instead and rerun <span class="m">N = 4</span> for five iterations. Does the experiment prove initialisation independence?</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>seed_run(3)</code> in the numbers script.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Costs 17.027694 (seed), 16.636227, 16.636215, 16.636215, 16.636215, 16.636215: the same limit to nine decimals as from the two-step seed, reached one iteration sooner. That is evidence of initialisation independence for this convex task and this horizon, not a proof: the theory guarantees non-increase from each seed and nothing about where the sequences end, and the <span class="m">N = 2</span> controller lands elsewhere from the same data.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Model mismatch.</b> If the real system is <span class="m">x^+ = (A + \Delta A)x + Bu</span>, which line of the convex-invariance proof fails?</p>
+<details class="sol"><summary>Hint</summary>
+<p>The stored successors were produced by the real plant, but the proof multiplies by the nominal <span class="m">A</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The line <span class="m">x^+ = \sum_r \lambda_r (A s_r + B u_r) = \sum_r \lambda_r s_r^+</span>. Replaying the mixture of stored inputs on the true plant gives <span class="m">\sum_r \lambda_r ((A + \Delta A) s_r + B u_r)</span>; if the stored successors came from the true plant this still equals <span class="m">\sum_r \lambda_r s_r^+</span>, but the online QP predicts <span class="m">x_N</span> with the nominal <span class="m">A</span>, so the state that actually arrives at time <span class="m">N</span> is not the <span class="m">S^\top \lambda</span> the optimiser planned, and the continuation argument breaks. Either way the certificate rests on the identity between model and plant, which chapter <a href="b06-capstone-one-design-end-to-end.html" title="Capstone: one design, end to end">B6</a> takes up.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Task</strong>: the canonical cart from <span class="m">(-3.5, 2.5)</span> to the origin; reference <span class="m">J^\star = 16.636215</span>, converged to nine decimals at <span class="m">N_{\mathrm{ref}} = 30</span>.</div></li>
+<li><div><strong>Seed</strong>: two-step plain MPC, first input 0, 20 inputs, cost 28.087, 68.8 percent above; 21 stored samples.</div></li>
+<li><div><strong>First learned move</strong>: <span class="m">N = 4</span> applies <span class="m">-0.794</span>, ends on stored state 11 of the seed, objective 16.644 against the stored 28.087.</div></li>
+<li><div><strong>Iterations</strong>: <span class="m">N = 4</span> reaches 16.636970, 16.636224, 16.636215, never increasing; <span class="m">N = 3</span> and <span class="m">N = 2</span> stall at 0.13 and 0.30 percent above.</div></li>
+<li><div><strong>Anatomy</strong>: the hull never changes (area 10.25 throughout); the stored values fall; the learned run brakes at once and saturates once, like the reference.</div></li>
+<li><div><strong>Window</strong>: four trajectories keep the QP at 45 barycentric variables at equal cost; all data reach 76 by iteration 5.</div></li>
+<li><div><strong>Plateau</strong>: a brute-force search over <span class="m">(u_0, u_1)</span> with the learned value finds nothing cheaper than the stored run; the limit is in the data and the horizon.</div></li>
+<li><div><strong>Meaning</strong>: non-increase and feasibility are theorems; the limit, the first-iteration jump and the fixed hull are observations.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Seed</td>
+<td>The first successful trajectory, here from two-step plain MPC.</td>
+</tr>
+<tr>
+<td>Long-horizon reference</td>
+<td>A converged finite-horizon open-loop solve standing in for the infinite-horizon optimum.</td>
+</tr>
+<tr>
+<td>Iteration cost</td>
+<td>The complete closed-loop cost of one run from <span class="m">x_S</span> to the target.</td>
+</tr>
+<tr>
+<td>Trajectory window</td>
+<td>Only the most recent runs enter the online QP.</td>
+</tr>
+<tr>
+<td>Plateau</td>
+<td>An iteration cost that stops improving because <span class="m">V_c</span> over-estimates the tail between data.</td>
+</tr>
+<tr>
+<td>Deadbeat bridge</td>
+<td>Two inputs that bring the cart exactly to the origin once it is within <span class="m">10^{-3}</span>.</td>
+</tr>
+<tr>
+<td>Non-increase</td>
+<td><span class="m">J^{j+1}(x_S) \le J^j(x_S)</span>, guaranteed; convergence to <span class="m">J^\star</span> is not.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> A deterministic repeated task with known linear dynamics, convex box constraints and a quadratic stage cost, which is the setting in which the convex constructions are justified. Only the terminal ingredients are learned. The experiment runs in your browser with the course's interior-point solver and in Python with the same algorithm; costs agree to the solvers' tolerances.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>U. Rosolia and F. Borrelli. &quot;Learning Model Predictive Control for Iterative Tasks. A Data-Driven Control Framework&quot;. <em>IEEE Transactions on Automatic Control</em> 63(7), 1883–1896, 2018. <a href="https://doi.org/10.1109/TAC.2017.2753460">doi:10.1109/TAC.2017.2753460</a>. The LMPC framework: sampled and convex safe sets, the learned terminal value, non-increasing iteration cost.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>F. Borrelli, A. Bemporad and M. Morari. <em>Predictive Control for Linear and Hybrid Systems</em>. Cambridge University Press, 2017. <a href="https://doi.org/10.1017/9781139061759">doi:10.1017/9781139061759</a>. Terminal sets, terminal costs and invariance in classical MPC.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Stability theory that the learned ingredients plug into.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>D. A. Bristow, M. Tharayil and A. G. Alleyne. &quot;A survey of iterative learning control&quot;. <em>IEEE Control Systems Magazine</em> 26(3), 96–114, 2006. <a href="https://doi.org/10.1109/MCS.2006.1636313">doi:10.1109/MCS.2006.1636313</a>. The other way to learn from repetition.</div></li>
+</ul>
+<p>Rosolia and Borrelli <a href="#ref-1">[1]</a> introduced the construction followed here; Borrelli, Bemporad and Morari <a href="#ref-2">[2]</a> and Rawlings, Mayne and Diehl <a href="#ref-3">[3]</a> supply the classical theory it mirrors. Lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a> takes the same learning idea towards a nonlinear vehicle on a track, starting with the geometry that makes a track a box constraint.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="b01-vehicle-bike-collision-avoidance.html"><span class="lbl">Previous · B1</span><span class="t">Vehicle–bike collision avoidance</span></a>
+  <a class="next" rel="next" href="b03-frenet-coordinates-and-minimum-time-racing.html"><span class="lbl">Next · B3</span><span class="t">Frenet coordinates and minimum-time racing</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter B2 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261102221633"></script>
+<script src="interactive/mpc-lmpc.js?v=20261102221633"></script>
+<script src="interactive/b02.js?v=20261102221633"></script>
+</body>
+</html>
