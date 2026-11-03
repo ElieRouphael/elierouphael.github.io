@@ -3,11 +3,11 @@
 
 Usage:  python ch03_numbers.py          # print everything the page quotes
         python ch03_numbers.py data     # print the page's data file, interactive/ch03-data.js
-Checked with jax 0.12.0.1, optax 0.2.8 and numpy 2.x on a laptop CPU; it trains about thirty small models and takes
-a few minutes. JAX runs in its default float32; the float64 numbers (the page computes in double precision) come
-from a second run of this script with jax_enable_x64, started automatically. The functions of the repository's
-kalman_jax/learned_dynamics.py and forecasters.py are copied verbatim (docstrings shortened) so that the script runs
-alone.
+Checked with jax 0.12.0.1, optax 0.2.8 and numpy 2.5 on a laptop CPU; it trains about thirty small models and takes
+a few minutes (section 7, exercise 5, trains two more and adds about 10 s). JAX runs in its default float32; the
+float64 numbers (the page computes in double precision) come from a second run of this script with jax_enable_x64,
+started automatically. The functions of the repository's kalman_jax/learned_dynamics.py and forecasters.py are
+copied verbatim (docstrings shortened) so that the script runs alone.
 """
 from __future__ import annotations
 
@@ -404,7 +404,8 @@ if DATA:
         "   measurements) from the repository's JAX stream, the initial and trained residual-network parameters,\n"
         "   JAX's training loss trace, three fresh rollouts for generalisation, the same experiment on a plant\n"
         "   whose state stays bounded, a forecast-loss model, and the main models scored on 1000 fresh rollouts.\n"
-        "   Printed by code/ch03_numbers.py data. Filtering and training run live on the page. */\n"
+        "   Written by code/ch03_numbers.py data with JAX 0.12.0.1, NumPy 2.5 and Optax 0.2.8 on a CPU. Filtering and\n"
+        "   training run live on the page. */\n"
         "window.KJ2 = {\n"
         f"  train: {roll((xs, us, ys))},\n"
         f"  params0: {prm(p0)},\n"
@@ -632,3 +633,104 @@ out(f"exercise 3, covariance with A + J: final training loss {float(_l):.4f}; ke
 Jmax = max(float(np.linalg.norm(np.asarray(A_ORIG) + np.array([[3 * np.cos(a), -2 * np.sin(b)]] * 2), 2) ** 2)
            for a in np.linspace(-np.pi, np.pi, 181) for b in np.linspace(-np.pi, np.pi, 181))
 out(f"for the true residual, the largest squared singular value of A + J is {Jmax:.1f}")
+
+section("7. Exercise 5: the residual network on (x0, x1) only")
+# The repository's filter with one change: the network's input is the state x_prev, not concatenate([x_prev, u]),
+# so its first layer is 16 x 2 and init_mlp_params gets the sizes [2, 16, 16, 16, 16, 2]. Everything else is as in
+# the runs above: the training rollout (key 0), PRNGKey(42) for the initial parameters, Adam with learning rate
+# 1e-3, the filtered loss, the same steps, and the same scores on keys 7, 11, 13 and 100-1099.
+SIZES_X = [2] + SIZES[1:]
+
+
+def net_input(x, u, with_u):
+    return jnp.concatenate([x, u]) if with_u else x
+
+
+def run_net(params, A, Q, R, us_, ys_, with_u):
+    """kalman_filter_step in a scan, also returning the prediction before the update (as forecast_with_kalman)."""
+    def step(carry, inp):
+        x, P = carry
+        u, y = inp
+        x_pred = A @ x + B @ u + mlp(params, net_input(x, u, with_u))
+        P_pred = A @ P @ A.T + Q
+        x_new, P_new, _ = measurement_update(x_pred, P_pred, y, C, R)
+        return (x_new, P_new), (C @ x_new, C @ x_pred)
+    _, (y_f, y_pred) = jax.lax.scan(step, (x0, P0), (us_, ys_))
+    return y_f, y_pred
+
+
+def net_loss(plant, T, noise, with_u):
+    """The repository's loss_fn through run_net, on the training rollout of train() above."""
+    A = A_ORIG if plant == "original" else A_STAB
+    q, r = NOISE[noise]
+    Q_, R_ = q * jnp.eye(2), r * jnp.eye(2)
+    xs_, us_, ys_ = generate_data(T=T, A_true=A)
+    loss = lambda p_: jnp.mean((ys_ - run_net(p_, A, Q_, R_, us_, ys_, with_u)[0]) ** 2)
+    return loss, dict(A=A, Q=Q_, R=R_, train_xs=np.asarray(xs_), with_u=with_u)
+
+
+def train_net(plant, T, noise, steps, with_u):
+    """train_learned_kalman's loop (Adam, learning rate 1e-3) on net_loss, from init_mlp_params(PRNGKey(42), ...)."""
+    loss, m = net_loss(plant, T, noise, with_u)
+    p = init_mlp_params(random.PRNGKey(42), SIZES if with_u else SIZES_X)
+    opt = optax.adam(1e-3)
+    st = opt.init(p)
+
+    @jax.jit
+    def upd(p_, st_):
+        l_, gr = value_and_grad(loss)(p_)
+        updates, st_ = opt.update(gr, st_, p_)
+        return optax.apply_updates(p_, updates), st_, l_
+    losses_ = []
+    for _ in range(steps):
+        p, st, l = upd(p, st)
+        losses_.append(l)
+    return dict(m, params=p, losses=np.asarray(jnp.stack(losses_)))
+
+
+def net_scores(m, xs_, us_, ys_):
+    """scores() above for run_net: one-step forecast RMSE, the linear baseline, and the residual error."""
+    _, y_pred = run_net(m["params"], m["A"], m["Q"], m["R"], us_, ys_, m["with_u"])
+    fc = jnp.sqrt(jnp.mean((y_pred - ys_) ** 2))
+    base = (ys_[:-1] @ m["A"].T) + us_[1:] @ B.T
+    lin = jnp.sqrt(jnp.mean((base - ys_[1:]) ** 2))
+    learned = jax.vmap(lambda x, u: mlp(m["params"], net_input(x, u, m["with_u"])))(xs_, us_)
+    truth = 3 * jnp.sin(xs_[:, 0]) + 2 * jnp.cos(xs_[:, 1])
+    return fc, lin, jnp.sqrt(jnp.mean((learned - truth[:, None]) ** 2))
+
+
+def net_report(m, label):
+    s3 = np.array([[float(v) for v in net_scores(m, *generate_data(T=50, key=random.PRNGKey(k), A_true=m["A"]))] for k in KEYS3])
+    sm = np.array([np.asarray(v) for v in jax.jit(jax.vmap(lambda a, b, c: net_scores(m, a, b, c)))(*many_rollouts(m["A"]))]).T
+    lo_, hi_ = m["train_xs"].min(0), m["train_xs"].max(0)
+    out_ = (~((np.asarray(many_rollouts(m["A"])[0]) >= lo_) & (np.asarray(many_rollouts(m["A"])[0]) <= hi_)).all(2)).mean(1)
+    ex_ = sm[:, 0] - sm[:, 1]
+    out(f"  {label}: final loss {float(m['losses'][-1]):.4g}; keys 7, 11, 13 forecast {np.round(s3[:, 0], 2).tolist()} (mean {s3[:, 0].mean():.2f}) "
+        f"against the baseline's mean {s3[:, 1].mean():.2f}, residual error mean {s3[:, 2].mean():.2f}")
+    out(f"  {'':{len(label)}}  1000 rollouts: forecast mean {sm[:, 0].mean():.2f} median {np.median(sm[:, 0]):.2f}; baseline mean "
+        f"{sm[:, 1].mean():.2f} median {np.median(sm[:, 1]):.2f}; wins on {int(np.sum(sm[:, 0] < sm[:, 1]))} of 1000; loses by more "
+        f"than 2 on {int(np.sum(ex_ > 2))}; excess error correlates {np.corrcoef(ex_, out_)[0, 1]:.2f} with the share of states outside "
+        f"the training box")
+    return s3, sm
+
+
+for setting, (plant, T, noise, steps) in (("the repository's setting: double integrator, Q = 0.1 I, R = 0.5 I, T = 50, 1000 steps",
+                                           ("original", 50, "repo", 1000)),
+                                          ("bounded plant, honest noise, T = 500, 2000 steps",
+                                           ("stable", 500, "honest", 2000))):
+    out(setting)
+    ref = M[(plant, T, noise, steps, "filtered")]                  # the model with u, trained by train() above
+    loss_u, with_u = net_loss(plant, T, noise, True)
+    with_u = dict(with_u, params=ref["params"], losses=ref["losses"])
+    lv, gv = value_and_grad(loss_u)(p0)
+    lr, gr_ = value_and_grad(lambda p_: loss_fn(p_, ref["A"], B, C, ref["Q"], ref["R"], x0, P0, *ref["data"][1:]))(p0)
+    gdiff = max(float(jnp.abs(a - b).max()) for a, b in zip(jax.tree_util.tree_leaves(gv), jax.tree_util.tree_leaves(gr_)))
+    out(f"  check: with u, run_net's loss and gradient at the initial parameters equal loss_fn's ({float(lv):.6f} and "
+        f"{float(lr):.6f}; largest gradient difference {gdiff:.1e})")
+    no_u = train_net(plant, T, noise, steps, False)
+    _, sm_u = net_report(with_u, "network on (x0, x1, u)")
+    _, sm_x = net_report(no_u, "network on (x0, x1)   ")
+    big_u, big_x = (sm_u[:, 0] - sm_u[:, 1]) > 2, (sm_x[:, 0] - sm_x[:, 1]) > 2
+    out(f"  rollouts lost by more than 2: {int(big_u.sum())} with u, {int(big_x.sum())} without, {int((big_u & big_x).sum())} of them the same; "
+        f"rollouts won: {int((sm_u[:, 0] < sm_u[:, 1]).sum())} with u, {int((sm_x[:, 0] < sm_x[:, 1]).sum())} without, "
+        f"{int(((sm_u[:, 0] < sm_u[:, 1]) & (sm_x[:, 0] < sm_x[:, 1])).sum())} by both")
