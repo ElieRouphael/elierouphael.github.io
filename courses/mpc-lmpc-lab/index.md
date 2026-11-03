@@ -1,12 +1,13 @@
 ---
-eyebrow: Two parts · fifteen concepts, six labs · NumPy, SciPy, your browser
+eyebrow: Three parts · fifteen concepts, six labs, four extensions · NumPy, SciPy, your browser
 description: >-
-  A course on constrained optimal control in two parts: fifteen short concept chapters, one idea each on the same
+  A course on constrained optimal control in three parts: fifteen short concept chapters, one idea each on the same
   double integrator, from state-space models and convex optimisation through invariant sets and the MPC stability
-  theorem to Learning MPC and dynamic programming; then six labs that assemble them, collision avoidance, Learning
+  theorem to Learning MPC and dynamic programming; six labs that assemble them, collision avoidance, Learning
   MPC on a repeated task, minimum-time racing, learned vehicle models, the bridge to reinforcement learning and a
-  capstone that checks every guarantee numerically. Every demo runs in the browser and every number is reproduced
-  by a script.
+  capstone that checks every guarantee numerically; and four chapters beyond the nominal case, tube MPC, offset-free
+  tracking, nonlinear MPC by successive linearisation and a Learning MPC racing controller driving laps. Every demo
+  runs in the browser and every number is reproduced by a script.
 lede: >-
   Model predictive control solves an optimisation problem at every sample. This course does not treat that
   optimiser as a black box: for every controller it asks what the decision variables, objective and constraints
@@ -14,7 +15,8 @@ lede: >-
   real system would break. Part A teaches the concepts one at a time, each on the same small system, with the
   function that computes it read line by line. Part B assembles them into complete designs, from a collision
   decision to <strong>Learning MPC</strong>, which learns its terminal ingredients from its own successful
-  executions, and to the connection with dynamic programming and reinforcement learning.
+  executions, and to the connection with dynamic programming and reinforcement learning. Part C goes beyond
+  the nominal case: disturbances, setpoints, a nonlinear plant, and the racing controller that finally drives laps.
 assumes: Assumes linear algebra, basic control (state-space models, stability) and Python
 ---
 

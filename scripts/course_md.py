@@ -153,13 +153,18 @@ def code_open(spec: str, env: dict) -> str:
     elif what:
         tree = ast.parse(source)
         node = None
-        for n in ast.walk(tree):
-            if isinstance(n, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
-                qual = n.name
-                if qual == what or qual == what.split(".")[-1]:
+        if "." in what:                      # Class.method: the method inside that class
+            cls_name, meth_name = what.split(".", 1)
+            for n in ast.walk(tree):
+                if isinstance(n, ast.ClassDef) and n.name == cls_name:
+                    for m in n.body:
+                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name == meth_name:
+                            node = m
+        else:
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)) and n.name == what:
                     node = n
-                    if "." not in what:
-                        break
+                    break
         if node is None:
             snippet = f"# {what} not found in {path}"
         else:

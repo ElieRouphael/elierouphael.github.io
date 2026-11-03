@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
 <link rel="stylesheet" href="../kit/kit.css">
-<link rel="stylesheet" href="course.css?v=20261102222522">
+<link rel="stylesheet" href="course.css?v=20261103042620">
 <style>
 @media (max-width: 480px) { #dataT, #matT, #sweepT, #regT { font-size: 0.8rem; } }
 .seg.stack { display: grid; gap: 0.3rem; }
@@ -94,7 +94,7 @@
     <a href="#diagnostics"><span class="n">9</span><span class="t">Data support, conditioning, and the exercise sweeps</span><span class="d">Support, conditioning, the exercise sweeps</span></a>
     <a href="#horizon"><span class="n">10</span><span class="t">The affine LTV horizon</span><span class="d">Fourteen steps ahead; why the matrices move</span></a>
     <a href="#limits"><span class="n">11</span><span class="t">Out of distribution, bias and variance, and the way into LMPC</span><span class="d">Out of distribution, bias and variance, into LMPC</span></a>
-    <a href="#code"><span class="n">12</span><span class="t">The code behind it</span><span class="d">local_affine_regression and nonlinear_vehicle_step</span></a>
+    <a href="#code"><span class="n">12</span><span class="t">The code behind it</span><span class="d">LocalRacingModel.fit, the structured fit, bicycle_dynamics</span></a>
     <a href="#pitfalls"><span class="n">13</span><span class="t">Common pitfalls</span><span class="d">Eight confusions</span></a>
     <a href="#check"><span class="n">14</span><span class="t">Check your understanding</span><span class="d">Fifteen questions with answers</span></a>
     <a href="#exercises"><span class="n">15</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
@@ -414,34 +414,68 @@
   </div>
   <div class="col prose">
 
-<p>The package ships the simplest form of the idea: one unstructured local affine fit from the nearest transitions, every state regressed on every state and input. The lab's structured version (Parts 5 and 6) differs in three ways, and the numbers script implements it in full.</p>
-<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · local_affine_regression</p><pre><code class="language-python">def local_affine_regression(X,U,Y,xq,uq,k=30,ridge=1e-6):
-    &quot;&quot;&quot;Fit y=A x+B u+c from nearest stored transitions around query (xq,uq).&quot;&quot;&quot;
-    X=np.asarray(X,float); U=np.asarray(U,float); Y=np.asarray(Y,float)
-    xq=np.asarray(xq,float); uq=np.asarray(uq,float)
-    Z=np.hstack([X,U])
-    zq=np.r_[xq,uq]
-    scale=np.std(Z,axis=0)+1e-6
-    d=np.linalg.norm((Z-zq)/scale,axis=1)
-    idx=np.argsort(d)[:min(k,len(d))]
-    w=np.exp(-(d[idx]/(d[idx].mean()+1e-9))**2)
-    Phi=np.hstack([X[idx],U[idx],np.ones((len(idx),1))])
-    W=np.diag(w)
-    Theta=np.linalg.solve(Phi.T@W@Phi+ridge*np.eye(Phi.shape[1]),Phi.T@W@Y[idx])
-    nx=X.shape[1]; nu=U.shape[1]
-    A=Theta[:nx].T; B=Theta[nx:nx+nu].T; c=Theta[-1]
-    return A,B,c,idx</code></pre>
-<p>Read the four moves. The metric: features are standardised by their standard deviation over the whole database, then a Euclidean distance, where the lab uses a fixed scaling <span class="m">\operatorname{diag}(0.1, 1, 1, 1, 1)</span> and an <span class="m">\ell_1</span> distance, and selects per lap rather than from the pool. The kernel: a Gaussian in the distance normalised by the neighbours' mean distance, where the lab uses a compact Epanechnikov kernel with a fixed bandwidth. The regressors: <code>Phi</code> holds every state, every input and a one, so every row of <code>Y</code> is regressed on everything, where the lab restricts each row to its physical inputs and keeps the kinematic rows exact. The solve: the same weighted ridge normal equations as Part 5, <code>Phi.T @ W @ Phi + ridge * I</code>, with the returned <code>A</code>, <code>B</code>, <code>c</code> read off the rows of <code>Theta</code>. On the lab's data, at the lab's query, this unstructured fit from the 28 nearest transitions misses the simulator's next velocities by <span class="m">5.0 \times 10^{-2}</span> against <span class="m">2.7 \times 10^{-2}</span> for the structured local model: structure is worth having, and the exact kinematic rows are free.</p>
+<p>The package's <code>LocalRacingModel</code> is Parts 4 to 7 in one class: stored laps as transitions, the per-lap selection, the kernel weights, the structured fit and the exact kinematic rows. The numbers script re-implements the same steps with the switches the exercises need and checks that the two agree at the lab's query to <span class="m">10^{-11}</span>.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · LocalRacingModel.fit</p><pre><code class="language-python">    def fit(self, x, u):
+        &quot;&quot;&quot;Affine model x+ ~ A x + B u + c valid near (x, u). Returns (A, B, c, diagnostics).&quot;&quot;&quot;
+        if not self.laps:
+            raise RuntimeError(&quot;add at least one trajectory before fitting&quot;)
+        h, m = self.bandwidth, self.max_points_per_lap
+        rows_X, rows_U, rows_next, weights = [], [], [], []
+        indices, distances, kernel_weights, fallback = [], [], [], []
+        for (Xk, Uk, Xn), d in zip(self.laps, self._lap_distances(x, u)):
+            order = np.argsort(d, kind=&quot;stable&quot;)
+            inside = order[d[order] &lt; h]
+            if len(inside):
+                idx, h_lap, flag = inside[:m], h, False
+            else:
+                idx = order[:m]
+                h_lap, flag = 1.05 * float(d[idx].max()), True
+            w = 0.75 * (1.0 - (d[idx] / h_lap) ** 2)
+            rows_X.append(Xk[idx]); rows_U.append(Uk[idx]); rows_next.append(Xn[idx]); weights.append(w)
+            indices.append(idx); distances.append(d[idx]); kernel_weights.append(w); fallback.append(flag)
+
+        A_dyn, B_dyn, c_dyn, cond = _structured_dynamic_fit(
+            np.vstack(rows_X), np.vstack(rows_U), np.vstack(rows_next), np.concatenate(weights), self.ridge)
+        A_kin, c_kin, kappa = kinematic_affine_linearization(x, self.track, self.dt)
+        A, B, c = _assemble(A_dyn, B_dyn, c_dyn, A_kin, c_kin)
+        return A, B, c, FitDiagnostics(kappa, indices, distances, kernel_weights, cond, fallback)</code></pre>
+<p>This is <code>LocalRacingModel.fit</code>. Read it against Part 4. <code>_lap_distances</code> computes the scaled <span class="m">\ell_1</span> distance of the query to every stored transition of every lap, with <code>scaling</code> the <span class="m">(0.1, 1, 1, 1, 1)</span> of the metric. For each lap, <code>order</code> sorts the transitions by distance (a stable sort, so ties keep the lap's own order), <code>inside</code> keeps those within the bandwidth, and at most <code>max_points_per_lap</code> of them are taken; a lap with nothing inside falls back to its nearest <code>m</code> transitions with the bandwidth widened by five percent to cover them, and <code>flag</code> records it. The weights are the Epanechnikov kernel of Part 4. The selected rows of all laps are stacked and handed to <code>_structured_dynamic_fit</code> below, the kinematic rows come from <code>kinematic_affine_linearization</code> (Part 7), and <code>_assemble</code> puts the six rows together with zero input columns for the kinematics. The <code>FitDiagnostics</code> returned alongside the model carry the curvature, the selected indices, their distances and weights, the two condition numbers and the fallback flags: everything the page's readouts show.</p>
 </div>
-<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · nonlinear_vehicle_step</p><pre><code class="language-python">def nonlinear_vehicle_step(x,u,kappa,dt=0.1,L=2.7):
-    &quot;&quot;&quot;Reduced kinematic Frenet model: x=[e_y,e_psi,v], u=[delta,a].&quot;&quot;&quot;
-    ey,epsi,v=np.asarray(x,float); delta,a=np.asarray(u,float)
-    den=max(0.25,1-kappa*ey)
-    ey_dot=v*np.sin(epsi)
-    epsi_dot=v/L*np.tan(delta)-kappa*v*np.cos(epsi)/den
-    v_dot=a
-    return np.array([ey+dt*ey_dot, epsi+dt*epsi_dot, max(0.1,v+dt*v_dot)])</code></pre>
-<p>The package's plant is a reduced kinematic model in Frenet coordinates, three states <span class="m">(e_y, e_\psi, v)</span> and the inputs <span class="m">(\delta, a)</span> with a wheelbase <span class="m">L</span>, used by its identification demo; the lab's plant is the six-state dynamic bicycle model of Part 1 with tire forces. The two share the Frenet rates of lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a>, and the <code>max(0.25, 1 - kappa * ey)</code> guard is the singularity of the position map kept at bay. From <span class="m">(0, 0, 15)</span> under a small steering and acceleration on a gentle curvature the step moves the heading error by 0.0128 rad and the speed to 15.05 m/s.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · _structured_dynamic_fit</p><pre><code class="language-python">def _structured_dynamic_fit(X, U, Xnext, w, ridge):
+    &quot;&quot;&quot;Weighted fit of the rows for vx, vy and r. Returns (A (3, 6), B (3, 2), c (3,), condition numbers).&quot;&quot;&quot;
+    ones = np.ones((len(X), 1))
+    A = np.zeros((3, 6))
+    B = np.zeros((3, 2))
+    c = np.zeros(3)
+
+    Phi_vx = np.hstack([X[:, :3], U[:, [_LONGITUDINAL_INPUT]], ones])
+    theta_vx, cond_vx = _weighted_ridge(Phi_vx, Xnext[:, 0], w, ridge)
+    A[0, :3], B[0, _LONGITUDINAL_INPUT], c[0] = theta_vx[:3], theta_vx[3], theta_vx[4]
+
+    Phi_lat = np.hstack([X[:, :3], U[:, [_LATERAL_INPUT]], ones])
+    theta_lat, cond_lat = _weighted_ridge(Phi_lat, Xnext[:, 1:3], w, ridge)
+    A[1:3, :3] = theta_lat[:3].T
+    B[1:3, _LATERAL_INPUT] = theta_lat[3]
+    c[1:3] = theta_lat[4]
+    return A, B, c, [cond_vx, cond_lat]</code></pre>
+<p>Part 6 in code, with the structure fixed by two module constants: <code>_LONGITUDINAL_INPUT = 1</code> selects <span class="m">a_x</span> for the <span class="m">v_x</span> row, <code>_LATERAL_INPUT = 0</code> selects <span class="m">\delta</span> for the <span class="m">v_y</span> and <span class="m">r</span> rows. <code>Phi_vx</code> is <span class="m">[v_x, v_y, r, a_x, 1]</span> and <code>Phi_lat</code> is <span class="m">[v_x, v_y, r, \delta, 1]</span>, each with the column of ones that gives the affine offset of Part 5; <code>_weighted_ridge</code> solves the normal equations <span class="m">(\Phi^\top W\Phi + \lambda I)\theta = \Phi^\top W y</span> and returns the normal matrix's condition number. The two lateral rows share one regression because they share regressors, which is why the condition numbers come in a pair. The entries of <span class="m">A</span>, <span class="m">B</span> and <span class="m">c</span> that the structure leaves at zero are exactly the zero blocks of the sparsity pattern in Part 6; exercises 7 and 8 are what happens when a star is added to one of them.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · bicycle_dynamics</p><pre><code class="language-python">def bicycle_dynamics(x, u, kappa, params: VehicleParams = BARC) -&gt; np.ndarray:
+    &quot;&quot;&quot;Time derivative of x = [vx, vy, r, e_psi, s, e_y] for input u = [delta, a].&quot;&quot;&quot;
+    vx, vy, r, epsi, _, ey = (float(v) for v in x)
+    delta, a = float(u[0]), float(u[1])
+    f = bicycle_lateral_forces(vx, vy, r, delta, params)
+    Fyf, Fyr = f[&quot;Fyf&quot;], f[&quot;Fyr&quot;]
+    sdot = (vx * math.cos(epsi) - vy * math.sin(epsi)) / (1.0 - kappa * ey)
+    return np.array([
+        a - Fyf * math.sin(delta) / params.m + r * vy,
+        (Fyf * math.cos(delta) + Fyr) / params.m - r * vx,
+        (params.lf * Fyf * math.cos(delta) - params.lr * Fyr) / params.Iz,
+        r - kappa * sdot,
+        sdot,
+        vx * math.sin(epsi) + vy * math.cos(epsi),
+    ])</code></pre>
+<p>Part 1 in code: the time derivative of <span class="m">[v_x, v_y, r, e_\psi, s, e_y]</span> under <span class="m">u = [\delta, a]</span>, with the slip angles and Pacejka forces from <code>bicycle_lateral_forces</code> and the Frenet rates of lab <a href="b03-frenet-coordinates-and-minimum-time-racing.html" title="Frenet coordinates and minimum-time racing">B3</a> for the last three states. The simulator that produced the laps integrates this function with explicit Euler at 1 ms inside each 0.1 s control step; <code>bicycle_spatial_rhs</code> divides the same vector by <span class="m">\dot s</span> to give the spatial dynamics of the raceline problem, with the time state <span class="m">t&#x27; = 1/\dot s</span> in the fifth slot. At the example state the longitudinal tire term <span class="m">-F_{y,f}\sin\delta / m</span> is tiny, 0.02 m/s², and grows to 1.9 m/s² at full steering: the term the structured <span class="m">v_x</span> row neglects, and the reason exercise 7 finds it worth adding.</p>
 </div>
 
   </div>
@@ -653,7 +687,7 @@
 <p>Parse the JSON after the <code>=</code> in <code>interactive/b04-data.js</code>; select at most seven points per lap by the scaled <span class="m">\ell_1</span> distance; regress <span class="m">v_x^+</span> on <span class="m">(v_x, v_y, r, a_x, 1)</span> and <span class="m">(v_y^+, r^+)</span> on <span class="m">(v_x, v_y, r, \delta, 1)</span> with the weights on the diagonal of <span class="m">W</span>.</p>
 </details>
 <details class="sol"><summary>Solution</summary>
-<p>Your learned block should be <span class="m">a_{11} = 1.204</span>, <span class="m">a_{12} = 2.017</span>, <span class="m">a_{13} = -0.119</span>, <span class="m">b_{12} = 0.072</span>, <span class="m">b_{21} = 0.199</span>, <span class="m">b_{31} = 2.316</span> and <span class="m">c = (-0.184, 0.011, -0.608)</span>, with normal-matrix condition numbers of <span class="m">2.3 \times 10^{6}</span> and <span class="m">1.9 \times 10^{6}</span>, and the one-step error of the velocities and yaw rate should be <span class="m">2.7 \times 10^{-2}</span>. The numbers script's <code>local_fit</code> is the reference implementation; its <code>select</code> function is where the per-lap rule and the fallback live.</p>
+<p>Your learned block should be <span class="m">a_{11} = 1.204</span>, <span class="m">a_{12} = 2.017</span>, <span class="m">a_{13} = -0.119</span>, <span class="m">b_{12} = 0.072</span>, <span class="m">b_{21} = 0.199</span>, <span class="m">b_{31} = 2.316</span> and <span class="m">c = (-0.184, 0.011, -0.608)</span>, with normal-matrix condition numbers of <span class="m">2.3 \times 10^{6}</span> and <span class="m">1.9 \times 10^{6}</span>, and the one-step error of the velocities and yaw rate should be <span class="m">2.7 \times 10^{-2}</span>. The numbers script's <code>local_fit</code> is the reference implementation; its <code>select</code> function is where the per-lap rule and the fallback live, and the package's <code>LocalRacingModel.fit</code> returns the same <span class="m">A</span>, <span class="m">B</span> and <span class="m">c</span> to <span class="m">10^{-11}</span>.</p>
 <pre><code class="language-python">import json, numpy as np
 from pathlib import Path
 text = Path(&quot;interactive/b04-data.js&quot;).read_text(encoding=&quot;utf-8&quot;)
@@ -789,8 +823,8 @@ print(tv.round(3), tl[:, 0].round(3), tl[:, 1].round(3))   # a11..a13, b12, c1 |
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="../kit/kit.js"></script>
-<script src="interactive/mpc-lib.js?v=20261102222522"></script>
-<script src="interactive/b04-data.js?v=20261102222522"></script>
-<script src="interactive/b04.js?v=20261102222522"></script>
+<script src="interactive/mpc-lib.js?v=20261103042620"></script>
+<script src="interactive/b04-data.js?v=20261103042620"></script>
+<script src="interactive/b04.js?v=20261103042620"></script>
 </body>
 </html>

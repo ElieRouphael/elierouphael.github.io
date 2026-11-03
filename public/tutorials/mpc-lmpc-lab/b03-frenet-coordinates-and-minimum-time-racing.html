@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
 <link rel="stylesheet" href="../kit/kit.css">
-<link rel="stylesheet" href="course.css?v=20261102222522">
+<link rel="stylesheet" href="course.css?v=20261103042620">
 <style>
 .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem 0.8rem; }
 @media (max-width: 560px) { .three { grid-template-columns: repeat(2, 1fr); } }
@@ -390,50 +390,100 @@
   </div>
   <div class="col prose">
 
-<p>The package ships a simpler, open-loop version of the planner on a synthetic 300 m curvature profile: the same two passes, but with a given starting speed instead of a closed lap, and a single forward and backward sweep instead of a fixed point. The page's numbers come from the lab notebook's closed-lap planner on its closed-form track, which the numbers script re-implements; the package's version is the one to read first.</p>
-<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · synthetic_track</p><pre><code class="language-python">def synthetic_track(s, length=300.0):
-    &quot;&quot;&quot;Smooth periodic curvature profile for an educational closed track.&quot;&quot;&quot;
-    s=np.asarray(s,float)
-    kappa=(0.010*np.sin(2*np.pi*s/length)
-           +0.018*np.sin(4*np.pi*s/length+0.5)
-           +0.008*np.sin(6*np.pi*s/length-0.8))
-    return kappa</code></pre>
-<p>Three sinusoids in the arc length on a 300 m loop, with curvature between <span class="m">-0.0228</span> and <span class="m">0.0312</span> per metre, a tightest radius of 32 m: a gentler track than the lab's, chosen so that the open-loop planner never saturates its top speed for long. The lab's track is instead a closed-form curve in the plane, with curvature computed from its exact derivatives (Part 2); the two differ in origin, not in use.</p>
-</div>
-<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · minimum_time_speed_profile</p><pre><code class="language-python">def minimum_time_speed_profile(s, kappa, mu=1.0, g=9.81, vmax=35.0,
-                               amin=-6.0, amax=3.0, v0=12.0):
-    &quot;&quot;&quot;
-    Minimum-time centerline speed planning in the spatial domain.
+<p>The package's racing module is the lab's track, planner and diagnostic, line for line; the numbers script calls nothing else.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · build_demo_track</p><pre><code class="language-python">def build_demo_track(n: int = 400, half_width: float = 3.0, dense: int = 200_000) -&gt; Track:
+    &quot;&quot;&quot;Smooth closed demonstration track, sampled at ``n`` points uniform in arc length.
 
-    Decision z_i=v_i^2. Spatial longitudinal dynamics:
-        z_{i+1} = z_i + 2 ds a_i.
-    With a pointwise lateral limit z_i |kappa_i| &lt;= mu g, the minimum-time
-    solution is the largest feasible speed-squared profile. A forward pass
-    enforces acceleration capability and a backward pass enforces braking.
+    The centerline is the closed curve
+
+        x(t) = 45 cos t + 5 cos 2t,    y(t) = 30 sin t + 6 sin 3t,    t in [0, 2 pi),
+
+    driven counter-clockwise from (50, 0). It is about 252.3 m long, with two
+    tight corners (radius about 7.7 m), two sweeping bends and two slight reverse
+    kinks on the long sides. Curvature and heading are evaluated from the exact
+    derivatives of the curve; arc length is integrated on a dense parameter grid.
     &quot;&quot;&quot;
-    s=np.asarray(s,float); kappa=np.asarray(kappa,float)
-    ds=np.diff(s); n=len(s)
-    lat_cap=np.where(np.abs(kappa)&gt;1e-7, mu*g/np.abs(kappa), vmax**2)
-    cap=np.minimum(vmax**2,lat_cap)
-    z=np.maximum(2.0**2, cap.copy())
-    z[0]=min(float(cap[0]), max(v0**2, 2.0**2))
-    # Forward: z_{i+1}-z_i &lt;= 2 ds amax
-    for i,dsi in enumerate(ds):
-        z[i+1]=min(z[i+1], z[i]+2*dsi*amax)
-    # Backward: z_{i+1}-z_i &gt;= 2 ds amin -&gt; z_i &lt;= z_{i+1}-2 ds amin
-    for i in range(n-2,-1,-1):
-        z[i]=min(z[i], z[i+1]-2*ds[i]*amin)
-    # Re-enforce initial speed and forward acceleration once more.
-    z[0]=min(float(cap[0]), max(v0**2, 2.0**2))
-    for i,dsi in enumerate(ds):
-        z[i+1]=min(z[i+1], z[i]+2*dsi*amax, cap[i+1])
-    v=np.sqrt(np.maximum(z,1e-9))
-    a=np.diff(z)/(2*ds)
-    time=float(np.sum(ds*2.0/(v[:-1]+v[1:])))
-    feasible=bool(np.all(a&lt;=amax+1e-8) and np.all(a&gt;=amin-1e-8) and np.all(z&lt;=cap+1e-8))
-    return {&quot;success&quot;:feasible,&quot;v&quot;:v,&quot;a&quot;:a,&quot;time&quot;:time,&quot;z&quot;:z,
-            &quot;zmax&quot;:cap,&quot;message&quot;:&quot;forward-backward spatial speed planning&quot;}</code></pre>
-<p>Read it against Parts 4 to 6. <code>lat_cap</code> and <code>cap</code> are <span class="m">z_{\max}(s) = \min(v_{\max}^2, \mu g / |\kappa|)</span>, with the straight handled by the <code>1e-7</code> guard. The first loop is the forward envelope, <span class="m">z_{i+1} \le z_i + 2\Delta s_i a_{\max}</span>; the second the backward envelope, <span class="m">z_i \le z_{i+1} - 2\Delta s_i a_{\min}</span>. Two differences from the closed-lap planner: <code>z[0]</code> is pinned to the starting speed <span class="m">v_0 = 12</span> m/s, so the profile is open-loop, and the passes are run once each (plus one forward re-enforcement) rather than iterated to a fixed point, which is enough here because the backward pass cannot lower a point below the forward bound on a track this smooth. The time is the exact segment sum of Part 5, and the <code>feasible</code> check at the end asks whether the result respects the accelerations and the cap, which a converged fixed point does by construction. On the 300 m loop it reports 13.03 s with speeds from 12 to 31.2 m/s.</p>
+    t = np.linspace(0.0, 2.0 * np.pi, dense + 1)
+    speed = np.hypot(*_demo_curve_d1(t))
+    s_dense = np.r_[0.0, np.cumsum(0.5 * (speed[1:] + speed[:-1]) * np.diff(t))]
+    length = float(s_dense[-1])
+
+    s = np.arange(n) * length / n
+    tq = np.interp(s, s_dense, t)
+    half = n // 2
+    if n % 2 == 0:
+        # The curve is symmetric about the x-axis: sample it symmetrically so the two
+        # mirror-image corners get identical samples.
+        tq[half + 1:] = 2.0 * np.pi - tq[1:half][::-1]
+    x, y = _demo_curve(tq)
+    dx, dy = _demo_curve_d1(tq)
+    ddx, ddy = _demo_curve_d2(tq)
+    curvature = (dx * ddy - dy * ddx) / np.hypot(dx, dy) ** 3
+    if n % 2 == 0:
+        curvature[half + 1:] = curvature[1:half][::-1]
+    heading = np.unwrap(np.arctan2(dy, dx))
+    return Track(s=s, xy=np.c_[x, y], heading=heading, curvature=curvature,
+                 length=length, half_width=float(half_width))</code></pre>
+<p>Part 2 in code. The closed-form curve and its two exact derivatives live in three small helpers below this function; the arc length is the trapezoidal integral of <span class="m">\|\gamma&#x27;\|</span> on a dense parameter grid (200 000 points by default), and <code>np.interp</code> inverts it to find the parameter at <span class="m">n</span> equally spaced arc lengths. The symmetric-sampling block matters more than it looks: the curve is mirror-symmetric about the <span class="m">x</span>-axis, and sampling the second half as the mirror of the first makes the two tight corners identical to the last digit, so the lap has one apex speed, not two slightly different ones. Curvature comes from the formula of Part 1 with the exact derivatives, heading from <code>atan2</code> unwrapped, and the result is a <code>Track</code>, whose <code>ds</code> property closes the loop with the last segment. With <span class="m">n = 240</span> the length is 252.333 m and the tightest sample has <span class="m">K = 0.129430</span>.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · periodic_minimum_time_speed_profile</p><pre><code class="language-python">def periodic_minimum_time_speed_profile(track: Track, mu=1.0, g=G, vmax=35.0,
+                                        amin=-6.0, amax=3.0, tol=1e-9, max_iter=100) -&gt; dict:
+    &quot;&quot;&quot;Minimum-time speed profile on a closed track, in the spatial domain.
+
+    Decision variable z_i = v_i^2 at every sample. Over segment i of length ds_i,
+    a constant acceleration a_i gives z_{i+1} = z_i + 2 a_i ds_i, so the bounds
+    amin &lt;= a_i &lt;= amax are linear in z:
+
+        z_{i+1} &lt;= z_i + 2 amax ds_i        (acceleration)
+        z_i     &lt;= z_{i+1} - 2 amin ds_i    (braking)
+
+    together with z_i &lt;= cap_i from ``lateral_speed_squared_cap``. Lap time
+    decreases in every z_i, so the minimum-time profile is the largest feasible
+    z. It is found by repeated forward (acceleration) and backward (braking)
+    passes around the loop, starting from the cap, until nothing changes.
+    &quot;&quot;&quot;
+    ds = track.ds
+    n = len(ds)
+    zmax = lateral_speed_squared_cap(track.curvature, mu=mu, g=g, vmax=vmax)
+    z = zmax.copy()
+    converged = False
+    for iteration in range(1, max_iter + 1):
+        z_previous = z.copy()
+        for i in range(n):                      # forward: acceleration limit
+            j = (i + 1) % n
+            z[j] = min(z[j], z[i] + 2.0 * amax * ds[i])
+        for i in range(n - 1, -1, -1):          # backward: braking limit
+            j = (i + 1) % n
+            z[i] = min(z[i], z[j] - 2.0 * amin * ds[i])
+        if np.max(np.abs(z - z_previous)) &lt;= tol:
+            converged = True
+            break
+    z_next = np.roll(z, -1)
+    a = (z_next - z) / (2.0 * ds)
+    segment_time = segment_time_from_speed_squared(z, z_next, ds)
+    feasible = (np.all(z &lt;= zmax + 1e-8) and np.all(a &lt;= amax + 1e-8)
+                and np.all(a &gt;= amin - 1e-8) and np.all(z &gt; 0))
+    return {
+        &quot;success&quot;: bool(converged and feasible),
+        &quot;iterations&quot;: iteration,
+        &quot;time&quot;: float(np.sum(segment_time)),
+        &quot;v&quot;: np.sqrt(z),
+        &quot;a&quot;: a,
+        &quot;z&quot;: z,
+        &quot;zmax&quot;: zmax,
+        &quot;segment_time&quot;: segment_time,
+    }</code></pre>
+<p>Parts 4 to 6 in code. <code>zmax</code> is the cap of Part 4 from <code>lateral_speed_squared_cap</code>, <span class="m">\min(v_{\max}^2, \mu g / |\kappa|)</span> with a guard for straights. The first inner loop is the forward envelope, <span class="m">z_{j} \le z_i + 2 a_{\max}\Delta s_i</span> with <span class="m">j = i + 1</span> wrapping at the finish line; the second is the backward envelope, <span class="m">z_i \le z_j - 2 a_{\min}\Delta s_i</span>. The outer loop repeats the pair until no entry moves by more than <code>tol</code>, which is the fixed point of Part 6; <code>iterations</code> reports the sweeps, 3 at the lab's setting. The acceleration is read back from the converged <span class="m">z</span>, the segment times are the exact formula of Part 5 from <code>segment_time_from_speed_squared</code>, and <code>success</code> asks the converged profile to respect the cap and the two acceleration bounds, which a fixed point does by construction. On the 240-sample track it returns 17.0939 s with speeds from 8.706 to 20.914 m/s; on the package's default of 400 samples, 17.1052 s, consistent with the grid study of Part 7.</p>
+</div>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/racing.py · friction_circle_utilization</p><pre><code class="language-python">def friction_circle_utilization(z, a, curvature, mu=1.0, g=G) -&gt; np.ndarray:
+    &quot;&quot;&quot;sqrt(a_x^2 + a_y^2) / (mu g) with lateral acceleration a_y = z kappa.
+
+    The speed planner bounds a_x and a_y separately; values above 1 show where the
+    combined (friction-circle) demand exceeds what the tires can deliver.
+    &quot;&quot;&quot;
+    a_lat = np.asarray(z, float) * np.asarray(curvature, float)
+    return np.hypot(np.asarray(a, float), a_lat) / (mu * g)</code></pre>
+<p>Part 8 in two lines: <span class="m">a_y = z\kappa</span> at every sample and <span class="m">\sqrt{a_x^2 + a_y^2} / (\mu g)</span>. The planner never sees this number; it is a diagnostic applied to its answer, and on the lab's solution it exceeds one on 66 of 240 segments.</p>
 </div>
 
   </div>
@@ -620,21 +670,24 @@
 <p>The admissible longitudinal acceleration becomes <span class="m">|a_x| \le \sqrt{(\mu g)^2 - (zK)^2}</span>, which depends on the local speed and curvature: the faster the car corners, the less it may accelerate or brake. The forward bound <span class="m">z_{i+1} \le z_i + 2\Delta s_i a_{\max}(z_i, K_i)</span> is now a nonlinear function of <span class="m">z_i</span>, and the same for the backward bound, so the passes are no longer simple minimum operations with constant increments; at the apex, where <span class="m">zK = \mu g</span>, there is no longitudinal authority at all, whereas the decoupled planner there still accelerates at 2.66 m/s². The fixed-point structure survives (the bounds are still monotone in <span class="m">z</span>), but each pass must evaluate the circle, and the result is slower: the diagnostic of Part 8 shows the decoupled solution exceeding the circle on 66 segments.</p>
 </details>
 </div></li>
-<li><div class="ex"><p><b>Build the planner yourself.</b> Implement the two passes in NumPy for an open-loop profile with a given starting speed, run it on the package's 300 m curvature profile, and compare with <code>minimum_time_speed_profile</code>.</p>
+<li><div class="ex"><p><b>Build the planner yourself.</b> Implement the two passes in NumPy on the 240-sample demo track, repeat them to a fixed point, and compare your lap time and speed profile with <code>periodic_minimum_time_speed_profile</code>.</p>
 <details class="sol"><summary>Hint</summary>
-<p>Start from the cap, pin <span class="m">z_0 = v_0^2</span>, run the forward pass then the backward pass, and compute the time with the exact segment formula.</p>
+<p>Start from <code>lateral_speed_squared_cap</code>, run the forward pass then the backward pass with the indices wrapping, and stop when no entry changes by more than <span class="m">10^{-9}</span>; the lap time is the exact segment formula summed around the loop.</p>
 </details>
 <details class="sol"><summary>Solution</summary>
-<p>On the package's profile both give 13.0258 s, speeds from 12 to 31.2 m/s and accelerations within <span class="m">[-6, 3]</span>; the one-pass version agrees with the package because a single backward sweep never pulls a point below the forward envelope on a track whose caps vary slowly. On the lab's closed track the same two passes must be iterated to a fixed point (three sweeps at the lab's setting), because the loop has no start to pin and the braking zones of consecutive corners interact.</p>
+<p>Both converge in 3 sweeps to 17.0939 s, and the two speed profiles agree exactly, because the package does the same two minimum operations in the same order. Try the sweeps one at a time: after the first forward pass the profile already respects the acceleration bound everywhere, after the first backward pass the braking bound, and the second pair of passes changes almost nothing; the third confirms the fixed point.</p>
 <pre><code class="language-python">import numpy as np
-from advanced_mpc_lmpc.racing import synthetic_track, minimum_time_speed_profile
-g = 9.81; s = np.linspace(0, 300, 301); kappa = synthetic_track(s); ds = np.diff(s)
-mu, vmax, amin, amax, v0 = 1.0, 35.0, -6.0, 3.0, 12.0
-z = np.minimum(vmax**2, mu * g / np.maximum(np.abs(kappa), 1e-7)); z[0] = min(z[0], v0**2)
-for i in range(len(ds)):            z[i + 1] = min(z[i + 1], z[i] + 2 * ds[i] * amax)      # forward
-for i in range(len(ds) - 1, -1, -1): z[i] = min(z[i], z[i + 1] - 2 * ds[i] * amin)          # backward
-v = np.sqrt(z); T = np.sum(2 * ds / (v[:-1] + v[1:]))
-print(round(T, 4), round(minimum_time_speed_profile(s, kappa)[&quot;time&quot;], 4))     # 13.0258 13.0258
+from advanced_mpc_lmpc.racing import build_demo_track, lateral_speed_squared_cap, periodic_minimum_time_speed_profile
+track = build_demo_track(240); ds = track.ds; n = len(ds); amin, amax = -6.0, 3.0
+z = lateral_speed_squared_cap(track.curvature, mu=1.0, vmax=35.0)
+for sweep in range(1, 101):
+    prev = z.copy()
+    for i in range(n):             z[(i + 1) % n] = min(z[(i + 1) % n], z[i] + 2 * amax * ds[i])   # forward
+    for i in range(n - 1, -1, -1): z[i] = min(z[i], z[(i + 1) % n] - 2 * amin * ds[i])               # backward
+    if np.max(np.abs(z - prev)) &lt;= 1e-9: break
+v = np.sqrt(z); T = np.sum(2 * ds / (v + np.roll(v, -1)))
+sol = periodic_minimum_time_speed_profile(track, mu=1.0, vmax=35.0, amin=amin, amax=amax)
+print(sweep, round(T, 4), sol[&quot;iterations&quot;], round(sol[&quot;time&quot;], 4), np.abs(v - sol[&quot;v&quot;]).max())   # 3 17.0939 3 17.0939 0.0
 </code></pre>
 </details>
 </div></li>
@@ -749,7 +802,7 @@ print(round(T, 4), round(minimum_time_speed_profile(s, kappa)[&quot;time&quot;],
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="../kit/kit.js"></script>
-<script src="interactive/mpc-lib.js?v=20261102222522"></script>
-<script src="interactive/b03.js?v=20261102222522"></script>
+<script src="interactive/mpc-lib.js?v=20261103042620"></script>
+<script src="interactive/b03.js?v=20261103042620"></script>
 </body>
 </html>

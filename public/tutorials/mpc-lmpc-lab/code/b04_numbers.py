@@ -8,8 +8,8 @@ The recorded laps (four training laps and one held-out lap of the nonlinear bicy
 path-following controller) come from the lab notebook and ship with the page as interactive/b04-data.js; the
 script reads that file (by default next to this script, in ../interactive/) so that every regression, validation
 and sweep on the page is recomputed from the same data. The local structured regression is re-implemented here
-as in the notebook; the package's `local_affine_regression` is the simpler unstructured version read in the
-code walk. Takes about a minute.
+with the switches the exercises need (no offset, extra regressors, other scalings); the last section checks it
+against the package's LocalRacingModel and GlobalRacingModel, which the code walk reads. Takes about a minute.
 """
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
-from advanced_mpc_lmpc.racing import local_affine_regression, nonlinear_vehicle_step
+from advanced_mpc_lmpc.racing import (BARC, GlobalRacingModel, LocalRacingModel, bicycle_dynamics, bicycle_lateral_forces,
+                                      bicycle_spatial_rhs, build_demo_track, rollout_affine_predictive_model, scale_track_geometry)
 
 np.set_printoptions(precision=4, suppress=True)
 G = 9.81
@@ -135,20 +136,14 @@ def validate(h=5.0, m=7, ridge=1e-8, scaling=(0.1, 1, 1, 1, 1), **opts):
 
 # --------------------------------------------------------------------------------------------------------------
 section("Part 1: the dynamic bicycle model at the example state (v_x 10, v_y 0.25, r 0.2, delta 0.08)")
-m_, lf, lr, Iz, Bp, Cp = 1.98, 0.125, 0.125, 0.024, 1.0, 1.25
-Dp = 0.8 * m_ * G / 2
-pacejka = lambda a: Dp * np.sin(Cp * np.arctan(Bp * a))
-vx, vy, r, delta = 10.0, 0.25, 0.2, 0.08
-af = delta - np.arctan2(vy + lf * r, vx); ar = -np.arctan2(vy - lr * r, vx)
-Fyf, Fyr = pacejka(af), pacejka(ar)
-print(f"peak force per axle D = {Dp:.2f} N; slip angles alpha_f = {af:.5f}, alpha_r = {ar:.5f}; forces F_yf = {Fyf:.4f} N, F_yr = {Fyr:.4f} N")
-epsi, ey, kappa, ax = 0.04, 0.3, 0.03, 1.0
-sdot = (vx * np.cos(epsi) - vy * np.sin(epsi)) / (1 - kappa * ey)
-xd = np.array([ax - Fyf * np.sin(delta) / m_ + r * vy, (Fyf * np.cos(delta) + Fyr) / m_ - r * vx, (lf * Fyf * np.cos(delta) - lr * Fyr) / Iz,
-               r - kappa * sdot, 1.0, vx * np.sin(epsi) + vy * np.cos(epsi)])
-rhs = xd / sdot; rhs[4] = 1 / sdot
+f = bicycle_lateral_forces(10.0, 0.25, 0.2, 0.08)
+print(f"peak force per axle D = {BARC.D:.2f} N; slip angles alpha_f = {f['alpha_f']:.5f}, alpha_r = {f['alpha_r']:.5f}; "
+      f"forces F_yf = {f['Fyf']:.4f} N, F_yr = {f['Fyr']:.4f} N")
+rhs = bicycle_spatial_rhs([10.0, 0.25, 0.2, 0.04, 0.0, 0.3], 1.0, 0.08, 0.03)
 print("spatial right-hand side (v_x', v_y', r', e_psi', t', e_y') =", rhs.round(4).tolist())
-print(f"largest longitudinal tire term at delta = 0.5: {Dp * np.sin(0.5) / m_:.2f} m/s^2")
+xdot = bicycle_dynamics([10.0, 0.25, 0.2, 0.04, 0.0, 0.3], [0.08, 1.0], 0.03)
+print("time derivatives (v_x, v_y, r, e_psi, s, e_y) =", xdot.round(4).tolist(), "; s_dot =", round(float(xdot[4]), 4))
+print(f"largest longitudinal tire term at delta = 0.5: {BARC.D * np.sin(0.5) / BARC.m:.2f} m/s^2")
 
 section("Part 2: the racing data")
 print(f"track: {L:.3f} m long, half-width {W}, curvature [{TK.min():.3f}, {TK.max():.3f}] 1/m, tightest radius {1 / np.abs(TK).max():.2f} m, "
@@ -225,11 +220,20 @@ rms = lambda a, mask: np.sqrt(np.mean(a[mask] ** 2))
 for name, mask in (("low curvature", Kv < np.median(Kv)), ("high curvature", Kv >= np.median(Kv)), ("low speed", vxs < np.median(vxs)), ("high speed", vxs >= np.median(vxs))):
     print(f"   ex. 9 {name:15s}: local {rms(el, mask):.4f}, global {rms(eg, mask):.4f}")
 
-section("The code behind it: the package's unstructured local regression on the same data")
-X_all = np.vstack([l["X"] for l in LAPS]); U_all = np.vstack([l["U"] for l in LAPS]); Y_all = np.vstack([l["Xn"] for l in LAPS])
-Ap, Bp_, cp, idx = local_affine_regression(X_all, U_all, Y_all, x, u, k=28)
-pred = Ap @ x + Bp_ @ u + cp
-print(f"28 nearest transitions by the package's standardised Euclidean metric; one-step error (v_x, v_y, r) {np.linalg.norm(pred[:3] - VAL['X'][k + 1][:3]):.3e}"
-      f" against {np.linalg.norm(apply(M, x, u)[:3] - VAL['X'][k + 1][:3]):.3e} for the structured local model")
-xs = nonlinear_vehicle_step([0.0, 0.0, 15.0], [0.05, 0.5], 0.01)
-print("the package's reduced kinematic step from (e_y, e_psi, v) = (0, 0, 15) under (delta, a) = (0.05, 0.5), kappa 0.01:", xs.round(4).tolist())
+section("The code behind it: the package's LocalRacingModel and GlobalRacingModel on the same data")
+track = scale_track_geometry(build_demo_track(400, half_width=3.0), 0.08, half_width=0.4)
+print(f"package track: {track.length:.3f} m, half-width {track.half_width}, matches the data file: {np.allclose(track.curvature, TK)}")
+local = LocalRacingModel(track); glob = GlobalRacingModel(track)
+for l in LAPS:
+    local.add_trajectory(l["Xfull"], l["U"]); glob.add_trajectory(l["Xfull"], l["U"])
+Ap, Bp, cp, diag = local.fit(x, u)
+print(f"at sample 120: kappa {diag.curvature:.3f}, {sum(len(i) for i in diag.selected_indices)} points, condition numbers "
+      f"{[f'{c:.1e}' for c in diag.normal_condition_numbers]}, fallback {any(diag.support_fallback)}")
+print(f"package against the script's structured fit: |A - A'| {np.abs(Ap - M['A']).max():.1e}, |B - B'| {np.abs(Bp - M['B']).max():.1e}, "
+      f"|c - c'| {np.abs(cp - M['c']).max():.1e}; support distance {local.support_distance(x, u):.3f}")
+El_pkg = np.array([local.predict(VAL["X"][k], VAL["U"][k])[0] - VAL["X"][k + 1] for k in range(NV)])
+Eg_pkg = np.array([glob.predict(VAL["X"][k], VAL["U"][k]) - VAL["X"][k + 1] for k in range(NV)])
+print("held-out RMSE with the package, local :", [f"{v:.3e}" for v in np.sqrt((El_pkg**2).mean(0))])
+print("held-out RMSE with the package, global:", [f"{v:.3e}" for v in np.sqrt((Eg_pkg**2).mean(0))])
+Xl14, _ = rollout_affine_predictive_model(local, VAL["X"][145], VAL["U"][145:159]); T14 = VAL["X"][145:160]
+print(f"rollout_affine_predictive_model, 14 steps from sample 145: dynamic-state RMSE {np.sqrt(np.mean((Xl14[:, :3] - T14[:, :3])**2)):.4f}")
