@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>C2 · Reference tracking and offset-free MPC · Advanced MPC and Learning MPC</title>
+<meta name="description" content="Steady-state targets, the tracking problem in deviation variables with its shifted terminal set, the offset a constant disturbance leaves, the augmented model and its observer, offset-free MPC and why its disturbance model must be detectable.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261103042706">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Advanced MPC and Learning MPC</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Advanced MPC and Learning MPC · Part C, Beyond the nominal case · Chapter C2 of 4</span>
+  <h1>Reference tracking and offset-free MPC</h1>
+  <p class="lede">Every controller so far drove the cart to the origin. A real controller is given a setpoint, and the setpoint changes. The regulator of Part A handles that with a change of variables, as long as the model is right. When it is not, when the cart sits on a slope the model knows nothing about, the controller settles a fixed distance from where it was told to go, and no amount of tuning moves it. The repair is an observer that estimates the slope from the measured position and a target that accounts for it. Below, both controllers run on the same sloping cart.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A7, A11 and C1's plant-against-model habit · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/c02_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="mpc-lmpc-lab-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Position against the step: the setpoint, plain tracking MPC, and offset-free MPC on the sloping cart</p>
+      <canvas id="posC" aria-label="The setpoint sequence and the position of the cart under plain tracking MPC and under offset-free MPC, with the box bound" aria-describedby="heroStatus"></canvas>
+      <p class="chart-title" style="margin-top:0.6rem">The observer's estimate of the slope</p>
+      <canvas id="distC" aria-label="The estimated input disturbance against the step, with the true value" aria-describedby="heroStatus"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Slope <span class="m">d</span> (an input the model does not see): <b id="hDV"></b></span>
+      <span class="row"><input type="range" id="hD" min="-0.4" max="0.4" step="0.05" value="-0.2"></span>
+    </label>
+    <label class="field"><span>Observer error eigenvalues: <b id="hLV"></b></span>
+      <span class="row"><input type="range" id="hL" min="0" max="2" step="1" value="1"></span>
+    </label>
+    <label class="field"><span>First setpoint <span class="m">r_1</span>: <b id="hR1V"></b></span>
+      <span class="row"><input type="range" id="hR1" min="-3" max="3" step="0.5" value="2"></span>
+    </label>
+    <label class="field"><span>Second setpoint <span class="m">r_2</span>: <b id="hR2V"></b></span>
+      <span class="row"><input type="range" id="hR2" min="-3" max="3" step="0.5" value="-1"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>plain MPC, offset at step 30 / 60</span><span class="v" id="rPlain">–</span>
+      <span>offset-free, error at step 30 / 60</span><span class="v" id="rFree">–</span>
+      <span>estimate <span class="m">\hat d</span> at step 30</span><span class="v" id="rD">–</span>
+      <span>within 0.01 of <span class="m">r_1</span> from step</span><span class="v" id="rSettle">–</span>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="hReset">Back to the chapter's run</button></div>
+    <p class="hint">The canonical cart from rest, <span class="m">N = 5</span>, thirty steps at each setpoint. The plant is <span class="m">x^+ = Ax + B(u + d)</span>; both controllers use the model without <span class="m">d</span>. The observer gains are the numbers script's, computed by pole placement in Python.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#targets"><span class="n">1</span><span class="t">Where the cart can sit still</span><span class="d">Where the cart can sit still</span></a>
+    <a href="#deviation"><span class="n">2</span><span class="t">The regulator of A11 around a setpoint</span><span class="d">The regulator of A11 around a setpoint</span></a>
+    <a href="#offset"><span class="n">3</span><span class="t">A slope the model does not know</span><span class="d">A slope the model does not know</span></a>
+    <a href="#observer"><span class="n">4</span><span class="t">An integrating disturbance state and its observer</span><span class="d">An integrating disturbance state and its observer</span></a>
+    <a href="#experiment"><span class="n">5</span><span class="t">Two setpoints, two controllers, one slope</span><span class="d">Two setpoints, two controllers, one slope</span></a>
+    <a href="#models"><span class="n">6</span><span class="t">Input against output disturbance, and detectability</span><span class="d">Input against output disturbance, and detectability</span></a>
+    <a href="#code"><span class="n">7</span><span class="t">The code behind it</span><span class="d">LinearMPC.solve and its x_ref, the target, the observer</span></a>
+    <a href="#pitfalls"><span class="n">8</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">9</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">11</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="targets">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Where the cart can sit still</h2>
+  </div>
+  <div class="col prose">
+
+<p>A setpoint is a value of the output that the cart must hold. With the position measured, <span class="m">y = Cx</span>, <span class="m">C = (1, 0)</span>, holding <span class="m">y = r</span> means finding a <em>steady state</em>, a pair <span class="m">(x_s, u_s)</span> that the model leaves where it is and whose output is <span class="m">r</span>:</p>
+<div class="math-block" data-narrow="A_a = \begin{pmatrix} 1 &amp; 1 &amp; 0.5 \ 0 &amp; 1 &amp; 1 \ 0 &amp; 0 &amp; 1 \end{pmatrix}, \quad B_a = \begin{pmatrix} 0.5 \ 1 \ 0 \end{pmatrix}, \quad C_a = (1, 0, 0)">\boxed{x_s = Ax_s + Bu_s, \qquad Cx_s = r}, \qquad \text{that is}\qquad \begin{pmatrix} I - A &amp; -B \\ C &amp; 0 \end{pmatrix} \begin{pmatrix} x_s \\ u_s \end{pmatrix} = \begin{pmatrix} 0 \\ r \end{pmatrix}.</div>
+<p>Three equations in three unknowns. For the cart the answer is obvious once written: a cart sits still only at zero velocity, and holds zero velocity only with zero input, so <span class="m">x_s = (r, 0)</span> and <span class="m">u_s = 0</span> for every <span class="m">r</span>. The determinant of the <span class="m">3 \times 3</span> system is 1, so the target is unique; for a plant with more inputs than outputs the system is underdetermined and a least-cost target is chosen, for one with fewer, a least-squares one, and both are the <em>target problem</em> of tracking MPC (Rawlings, Mayne and Diehl <a href="#ref-1">[1]</a>, chapter 1.5). Everything that follows is built on the target: the controller never sees <span class="m">r</span> directly, only <span class="m">(x_s, u_s)</span>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="deviation">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The regulator of A11 around a setpoint</h2>
+  </div>
+  <div class="col prose">
+
+<p>Write the state and input as deviations from the target, <span class="m">\delta x = x - x_s</span> and <span class="m">\delta u = u - u_s</span>. Because the target is a steady state of the model, the deviations obey the same dynamics,</p>
+<div class="math-block">\delta x^+ = A\,\delta x + B\,\delta u,</div>
+<p>and driving <span class="m">\delta x</span> to zero is exactly chapter <a href="a11-terminal-ingredients-and-the-stability-theorem.html" title="Terminal ingredients and the stability theorem">A11</a>'s regulation problem, with its stage cost <span class="m">q(\delta x, \delta u)</span>, its Riccati terminal cost and its LQR gain unchanged. Two things do change.</p>
+<p><strong>The constraints move.</strong> <span class="m">|p| \le 4</span> becomes <span class="m">-4 - r \le \delta p \le 4 - r</span>, and <span class="m">|u| \le 1</span> becomes <span class="m">-1 - u_s \le \delta u \le 1 - u_s</span>: the box is no longer centred on the equilibrium, and the room on the side of the setpoint shrinks as <span class="m">r</span> approaches the wall.</p>
+<p><strong>The terminal set must be recomputed.</strong> The LQR's invariant set of chapter <a href="a10-positive-and-control-invariance.html" title="Positive and control invariance">A10</a> was built inside the symmetric box; around <span class="m">(r, 0)</span> it has to be built inside the shifted one, where the LQR input stays admissible and the next state stays inside, which the same fixed-point iteration delivers. At <span class="m">r = 0</span> it is the familiar parallelogram of area 7.31; at <span class="m">r = 2</span> it loses its right corner and has area 6.83; at <span class="m">r = 3.5</span> it is squeezed to 4.45 with only half a unit of room on the setpoint's side; at <span class="m">r = 3.8</span> the iteration returns a five-vertex set of area 3.87. A terminal set that depends on the setpoint is the price of hard constraints near the wall, and the reason tracking MPC with changing references needs either a recomputation at every change or the artificial-setpoint formulation of Limón and colleagues <a href="#ref-4">[4]</a>, which keeps one invariant set for all targets.</p>
+<div class="widget" id="shiftW">
+  <div class="controls">
+    <label class="field"><span>Setpoint <span class="m">r</span>: <b id="shiftRV"></b></span>
+      <span class="row"><input type="range" id="shiftR" min="-3.9" max="3.9" step="0.1" value="2"></span></label>
+  </div>
+  <canvas id="shiftC" aria-label="The state box, the setpoint, and the LQR's terminal set recomputed around the setpoint inside the shifted box"></canvas>
+  <p class="caption" id="shiftCap"></p>
+</div>
+<div class="callout">
+<p><strong>What the regulator theorem gives.</strong> With the shifted constraints and terminal set, every statement of chapter A11 holds for <span class="m">\delta x</span>: recursive feasibility, the Lyapunov decrease, exponential convergence to <span class="m">x_s</span> from the feasible region. The model, not the controller, is what will fail next.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="offset">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>A slope the model does not know</h2>
+  </div>
+  <div class="col prose">
+
+<p>Put the cart on a slope. Gravity adds a constant acceleration that the motor must fight: the plant is</p>
+<div class="math-block">x^+ = Ax + B(u + d), \qquad d = -0.2,</div>
+<p>while the controller's model has no <span class="m">d</span>. Nothing is wrong with the controller: its problem is feasible, its value decreases, its deviation converges. It converges to the wrong place.</p>
+<p><strong>Why, in one line.</strong> Near the target the controller is the LQR, <span class="m">\delta u = -K\,\delta x</span>, so the deviation obeys <span class="m">\delta x^+ = (A - BK)\,\delta x + Bd</span>, a stable linear system with a constant input, whose fixed point is</p>
+<div class="math-block">\boxed{\delta x_{ss} = (I - A_K)^{-1} B d = (-0.270,\ 0)}.</div>
+<p>The cart stops 0.270 short of every setpoint, at zero velocity, with the input <span class="m">-K\,\delta x_{ss} = +0.2</span>: the position error is what supplies the input that cancels the slope. A larger <span class="m">K</span> would shrink the offset, never remove it; an integrator would remove it, and the LQR has none. The numbers script runs plain tracking MPC with <span class="m">r = 2</span> for thirty steps and then <span class="m">r = -1</span> for thirty: the position settles at 1.730 and then at <span class="m">-1.270</span>, the same offset both times, with the input at 0.200 at the end. The first setpoint is reached at the input bound, <span class="m">u = 1</span>, then the controller eases off; the offset is already there by step 10 and never changes.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="observer">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>An integrating disturbance state and its observer</h2>
+  </div>
+  <div class="col prose">
+
+<div class="define"><p class="define-title">What is offset-free MPC?</p>
+<p><strong>In plain words:</strong> give the model a state for what it does not know, a constant disturbance; estimate that state from the measurements with an observer; and aim the controller at the target that the estimated disturbance implies, so that the controller's steady state is the plant's steady state.</p>
+<p><strong>More precisely:</strong> augment the model with <span class="m">d^+ = d</span> and <span class="m">x^+ = Ax + B(u + d)</span>, estimate <span class="m">(\hat x, \hat d)</span> with a Luenberger observer driven by <span class="m">y - C\hat x</span>, solve the target problem with the estimate, <span class="m">x_s = Ax_s + B(u_s + \hat d)</span>, <span class="m">Cx_s = r</span>, and apply the deviation controller to <span class="m">\hat x - x_s</span>. If the augmented model is detectable and the closed loop converges, the output converges to <span class="m">r</span> with no offset (Pannocchia and Rawlings <a href="#ref-2">[2]</a>, Maeder, Borrelli and Morari <a href="#ref-3">[3]</a>).</p>
+<dl><dt>Augmented state</dt><dd><span class="m">(x, d)</span>: the cart's state and the unknown constant, three numbers.</dd><dt>Observer</dt><dd><span class="m">\hat x_t = \bar x_t + L(y_t - C\bar x_t)</span>, then <span class="m">\bar x_{t+1} = A_a \hat x_t + B_a u_t</span>: predict, correct with the measurement.</dd><dt>Detectability</dt><dd>The disturbance must be visible in the output in a way the state cannot imitate; a rank test decides.</dd><dt>Target with <span class="m">\hat d</span></dt><dd>For the cart, <span class="m">x_s = (r, 0)</span> and <span class="m">u_s = -\hat d</span>: the input the slope requires.</dd></dl>
+</div>
+<p><strong>The augmented model.</strong> With <span class="m">x_a = (p, v, d)</span>,</p>
+<div class="math-block">A_a = \begin{pmatrix} 1 &amp; 1 &amp; 0.5 \\ 0 &amp; 1 &amp; 1 \\ 0 &amp; 0 &amp; 1 \end{pmatrix}, \qquad B_a = \begin{pmatrix} 0.5 \\ 1 \\ 0 \end{pmatrix}, \qquad C_a = (1, 0, 0).</div>
+<p>The slope enters the velocity like the input does. Is it observable from the position alone? The observability matrix of <span class="m">(A_a, C_a)</span> has rank 3: the position's first differences give the velocity, its second differences give the acceleration, and the acceleration is <span class="m">u + d</span> with <span class="m">u</span> known. The rank test of Pannocchia and Rawlings, <span class="m">\mathrm{rank} \begin{pmatrix} I - A &amp; -B_d \\ C &amp; C_d \end{pmatrix} = n + n_d</span> with <span class="m">B_d = B</span>, <span class="m">C_d = 0</span>, gives 3 as well.</p>
+<p><strong>The observer.</strong> A Luenberger observer in current-estimator form corrects the predicted augmented state with the measurement that has just arrived, then predicts the next one:</p>
+<div class="math-block">\hat x_t = \bar x_t + L\,(y_t - C_a \bar x_t), \qquad \bar x_{t+1} = A_a \hat x_t + B_a u_t.</div>
+<p>Its estimation error obeys <span class="m">e_{t+1} = A_a (I - LC_a)\, e_t</span>, and <span class="m">L</span> is chosen to place the eigenvalues of that matrix. The numbers script does it by pole placement on the dual pair: for eigenvalues <span class="m">0.5, 0.55, 0.6</span> the gain is <span class="m">L = (0.835, 0.470, 0.090)</span>; faster, <span class="m">0.3, 0.35, 0.4</span>, gives <span class="m">(0.958, 0.856, 0.273)</span>; slower, <span class="m">0.8, 0.85, 0.9</span>, gives <span class="m">(0.388, 0.061, 0.003)</span>. A larger gain trusts the measurement more and converges faster, and would amplify measurement noise more, which this noiseless chapter does not show.</p>
+<p><strong>The target with the estimate.</strong> Solving the target equations with <span class="m">\hat d</span> in place of the unknown slope gives <span class="m">x_s = (r, 0)</span> as before and <span class="m">u_s = -\hat d</span>: the controller is told to hold the input that cancels the slope, and regulates the deviation from there. When <span class="m">\hat d</span> converges to <span class="m">d</span> the controller's equilibrium is the plant's.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="experiment">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Two setpoints, two controllers, one slope</h2>
+  </div>
+  <div class="col prose">
+
+<p>The numbers script runs both controllers from rest on the cart with <span class="m">d = -0.2</span>, thirty steps at <span class="m">r = 2</span> and thirty at <span class="m">r = -1</span>, with the observer's error eigenvalues at <span class="m">0.5, 0.55, 0.6</span>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>step</th>
+<th>setpoint</th>
+<th>plain tracking MPC</th>
+<th>offset-free MPC</th>
+<th><span class="m">\hat d</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5</td>
+<td>2</td>
+<td>1.750</td>
+<td>1.421</td>
+<td><span class="m">-0.123</span></td>
+</tr>
+<tr>
+<td>10</td>
+<td>2</td>
+<td>1.730</td>
+<td>1.855</td>
+<td><span class="m">-0.189</span></td>
+</tr>
+<tr>
+<td>30</td>
+<td>2</td>
+<td>1.730</td>
+<td>2.000</td>
+<td><span class="m">-0.200</span></td>
+</tr>
+<tr>
+<td>40</td>
+<td><span class="m">-1</span></td>
+<td><span class="m">-1.271</span></td>
+<td><span class="m">-1.000</span></td>
+<td><span class="m">-0.200</span></td>
+</tr>
+<tr>
+<td>60</td>
+<td><span class="m">-1</span></td>
+<td><span class="m">-1.270</span></td>
+<td><span class="m">-1.000</span></td>
+<td><span class="m">-0.200</span></td>
+</tr>
+</tbody>
+</table></div>
+<p>The offset-free controller starts identically, with the input saturated at 1, because <span class="m">\hat d</span> is still zero; by step 5 the estimate has reached <span class="m">-0.123</span> and the two inputs part ways. It is within 0.01 of the first setpoint from step 17, and after the change at step 30 it is within 0.01 of <span class="m">-1</span> from step 36, six steps later: the estimate is already right, so the second step is a pure regulation transient. The plain controller sits at 1.730 and <span class="m">-1.270</span> for ever. Both end with the same input, <span class="m">u = 0.200</span>, but for different reasons: the plain controller's error produces it, the offset-free controller's target prescribes it.</p>
+<p><strong>Observer speed.</strong> With the faster observer the estimate is at <span class="m">-0.182</span> after five steps and the position settles from step 10; with the slower one it is at <span class="m">-0.011</span> after five steps and <span class="m">-0.044</span> after ten, and the position is not within 0.01 of the setpoint after thirty steps. The observer's eigenvalues set how long the offset lasts, not whether it goes. Nothing becomes infeasible in any of the three runs; the hero reports when it does, holding the last input, since a bad estimate can place <span class="m">\hat x</span> outside the feasible region.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="models">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Input against output disturbance, and detectability</h2>
+  </div>
+  <div class="col prose">
+
+<p>The disturbance could have been modelled on the output instead, <span class="m">y = p + d</span> with <span class="m">d^+ = d</span>, the choice many implementations make by default. On the cart it fails, and the failure is instructive.</p>
+<p><strong>The rank test.</strong> With <span class="m">B_d = 0</span> and <span class="m">C_d = 1</span> the matrix <span class="m">\begin{pmatrix} I - A &amp; 0 \\ C &amp; 1 \end{pmatrix}</span> has rank 2, not 3: the augmented pair is not detectable. The reason is physical. The cart is itself an integrator, so a constant position with zero velocity is an equilibrium of the model, and a constant output offset produces the same measurements as that equilibrium shifted: the observer cannot tell the two apart. Pole placement still returns a gain, because the software does not check, and the numbers script runs the loop anyway: the position is at 40 after ten steps and 360 after thirty, the estimate is at <span class="m">10^{14}</span>, and the tracking problem is infeasible from the first step. For a plant with integrators the disturbance must enter where the integrator does not already explain it, which here means the input. For an asymptotically stable plant either model is detectable, and the choice affects the transient, not the offset; Pannocchia and Rawlings <a href="#ref-2">[2]</a> give the general conditions and the number of disturbance states, one per measured output, that offset-free tracking needs.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>The package's controller already accepts a reference. The relevant lines of its <code>solve</code> are the ones that build the linear term of the QP.</p>
+<div class="code-walk"><p class="code-src">advanced_mpc_lmpc/mpc.py · LinearMPC.solve</p><pre><code class="language-python">    def solve(self, x0, x_ref=None, extra_A_ub=None, extra_b_ub=None, warm=None):
+        x0=np.asarray(x0,float).reshape(self.n)
+        x_ref=np.zeros(self.n) if x_ref is None else np.asarray(x_ref,float).reshape(self.n)
+        Qbar=np.kron(np.eye(self.N),self.Q)
+        Qbar[-self.n:,-self.n:]=self.P
+        Rbar=np.kron(np.eye(self.N),self.R)
+        rstack=np.tile(x_ref,self.N)
+        base=self.Sx@x0-rstack
+        H=2*(self.Su.T@Qbar@self.Su+Rbar)
+        f=2*self.Su.T@Qbar@base
+        Aubs=[]; bubs=[]
+        if self.x_upper is not None:
+            Aubs.append(self.Su); bubs.append(np.tile(self.x_upper,self.N)-self.Sx@x0)
+        if self.x_lower is not None:
+            Aubs.append(-self.Su); bubs.append(-np.tile(self.x_lower,self.N)+self.Sx@x0)
+        if self.terminal_H is not None:
+            SuN=self.Su[-self.n:]; SxN=self.Sx[-self.n:]
+            Aubs.append(np.asarray(self.terminal_H)@SuN)
+            bubs.append(np.asarray(self.terminal_h)-np.asarray(self.terminal_H)@SxN@x0)
+        if extra_A_ub is not None:
+            Aubs.append(np.asarray(extra_A_ub,float)); bubs.append(np.asarray(extra_b_ub,float))
+        Aub=np.vstack(Aubs) if Aubs else None
+        bub=np.concatenate(bubs) if bubs else None
+        lb=np.tile(self.u_lower,self.N) if self.u_lower is not None else None
+        ub=np.tile(self.u_upper,self.N) if self.u_upper is not None else None
+        res=solve_qp(H,f,A_ub=Aub,b_ub=bub,lb=lb,ub=ub,x0=warm)
+        U=res.x.reshape(self.N,self.m)
+        X=(self.Sx@x0+self.Su@res.x).reshape(self.N,self.n)
+        return MPCSolution(res.success,U,X,res.objective,res.message)</code></pre>
+<p>Read <code>x_ref</code>: it is tiled over the horizon and subtracted from the predicted states inside the cost, <code>base = Sx @ x0 - rstack</code>, so the quadratic penalises <span class="m">x_k - x_{\mathrm{ref}}</span> instead of <span class="m">x_k</span>. That is a tracking cost and nothing more. The constraints are not shifted, the terminal set stays where it was built, and no <span class="m">u_s</span> is subtracted from the input, so the controller is correct only for a reference that is an equilibrium with zero input and lies well inside the terminal set. The numbers script does not use <code>x_ref</code>; it builds the deviation problem explicitly, with the shifted box and the recomputed terminal set, which is the honest version.</p>
+</div>
+<p>The target and the observer are small enough to quote in full from the numbers script:</p>
+<pre><code class="language-python">def target(r, d_hat=0.0):
+    &quot;&quot;&quot;Steady state (x_s, u_s) with C x_s = r for x+ = A x + B (u + d).&quot;&quot;&quot;
+    M = np.block([[np.eye(2) - A, -B], [C, np.zeros((1, 1))]])
+    sol = np.linalg.solve(M, np.r_[B.ravel() * d_hat, r])
+    return sol[:2], float(sol[2])
+
+def observer_gain(poles, Am=Aa, Cm=Ca):
+    &quot;&quot;&quot;Current-estimator gain: error dynamics A (I - L C); eig(A (I - L C)) = eig(A - (A L) C).&quot;&quot;&quot;
+    Lp = place_poles(Am.T, Cm.T, poles).gain_matrix.T      # predictor-form gain, eig(A - Lp C) = poles
+    return np.linalg.solve(Am, Lp)                          # L = A^{-1} Lp
+
+# one step of the offset-free loop
+y = float((C @ x).item())
+xh = pred + L.ravel() * (y - float((Ca @ pred).item()))    # correct the prediction with the measurement
+x_s, u_s = target(r, xh[2])                                # the target the estimated slope implies
+u = u_s + float(mpc.solve(xh[:2] - x_s).U[0].item())       # the deviation controller on the estimate
+x = A @ x + B.ravel() * (u + d)                            # the plant, on its slope
+pred = Aa @ xh + Ba.ravel() * u                            # predict the next estimate
+</code></pre>
+<p>One detail that cost an afternoon: the pole-placement routine returns the gain of the <em>predictor</em> form, <span class="m">\bar x_{t+1} = A_a \bar x_t + B_a u_t + L_p (y_t - C_a \bar x_t)</span>, whose error matrix is <span class="m">A_a - L_p C_a</span>. The current-estimator form used here has error matrix <span class="m">A_a (I - LC_a)</span>, and using <span class="m">L_p</span> in it places the eigenvalues somewhere else, unstable for the fast design. The conversion <span class="m">L = A_a^{-1} L_p</span> makes the two forms agree.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;A reference is a state the cost penalises.&quot;</strong> A reference is a steady state of the model, <span class="m">(x_s, u_s)</span>, and the constraints and the terminal set move with it. A cost term alone, as <code>x_ref</code> provides, is right only for an equilibrium at zero input far from the walls.</li>
+<li><strong>&quot;A bigger gain removes the offset.&quot;</strong> It shrinks <span class="m">(I - A_K)^{-1} B d</span> and never zeroes it. Removing an offset needs an integrator somewhere: here, the disturbance state.</li>
+<li><strong>&quot;Any disturbance model will do.&quot;</strong> The output-disturbance model is not detectable on the cart and the loop diverges. The rank test is the check.</li>
+<li><strong>&quot;The observer can be as fast as we like.&quot;</strong> In this noiseless chapter, yes; with measurement noise a large <span class="m">L</span> passes the noise into the estimate, the target and the input.</li>
+<li><strong>&quot;Offset-free means the estimate equals the true disturbance.&quot;</strong> Only when the disturbance model matches the plant's. In general the estimate is whatever constant makes the model's steady state agree with the measurements, which is enough for the output to reach the setpoint.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What is a steady-state target, and why does the cart's not depend on <span class="m">r</span> except through the position?</summary>
+<p>A pair <span class="m">(x_s, u_s)</span> with <span class="m">x_s = Ax_s + Bu_s</span> and <span class="m">Cx_s = r</span>. The cart sits still only at zero velocity with zero input, so <span class="m">x_s = (r, 0)</span> and <span class="m">u_s = 0</span> for every <span class="m">r</span>.</p>
+</details>
+<details class="sol"><summary>2. Why does chapter A11's regulator apply to tracking unchanged?</summary>
+<p>Deviations from a steady state obey the same linear dynamics, so regulating <span class="m">\delta x</span> to zero is the same problem with the same cost and gain. Only the constraints and the terminal set move.</p>
+</details>
+<details class="sol"><summary>3. Why does the terminal set shrink near the wall?</summary>
+<p>It is the LQR's invariant set inside the shifted box; as the setpoint approaches a bound, the room on that side disappears and states that would step over it are excluded. At <span class="m">r = 3.5</span> its area is 4.45 against 7.31 at the origin.</p>
+</details>
+<details class="sol"><summary>4. Where does the offset <span class="m">(I - A_K)^{-1} B d</span> come from?</summary>
+<p>Near the target the loop is <span class="m">\delta x^+ = A_K\,\delta x + Bd</span>; its fixed point is the offset. The position error produces the input <span class="m">+0.2</span> that holds the cart against the slope.</p>
+</details>
+<details class="sol"><summary>5. What does the observer estimate, and from what?</summary>
+<p>The cart's state and the constant slope, from the measured position alone, which is possible because the slope shows up in the position's second differences once the input is known.</p>
+</details>
+<details class="sol"><summary>6. How does the estimate remove the offset?</summary>
+<p>Through the target: <span class="m">u_s = -\hat d</span> prescribes the input the slope requires, so the controller's equilibrium coincides with the plant's once <span class="m">\hat d = d</span>.</p>
+</details>
+<details class="sol"><summary>7. Why does the output-disturbance model fail on the cart?</summary>
+<p>The cart integrates, so a constant output offset and a shifted equilibrium of the model give the same measurements; the augmented pair is not detectable and the rank test returns 2 of 3.</p>
+</details>
+<details class="sol"><summary>8. Why must the pole-placement gain be converted for the current estimator?</summary>
+<p>Pole placement gives <span class="m">L_p</span> with <span class="m">\mathrm{eig}(A_a - L_p C_a)</span> at the chosen values; the current estimator's error matrix is <span class="m">A_a(I - LC_a)</span>, whose eigenvalues match those of <span class="m">A_a - (A_a L)C_a</span>, so <span class="m">L = A_a^{-1} L_p</span>.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs with the course package installed. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>The target equations by hand.</b> Solve <span class="m">x_s = Ax_s + Bu_s</span>, <span class="m">Cx_s = r</span> for the cart, then with the slope: <span class="m">x_s = Ax_s + B(u_s + d)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Write the two state equations out; the velocity equation forces the input.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">p_s = p_s + v_s + u_s / 2</span> and <span class="m">v_s = v_s + u_s</span> give <span class="m">u_s = 0</span> then <span class="m">v_s = 0</span>, and <span class="m">Cx_s = r</span> gives <span class="m">p_s = r</span>. With the slope, <span class="m">v_s = v_s + u_s + d</span> gives <span class="m">u_s = -d</span>: the target input cancels the slope, and the position equation is then satisfied with <span class="m">v_s = 0</span>. That is why offset-free tracking on the cart changes <span class="m">u_s</span> and nothing else.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The offset.</b> Derive <span class="m">\delta x_{ss} = (I - A_K)^{-1} B d</span> and compute it for <span class="m">d = -0.2</span> and <span class="m">d = 0.3</span>; check both against the plain controller's steady state.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Set <span class="m">\delta x^+ = \delta x</span> in the closed loop <span class="m">\delta x^+ = A_K \delta x + Bd</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">(I - A_K)\,\delta x_{ss} = Bd</span>. With the canonical gain, <span class="m">\delta x_{ss} = (-0.2704, 0)</span> for <span class="m">d = -0.2</span> and <span class="m">(0.4056, 0)</span> for <span class="m">d = 0.3</span>; the numbers script's plain controller settles at <span class="m">2 - 0.2704 = 1.7296</span> and at <span class="m">2.4056</span>. The offset is linear in <span class="m">d</span> and independent of the setpoint.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Build it: the observer.</b> Implement the current-estimator observer yourself with the gain <span class="m">L = (0.835, 0.470, 0.090)</span>, run it on the sloping cart under the plain controller's inputs, and check that <span class="m">\hat d</span> converges to <span class="m">-0.2</span> and <span class="m">\hat x</span> to <span class="m">x</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Two lines per step: correct with <span class="m">y_t</span>, predict with <span class="m">u_t</span>. Start from <span class="m">\bar x_0 = 0</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The estimation error obeys <span class="m">e_{t+1} = A_a(I - LC_a)\,e_t</span> whatever the inputs, so the observer converges under any controller; with eigenvalues <span class="m">0.5</span> to <span class="m">0.6</span> the error shrinks by about half per step and <span class="m">\hat d</span> is within 0.01 of <span class="m">-0.2</span> in about ten steps. Feeding the estimate to the plain controller changes nothing, since that controller ignores <span class="m">\hat d</span>; feeding it through the target is what removes the offset.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The detectability test.</b> Compute the rank of <span class="m">\begin{pmatrix} I - A &amp; -B_d \\ C &amp; C_d \end{pmatrix}</span> for the input-disturbance model (<span class="m">B_d = B</span>, <span class="m">C_d = 0</span>) and the output-disturbance model (<span class="m">B_d = 0</span>, <span class="m">C_d = 1</span>). Then replace the cart by the stable scalar plant <span class="m">x^+ = 0.5x + u</span>, <span class="m">y = x</span>, and repeat.</p>
+<details class="sol"><summary>Hint</summary>
+<p>For the cart <span class="m">I - A</span> has rank 1.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Cart: input model rank 3, output model rank 2, so only the input model is detectable, as Part 6 says. Scalar stable plant: <span class="m">I - A = 0.5 \ne 0</span>, and both models give rank 2 of 2, so either removes the offset; they differ in the transient. The integrator is what breaks the output model, because a constant output offset is then indistinguishable from a shifted equilibrium.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>No slope.</b> Run both controllers with <span class="m">d = 0</span>. Do they differ?</p>
+<details class="sol"><summary>Hint</summary>
+<p>What is <span class="m">\hat d</span> when the model is right?</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The estimate stays at zero, the target is <span class="m">(r, 0)</span> with <span class="m">u_s = 0</span> for both, and the two controllers are the same controller: both reach 2.000. Offset-free MPC costs nothing when the model is right; it is insurance for when it is not.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A setpoint at the wall.</b> Set <span class="m">r = 3.8</span> with the slope. What happens to the terminal set and to the deviation problem's feasibility from rest, and what does the hero do when the problem is infeasible?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Part 2's widget at <span class="m">r = 3.8</span>; the deviation box leaves 0.2 on the right.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>The terminal set is a five-vertex sliver of area 3.87 and the deviation box has only 0.2 of room on the setpoint's side. From rest the problem is still feasible, since the controller can approach slowly, but an overshooting estimate can push <span class="m">\hat x - x_s</span> outside the feasible region; the hero then holds the last input and reports the step. A controller near a wall needs either a margin on the setpoint or the artificial-setpoint formulation that keeps the problem feasible for every reachable target.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>The target</strong> <span class="m">(x_s, u_s)</span> solves <span class="m">x_s = Ax_s + Bu_s</span>, <span class="m">Cx_s = r</span>: for the cart <span class="m">(r, 0)</span> and <span class="m">u_s = 0</span>, unique.</div></li>
+<li><div><strong>Deviation variables</strong> turn tracking into chapter A11's regulation; the box and the terminal set move with the setpoint (area 7.31 at the origin, 4.45 at <span class="m">r = 3.5</span>).</div></li>
+<li><div><strong>A slope</strong> <span class="m">d = -0.2</span> the model ignores leaves the offset <span class="m">(I - A_K)^{-1} B d = -0.270</span> at every setpoint; the error supplies the input <span class="m">0.2</span>.</div></li>
+<li><div><strong>Augment</strong> with <span class="m">d^+ = d</span>; observable from the position; observer <span class="m">\hat x = \bar x + L(y - C_a\bar x)</span> with <span class="m">L = (0.835, 0.470, 0.090)</span> for eigenvalues <span class="m">0.5</span> to <span class="m">0.6</span>.</div></li>
+<li><div><strong>Aim at the estimated target</strong>, <span class="m">u_s = -\hat d</span>: the offset vanishes, within 0.01 in 17 steps from rest and 6 after a setpoint change.</div></li>
+<li><div><strong>Detectability</strong> decides the disturbance model: the output model fails its rank test on the cart and the loop diverges.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Setpoint <span class="m">r</span>, target <span class="m">(x_s, u_s)</span></td>
+<td>The output to hold; the steady state of the model that holds it.</td>
+</tr>
+<tr>
+<td>Deviation variables</td>
+<td><span class="m">\delta x = x - x_s</span>, <span class="m">\delta u = u - u_s</span>: regulation to zero in disguise.</td>
+</tr>
+<tr>
+<td>Offset</td>
+<td>The steady-state error <span class="m">(I - A_K)^{-1} B d</span> a constant disturbance leaves.</td>
+</tr>
+<tr>
+<td>Augmented model</td>
+<td><span class="m">(x, d)</span> with <span class="m">d^+ = d</span>: the model plus a state for what it does not know.</td>
+</tr>
+<tr>
+<td>Observer, gain <span class="m">L</span></td>
+<td>Predict and correct; <span class="m">L</span> places the error eigenvalues.</td>
+</tr>
+<tr>
+<td>Current estimator</td>
+<td>Corrects with the measurement that has just arrived; gain <span class="m">A_a^{-1}</span> times the predictor's.</td>
+</tr>
+<tr>
+<td>Detectability</td>
+<td>The disturbance is visible in the output in a way the state cannot imitate; a rank test.</td>
+</tr>
+<tr>
+<td>Offset-free MPC</td>
+<td>Observer plus target with <span class="m">\hat d</span> plus the deviation controller.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Constant disturbances on a linear plant with a measured output and no noise; one disturbance state for one output. Noisy measurements, drifting disturbances, references that change every step, and the artificial-setpoint formulation that keeps one terminal set for every target are outside the chapter; Part 2 and the references say where to find them.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>J. B. Rawlings, D. Q. Mayne and M. M. Diehl. <em>Model Predictive Control: Theory, Computation, and Design</em>, 2nd ed. Nob Hill Publishing, 2017 (paperback 2022). Sections 1.5 and 2.8: the target problem and offset-free control.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>G. Pannocchia and J. B. Rawlings. &quot;Disturbance models for offset-free model-predictive control&quot;. <em>AIChE Journal</em> 49(2), 426–437, 2003. <a href="https://doi.org/10.1002/aic.690490213">doi:10.1002/aic.690490213</a>. The detectability condition and the number of disturbance states.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>U. Maeder, F. Borrelli and M. Morari. &quot;Linear offset-free model predictive control&quot;. <em>Automatica</em> 45(10), 2214–2222, 2009. <a href="https://doi.org/10.1016/j.automatica.2009.06.005">doi:10.1016/j.automatica.2009.06.005</a>. Offset-free MPC for linear systems, with input and output disturbance models.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>D. Limón, I. Alvarado, T. Álamo and E. F. Camacho. &quot;MPC for tracking piecewise constant references for constrained linear systems&quot;. <em>Automatica</em> 44(9), 2382–2387, 2008. <a href="https://doi.org/10.1016/j.automatica.2008.01.023">doi:10.1016/j.automatica.2008.01.023</a>. The artificial setpoint and an invariant set for all targets.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>G. F. Franklin, J. D. Powell and M. L. Workman. <em>Digital Control of Dynamic Systems</em>, 3rd ed. Addison-Wesley, 1998. Predictor and current estimators, pole placement.</div></li>
+</ul>
+<p>Pannocchia and Rawlings <a href="#ref-2">[2]</a> and Maeder, Borrelli and Morari <a href="#ref-3">[3]</a> are the references for the offset-free construction, Limón and colleagues <a href="#ref-4">[4]</a> for references that change, Franklin, Powell and Workman <a href="#ref-5">[5]</a> for the two observer forms. Next, chapter <a href="c03-nonlinear-mpc-by-successive-linearisation.html" title="Nonlinear MPC by successive linearisation">C3</a> drops the linear model altogether and asks how much of the QP machinery survives when the prediction model is a linearisation that has to be redone at every step.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="c01-tube-mpc-for-a-bounded-disturbance.html"><span class="lbl">Previous · C1</span><span class="t">Tube MPC for a bounded disturbance</span></a>
+  <a class="next" rel="next" href="c03-nonlinear-mpc-by-successive-linearisation.html"><span class="lbl">Next · C3</span><span class="t">Nonlinear MPC by successive linearisation</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter C2 of "Advanced MPC and Learning MPC" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/mpc-lib.js?v=20261103042706"></script>
+<script src="interactive/c02.js?v=20261103042706"></script>
+</body>
+</html>

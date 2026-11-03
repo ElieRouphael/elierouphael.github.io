@@ -186,7 +186,7 @@ print(f"grid of starts in chapter A11's region (spacing 0.5), 3 seeds each: {tot
 for s0, seed, inf, viol, _ in fails[:6]:
     print(f"   start {s0}, seed {seed}: infeasible at step {inf}" + (f", outside the box at step {viol[0]}" if viol else ""))
 ex = nominal_loop(mpc_n, [3.0, 1.5], WMAX, seed=1)
-print(f"the page's example, (3, 1.5) with seed 1: x_1 = {ex['xs'][1].round(4)} (v_1 > 3), then no feasible plan; "
+print(f"the page's example, (3, 1.5) with seed 1: x_1 = {ex['xs'][1].round(4)} (p_1 > 4), then no feasible plan; "
       f"the tube controller's region does not contain (3, 1.5): {not regt.contains([3.0, 1.5], 1e-7)}")
 
 # --------------------------------------------------------------------------------------------------------------
@@ -216,3 +216,14 @@ for t in range(40):
     x = A @ x + B.ravel() * u + w; z = A @ z + B.ravel() * v
     worst = max(worst, float(np.max(E.H @ (x - z) - E.h)))
 print(f"corner disturbances w = +-0.1 every step: largest support-function excess of e over E = {worst:.2e} (never positive)")
+
+# --------------------------------------------------------------------------------------------------------------
+section("Exercise: the scaling factor for s = 4, 6, 8, and the w_max = 0.2 row")
+for s_ in (4, 6, 8):
+    a_ = max(np.abs(np.linalg.matrix_power(AK, s_) @ v).max() / WMAX for v in W.vertices_2d())
+    print(f"s = {s_}: alpha = {a_:.4e}, area of F_s / (1 - alpha) = {area(scaled(Fs[s_ - 1], 1 / (1 - a_))):.4f}")
+W2, Fs2 = rpi_sets(0.2); a2 = max(np.abs(AKs @ v).max() / 0.2 for v in W2.vertices_2d()); E2 = scaled(Fs2[S_USE - 1], 1 / (1 - a2))
+h2 = X.h - support(E2, X.H); um2 = UMAX - support(E2, K)[0]; Xt2 = HPolytope(X.H, h2)
+XKt2 = closed_loop_admissible_set_scalar_input(Xt2, K, -um2, um2); Xft2, _ = maximal_invariant(AK, XKt2)
+reg2 = n_step_controllable_sets(A, B, Xt2, Xft2, -um2, um2, N)[-1]
+print(f"w_max = 0.2: E area {area(E2):.3f}, box {h2[0]:.3f} x {h2[1]:.3f}, |v| <= {um2:.3f}, N = 5 region area {area(reg2):.2f}, (-3, 2) feasible: {reg2.contains(x0)}")
