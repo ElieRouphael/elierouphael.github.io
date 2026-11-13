@@ -170,4 +170,19 @@ export const tutorials: Tutorial[] = [
     },
     draft: false,
   },
+  {
+    title: 'Rescheduling a Flexible Job Shop',
+    description:
+      'A simulated workshop with alternative routings, sequence-dependent changeovers, two AGVs, random arrivals and breakdowns, and three ways to decide what runs next: classical dispatching rules, rescheduling with an OR-Tools CP-SAT model at every event, and a DQN agent that learns which rule to apply. Compared on the same 20 seeds with paired statistics, and every executed schedule verified by an independent checker. Rescheduling cuts mean tardiness under breakdowns by 43 %, mostly by grouping families to avoid changeovers; the learned agent does not beat the best rule.',
+    topics: ['Discrete-Event Simulation', 'Scheduling', 'Constraint Programming', 'CP-SAT', 'Reinforcement Learning', 'Python'],
+    prerequisites: 'Python; some familiarity with scheduling or optimisation helps',
+    level: 'Intermediate',
+    added: '2026-11-13T17:00',
+    href: '/tutorials/jobshop-digital-twin/index.html',
+    cover: {
+      src: '/tutorials/jobshop-digital-twin/cover.png',
+      alt: 'Horizontal bar chart of mean tardiness per job under breakdowns for seven methods: four dispatching rules, a DQN agent, greedy replanning and CP-SAT rescheduling, which is lowest',
+    },
+    draft: false,
+  },
 ];

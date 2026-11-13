@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rescheduling a Flexible Job Shop</title>
+<meta name="description" content="A simulated workshop with alternative routings, sequence-dependent changeovers, AGVs, random arrivals and breakdowns, and three ways to decide what runs next: dispatching rules, event-driven CP-SAT rescheduling and a DQN agent, compared on 20 seeds with an independent schedule checker.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Discrete-event simulation · dynamic scheduling · constraint programming · reinforcement learning</span>
+  <h1>Rescheduling a flexible job shop</h1>
+  <p class="lede">A small workshop: five machines, two AGVs that carry the jobs between them, four product
+  families that need a changeover whenever a machine switches family, orders arriving at random, and machines
+  that break down. Every time something happens, a controller has to decide again which machine each job goes
+  to and in which order the machines work. This page compares three ways of deciding, on the same simulated
+  days: the <strong>dispatching rules</strong> a shop floor uses, <strong>rescheduling with a constraint-programming
+  model</strong> (OR-Tools CP-SAT) at every event, and a <strong>reinforcement-learning agent</strong> (DQN) that
+  learns which rule to apply. Every schedule any method executes is verified by an independent checker.</p>
+  <p class="byline">Elie Rouphael · A side project, far from my research on tyres and vehicle dynamics · Python, SimPy, OR-Tools, PyTorch</p>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/jobshop-digital-twin">The repository on GitHub</a>
+    <a class="btn ghost" href="jobshop-digital-twin-code.zip" download>Download the code (.zip)</a>
+    <a class="btn ghost" href="#results">Skip to the results</a>
+  </div>
+</header>
+
+<section class="wide" aria-label="Executed schedule under breakdowns">
+  <figure class="output-figure hero-figure">
+    <img src="gantt_breakdowns.png" alt="Gantt chart of five machines and two AGVs over the first 480 minutes of a simulated day: coloured blocks are operations by product family, grey blocks are changeovers, hatched red blocks are breakdowns, and the AGV rows show short loaded and empty trips" width="1950" height="690">
+    <figcaption><b>One simulated morning.</b> The schedule actually executed on test seed 0 under frequent breakdowns, with CP-SAT rescheduling at every event: operations coloured by product family (numbers are job ids), changeovers in grey, breakdowns hatched in red, and the two AGVs' trips underneath. Notice the runs of the same colour on a machine: grouping a family avoids changeovers, and that is where most of the gain over the rules comes from.</figcaption>
+  </figure>
+</section>
+
+<section class="col prose" aria-labelledby="question">
+  <h2 id="question">The question</h2>
+  <p>A dispatching rule looks at one machine's queue at a time: when the machine is free, take the job that
+  arrived first (FIFO), the shortest one (SPT), the most urgent one (EDD) or the one that needs the shortest
+  changeover (SST). Rules are instantaneous and robust, and they are what most shops run. A model-based planner
+  looks at the whole shop and the next few hours, but it costs computing time and is only as good as its model.
+  A learned policy promises the best of both, if it can learn something the rules do not already know.</p>
+  <p>Which of the three gives jobs that are less late, how much of the difference survives breakdowns, and where
+  does it come from? To answer it fairly, the three controllers face the same jobs and the same breakdowns, and
+  the comparison is paired seed by seed.</p>
+  <p><b>Everything here is synthetic.</b> The workshop, its processing and changeover times, the layout, the
+  arrivals and the breakdowns are drawn from seeded random generators: no data from a real plant, no connection
+  to real equipment. It is a modelling and comparison exercise, not a production tool.</p>
+</section>
+
+<section class="col" aria-labelledby="shop">
+  <h2 id="shop">The workshop</h2>
+  <p class="section-lede">A discrete-event simulation in SimPy plays the role of the real shop. It takes no
+  decision itself: it asks the controller and logs every piece of work and every AGV trip.</p>
+  <div class="md">
+  <table>
+    <thead><tr><th>Element</th><th>Model</th></tr></thead>
+    <tbody>
+      <tr><td>Machines</td><td>5 machines, one station each, plus a load station where jobs enter</td></tr>
+      <tr><td>Products</td><td>4 families of 4 operations; each operation can run on 1 to 3 machines, with machine-dependent times (6 to 30 min)</td></tr>
+      <tr><td>Changeovers</td><td>Sequence-dependent, 3 to 10 min and asymmetric, when a machine switches family; none within a family. A changeover starts once the machine is free and the job is there</td></tr>
+      <tr><td>Transport</td><td>2 AGVs, one job at a time, 2 to 3 min between stations; requests go first come first served to the nearest idle AGV, for every method</td></tr>
+      <tr><td>Arrivals</td><td>60 jobs per run, Poisson arrivals (one every 20.8 min on average: machines loaded at 60 % before changeovers), uniform family mix</td></tr>
+      <tr><td>Due dates</td><td>Arrival plus 2 to 4 times the job's shortest total processing time</td></tr>
+      <tr><td>Breakdowns</td><td>Exponential time between failures per machine, repair 10 to 30 min; the interrupted operation resumes. A controller learns that a machine failed and the mean repair time, not the actual one</td></tr>
+      <tr><td>Two levels</td><td><b>No breakdowns</b>, and <b>frequent breakdowns</b>: mean time between failures 120 min per machine, about 14 % downtime</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="col prose" aria-labelledby="methods">
+  <h2 id="methods">Three ways to decide</h2>
+  <h3>Dispatching rules</h3>
+  <p>Routing is the same for the rules and for the agent: send the job to the eligible machine with the earliest
+  expected finish, counting the travel, the work already committed there and the expected end of a repair. The
+  rule only decides the sequence. When a machine fails, the jobs waiting in front of it are routed again.</p>
+  <h3>Event-driven rescheduling with CP-SAT</h3>
+  <p>At every arrival, breakdown and repair, the controller takes a snapshot of the shop (where each job is, what
+  each machine is doing, when a broken machine should be back) and solves a flexible job-shop model of the jobs
+  present:</p>
+  <ul>
+    <li>one start and one end per remaining operation, and one <b>optional interval</b> per eligible machine, exactly one of them present: that is the routing decision;</li>
+    <li><b>NoOverlap</b> on each machine, and a <b>circuit</b> over its operations whose arcs mean "b directly follows a" and carry the <b>sequence-dependent changeover</b>: start of b ≥ max(end of a, arrival of b) + setup(family of a, family of b);</li>
+    <li>precedence inside a job, with a transport lag that depends on the two machines chosen;</li>
+    <li>objective: 10 × total tardiness + total completion time;</li>
+    <li>a warm start from greedy schedules and from the previous plan re-timed on the new snapshot, passed as a complete hint; the solver stops on a deterministic-time budget, so a run reproduces exactly.</li>
+  </ul>
+  <p>Only the beginning of each plan is ever executed: the next event replaces it. What the model does not
+  contain is the AGVs. A move is a fixed lag (travel plus a 2-minute allowance, the median wait for an AGV
+  measured in simulation), while the simulated shop moves real AGVs, so the plan and the shop drift apart and the
+  next replan absorbs the difference. The model knows nothing about future arrivals or failures.</p>
+  <p>The model reuses the patterns of my <a href="../satellite-pass-planning/index.html">satellite pass
+  planning</a> study: optional intervals, NoOverlap, and sequence-dependent transitions between consecutive
+  tasks.</p>
+  <h3>A DQN agent that picks the rule</h3>
+  <p>At each sequencing decision (a machine is free and at least two jobs wait for it) the agent chooses one of
+  the four rules, and the job that rule selects starts. Its state has 29 features: for the job each rule would
+  pick, its processing time, changeover, slack, remaining operations and waiting time, plus queue and shop
+  statistics. The reward is minus the increase in the tardiness the shop is already committed to, so the rewards
+  of a run sum exactly to minus its total tardiness. It is a Double DQN with a replay buffer and a soft target
+  update, built on the code of my <a href="../dqn-cartpole/index.html">CartPole DQN tutorial</a>.</p>
+</section>
+
+<section class="col prose" aria-labelledby="checker">
+  <h2 id="checker">Trusting a schedule: the independent checker</h2>
+  <p>A simulation can hide bugs that make a method look good. So every executed schedule, of every method, goes
+  through a checker that never looks at the simulator's state or at a solver model. From the workshop data, the
+  scenario and the raw log alone, it re-derives every constraint: each operation done once, on an eligible
+  machine, for its full duration; no overlap and no work during downtime; the exact changeover between
+  consecutive families; each AGV on a continuous path at the layout's travel times; each job physically carried
+  from station to station before its next operation. The tests inject each kind of violation into a valid log and
+  check that it is caught. <b>All 480 test runs passed it.</b></p>
+</section>
+
+<section class="col" id="results" aria-labelledby="results-h">
+  <h2 id="results-h">Results</h2>
+  <p class="section-lede">20 test seeds, 60 jobs per run, two disturbance levels, 7 methods. Mean over the seeds
+  with a 95 % bootstrap interval. "Greedy replan" is an ablation: the same event-driven loop as CP-SAT, but the
+  plan is the greedy warm start, without the solver.</p>
+</section>
+
+<section class="wide" aria-label="Mean tardiness by method">
+  <figure class="output-figure">
+    <img src="tardiness.png" alt="Two horizontal bar charts of mean tardiness per job for seven methods. Without breakdowns: FIFO 15.5, SPT 10.0, EDD 7.0, SST 9.4, DQN 7.4, greedy replan 3.1, CP-SAT 1.3 minutes. With frequent breakdowns: FIFO 60.8, SPT 45.4, EDD 37.6, SST 34.1, DQN 35.4, greedy replan 24.0, CP-SAT 19.3 minutes." width="1500" height="630">
+    <figcaption><b>Mean tardiness per job.</b> Grey: the four rules; purple: the DQN agent; light blue: replanning without the solver; blue: CP-SAT rescheduling. Error bars are 95 % bootstrap intervals over the 20 seeds; they are wide because the seeds differ a lot, which is why the comparisons below are paired seed by seed.</figcaption>
+  </figure>
+</section>
+
+<section class="col">
+  <div class="md">
+  <table>
+    <thead><tr><th>Frequent breakdowns</th><th>mean tardiness (min)</th><th>max tardiness (min)</th><th>changeover time (min)</th><th>decision time per run</th></tr></thead>
+    <tbody>
+      <tr><td>FIFO</td><td>60.8 [41.9, 82.2]</td><td>216</td><td>1091</td><td>1 ms</td></tr>
+      <tr><td>SPT</td><td>45.4 [32.0, 60.8]</td><td>235</td><td>1036</td><td>2 ms</td></tr>
+      <tr><td>EDD</td><td>37.6 [27.1, 50.0]</td><td>155</td><td>1014</td><td>2 ms</td></tr>
+      <tr><td>SST (best rule)</td><td>34.1 [24.8, 44.9]</td><td>212</td><td>820</td><td>1 ms</td></tr>
+      <tr><td>DQN</td><td>35.4 [25.1, 47.0]</td><td>183</td><td>904</td><td>20 ms</td></tr>
+      <tr><td>Greedy replan</td><td>24.0 [15.8, 33.6]</td><td>131</td><td>618</td><td>81 ms (159 replans)</td></tr>
+      <tr><td><b>CP-SAT</b></td><td><b>19.3 [12.3, 27.1]</b></td><td><b>116</b></td><td>633</td><td>256 s (1.6 s per replan)</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>Paired differences in mean tardiness (min)</th><th>no breakdowns</th><th>frequent breakdowns</th></tr></thead>
+    <tbody>
+      <tr><td>CP-SAT vs best rule (EDD, then SST)</td><td>−5.7 [−9.6, −2.9], better on 20 of 20 seeds</td><td>−14.8 [−18.4, −11.7], better on 20 of 20</td></tr>
+      <tr><td>Greedy replan vs best rule</td><td>−3.9 [−7.5, −1.4], 18 of 20</td><td>−10.1 [−15.0, −5.3], 17 of 20</td></tr>
+      <tr><td>CP-SAT vs greedy replan</td><td>−1.7 [−2.7, −0.9], 19 of 20</td><td>−4.7 [−8.9, −1.3], 17 of 20</td></tr>
+      <tr><td>DQN vs best rule</td><td>+0.4 [−0.7, +1.5], 6 of 20</td><td>+1.3 [−2.1, +5.1], 11 of 20</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="col prose" aria-labelledby="reading">
+  <h2 id="reading">What the numbers say</h2>
+  <ul>
+    <li><b>Rescheduling with a model beats every rule, on every seed.</b> Mean tardiness drops from 7.0 min (EDD,
+    the best rule) to 1.3 min without breakdowns, and from 34.1 min (SST) to 19.3 min with frequent breakdowns,
+    43 % less. The worst job is 116 min late instead of 155 (EDD) or 212 (SST).</li>
+    <li><b>The gain comes from changeovers.</b> The rules spend 820 to 1,091 min per run changing over;
+    rescheduling spends about 635. A plan over the next operations groups a family on a machine, which a rule
+    looking at one queue at a time cannot do, even SST.</li>
+    <li><b>Most of the gain comes from replanning with a look-ahead, not from the solver.</b> Replanning at every
+    event with a greedy schedule already gives 3.1 and 24.0 min. The solver adds 1.7 and 4.7 min on top, both
+    intervals excluding zero, at 1.6 s per replan against well under a millisecond. About half the replans are
+    proven optimal (56 % and 42 %).</li>
+    <li><b>The DQN agent does not beat the rules.</b> It stays within the interval of the best rule at both levels,
+    and the five training seeds tell the same story. The best rule is not the same at the two levels and the
+    agent, trained on both, stays close to the better one each time, which is something, but it does not
+    improve on it. This is a result about this agent, this state and this training budget, not about
+    reinforcement learning in general.</li>
+    <li><b>Makespan and utilisation do not separate the methods</b> (every method processes the same jobs, and the
+    last arrival sets the makespan). Tardiness and changeover time do.</li>
+  </ul>
+</section>
+
+<section class="col prose" aria-labelledby="honest">
+  <h2 id="honest">How the test was kept honest</h2>
+  <ul>
+    <li>The 20 test seeds were run once, after every choice was fixed on other seeds: shop load and due-date
+    tightness, the CP-SAT transport allowance, warm start and strict plan following, the DQN reward and
+    hyper-parameters (validation seeds 5000 to 5009, training scenarios from seed 100000).</li>
+    <li>The reported agent is the one of five training seeds with the best validation score; the other four are
+    reported too.</li>
+    <li>The "best rule" is chosen after the fact on the test seeds, which favours the rules: the comparison is
+    harder on CP-SAT and DQN than a fixed choice would be.</li>
+    <li>Same scenario for every method on a seed, so the comparison is paired; a run reproduces exactly (the
+    solver stops on deterministic time, not wall clock).</li>
+  </ul>
+</section>
+
+<section class="col prose" aria-labelledby="limits">
+  <h2 id="limits">Limitations</h2>
+  <ul>
+    <li>Synthetic data, one workshop, one load level, 60 jobs from an empty shop: no steady-state analysis, and no
+    claim about a real plant.</li>
+    <li>The CP-SAT model treats transport as a fixed lag and ignores the AGVs; it does not see future arrivals or
+    failures. Its computing time is not charged to the simulated clock.</li>
+    <li>Controllers are told the mean repair time, and interrupted work resumes without loss.</li>
+    <li>The rules are the classical single-criterion ones; a composite rule built for tardiness with setups
+    (ATCS) would be a stronger baseline and might close part of the gap.</li>
+    <li>The agent only picks among four rules at one machine; routing is not learned.</li>
+  </ul>
+  <p>Natural next steps: ATCS and a simulation-based rollout as baselines, AGV missions inside the model, solver
+  time charged to the clock, and an agent that decides when to replan.</p>
+</section>
+
+<section class="col prose" aria-labelledby="reproduce">
+  <h2 id="reproduce">Reproduce it</h2>
+  <p>The repository has 64 tests: hand-made shops with known answers, injected checker violations, CP-SAT plans
+  compared with brute force on snapshots small enough to enumerate, and the DQN's Bellman targets. The
+  evaluation writes the tables above from scratch in about 40 minutes on a 14-thread machine; the trained agents
+  are included.</p>
+<pre><code>python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
+.venv/Scripts/python -m pytest                            # 64 tests, about 1 min
+.venv/Scripts/python scripts/evaluate.py                  # results/results.md, about 40 min</code></pre>
+  <p><a href="https://github.com/ElieRouphael/jobshop-digital-twin">github.com/ElieRouphael/jobshop-digital-twin</a>
+  · MIT licensed.</p>
+</section>
+
+<footer class="col">
+  <p>Rescheduling a Flexible Job Shop, by Elie Rouphael. Every number on this page comes from the repository's
+  <code>results/runs.csv</code>, regenerated by its evaluation script.</p>
+</footer>
+
+</body>
+</html>
