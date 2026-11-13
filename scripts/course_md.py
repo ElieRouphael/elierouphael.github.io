@@ -262,9 +262,14 @@ def postprocess(h: str) -> str:
     h = re.sub(r'<div class="table-wrap num">\s*<table>', '<div class="table-wrap"><table class="num">', h)
     h = re.sub(r'(?<!<div class="table-wrap">)(?<!<div class="table-wrap">\n)<table>', '<div class="table-wrap"><table>', h)
     h = re.sub(r'<div class="table-wrap"><table>(.*?)</table>(?!\s*</div>)', r'<div class="table-wrap"><table>\1</table></div>', h, flags=re.S)
-    # narrow variants of display formulas
-    h = re.sub(r'<div class="math-block">(.*?)</div>\s*<p>%narrow (.*?)</p>',
-               lambda m: f'<div class="math-block" data-narrow="{m[2].strip()}">{m[1]}</div>', h, flags=re.S)
+    # narrow variants of display formulas. The formula must be the one immediately before the %narrow line:
+    # the group may not cross a </div> (it used to, and attached a phone version to an earlier formula).
+    # A %narrow protected by protect_narrow() comes back as its raw TeX, untouched by Markdown.
+    def narrow(m):
+        k = re.fullmatch(r"NARROWTOKEN(\d+)X", m[2].strip())
+        tex = html.escape(NARROW_STORE[int(k[1])], quote=True) if k else m[2].strip()
+        return f'<div class="math-block" data-narrow="{tex}">{m[1]}</div>'
+    h = re.sub(r'<div class="math-block">((?:(?!</div>).)*?)</div>\s*<p>%narrow (.*?)</p>', narrow, h, flags=re.S)
     # code fences: language class for highlight.js, output blocks
     h = h.replace('<pre><code class="language-output">', '<pre class="output"><code class="nohl">')
     h = re.sub(r"<pre><code>(?!<)", '<pre><code class="nohl">', h)
@@ -280,11 +285,23 @@ class Rendered:
     sections: list      # [(id, title, html)]
 
 
+NARROW_STORE: list[str] = []
+
+
+def protect_narrow(text: str) -> str:
+    """Replace each `%narrow <tex>` line by a token, so Markdown cannot eat its backslashes (\\, \\\\ ...)."""
+    def keep(m):
+        NARROW_STORE.append(m[2].strip())
+        return f"{m[1]}%narrow NARROWTOKEN{len(NARROW_STORE) - 1}X"
+    return re.sub(r"^([ \t]*)%narrow (.+)$", keep, text, flags=re.M)
+
+
 def render_chapter_file(path: Path, course: Course, ch: Chapter) -> Rendered:
     text = path.read_text(encoding="utf-8")
     m = re.match(r"^---\n(.*?)\n---\n", text, flags=re.S)
     meta = yaml.safe_load(m[1]) if m else {}
     body = text[m.end():] if m else text
+    body = protect_narrow(body)
     body = resolve_refs(body, course, ch)
     body = mark_heading_ids(body)
     env = {"package_root": course.package_root}
