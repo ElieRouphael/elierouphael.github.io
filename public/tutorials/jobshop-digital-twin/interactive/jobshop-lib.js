@@ -17,7 +17,7 @@
 "use strict";
 const Kit = global.Kit;
 
-/* ---------------- the worked example of chapter A2 (and the landing page) ----------------
+/* ---------------- the worked example of the course (notation.md, from chapter A1 on) ----------------
    One paint machine, set up for blue; a colour change takes 10 min; four orders in this
    order of arrival. Same timing rule as the repository's simulator: an order starts after
    the changeover it needs, and its lateness is max(0, completion - due). */
@@ -106,12 +106,14 @@ function runSequence(orders, seq, setup = PAINT.setup, startFamily = PAINT.start
   });
 }
 const totalTardiness = rows => rows.reduce((s, r) => s + r.late, 0);
-/* The four classic rules, applied each time the machine is free: key(order, currentFamily) -> sort key. */
+/* The four classic rules, applied each time the machine is free: key(order, currentFamily) -> sort key.
+   Same keys as jobshop/rules.py, with `arrival` standing for the job index: ties by index, and
+   shortest setup first breaks ties by due date, then index. */
 const RULES = {
   FIFO: { name: "First come, first served", key: (o) => [o.arrival] },
   SPT:  { name: "Shortest job first",       key: (o) => [o.p, o.arrival] },
   EDD:  { name: "Most urgent first",        key: (o) => [o.due, o.arrival] },
-  SST:  { name: "Shortest setup first",     key: (o, fam, setup) => [setup(fam, o.family), o.arrival] },
+  SST:  { name: "Shortest setup first",     key: (o, fam, setup) => [setup(fam, o.family), o.due, o.arrival] },
 };
 function lexLess(a, b) { for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] < b[i]; } return false; }
 function ruleSequence(orders, rule, setup = PAINT.setup, startFamily = PAINT.start) {
@@ -148,8 +150,8 @@ function drawGantt(canvas, blocks, o = {}) {
   const t0 = o.t0 ?? 0, t1 = o.t1 ?? Math.max(1, ...blocks.map(b => b.end));
   const labelW = o.labelWidth ?? (o.laneLabels ? 92 : 8);
   const laneH = o.laneHeight ?? 30;
+  if (!o.aspect) { canvas.style.height = (lanes * laneH + 30) + "px"; }   // before fit, so the bitmap matches on the first draw
   const { ctx, w, h } = Kit.fit(canvas, o.aspect || null);
-  if (!o.aspect) { canvas.style.height = (lanes * laneH + 30) + "px"; }
   const H = o.aspect ? h : lanes * laneH + 30;
   const X = t => labelW + (t - t0) / (t1 - t0) * (w - labelW - 10);
   const css = Kit.css;

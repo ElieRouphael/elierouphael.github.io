@@ -41,6 +41,23 @@ All times are **integer minutes**, measured from the start of the simulated day,
 The CP-SAT model minimises $10 \sum_j T_j + \sum_j C_j$ over the jobs it plans: tardiness first, and among equally
 late plans, earlier completions.
 
+## The planner's model and the snapshot {#model}
+
+Introduced in chapter C1 (the model) and chapter C3 (the snapshot it is solved on).
+
+| Symbol | Meaning | In the code |
+| --- | --- | --- |
+| $t_0$ | time of the snapshot; every planned start and end lies in $[t_0, H]$ | `snap.now` |
+| $H$ | the planning horizon | `horizon` |
+| $\phi_m$ | when machine $m$ is expected to be free (a broken machine: the *mean* repair time) | `machine_free` |
+| $g_m$ | the family machine $m$ is set up for (none if it has run nothing) | `machine_family` |
+| $R_{jm}$ | ready time: the earliest minute job $j$ can be at machine $m$ for its next operation (chapter C3 writes it $\alpha_j(m)$, the ready map) | `job.ready` |
+| $x_{jkm}$ | 1 if operation $(j,k)$ runs on machine $m$, else 0 (presence literal of an optional interval) | per-machine literal |
+| $\alpha_{jk}$ | when job $j$ reaches the machine of operation $(j,k)$; $S_{jk} \ge \alpha_{jk}$ | `a` |
+| $z^m_{ab}$ | 1 if, on machine $m$, operation $b$ directly follows $a$ (an arc of the circuit) | arc literal |
+| $\ell(m', m)$ | transport lag: $0$ if $m' = m$, else $\delta + \tau(\text{station of } m', \text{station of } m)$ | `transport_lag` |
+| $y_{ab}$, $M$ | big-M MILP only: $y_{ab} = 1$ if $a$ comes before $b$ (not necessarily directly); $M$ the large constant | |
+
 ## Randomness {#random}
 
 | Symbol | Meaning | Value |
@@ -50,7 +67,7 @@ late plans, earlier completions.
 | MTBF | mean time between a repair and the next failure, per machine ("frequent breakdowns") | 120 min |
 | MTTR | mean repair time; a repair lasts uniform $[0.5, 1.5] \times$ MTTR | 20 min |
 | $A = \frac{\text{MTBF}}{\text{MTBF} + \text{MTTR}}$ | availability of a machine | $120/140 = 0.857$, about 14 % downtime |
-| seed $i = 0, \dots, 19$ | the 20 test days; seeds 5000–5009 validate, seeds from 100000 train the agent | |
+| seed $i = 0, \dots, 19$ | the 20 test days; seeds 5000–5009 validate; the agent trains on seeds $100000 + 1000 \times$ training seed $+$ episode, 100001 to 105500 | |
 
 ## Decision methods and their names {#methods}
 
@@ -61,7 +78,7 @@ Every chapter uses these names. The plain name comes first; the abbreviation fol
 | First come, first served | FIFO | the job that arrived first |
 | Shortest job first | SPT | the shortest processing time |
 | Most urgent first | EDD | the earliest due date |
-| Shortest setup first | SST | the job needing the shortest changeover ("avoid colour changes" in the paint example) |
+| Shortest setup first | SST | the job needing the shortest changeover, ties by earliest due date ("avoid colour changes" in the paint example) |
 | Self-learning agent | DQN | a Double DQN that picks one of the four rules at each decision |
 | Quick re-planning | Greedy replan | the re-planning loop with a greedy plan, no solver (an ablation) |
 | Optimiser re-planning | CP-SAT | the re-planning loop with the CP-SAT model at every event |
@@ -87,7 +104,7 @@ earliest expected finish.
 
 ## The worked example: one paint machine {#paint}
 
-Used in chapters A1 and A2, and on the landing page. One machine paints parts; it is set up for **blue**; any
+Introduced in chapter A1 and used as the small example of almost every chapter. One machine paints parts; it is set up for **blue**; any
 colour change takes **10 minutes**. Four orders wait, in this order of arrival:
 
 | Order | Colour | Painting time | Due at minute |

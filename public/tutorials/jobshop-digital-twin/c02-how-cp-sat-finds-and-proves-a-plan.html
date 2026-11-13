@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>C2 · How CP-SAT finds and proves a plan · Which Job Should the Machine Do Next?</title>
+<meta name="description" content="Search as a tree and branch and bound with lower and upper bounds; constraint propagation on precedences and machines (timetabling, edge-finding); clause learning and lazy clause generation in plain terms; CP-SAT&#x27;s portfolio of workers, linear relaxation and large neighbourhood search; the optimality gap; warm starts and hints; deterministic time and reproducible runs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261113225334">
+<style>
+#bbTree, #bbGantt, #propC, #sweepC { display: block; width: 100%; }
+#propW .cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0.8rem; align-items: start; }
+@media (max-width: 720px) { #propW .cols { grid-template-columns: minmax(0, 1fr); } }
+#pLog { margin: 0; padding-left: 1.2rem; font-size: 0.86rem; font-family: var(--font-ui); color: var(--ink-2); display: grid; gap: 0.25rem; }
+#propW label.chk, #sweepW .btn-row { font-family: var(--font-ui); font-size: 0.88rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Which Job Should the Machine Do Next?</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Which Job Should the Machine Do Next? · Part C, Optimising · Chapter C2 of 3</span>
+  <h1>How CP-SAT finds and proves a plan</h1>
+  <p class="lede">A solver does two jobs: it finds good plans, an upper bound on the best cost, and it proves that nothing is better, which needs a lower bound. This chapter opens the solver that receives chapter C1's model. You will run branch and bound on the paint machine, watch propagation shrink time windows, see a learned clause rule out unvisited sequences, and read CP-SAT's numbers on real snapshots: OPTIMAL against FEASIBLE, what a warm start buys, and why the course stops the solver on deterministic time.</p>
+  <p class="byline">Elie Rouphael · Needs chapter C1 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/c02_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="jobshop-digital-twin-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">Depth-first branch and bound over the paint machine's four orders</p>
+      <canvas id="bbTree" aria-label="The search tree: the root, the four first orders, then the second, third and fourth; each node is a sequence prefix, coloured by what the search did with it" aria-describedby="heroStatus"></canvas>
+      <p class="chart-title" style="margin-top:0.6rem">The current node: orders placed, and each remaining order alone</p>
+      <canvas id="bbGantt" aria-label="Gantt chart of the current prefix on the machine and of each remaining order run alone right after it; red ticks are due dates"></canvas>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>Lower bound used for pruning</span>
+      <select id="bbBound">
+        <option value="none">none: enumerate everything</option>
+        <option value="sofar">tardiness so far</option>
+        <option value="alone" selected>so far + each order alone</option>
+      </select>
+    </label>
+    <label class="field"><span>Children explored</span>
+      <select id="bbOrder">
+        <option value="bound" selected>best bound first</option>
+        <option value="alpha">alphabetical</option>
+      </select>
+    </label>
+    <label class="field"><span>Plan known before the search</span>
+      <select id="bbStart">
+        <option value="none" selected>none</option>
+        <option value="SST">SST plan ACBD (50)</option>
+        <option value="optimum">the optimum ABDC (40)</option>
+      </select>
+    </label>
+    <div class="btn-row">
+      <button class="btn primary" id="bbStep" type="button">Step</button>
+      <button class="btn" id="bbRun" type="button" aria-pressed="false">Run</button>
+      <button class="btn" id="bbReset" type="button">Reset</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>nodes touched</span><span class="v" id="rVisited">–</span>
+      <span>expanded</span><span class="v" id="rExpanded">–</span>
+      <span>leaves evaluated</span><span class="v" id="rLeaves">–</span>
+      <span>pruned</span><span class="v" id="rPruned">–</span>
+      <span>best plan (upper bound)</span><span class="v" id="rUB">–</span>
+      <span>lower bound</span><span class="v" id="rLB">–</span>
+      <span>gap</span><span class="v" id="rGap">–</span>
+      <span>status</span><span class="v" id="rStatus">–</span>
+    </div>
+    <p class="hint">Black: expanded. Blue ring: on the stack. Orange: pruned, with its subtree. Grey: an evaluated sequence; green: the best so far. Numbers: lower bounds beside the upper nodes, total tardiness under the leaves.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#idea"><span class="n">1</span><span class="t">Finding a plan and proving it</span><span class="d">Upper bound, lower bound, gap</span></a>
+    <a href="#bnb"><span class="n">2</span><span class="t">Branch and bound on the paint machine</span><span class="d">The search tree, bounds and pruning</span></a>
+    <a href="#propagation"><span class="n">3</span><span class="t">Propagation: shrinking what is still possible</span><span class="d">Precedence, timetabling, edge-finding</span></a>
+    <a href="#learning"><span class="n">4</span><span class="t">Learning from failure: clauses and lazy clause generation</span><span class="d">Clauses, conflicts, lazy clause generation</span></a>
+    <a href="#portfolio"><span class="n">5</span><span class="t">Inside CP-SAT: a portfolio of searches</span><span class="d">Workers, linear relaxation, neighbourhoods</span></a>
+    <a href="#gap"><span class="n">6</span><span class="t">Bounds, gap and status on real snapshots</span><span class="d">OPTIMAL, FEASIBLE and the gap on real snapshots</span></a>
+    <a href="#warm"><span class="n">7</span><span class="t">Warm starts, budgets and reproducible runs</span><span class="d">Hints, budgets and reproducible runs</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The code behind it</span><span class="d">solve_snapshot&#x27;s solver part and warm_start</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Four confusions</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Seven questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="idea">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Finding a plan and proving it</h2>
+  </div>
+  <div class="col prose">
+
+<p>Take the paint machine of chapter <a href="a01-what-a-schedule-is.html" title="What a schedule is">A1</a>: order A (blue, 20 minutes, due at 30), B (red, 10, due 25), C (blue, 15, due 70) and D (red, 25, due 60), a machine set up for blue, 10 minutes per colour change. Chapter <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a> found 55 minutes of total tardiness for first come, first served (FIFO), 50 for shortest setup first (SST), and the best of all <span class="m">4! = 24</span> sequences, ABDC, at 40. Checking that ABDC costs 40 is one line of arithmetic. Checking that <strong>nothing costs less</strong> is a different job: the other 23 sequences must be accounted for.</p>
+<p>A solver like CP-SAT reports on both jobs: the <strong>best plan found so far</strong>, whose cost is an <strong>upper bound</strong> on the optimum, and a <strong>lower bound</strong>, a number no plan can beat, obtained by reasoning. When they meet, the plan is <strong>proven optimal</strong>; until then their distance, the <strong>optimality gap</strong>, says how much better a plan could still be. The real problems are <strong>snapshots</strong>: the frozen state of the running shop at one event, with the jobs still to plan (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>). With 12 jobs, the orders on a single machine already number <span class="m">12! = 479{,}001{,}600</span>. This chapter is about not listing them: <strong>bounds</strong> that discard many sequences at once, <strong>propagation</strong> that removes impossible values, <strong>learning</strong> that turns each failure into a rule, and <strong>heuristics</strong> that find good plans early.</p>
+<div class="define"><p class="define-title">What are the upper bound, the lower bound and the gap?</p>
+<p><strong>In plain words:</strong> the upper bound is the cost of the best plan you hold; the lower bound is a cost you have proved nobody can beat; the gap is how much you might still be leaving on the table.</p>
+<p><strong>More precisely:</strong> for a minimisation with optimum <span class="m">z^\star</span>, a feasible plan <span class="m">x</span> gives <span class="m">\mathrm{UB} = f(x) \ge z^\star</span> and a valid bound gives <span class="m">\mathrm{LB} \le z^\star</span>. The absolute gap is <span class="m">\mathrm{UB} - \mathrm{LB} \ge 0</span>, the relative gap <span class="m">(\mathrm{UB} - \mathrm{LB}) / |\mathrm{UB}|</span>. A zero gap proves the plan optimal.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="bnb">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Branch and bound on the paint machine</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The search tree.</strong> Build a sequence one order at a time. The empty sequence is the <strong>root</strong>; choosing the first order gives four <strong>nodes</strong>, the second twelve, and so on. A node is a <strong>prefix</strong>, the orders placed first; a complete sequence is a <strong>leaf</strong>. Level <span class="m">k</span> holds <span class="m">4!/(4-k)!</span> prefixes, so the hero's tree has</p>
+<div class="math-block" data-narrow="\begin{aligned} &amp;1 + 4 + 12 + 24 + 24 = 65, \\ &amp;\textstyle\sum_{k=0}^{n} \frac{n!}{(n-k)!} = \lfloor e \, n! \rfloor \end{aligned}">1 + 4 + 12 + 24 + 24 = 65 \ \text{nodes}, \qquad \sum_{k=0}^{n} \frac{n!}{(n-k)!} = \lfloor e \, n! \rfloor \ \text{for } n \text{ jobs}</div>
+<p>(exercise 1); for 10 jobs, 9,864,101 nodes.</p>
+<p><strong>The bound of a node</strong> is a number every sequence below it is guaranteed to reach. The tardiness of the orders already placed, <span class="m">g(\text{prefix})</span>, is one: those completions are fixed and the rest can only add, since tardiness is never negative. A better one adds the remaining orders. At the end of the prefix the machine is free at <span class="m">t</span> and set up for colour <span class="m">c</span>; a remaining order <span class="m">o</span> cannot finish before <span class="m">t + p_o</span>, nor before <span class="m">t + 10 + p_o</span> if its colour differs from <span class="m">c</span>, because the machine must change colour at some point before painting it. Tardiness grows with completion time, so</p>
+<div class="math-block" data-narrow="\begin{aligned} \mathrm{LB} = {} &amp; g(\text{prefix}) \\ &amp;+ \textstyle\sum_{o \notin \text{prefix}} \max(0, t + s(c,o) + p_o - d_o) \end{aligned}">\boxed{\mathrm{LB}(\text{prefix}) = g(\text{prefix}) + \sum_{o \notin \text{prefix}} \max\bigl(0,\ t + s(c, o) + p_o - d_o\bigr)},</div>
+<p>with <span class="m">s(c, o) = 0</span> if <span class="m">o</span> has colour <span class="m">c</span> and 10 otherwise. Each remaining order is treated as if it had the machine to itself, hence a lower bound. At the root every order alone is on time, so <span class="m">\mathrm{LB} = 0</span>. One level down it bites: after A the machine is free at 20 and blue, B alone ends at 40, 15 minutes late, C and D are on time, so <span class="m">\mathrm{LB}(A) = 15</span>. The first-level bounds are A 15, B 20, C 15, D 55.</p>
+<p><strong>Pruning.</strong> Keep the best complete sequence found so far, of value <span class="m">\mathrm{UB}</span>. A node with <span class="m">\mathrm{LB} \ge \mathrm{UB}</span> cannot lead to anything better: its subtree is discarded unseen.</p>
+<div class="define"><p class="define-title">What is branch and bound?</p>
+<p><strong>In plain words:</strong> explore the tree of choices, but before going down a branch, compute an optimistic estimate of the best it could contain; if even that is no better than a plan you hold, skip the branch.</p>
+<p><strong>More precisely:</strong> a tree search with a bound satisfying <span class="m">\mathrm{LB}(u) \le f(\sigma)</span> for every leaf <span class="m">\sigma</span> below node <span class="m">u</span>, and an incumbent value <span class="m">\mathrm{UB}</span>; node <span class="m">u</span> is pruned when <span class="m">\mathrm{LB}(u) \ge \mathrm{UB}</span>. The exploration order changes the work, never the answer.</p>
+<dl><dt>Incumbent</dt><dd>The best complete solution found so far.</dd><dt>Open node</dt><dd>Generated, not yet explored; the hero's blue rings, on a stack.</dd></dl>
+</div>
+<p><strong>The trace.</strong> With the hero's default settings, the search expands the root (children A 15, C 15, B 20, D 55), then A (AB 20, AC 40, AD 50), AB and ABD, whose only child, the leaf ABDC, costs 40 and becomes the incumbent. Everything else is pruned: ABC, AC, AD, the children of C and of B, and D. Seventeen nodes touched (6 expanded, 1 leaf, 10 pruned) instead of 65, and <strong>one</strong> sequence evaluated out of 24.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Bound</th>
+<th>Children</th>
+<th>Plan known before</th>
+<th>Nodes touched</th>
+<th>Expanded</th>
+<th>Leaves</th>
+<th>Pruned</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>none</td>
+<td>any</td>
+<td>any</td>
+<td>65</td>
+<td>41</td>
+<td>24</td>
+<td>0</td>
+</tr>
+<tr>
+<td>tardiness so far</td>
+<td>alphabetical</td>
+<td>none</td>
+<td>55</td>
+<td>31</td>
+<td>2</td>
+<td>22</td>
+</tr>
+<tr>
+<td>tardiness so far</td>
+<td>best bound first</td>
+<td>none</td>
+<td>56</td>
+<td>32</td>
+<td>3</td>
+<td>21</td>
+</tr>
+<tr>
+<td>so far + each alone</td>
+<td>alphabetical</td>
+<td>none</td>
+<td>18</td>
+<td>7</td>
+<td>2</td>
+<td>9</td>
+</tr>
+<tr>
+<td>so far + each alone</td>
+<td>best bound first</td>
+<td>none</td>
+<td>17</td>
+<td>6</td>
+<td>1</td>
+<td>10</td>
+</tr>
+<tr>
+<td>so far + each alone</td>
+<td>alphabetical</td>
+<td>SST plan (50)</td>
+<td>17</td>
+<td>6</td>
+<td>1</td>
+<td>10</td>
+</tr>
+<tr>
+<td>so far + each alone</td>
+<td>best bound first</td>
+<td>the optimum (40)</td>
+<td>16</td>
+<td>5</td>
+<td>0</td>
+<td>11</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>The bound does most of the work</strong> (55 nodes against 17); the order matters less. <strong>Holding the optimum does not make the proof free</strong>: handed ABDC, the search still touches 16 nodes. On large problems that is the usual picture: a good plan comes early, and most of the work goes into raising the lower bound. Step through the hero's default (the incumbent appears at the fifth step), then change the settings and compare with the table.</p>
+<p><strong>Why it is correct.</strong> Every leaf is evaluated (value at least <span class="m">\mathrm{UB}</span>), or below a pruned node <span class="m">u</span> (value at least <span class="m">\mathrm{LB}(u) \ge \mathrm{UB}</span>), or below an open node <span class="m">u</span> (value at least <span class="m">\mathrm{LB}(u)</span>). So <span class="m">z^\star \ge \min(\mathrm{UB}, \min_{\text{open}} \mathrm{LB})</span> at all times; when the stack empties, <span class="m">z^\star \ge \mathrm{UB}</span> and the incumbent is optimal. A solver then reports <strong>OPTIMAL</strong>; with a plan and an open gap, <strong>FEASIBLE</strong>; with no plan yet, <strong>UNKNOWN</strong>. Total tardiness on one machine is NP-hard (Du and Leung <a href="#ref-5">[5]</a>, chapter <a href="a02-one-machine-when-rules-are-optimal.html#nphard" title="One machine: when a rule is optimal, and when it cannot be">A2</a>), so unless P = NP no polynomial-time bound keeps every tree small; CP-SAT's strength is bounds from <strong>propagation</strong> and a search that <strong>learns</strong>. Pinedo <a href="#ref-3">[3]</a> treats this branch and bound in depth.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="propagation">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Propagation: shrinking what is still possible</h2>
+  </div>
+  <div class="col prose">
+
+<p>If <span class="m">P</span> must finish before <span class="m">U</span> can start, and <span class="m">P</span> cannot finish before minute 4, then <span class="m">U</span> cannot start before minute 4 plus the transport.</p>
+<div class="define"><p class="define-title">What is propagation?</p>
+<p><strong>In plain words:</strong> each constraint crosses out the values it can prove impossible; the constraints take turns until none can cross out more.</p>
+<p><strong>More precisely:</strong> the <strong>domain</strong> <span class="m">D(x)</span> is the set of values variable <span class="m">x</span> may still take. A <strong>propagator</strong> of a constraint maps domains to smaller ones, <span class="m">f(D) \subseteq D</span>, removing only values that belong to no solution of that constraint. <strong>Propagation</strong> applies the propagators until none changes anything: a <strong>fixed point</strong>. In scheduling the domains are time windows, an <strong>earliest start</strong> <span class="m">\mathrm{est}</span> and a <strong>latest completion</strong> <span class="m">\mathrm{lct}</span>, hence a latest start <span class="m">\mathrm{lst} = \mathrm{lct} - p</span> and an earliest completion <span class="m">\mathrm{ect} = \mathrm{est} + p</span>.</p>
+</div>
+<p><strong>A hand example.</strong> On machine 1, <span class="m">P</span> (4 minutes), <span class="m">Q</span> (3) and <span class="m">R</span> (3); on machine 2, <span class="m">U</span> (3) and <span class="m">V</span> (5); <span class="m">U</span> starts at least 2 minutes after <span class="m">P</span> ends, a transport lag as in chapter <a href="c01-a-constraint-programming-model.html#precedence" title="A constraint-programming model of the shop">C1</a>. (These letters are not the paint orders.) The windows are <span class="m">P\ [0, 20]</span>, <span class="m">Q\ [1, 8]</span>, <span class="m">R\ [2, 9]</span>, <span class="m">U\ [0, 20]</span>, <span class="m">V\ [3, 10]</span>; in CP-SAT latest completions come from the horizon and, once a plan is known, from the objective bound.</p>
+<p><strong>Precedence.</strong> From <span class="m">S_U \ge E_P + 2</span> and <span class="m">E_P \ge \mathrm{est}_P + p_P</span>, and symmetrically,</p>
+<div class="math-block" data-narrow="\begin{aligned} \mathrm{est}_U &amp;\leftarrow \max(\mathrm{est}_U, \mathrm{est}_P + p_P + 2), \\ \mathrm{lct}_P &amp;\leftarrow \min(\mathrm{lct}_P, \mathrm{lct}_U - p_U - 2) \end{aligned}">\mathrm{est}_U \leftarrow \max\bigl(\mathrm{est}_U,\ \mathrm{est}_P + p_P + 2\bigr), \qquad \mathrm{lct}_P \leftarrow \min\bigl(\mathrm{lct}_P,\ \mathrm{lct}_U - p_U - 2\bigr),</div>
+<p>so <span class="m">\mathrm{est}_U = 6</span> and <span class="m">\mathrm{lct}_P = 15</span>.</p>
+<p><strong>Timetabling.</strong> If <span class="m">\mathrm{lst}_i &lt; \mathrm{ect}_i</span>, operation <span class="m">i</span> runs during <span class="m">[\mathrm{lst}_i, \mathrm{ect}_i)</span> in every solution, its <strong>compulsory part</strong>: for <span class="m">V</span>, <span class="m">[5, 8)</span>. Another operation <span class="m">j</span> on the machine with <span class="m">\mathrm{est}_j + p_j &gt; 5</span> overlaps it from any start before 8, so <span class="m">\mathrm{est}_j \leftarrow 8</span>; for <span class="m">U</span>, <span class="m">\mathrm{est}_U = 8</span>.</p>
+<p><strong>Edge-finding.</strong> On machine 1 nobody has a compulsory part, yet <span class="m">P</span> cannot go first: <span class="m">P</span>, <span class="m">Q</span>, <span class="m">R</span> need 10 minutes together, <span class="m">Q</span> and <span class="m">R</span> must end by 9, and nothing starts before 0. For an operation <span class="m">i</span> and a set <span class="m">\Omega</span> of others on the machine, with <span class="m">\mathrm{est}(\Omega)</span> the smallest earliest start, <span class="m">\mathrm{lct}(\Omega)</span> the largest latest completion and <span class="m">p(\Omega)</span> the total duration,</p>
+<div class="math-block" data-narrow="\begin{aligned} &amp;\mathrm{est}(\Omega \cup i) + p(\Omega) + p_i &gt; \mathrm{lct}(\Omega) \\ &amp;\Rightarrow \mathrm{est}_i \leftarrow \max_{\emptyset \ne \Omega&#x27; \subseteq \Omega} (\mathrm{est}(\Omega&#x27;) + p(\Omega&#x27;)) \end{aligned}">\boxed{\mathrm{est}(\Omega \cup \{i\}) + p(\Omega) + p_i &gt; \mathrm{lct}(\Omega) \ \Longrightarrow\ \mathrm{est}_i \leftarrow \max_{\emptyset \ne \Omega&#x27; \subseteq \Omega} \bigl(\mathrm{est}(\Omega&#x27;) + p(\Omega&#x27;)\bigr)}.</div>
+<p><em>Proof.</em> If <span class="m">i</span> did not end last among <span class="m">\Omega \cup \{i\}</span>, the last one to end would be in <span class="m">\Omega</span>, so all of them would run inside <span class="m">[\mathrm{est}(\Omega \cup \{i\}), \mathrm{lct}(\Omega)]</span>, shorter than their total duration: impossible on one machine. So <span class="m">i</span> ends last and, nothing overlapping, starts after all of <span class="m">\Omega</span>, which cannot be done before <span class="m">\mathrm{est}(\Omega&#x27;) + p(\Omega&#x27;)</span> for any non-empty subset <span class="m">\Omega&#x27;</span>. <span class="m">\square</span></p>
+<p>In the example, with <span class="m">\Omega = \{Q, R\}</span>: <span class="m">0 + 6 + 4 = 10 &gt; 9</span>, and <span class="m">\mathrm{est}_P = \max(4, 5, 7) = 7</span>, over the subsets <span class="m">\{Q\}</span>, <span class="m">\{R\}</span>, <span class="m">\{Q, R\}</span>. A mirror rule moves latest completions left. Precedence then fires again: <span class="m">\mathrm{est}_U = 7 + 4 + 2 = 13</span>.</p>
+<div class="widget" id="propW">
+  <div class="controls">
+    <button class="btn primary" id="pStep" type="button">Propagate one step</button>
+    <button class="btn" id="pAll" type="button">To the fixed point</button>
+    <button class="btn" id="pReset" type="button">Reset</button>
+    <label class="chk"><input type="checkbox" id="pEF" checked> edge-finding</label>
+  </div>
+  <div class="cols">
+    <canvas id="propC" aria-label="Time windows of the five operations: dashed, the initial window; shaded, the current one; dark, the compulsory part; the thin bar is the operation at its earliest start" aria-describedby="propCap"></canvas>
+    <ol id="pLog" aria-live="polite"></ol>
+  </div>
+  <p class="caption" id="propCap"></p>
+</div>
+<p>With edge-finding, five deductions reach the fixed point <span class="m">P\ [7, 15]</span>, <span class="m">U\ [13, 20]</span>; without it, three stop at <span class="m">P\ [0, 15]</span>, <span class="m">U\ [8, 20]</span>. The product of the numbers of possible start values falls from <span class="m">17 \times 5 \times 5 \times 18 \times 3 = 22{,}950</span> to <span class="m">5 \times 5 \times 5 \times 5 \times 3 = 1{,}875</span> (9,000 without edge-finding). Enumeration agrees: of the six orders of <span class="m">P</span>, <span class="m">Q</span>, <span class="m">R</span>, only <span class="m">QRP</span> and <span class="m">RQP</span> fit, with <span class="m">P</span> starting at 7 at the earliest.</p>
+<p><strong>The order of the rules does not matter.</strong> Each rule only removes values and is <em>monotone</em> (<span class="m">D \subseteq D&#x27;</span> implies <span class="m">f(D) \subseteq f(D&#x27;)</span>). Then the largest domains <span class="m">G</span> that every rule leaves unchanged exist, every intermediate domain contains <span class="m">G</span> (<span class="m">D \supseteq G</span> gives <span class="m">f(D) \supseteq f(G) = G</span>), and so every run stops exactly at <span class="m">G</span>.</p>
+<p><strong>Propagation is incomplete.</strong> At the fixed point <span class="m">Q</span> and <span class="m">R</span> are still unordered; search decides the rest. Real solvers use faster versions of these rules (Laborie, Rogerie, Shaw and Vilím <a href="#ref-2">[2]</a>); CP-SAT's NoOverlap propagates in this spirit, and we cite, not reproduce, its exact algorithms.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="learning">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Learning from failure: clauses and lazy clause generation</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>SAT in brief.</strong> A <strong>literal</strong> is a Boolean variable or its negation; a <strong>clause</strong> is an OR of literals. Take <span class="m">(x \vee y)</span>, <span class="m">(\neg y \vee z)</span>, <span class="m">(\neg z \vee x)</span> and decide <span class="m">x = \text{false}</span>. The first clause forces <span class="m">y</span> (<strong>unit propagation</strong>: when all literals of a clause but one are false, the last must be true), the second forces <span class="m">z</span>, and the third is false: a <strong>conflict</strong>. Its reasons chain back to <span class="m">x = \text{false}</span>, so the solver <strong>learns</strong> the clause <span class="m">(x)</span>, undoes decisions back to the cause (<strong>backjumping</strong>) and continues with <span class="m">x</span> true. This is <strong>conflict-driven clause learning</strong>.</p>
+<p><strong>Lazy clause generation</strong> (Stuckey <a href="#ref-1">[1]</a>) brings this to integers. A bound becomes a literal: <span class="m">[S_A \ge 45]</span> is true when <span class="m">A</span> starts at minute 45 or later. A propagator that moves a bound <strong>explains</strong> it as a clause over such literals, so conflict analysis runs through NoOverlap or a linear sum as through clauses. Literals are created only when needed, hence &quot;lazy&quot;: the paint machine's four starts in <span class="m">[0, 110]</span> would need <span class="m">4 \times 110 = 440</span> literals in advance; the conflict below uses 2.</p>
+<p><strong>A learned clause on the paint machine.</strong> Having found ABDC (40), the solver asks for total tardiness at most 39. Decide D first: D is painted from 10 to 35, so <span class="m">S_B \ge 35</span> and, after a change back to blue, <span class="m">S_A \ge 45</span>; then <span class="m">T_A \ge 35</span> and <span class="m">T_B \ge 20</span>, so <span class="m">\sum T \ge 55 &gt; 39</span>, a conflict. Its explanation does not mention D:</p>
+<div class="math-block" data-narrow="\begin{aligned} &amp;[S_A \ge 45] \wedge [S_B \ge 35] \Rightarrow \textstyle\sum T \ge 55, \\ &amp;\text{learn } [S_A \le 44] \vee [S_B \le 34] \end{aligned}">[S_A \ge 45] \wedge [S_B \ge 35] \ \Rightarrow\ \textstyle\sum_j T_j \ge 55, \qquad \text{learned clause: } [S_A \le 44] \vee [S_B \le 34].</div>
+<p>&quot;Not D first&quot; would rule out 6 sequences; this clause rules out 8 of the 24, including CDAB and CDBA: after C then D, B and A cannot start before 50 and 60, and the clause fails at once. Because it speaks about integers, not about the decision, it travels to branches never visited.</p>
+<div class="define"><p class="define-title">What is lazy clause generation?</p>
+<p><strong>In plain words:</strong> a solver that records why it deduced each bound, so that at a dead end it writes a general rule (&quot;A or B must start earlier&quot;) instead of just backing up.</p>
+<p><strong>More precisely:</strong> propagation combined with conflict-driven SAT solving, where integer domains are bound literals <span class="m">[x \ge v]</span> created on demand, every propagator explains its inferences as clauses, and conflicts are analysed over these explanations (Stuckey <a href="#ref-1">[1]</a>). CP-SAT is built on this design.</p>
+</div>
+<p>Proving that 40 is optimal <em>is</em> proving that &quot;total tardiness <span class="m">\le 39</span>&quot; has no solution; learning shortens that proof by sharing reasoning across branches.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="portfolio">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Inside CP-SAT: a portfolio of searches</h2>
+  </div>
+  <div class="col prose">
+
+<p>CP-SAT runs many searches at once and lets them share what they find. Its log, captured by <code>code/c02_numbers.py</code>, lists for the course's model with 8 workers <strong>9 full-problem subsolvers</strong>, <strong>13 interleaved subsolvers</strong>, all large neighbourhood searches, and 3 helpers.</p>
+<p><strong>Full-problem searches</strong> (<code>default_lp</code>, <code>no_lp</code>, <code>quick_restart</code> and others) each run a branch and bound with propagation and learning on the whole model. They differ in what they branch on, how often they <strong>restart</strong> (drop the tree, keep the learned clauses, begin again), and how much <strong>linear relaxation</strong> they add (<code>no_lp</code> none, <code>max_lp</code> the most).</p>
+<p><strong>The <code>core</code> worker</strong> raises the lower bound as maximum-satisfiability solvers do. It asks whether every term of the objective can sit at its smallest value; when that is impossible, it extracts a <strong>core</strong>, a set of terms that cannot all be there at once. Can A and B both be on time? If A goes first, B needs a colour change and ends at 40, 15 late; if B goes first, A ends at 50, 20 late. So <span class="m">\{T_A = 0, T_B = 0\}</span> is a core, and <span class="m">T_A + T_B \ge 15</span>: the bound rises to 15 (exercise 3 looks for more).</p>
+<p><strong>The linear relaxation.</strong> Chapter <a href="c01-a-constraint-programming-model.html#milp" title="A constraint-programming model of the shop">C1</a> showed that the big-M relaxation bounds the paint machine's tardiness by 0, against the optimum 40. CP-SAT's LP workers relax the linear constraints and add cuts of their own; we do not measure what they contribute.</p>
+<div class="define"><p class="define-title">What is large neighbourhood search?</p>
+<p><strong>In plain words:</strong> keep most of the best plan, free one part of it (a time window, some machines, some jobs), re-solve only that part quickly, keep the result if better, repeat.</p>
+<p><strong>More precisely:</strong> given an incumbent <span class="m">\bar x</span>, choose a set <span class="m">N</span> of variables, fix the others to <span class="m">\bar x</span>, solve the sub-model with a small budget, accept an improvement. The families differ in how <span class="m">N</span> is chosen: at random, from the constraint graph, along the circuit, or from scheduling structure. LNS cannot prove anything about plans it did not look at.</p>
+</div>
+<p>On the 8-job snapshot of Part 6, the log credits both improvements over the hint to LNS workers (<code>routing_random_lns</code>, then <code>scheduling_intervals_lns</code>, which reaches the optimum 7940) and most bound improvements to <code>core</code>. LNS finds; the full-problem searches and <code>core</code> prove.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="gap">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Bounds, gap and status on real snapshots</h2>
+  </div>
+  <div class="col prose">
+
+<p>Two terms of Part 7 first: the <strong>budget</strong> is deterministic time, a machine-independent count of the solver's work, roughly comparable to seconds (0.2 per replan in the benchmark); the <strong>hint</strong> is the warm start, the cheapest of a few quick greedy plans, handed to the solver as its first solution.</p>
+<p><strong>The statuses.</strong> <strong>OPTIMAL</strong>: the plan's cost equals the lower bound, so the plan is best <em>for the model</em>. <strong>FEASIBLE</strong>: a plan whose proof the budget did not finish. <strong>UNKNOWN</strong>: no plan within the budget. <strong>INFEASIBLE</strong>: a proof that no plan exists.</p>
+<p><strong>The snapshots.</strong> A <code>Snapshot</code> holds the minute <code>now</code>, each machine's free time and set-up, and for each job to plan its due date, its first undecided operation and, per eligible machine, the earliest minute it can be there. The numbers script runs one simulated day (seed 0, frequent breakdowns, 60 jobs) under quick re-planning (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>) and records its 158 snapshots: 151 with jobs to plan, at most 12, and 7 empty. It solves every third non-empty one with the benchmark's settings (budget 0.2, 8 workers, hint): 27 of these 51 (53 %) end OPTIMAL, and size decides: all 11 of 1 to 4 jobs, 14 of the 18 of 5 or 6, 2 of the 8 of 7 or 8, none of the 14 of 9 to 12.</p>
+<div class="widget" id="sweepW">
+  <div class="btn-row">
+    <button class="btn" type="button" data-mode="hint" aria-pressed="true">with the hint</button>
+    <button class="btn" type="button" data-mode="nohint" aria-pressed="false">without the hint</button>
+  </div>
+  <canvas id="sweepC" aria-label="Best plan and best bound of CP-SAT on an 8-job snapshot against the deterministic budget, with or without the hint; the dashed line is the warm start" aria-describedby="sweepCap"></canvas>
+  <p class="caption" id="sweepCap"></p>
+</div>
+<p><strong>One snapshot, budget by budget.</strong> Snapshot 101, an arrival at minute 891, has 8 jobs and 19 operations to place; its warm start costs 7962 in the model's objective <span class="m">10 \sum_j T_j + \sum_j C_j</span> (<a href="notation.html#measures">notation</a>), completion times counted from the start of the day. Each point of the widget is a separate solve.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Budget</th>
+<th>With hint: plan / bound / status</th>
+<th>Without hint: plan / bound / status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.025</td>
+<td>7940 / 7540 / FEASIBLE</td>
+<td>none / 7540 / UNKNOWN</td>
+</tr>
+<tr>
+<td>0.05</td>
+<td>7940 / 7540 / FEASIBLE</td>
+<td>none / 7540 / UNKNOWN</td>
+</tr>
+<tr>
+<td>0.1</td>
+<td>7940 / 7540 / FEASIBLE</td>
+<td>8202 / 7702 / FEASIBLE</td>
+</tr>
+<tr>
+<td>0.2</td>
+<td>7940 / 7740 / FEASIBLE</td>
+<td>7961 / 7847 / FEASIBLE</td>
+</tr>
+<tr>
+<td>0.4</td>
+<td>7940 / 7859 / FEASIBLE</td>
+<td>7940 / 7858 / FEASIBLE</td>
+</tr>
+<tr>
+<td>0.8</td>
+<td>7940 / 7940 / OPTIMAL</td>
+<td>7940 / 7940 / OPTIMAL</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With the hint, the solver reaches the optimal 7940 within the smallest budget, and the rest goes into the proof: the gap closes from 400 (5.0 % of the objective) to 200 at 0.2, 81 at 0.4, 0 at 0.8. <strong>Finding is cheap, proving is expensive</strong>: at 0.2 the plan is optimal and the status still says FEASIBLE, because a better plan cannot yet be excluded. Without the hint there is no plan at 0.025 and 0.05, then 8202, worse than the warm start, and 7961 at 0.2. The proof is not faster with the hint: at 0.1 and 0.2 its bound is even lower (7540 and 7740 against 7702 and 7847), because the search takes a different path. One snapshot is not a general rule.</p>
+<p><strong>The largest snapshot.</strong> Snapshot 132 (minute 1111, 12 jobs, 33 operations) ends at budget 0.2 with plan 15311 and bound 13876: a gap of 1435, 9.4 % of the objective. That percentage flatters the plan: completion times count from the start of the day, so any plan carries at least <span class="m">12 \times 1111 = 13{,}332</span> unavoidable units, and 1435 units are about 143.5 minutes of total tardiness if total completion stays the same. <strong>Read gaps in absolute terms when the objective has a large constant part.</strong> Part of the gap is the bound's fault: exercise 5 finds a simple valid bound of 14266. Without the hint the plan costs 40183, 2.62 times as much.</p>
+<p><strong>In the benchmark</strong>, <code>results/runs.csv</code> counts every replanning event, including empty ones that call no solver (status EMPTY). Without breakdowns 668 of 1,200 (56 %) ended OPTIMAL, with frequent breakdowns 1,345 of 3,178 (42 %), probably because breakdowns keep more jobs in the shop. The rest ended FEASIBLE, EMPTY or, 5 times, GREEDY (Part 7). Computing took 1.61 s per event on average.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="warm">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>Warm starts, budgets and reproducible runs</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>A hint is a suggestion.</strong> <code>model.add_hint(x, v)</code> says &quot;try <span class="m">x = v</span> first&quot; and constrains nothing. When every variable is hinted and the values satisfy every constraint, the hint is <strong>complete and feasible</strong>, and CP-SAT keeps it as its first solution; on snapshot 101 the log reports it so, with objective 7962.</p>
+<div class="define"><p class="define-title">What is a warm start?</p>
+<p><strong>In plain words:</strong> starting the solver with a good plan in hand, so it can only improve and has something to return even with a tiny budget.</p>
+<p><strong>More precisely:</strong> an initial feasible solution, here given as a complete hint. It sets the first upper bound, steers the first decisions and feeds the LNS workers. It changes neither the model nor the optimum and adds no bound of its own; it changes the search path, and with it how fast the bound rises.</p>
+</div>
+<p><strong>The fallback.</strong> <code>solve_snapshot</code> builds the warm start first: the cheapest of three greedy list schedules and, when there is one, the previous plan re-timed on the new snapshot (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>). If the solver returns no plan, or a more expensive one, the warm start is used, with status GREEDY: 5 of the 4,378 benchmark replans, all under breakdowns. A kept hint is never worse than itself, so in those 5 the solver apparently did not keep it; the repository does not record why.</p>
+<div class="define"><p class="define-title">What are deterministic time and interleaved search?</p>
+<p><strong>In plain words:</strong> with a limit in seconds, the amount of search depends on the computer and its load, so two runs can return different plans, and in a simulation that re-plans thousands of times one different plan changes everything after it. So say &quot;stop after this much work&quot;, and make the parallel workers take turns.</p>
+<p><strong>More precisely:</strong> <code>max_deterministic_time</code> stops on a count of the search's elementary operations. <code>interleave_search = True</code> runs the portfolio in <strong>batches</strong> of tasks (24 per batch for this model, says the log) and exchanges solutions and bounds only between batches, which the parameter documentation <a href="#ref-4">[4]</a> describes as deterministic.</p>
+</div>
+<p>The response's <code>deterministic_time</code> exceeds the limit (1.12 for 0.2 on snapshot 101, 6.36 for 0.8); we do not interpret this further. What matters is that the stopping point is the same on every run.</p>
+<p><strong>Reproducibility, checked.</strong> Two solves of snapshot 101 at 0.2 with <code>random_seed = 0</code> return the same plan operation by operation, bound 7740, 7,743 branches and 867 conflicts; only wall-clock times differ. With <code>random_seed = 1</code> the search differs (7,827 branches), the plan happens not to. <code>test_controller_is_deterministic</code> checks the property on a whole run.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>Chapter <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a> walks through the model building; these are the parts that drive the solver.</p>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · warm_start</p><pre><code class="language-python">def warm_start(ws: Workshop, snap: Snapshot, allowance: int, previous_plan=None) -&gt; Plan:
+    candidates = [greedy_plan(ws, snap, allowance, rule) for rule in (&quot;finish&quot;, &quot;start&quot;, &quot;edd&quot;)]
+    if previous_plan:
+        candidates.append(greedy_plan(ws, snap, allowance, &quot;previous&quot;, previous_plan))
+    return min(candidates, key=lambda plan: plan.objective)</code></pre>
+<p>The candidates: <code>greedy_plan</code> with the rules &quot;finish&quot;, &quot;start&quot; and &quot;edd&quot; (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html#greedy" title="Rescheduling on a rolling horizon">C3</a>) and, given a previous plan, &quot;previous&quot;, re-timed on the new snapshot. All are costed by <code>plan_cost</code>, the model's <span class="m">10 \sum T + \sum C</span>, so the cheapest compares directly with the solver's answer.</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · 145-157</p><pre><code class="language-python">    t0 = time.perf_counter()
+    if not snap.jobs:
+        return Plan()
+    start_plan = warm_start(ws, snap, allowance, previous_plan) if use_warm_start else None
+    if not use_solver:  # ablation: replan with the greedy schedules only
+        start_plan.wall_s = time.perf_counter() - t0
+        return start_plan
+    m = cp_model.CpModel()
+
+    def hint(var, value) -&gt; None:
+        if start_plan is not None:
+            m.add_hint(var, int(value))
+</code></pre>
+<p>The warm start is built before any variable exists; with <code>use_solver=False</code> it is returned at once, the &quot;Greedy replan&quot; ablation. The helper <code>hint</code> does nothing when <code>use_warm_start=False</code>; further down, every variable is hinted, so the hint is complete.</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · 253-270</p><pre><code class="language-python">    m.minimize(sum(objective))
+    solver = cp_model.CpSolver()
+    solver.parameters.max_deterministic_time = det_time  # reproducible stop, unlike a wall-clock limit
+    solver.parameters.max_time_in_seconds = wall_time_s  # safety net only
+    solver.parameters.num_workers = workers
+    solver.parameters.interleave_search = True  # the workers take turns: same result on every run
+    solver.parameters.random_seed = seed
+    status = solver.solve(m)
+    plan = Plan(status=solver.status_name(status))
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        plan.objective = int(round(solver.objective_value))
+        for key, lits in present.items():
+            machine = next(k for k, lit in lits.items() if solver.boolean_value(lit))
+            plan.ops[key] = (machine, int(solver.value(starts[key])), int(solver.value(ends[key])))
+    if start_plan is not None and (plan.objective is None or plan.objective &gt; start_plan.objective):
+        plan = start_plan  # the solver did not reach its own starting point within the budget
+    plan.wall_s = time.perf_counter() - t0
+    return plan</code></pre>
+<p>The solver configuration of Part 7. The 20 s wall-clock limit is a safety net far above the 1.61 s average. A plan is read only for OPTIMAL or FEASIBLE; the last test is the fallback, counted as GREEDY (the <code>replans_not_improved</code> column of <code>runs.csv</code>).</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;FEASIBLE means a poor plan.&quot;</strong> It means an unfinished proof; the plan may already be optimal (Part 6).</li>
+<li><strong>&quot;A small relative gap means near-optimal.&quot;</strong> Not when the objective has a large constant part: 9.4 % on the 12-job snapshot is about 143.5 minutes of tardiness.</li>
+<li><strong>&quot;OPTIMAL means the best control of the shop.&quot;</strong> It means optimal for the snapshot's model: fixed transport lags, no future arrivals or breakdowns. Chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> shows why optimal snapshot plans do not make an optimal policy.</li>
+<li><strong>&quot;Seconds are the natural budget.&quot;</strong> They tie every run to the computer's speed and load. For repeatable experiments stop on deterministic time and interleave the workers.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What certifies the upper bound, and what certifies the lower bound?</summary>
+<p>The upper bound, a plan the solver holds. The lower bound, the reasoning that produced it: node bounds, propagation, learned clauses, relaxations, cores.</p>
+</details>
+<details class="sol"><summary>2. Why is &quot;so far plus each remaining order alone&quot; a valid bound?</summary>
+<p>No remaining order can finish before the machine is free plus its painting time, plus a colour change if its colour differs, and tardiness does not decrease with completion time; add the fixed tardiness of the prefix.</p>
+</details>
+<details class="sol"><summary>3. With the optimum given in advance, branch and bound still touches 16 nodes. Why?</summary>
+<p>The optimum only sets the upper bound; every other subtree must still be ruled out by a bound of at least 40.</p>
+</details>
+<details class="sol"><summary>4. Timetabling deduced nothing on machine 1, edge-finding did. What is the difference?</summary>
+<p>Timetabling reasons about one operation at a time, through compulsory parts, and none exists on machine 1. Edge-finding reasons about a set: <span class="m">P</span>, <span class="m">Q</span> and <span class="m">R</span> together do not fit before <span class="m">Q</span> and <span class="m">R</span> must be done, so <span class="m">P</span> goes after both.</p>
+</details>
+<details class="sol"><summary>5. Why is a learned clause more useful than backtracking?</summary>
+<p>Backtracking forgets why a branch failed. The clause keeps the reason in terms, such as <span class="m">[S_A \ge 45]</span>, that appear in other branches too.</p>
+</details>
+<details class="sol"><summary>6. Why is the linear relaxation weak on disjunctive scheduling?</summary>
+<p>Fractional ordering variables relax both big-M inequalities at once, removing the machine's capacity from the LP: the bound 0 against 40.</p>
+</details>
+<details class="sol"><summary>7. Which parameters make the benchmark reproducible, and how?</summary>
+<p><code>max_deterministic_time</code> stops after a fixed amount of work, <code>interleave_search</code> synchronises the workers in batches so sharing does not depend on thread timing, and <code>random_seed</code> fixes the remaining random choices.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>The code runs in the repository's environment, from its root folder.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Count the search tree.</b> Show that the tree of all prefixes of <span class="m">n</span> jobs has <span class="m">\sum_{k=0}^{n} n!/(n-k)!</span> nodes and that this equals <span class="m">\lfloor e \, n! \rfloor</span> for <span class="m">n \ge 1</span>. Check <span class="m">n = 4</span> and <span class="m">n = 10</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>With <span class="m">j = n - k</span> the sum is <span class="m">n! \sum_{j=0}^{n} 1/j!</span>; compare with <span class="m">e = \sum_{j \ge 0} 1/j!</span> and bound the tail.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Level <span class="m">k</span> holds the ordered choices of <span class="m">k</span> jobs out of <span class="m">n</span>, <span class="m">n!/(n-k)!</span>. The total <span class="m">N = n! \sum_{j=0}^{n} 1/j!</span> is an integer, and <span class="m">e \, n! - N = \frac{1}{n+1} + \frac{1}{(n+1)(n+2)} + \dots &lt; \frac{1}{n+1} + \frac{1}{(n+1)^2} + \dots = \frac1n \le 1</span>. So <span class="m">N = \lfloor e \, n! \rfloor</span>: 65 for <span class="m">n = 4</span>, and 9,864,101 nodes for 3,628,800 leaves when <span class="m">n = 10</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Edge-finding on a looser machine.</b> Widen the windows of Part 3 to <span class="m">Q\ [1, 9]</span> and <span class="m">R\ [2, 10]</span>. Does edge-finding still put <span class="m">P</span> last? Is <span class="m">P</span> first now possible?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Recompute <span class="m">\mathrm{est}(\{P, Q, R\}) + p(\{Q, R\}) + p_P</span> against <span class="m">\mathrm{lct}(\{Q, R\})</span>, then try <span class="m">P, Q, R</span> at their earliest starts.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">0 + 6 + 4 = 10</span> is not greater than <span class="m">\mathrm{lct}(\{Q, R\}) = 10</span>, so edge-finding deduces nothing about <span class="m">P</span>. Rightly so: <span class="m">P</span> from 0 to 4, <span class="m">Q</span> from 4 to 7, <span class="m">R</span> from 7 to 10 meets every window. The numbers script checks it (section PROPAGATION, &quot;exercise 2&quot;).</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Cores of the paint machine.</b> A <em>core</em> is a set of orders that cannot all be on time. Find every minimal core of the paint machine (no proper subset is a core) and the smallest total tardiness of its orders. Disjoint cores add up to a lower bound. Which bound do the cores give?</p>
+<details class="sol"><summary>Hint</summary>
+<p>For a set, try the sequences of its own orders from minute 0 on a blue machine: other orders placed among them can only delay them. Two orders of the same colour are both on time if the earlier-due one goes first.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\{A, B\}</span> is a core (Part 5), with smallest tardiness 15. No other pair is: in AC, AD, BC, BD and CD the second order ends at 35, 55, 45, 45 and 50, on time. Of the triples without both A and B, <span class="m">\{B, C, D\}</span> fits (B, D, C end at 20, 45, 70), but <span class="m">\{A, C, D\}</span> does not: A must come first to end by 30, and then whichever of C and D goes last is 10 late. The minimal cores are <span class="m">\{A, B\}</span> (15) and <span class="m">\{A, C, D\}</span> (10). They share A, so they cannot be added: the cores give 15, against the optimum 40. The numbers script enumerates every subset (section CORES).</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The hint and the budget on a snapshot.</b> Reproduce the plans and statuses of Part 6's table: record the snapshots of the day of seed 0 (frequent breakdowns, quick re-planning), solve snapshot 101 at each budget with and without the hint, then twice at 0.2 and compare.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Subclass <code>CPSATController</code> with <code>use_solver=False</code> and record <code>take_snapshot</code> in <code>on_event</code> before calling the parent, for the active jobs sorted by <code>(due, idx)</code>, cut to <code>max_jobs</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from jobshop.cpsat import CPSATController, take_snapshot, solve_snapshot, warm_start
+from jobshop.scenario import make_workshop, make_scenario
+from jobshop.shop import simulate
+
+ws, snaps = make_workshop(), []
+class Recorder(CPSATController):
+    def on_event(self, shop, kind, **info):
+        jobs = sorted(shop.active_jobs(), key=lambda j: (j.due, j.idx))[: self.max_jobs]
+        snaps.append((take_snapshot(shop, jobs, self.allowance), dict(self.plan)))
+        super().on_event(shop, kind, **info)
+simulate(ws, make_scenario(ws, 0, n_jobs=60, mtbf=120.0), Recorder(use_solver=False))
+snap, prev = snaps[101]
+print(len(snap.jobs), warm_start(ws, snap, 2, prev).objective)        # 8 7962
+for b in (0.025, 0.05, 0.1, 0.2, 0.4, 0.8):
+    on = solve_snapshot(ws, snap, previous_plan=prev, det_time=b)
+    off = solve_snapshot(ws, snap, previous_plan=prev, det_time=b, use_warm_start=False)
+    print(b, on.status, on.objective, off.status, off.objective)
+a, b = (solve_snapshot(ws, snap, previous_plan=prev) for _ in range(2))
+print(a.ops == b.ops)                                                  # True
+</code></pre>
+<p>The output matches the table. <code>solve_snapshot</code> does not return the bound; the numbers script reads it by substituting a <code>CpSolver</code> subclass that keeps a reference to itself.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A bound the solver does not see.</b> Bound the objective of snapshot 132 by scheduling each job alone: from <code>j.first_op</code> on, each operation on its best eligible machine <span class="m">k</span>, no earlier than <code>j.ready[k]</code> (the first) or the previous end plus the transport lag (the others), nor than <code>snap.machine_free[k]</code>, with no changeover. Compare with CP-SAT's 13876 at budget 0.2. Why can the solver miss a valid bound?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Carry the earliest end on each eligible machine; arrival on <span class="m">k</span> is the minimum over previous machines <span class="m">k&#x27;</span> of their end plus <code>transport_lag(ws, k', k, 2)</code>. For the last question, look at which constraint of chapter <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a>'s model uses <code>machine_free</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from jobshop.cpsat import transport_lag
+def each_job_alone(ws, snap, allowance=2):
+    total = 0
+    for j in snap.jobs:
+        E = {}
+        for op in range(j.first_op, ws.n_ops(j.family)):
+            new = {}
+            for k, p in ws.alternatives(j.family, op).items():
+                if op == j.first_op:
+                    if k not in j.ready:
+                        continue
+                    arrive = j.ready[k]
+                else:
+                    arrive = min(E[k2] + transport_lag(ws, k2, k, allowance) for k2 in E)
+                new[k] = max(arrive, snap.machine_free[k]) + p
+            E = new
+        end = min(E.values())
+        total += 10 * max(0, end - j.due) + end
+    return total
+print(each_job_alone(ws, snaps[132][0]))   # 14266
+</code></pre>
+<p>Every step only relaxes the model, so 14266 is a valid bound, above 13876. The solver probably misses it because the model states &quot;start <span class="m">\ge</span> <code>machine_free[k]</code>&quot; only for the operation first on the machine, through a circuit arc. Adding it for every operation, enforced by the presence literal, is a standard strengthening; the repository does not, and we have not measured it.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Two jobs</strong>: finding plans gives the upper bound, proving gives the lower bound; a zero gap is a proof.</div></li>
+<li><div><strong>Branch and bound</strong>: a bound valid below each node, pruning when <span class="m">\mathrm{LB} \ge \mathrm{UB}</span>; 17 of 65 nodes prove ABDC (40) optimal.</div></li>
+<li><div><strong>Propagation</strong>: precedence, timetabling and edge-finding shrink windows to a fixed point.</div></li>
+<li><div><strong>Learning</strong>: conflicts explained over bound literals give clauses that rule out unvisited branches.</div></li>
+<li><div><strong>CP-SAT</strong>: full-problem searches and <code>core</code> prove, neighbourhood searches find.</div></li>
+<li><div><strong>Real snapshots</strong>: finding is cheap, proving is expensive; FEASIBLE is an unfinished proof.</div></li>
+<li><div><strong>Reproducibility</strong>: deterministic time and interleaved workers give the same plan on every run.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Compulsory part, edge-finding</td>
+<td>Where an operation must run; deducing it goes after (or before) a whole set.</td>
+</tr>
+<tr>
+<td>Unit propagation, backjumping</td>
+<td>A clause forcing its last literal; undoing decisions back to the cause.</td>
+</tr>
+<tr>
+<td>Core</td>
+<td>A set of objective terms that cannot all take their smallest values.</td>
+</tr>
+<tr>
+<td>EMPTY, GREEDY</td>
+<td>The repository's statuses: nothing to plan; the warm start used as fallback.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> This explains CP-SAT at the level needed to read its output and set its parameters; its algorithms are richer and change between versions. The numbers are for OR-Tools 9.15, on snapshots from a shop run by quick re-planning, not those of the benchmark.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>P. J. Stuckey. &quot;Lazy clause generation: combining the power of SAT and CP (and MIP?) solving&quot;. CPAIOR 2010, Lecture Notes in Computer Science 6140, Springer, 2010. Bound literals and explaining propagators.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>P. Laborie, J. Rogerie, P. Shaw and P. Vilím. &quot;IBM ILOG CP optimizer for scheduling&quot;. Constraints 23, 2018. Timetabling, edge-finding and precedence reasoning.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>, 5th ed. Springer, 2016. Branch and bound for single-machine tardiness problems.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>Google OR-Tools. CP-SAT documentation and the <code>sat_parameters.proto</code> reference (<code>max_deterministic_time</code>, <code>num_workers</code>, <code>interleave_search</code>, <code>random_seed</code>, hints). developers.google.com/optimization.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>J. Du and J. Y.-T. Leung. &quot;Minimizing total tardiness on one machine is NP-hard&quot;. Mathematics of Operations Research 15(3), 1990.</div></li>
+</ul>
+<p>Next, chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> puts the solver in the loop: a snapshot after every event, a new plan, and only its beginning executed.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="c01-a-constraint-programming-model.html"><span class="lbl">Previous · C1</span><span class="t">A constraint-programming model</span></a>
+  <a class="next" rel="next" href="c03-rescheduling-on-a-rolling-horizon.html"><span class="lbl">Next · C3</span><span class="t">Rescheduling on a rolling horizon</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter C2 of "Which Job Should the Machine Do Next?" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/jobshop-lib.js?v=20261113225334"></script>
+<script src="interactive/c02.js?v=20261113225334"></script>
+</body>
+</html>

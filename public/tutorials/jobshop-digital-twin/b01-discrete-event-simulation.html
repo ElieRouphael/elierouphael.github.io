@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>B1 · Discrete-event simulation · Which Job Should the Machine Do Next?</title>
+<meta name="description" content="The event list and the simulation clock, traced by hand; Poisson arrivals, the memoryless exponential, splitting and merging streams; load and availability computed by hand; breakdowns as an alternating renewal process; Little&#x27;s law checked on simulated days; SimPy processes and the controller interface of jobshop/shop.py.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261113225334">
+<style>
+#demo [hidden] { display: none !important; }
+#demo .evlist { min-width: 0; overflow-x: auto; }
+#hList { width: 100%; font-family: var(--font-mono); font-size: 0.8rem; border-collapse: collapse; }
+#hList th { text-align: left; font-weight: 600; color: var(--muted); padding: 0.15rem 0.5rem; border-bottom: 1px solid var(--rule); }
+#hList td { padding: 0.15rem 0.5rem; border-bottom: 1px solid var(--rule); font-weight: 400; }
+#hList tr.next td { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+#pW canvas, #aW canvas { display: block; width: 100%; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Which Job Should the Machine Do Next?</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Which Job Should the Machine Do Next? · Part B, Simulating the shop · Chapter B1 of 2</span>
+  <h1>Discrete-event simulation</h1>
+  <p class="lede">Nobody lets you try four dispatching rules on a real factory for twenty working days each. A discrete-event simulation gives you a workshop you can replay as often as you like, in milliseconds: an event list, a clock that jumps from event to event, and random inputs drawn once per day. This chapter derives the probability behind those inputs, Poisson arrivals and breakdown cycles, proves Little's law, and reads how the repository's SimPy model plays them while leaving every decision to a controller. By the end you can trace an event list by hand, compute a shop's load, availability and expected breakdowns from its data, check a simulator with Little's law, and plug your own decision rule into the repository's simulator.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A3 and the exponential distribution · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/b01_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="jobshop-digital-twin-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The shop on a time axis: blue and red work, striped changeovers, pale red breakdowns, triangles for arrivals</p>
+      <canvas id="hGantt" aria-label="Gantt chart of the machines up to the simulation clock, with the arrivals" aria-describedby="hStatus"></canvas>
+      <p class="chart-title" style="margin-top:0.5rem">Jobs in the shop <span class="keep">N(t)</span> (filled) and its running average (dashed)</p>
+      <canvas id="hN" aria-label="Number of jobs in the shop over time and its running average"></canvas>
+    </div>
+    <div class="evlist">
+      <p class="chart-title">The event list: every future event, soonest first; the clock jumps to the top row</p>
+      <table id="hList" aria-label="The event list"></table>
+    </div>
+    <p class="status" id="hStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="field"><span>Scenario</span>
+      <span class="seg" id="hMode"><button class="btn" data-v="paint" aria-pressed="true">Worked example</button><button class="btn" data-v="random" aria-pressed="false">Random day</button></span>
+    </div>
+    <div class="field"><span>Rule for the next job</span>
+      <span class="seg" id="hRule"><button class="btn" data-v="FIFO" aria-pressed="true">FIFO</button><button class="btn" data-v="SPT" aria-pressed="false">SPT</button><button class="btn" data-v="SST" aria-pressed="false">SST</button></span>
+    </div>
+    <div class="field"><span>Machines</span>
+      <span class="seg" id="hM"><button class="btn" data-v="1" aria-pressed="true">1</button><button class="btn" data-v="2" aria-pressed="false">2</button></span>
+    </div>
+    <label class="field"><span><input type="checkbox" id="hBd" checked> Breakdowns</span></label>
+    <label class="field" id="hRhoF"><span>Load <span class="m">\rho</span> (changeovers not counted): <b id="hRhoV"></b></span>
+      <span class="row"><input type="range" id="hRho" min="0.3" max="0.95" step="0.05" value="0.6"></span>
+    </label>
+    <label class="field" id="hSeedF"><span>Seed</span><input type="number" id="hSeed" value="1" min="1" max="999"></label>
+    <div class="btn-row">
+      <button class="btn primary" id="hStep">Next event</button>
+      <button class="btn" id="hPlay" aria-pressed="false">Play</button>
+      <button class="btn" id="hEnd">To the end</button>
+      <button class="btn ghost" id="hReset">Reset</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>clock</span><span class="v" id="rClock">–</span>
+      <span>events processed</span><span class="v" id="rEv">–</span>
+      <span>instants of a 1-minute loop</span><span class="v" id="rSteps">–</span>
+      <span>jobs in the shop</span><span class="v" id="rN">–</span>
+      <span>time-average <span class="m">L</span></span><span class="v" id="rL">–</span>
+      <span><span class="m">\lambda_T W_T</span></span><span class="v" id="rLW">–</span>
+    </div>
+    <p class="hint"><span class="m">L</span> and <span class="m">\lambda_T W_T</span> are the two sides of Little's law, Part 6. The worked example is the paint machine of chapters <a href="a01-what-a-schedule-is.html" title="What a schedule is">A1</a> and <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a>: orders A (blue, 20 min), B (red, 10), C (blue, 15) and D (red, 25), now arriving at minutes 0, 5, 12 and 40; a colour change takes 10 min, and the machine is down from minute 25 to 33. Part 2 traces it by hand. On these four orders SPT happens to choose as FIFO does; SST avoids two colour changes (exercise 1). Here SST breaks ties by arrival; the repository's breaks them by due date. A random day draws 30 orders (numbered from 0) with exponential gaps, blue or red with equal chance and 10, 15, 20 or 25 min of work, and breakdowns with MTBF 120 and MTTR 20 min, generated as the repository does. The slider counts processing only: with colour changes and breakdowns counted, the real load is about 1.50 times the slider, so above about 0.67 the queue keeps growing, Part 4 in miniature.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#why"><span class="n">1</span><span class="t">A workshop you can experiment on</span><span class="d">Why a factory cannot be experimented on, and what a simulation replaces it with</span></a>
+    <a href="#events"><span class="n">2</span><span class="t">Time steps or events</span><span class="d">The clock jumps; the paint machine traced event by event</span></a>
+    <a href="#poisson"><span class="n">3</span><span class="t">Random arrivals: the Poisson process</span><span class="d">Exponential gaps, memorylessness proved, merging and splitting streams</span></a>
+    <a href="#load"><span class="n">4</span><span class="t">Load, by hand, and what it leaves out</span><span class="d">ρ = λ E[work] / m by hand, and the four things it leaves out</span></a>
+    <a href="#breakdowns"><span class="n">5</span><span class="t">Breakdowns and availability</span><span class="d">Up and down cycles, A = MTBF/(MTBF + MTTR), breakdowns per day</span></a>
+    <a href="#little"><span class="n">6</span><span class="t">Little's law</span><span class="d">Jobs inside = arrival rate × time inside, proved by counting an area twice</span></a>
+    <a href="#simpy"><span class="n">7</span><span class="t">SimPy in a few ideas</span><span class="d">Processes, timeouts and interrupts in SimPy</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The workshop in code</span><span class="d">make_scenario and the processes of jobshop/shop.py</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Six confusions</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="why">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>A workshop you can experiment on</h2>
+  </div>
+  <div class="col prose">
+
+<p>You run the workshop of chapter <a href="a03-the-flexible-job-shop.html" title="The flexible job shop">A3</a>: five machines, two carts, orders of four families arriving all day, changeovers, breakdowns. Does &quot;most urgent first&quot; beat &quot;shortest setup first&quot;? Trying each rule for a few weeks is impossible: the orders of week one are not those of week two, and the losing rule costs real late deliveries.</p>
+<p>A <strong>simulation</strong> replaces the workshop by a program that follows the same causes and effects: orders appear, wait, are carried, set up, processed, delayed by breakdowns and leave. On it you can replay the same day under every rule, so that the method is the only difference between two runs (chapter <a href="d02-a-fair-benchmark.html#crn" title="A fair benchmark">D2</a>). One simulated day under a rule, without breakdowns, takes a median of 5.8 ms for about 1,348 simulated minutes, 22.5 hours: a speed-up of <span class="m">1.4 \times 10^7</span> over real time. The optimiser runs take far longer, because planning, not simulating, costs time (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>).</p>
+<div class="define"><p class="define-title">What is a discrete-event simulation?</p>
+<p><strong>In plain words:</strong> a program that keeps a list of what is going to happen next (an order arrives at 10:42, machine 3 finishes at 10:47), jumps straight to the soonest item, updates the shop, writes the new consequences onto the list, and repeats.</p>
+<p><strong>More precisely:</strong> the state of the model changes only at a countable set of instants, the <strong>events</strong>; between two events nothing changes and nothing is computed. The simulator keeps a <strong>simulation clock</strong> <span class="m">t</span> and an <strong>event list</strong> of pending events keyed by their time. One iteration removes the earliest event, sets <span class="m">t</span> to its time and runs its <strong>event routine</strong>, which changes the state and may schedule or cancel future events.</p>
+<dl><dt>State</dt><dd>what determines the future given the future random inputs: queues, what each machine does and how much work it has left, which machines are down, where the carts are.</dd><dt>Event</dt><dd>an instant at which the state changes: an arrival, the end of a changeover or of an operation, a failure, a repair, a cart reaching a station.</dd><dt>Random inputs</dt><dd>arrival times, families, due dates and breakdowns, drawn with a seed so that a run can be replayed exactly.</dd></dl>
+</div>
+<p>Everything here is synthetic: the workshop and its distributions were invented, not measured on a plant. The simulation is a fair test bench for decision methods, not a forecast of a real factory.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="events">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Time steps or events</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Time-stepped.</strong> Choose a step <span class="m">\Delta</span>, say one minute, and loop: <span class="m">t \leftarrow t + \Delta</span>, then ask every machine, cart and order whether anything happened. Simple, and natural for a differential equation; but most steps are empty, events are rounded to the grid, and two events in one step are ordered arbitrarily.</p>
+<p><strong>Event-driven.</strong> Keep the list of future events and jump from one event time to the next: no empty steps, no rounding. The price is bookkeeping: every routine must write the consequences it causes onto the list, and strike off those that will no longer happen.</p>
+<div class="define"><p class="define-title">What is the event list?</p>
+<p><strong>In plain words:</strong> the simulator's diary of the future, sorted by time. Its top line says what happens next and when.</p>
+<p><strong>More precisely:</strong> a priority queue of records (time, tie-breaker, event), with two operations, <em>insert</em> and <em>remove the minimum</em>. A binary heap, a tree that keeps the soonest event on top, does each in about <span class="m">\log_2 n</span> comparisons for <span class="m">n</span> pending events. SimPy keeps exactly this: a heap of (time, priority, sequence number, event), where the sequence number breaks ties in scheduling order, so that a run is deterministic.</p>
+<dl><dt>Clock</dt><dd>the time of the event being executed; it never moves backwards, and it jumps rather than ticks.</dd><dt>Scheduling</dt><dd>inserting a future event: &quot;B's changeover will be done at minute 30&quot;.</dd><dt>Cancelling</dt><dd>striking off an event that will not happen: a breakdown at minute 25 cancels the end of changeover planned for 30.</dd></dl>
+</div>
+<p><strong>The paint machine, traced by hand.</strong> Take the four orders of chapter <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a>, blue A (20 min), red B (10), blue C (15) and red D (25), but let them arrive at minutes 0, 5, 12 and 40. The machine is set up for blue, a colour change takes 10 minutes, the rule is first come, first served (FIFO), and the machine is down from minute 25 to 33. An interrupted operation keeps the work done and resumes after the repair, changeovers included. Only the <em>next</em> arrival is on the list: each arrival, when it happens, schedules the one after it. The hero replays this trace with <strong>Next event</strong>.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Clock</th>
+<th>Event</th>
+<th>What the routine does</th>
+<th>Event list afterwards</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>A arrives</td>
+<td>machine idle and blue: A starts, no changeover</td>
+<td>arrival 5, done 20, failure 25</td>
+</tr>
+<tr>
+<td>5</td>
+<td>B arrives</td>
+<td>B waits</td>
+<td>arrival 12, done 20, failure 25</td>
+</tr>
+<tr>
+<td>12</td>
+<td>C arrives</td>
+<td>C waits</td>
+<td>done 20, failure 25, arrival 40</td>
+</tr>
+<tr>
+<td>20</td>
+<td>A done</td>
+<td>A leaves (20 min); FIFO picks B, red: changeover</td>
+<td>failure 25, setup done 30, arrival 40</td>
+</tr>
+<tr>
+<td>25</td>
+<td>failure</td>
+<td>5 of 10 changeover min done; &quot;setup done 30&quot; struck off</td>
+<td>repair 33, arrival 40</td>
+</tr>
+<tr>
+<td>33</td>
+<td>repair</td>
+<td>changeover resumes, 5 min left</td>
+<td>setup done 38, arrival 40</td>
+</tr>
+<tr>
+<td>38</td>
+<td>setup done</td>
+<td>B is processed</td>
+<td>arrival 40, done 48</td>
+</tr>
+<tr>
+<td>40</td>
+<td>D arrives</td>
+<td>D waits behind C</td>
+<td>done 48</td>
+</tr>
+<tr>
+<td>48</td>
+<td>B done</td>
+<td>B leaves (43 min); FIFO picks C, blue: changeover</td>
+<td>setup done 58</td>
+</tr>
+<tr>
+<td>58</td>
+<td>setup done</td>
+<td>C is processed</td>
+<td>done 73</td>
+</tr>
+<tr>
+<td>73</td>
+<td>C done</td>
+<td>C leaves (61 min); FIFO picks D, red: changeover</td>
+<td>setup done 83</td>
+</tr>
+<tr>
+<td>83</td>
+<td>setup done</td>
+<td>D is processed</td>
+<td>done 108</td>
+</tr>
+<tr>
+<td>108</td>
+<td>D done</td>
+<td>D leaves (68 min); the run is over</td>
+<td>(empty)</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Thirteen events, at 13 distinct minutes, carry the clock from 0 to 108; a one-minute loop would visit the 109 instants 0 to 108, 96 of them with no event. Without the breakdown the completions would be 20, 40, 65 and 100: a single machine has no way around 8 minutes of repair, so every later order is pushed back by 8. Given the same orders, one machine and carts that take no time, the repository's simulator produces the same log, B's changeover in two pieces (20 to 25, 33 to 38), as the numbers script checks.</p>
+<p><strong>The honest count for the real workshop.</strong> On test day 0 under &quot;most urgent first&quot; (EDD), without breakdowns, SimPy executes 1,680 events, its own bookkeeping included (process starts and ends, interrupts, stale timeouts), on only 613 of the 1,384 minutes: a one-minute loop would find nothing to do in 56 % of its steps, while several events often share a minute, ordered by the tie-breaker. With breakdowns, 1,965 events fall on 712 of 1,493 minutes, 52 % empty. With times in seconds, a time-stepped loop would need 60 times more steps; the event list would hold the same events.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="poisson">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Random arrivals: the Poisson process</h2>
+  </div>
+  <div class="col prose">
+
+<p>In plain words, the repository's arrival model says: at every instant an order is as likely to arrive in the next minute as at any other instant, whatever happened before. That sentence pins down the distribution of the gaps.</p>
+<div class="define"><p class="define-title">What is a Poisson process?</p>
+<p><strong>In plain words:</strong> arrivals at a constant average rate but without rhythm: clumps and droughts happen by chance, and when the last order came tells you nothing about when the next comes.</p>
+<p><strong>More precisely:</strong> a counting process <span class="m">R(t)</span>, the number of arrivals (releases) in <span class="m">[0, t]</span>, with <span class="m">R(0) = 0</span>, is a Poisson process of rate <span class="m">\lambda &gt; 0</span> when its increments over disjoint intervals are independent, and an interval of length <span class="m">h</span> gains one arrival with probability <span class="m">\lambda h + o(h)</span> and two or more with probability <span class="m">o(h)</span>, where <span class="m">o(h)</span> is a term that vanishes faster than <span class="m">h</span> as <span class="m">h \to 0</span>. Equivalently, the gaps <span class="m">X_1, X_2, \dots</span> are independent exponentials of rate <span class="m">\lambda</span>; the equivalence is a standard theorem, which we only cite <a href="#ref-3">[3]</a>.</p>
+<dl><dt>Exponential distribution</dt><dd><span class="m">P(X &gt; x) = e^{-\lambda x}</span> for <span class="m">x \ge 0</span>, density <span class="m">\lambda e^{-\lambda x}</span>.</dd><dt>Count in a window</dt><dd><span class="m">R(t+u) - R(t)</span> is Poisson with mean <span class="m">\lambda u</span>: <span class="m">P(k \text{ arrivals}) = e^{-\lambda u} (\lambda u)^k / k!</span>.</dd><dt>In the workshop</dt><dd><span class="m">1/\lambda = 20.83</span> min, <span class="m">\lambda = 0.0480</span> orders per minute, 2.88 per hour.</dd></dl>
+</div>
+<p><strong>Mean and variance, derived.</strong> Integrate by parts against the density <span class="m">\lambda e^{-\lambda x}</span>, whose antiderivative is <span class="m">-e^{-\lambda x}</span>; the boundary terms vanish at 0 and at infinity, because <span class="m">x^k e^{-\lambda x} \to 0</span>:</p>
+<div class="math-block" data-narrow="\begin{aligned} E[X] &amp;= \int_0^\infty x \lambda e^{-\lambda x} dx \\ &amp;= 0 + \int_0^\infty e^{-\lambda x} dx = \tfrac1\lambda \\ E[X^2] &amp;= \int_0^\infty x^2 \lambda e^{-\lambda x} dx \\ &amp;= 0 + \tfrac2\lambda \int_0^\infty x \lambda e^{-\lambda x} dx \\ &amp;= \tfrac2\lambda E[X] = \tfrac2{\lambda^2} \\ \operatorname{Var} X &amp;= E[X^2] - E[X]^2 = \tfrac1{\lambda^2} \end{aligned}">\begin{aligned} E[X] &amp;= \int_0^\infty x\, \lambda e^{-\lambda x}\, dx = \Big[-x e^{-\lambda x}\Big]_0^\infty + \int_0^\infty e^{-\lambda x}\, dx = \frac1\lambda, \\ E[X^2] &amp;= \int_0^\infty x^2 \lambda e^{-\lambda x}\, dx = \Big[-x^2 e^{-\lambda x}\Big]_0^\infty + \frac2\lambda \int_0^\infty x\, \lambda e^{-\lambda x}\, dx = \frac2\lambda E[X] = \frac2{\lambda^2}, \\ \operatorname{Var} X &amp;= E[X^2] - E[X]^2 = \frac2{\lambda^2} - \frac1{\lambda^2} = \frac1{\lambda^2}. \end{aligned}</div>
+<p>The standard deviation equals the mean, 20.83 minutes for the workshop (a variance of 434 min²): the coefficient of variation, standard deviation over mean, is exactly 1, where a timetable has 0. That is &quot;no rhythm&quot; in numbers.</p>
+<p><strong>The memoryless property, proved.</strong> For <span class="m">s, t \ge 0</span>,</p>
+<div class="math-block" data-narrow="\begin{aligned} P(X &gt; s+t \mid X &gt; s) &amp;= \tfrac{P(X &gt; s+t)}{P(X &gt; s)} \\ &amp;= \tfrac{e^{-\lambda(s+t)}}{e^{-\lambda s}} \\ &amp;= e^{-\lambda t} = P(X &gt; t) \end{aligned}">P(X &gt; s + t \mid X &gt; s) = \frac{P(X &gt; s + t)}{P(X &gt; s)} = \frac{e^{-\lambda (s+t)}}{e^{-\lambda s}} = e^{-\lambda t} = P(X &gt; t).</div>
+<p>After <span class="m">s</span> minutes without an order, the remaining wait has the distribution of a fresh gap. The exponential is the only continuous distribution with this property (exercise 2), which is why &quot;a constant chance per minute&quot; and &quot;exponential gaps&quot; are the same model. In the widget, the leftover part of an exponential gap looks exactly like a whole gap; with uniform gaps of the same mean, waiting makes the next arrival come sooner.</p>
+<div class="widget" id="pW">
+  <div class="controls">
+    <span class="seg" id="pDist"><button class="btn" data-v="expo" aria-pressed="true">Exponential</button><button class="btn" data-v="unif" aria-pressed="false">Uniform</button><button class="btn" data-v="fixed" aria-pressed="false">Constant</button></span>
+    <label class="field"><span>Already waited <span class="m">s</span>: <b id="pSV"></b> min</span><span class="row"><input type="range" id="pS" min="0" max="60" step="1" value="20"></span></label>
+  </div>
+  <p class="chart-title">Eight hours of arrivals with these gaps</p>
+  <canvas id="pLine" aria-label="Arrival times over eight hours"></canvas>
+  <p class="chart-title">Grey: a whole gap X · blue: what is left of it, X − s, once s minutes have passed (40,000 draws)</p>
+  <canvas id="pHist" aria-label="Histogram of the gaps and of the residual gaps" aria-describedby="pCap"></canvas>
+  <p class="caption" id="pCap"></p>
+</div>
+<p><strong>The real stream.</strong> <code>make_scenario</code> draws 60 exponential gaps of mean 20.83 per test day and floors the cumulative sums to integer minutes. On the 20 test days the 1,200 gaps have mean 20.14 and standard deviation 20.77 min. The standard error of a mean of 1,200 draws is <span class="m">20.83/\sqrt{1200} = 0.60</span>, so 20.14 is 1.14 standard errors from 20.83: ordinary chance. The 392 full hours hold 2.93 arrivals on average with variance 3.12, against a Poisson mean and variance of 2.88; an hour without any order happens 6.6 % of the time against <span class="m">e^{-2.88} = 0.056</span>. The memoryless check: of the 442 gaps longer than 20 min, a share of 0.344 also lasts beyond 40, where theory predicts <span class="m">e^{-20/20.83} = 0.383</span>, the share of fresh gaps beyond 20. Its standard error is about <span class="m">\sqrt{0.38 \times 0.62 / 442} = 0.023</span>, so 0.344 is 1.7 standard errors off: within chance.</p>
+<p><strong>Merging (superposition).</strong> For independent Poisson streams of rates <span class="m">\lambda_1</span> and <span class="m">\lambda_2</span>, the time to the next event of either is <span class="m">\min(X_1, X_2)</span>, and</p>
+<div class="math-block" data-narrow="\begin{aligned} P(\min(X_1, X_2) &gt; t) &amp;= P(X_1 &gt; t) P(X_2 &gt; t) \\ &amp;= e^{-(\lambda_1 + \lambda_2) t} \end{aligned}">P(\min(X_1, X_2) &gt; t) = P(X_1 &gt; t)\, P(X_2 &gt; t) = e^{-(\lambda_1 + \lambda_2) t}:</div>
+<p>the first gap is exponential with rate <span class="m">\lambda_1 + \lambda_2</span>. The whole merged stream is Poisson by the definition: the sum of two independent processes with independent increments has independent increments, and in an interval of length <span class="m">h</span> it gains one event with probability <span class="m">(\lambda_1 + \lambda_2) h + o(h)</span> and two or more with probability <span class="m">o(h)</span>, since both streams firing has probability <span class="m">\lambda_1 \lambda_2 h^2 + o(h^2)</span>. While all five machines are up, each fails at rate <span class="m">1/120</span> per minute, so the next failure <em>somewhere in the shop</em> comes after an exponential time of mean <span class="m">120/5 = 24</span> minutes.</p>
+<p><strong>Splitting (thinning).</strong> If each arrival of a Poisson stream of rate <span class="m">\lambda</span> is independently labelled family <span class="m">f</span> with probability <span class="m">p</span>, the family-<span class="m">f</span> arrivals form a Poisson process of rate <span class="m">p\lambda</span>. The proof counts. Start at time 0. No family-<span class="m">f</span> order comes in the first <span class="m">t</span> minutes exactly when each of the <span class="m">k</span> arrivals in that window, <span class="m">k</span> Poisson with mean <span class="m">\lambda t</span>, is labelled not-<span class="m">f</span>, which happens with probability <span class="m">(1-p)^k</span>. So the wait <span class="m">S</span> for the first family-<span class="m">f</span> order has</p>
+<div class="math-block" data-narrow="\begin{aligned} P(S &gt; t) &amp;= \sum_{k \ge 0} e^{-\lambda t} \tfrac{(\lambda t)^k}{k!} (1-p)^k \\ &amp;= e^{-\lambda t} e^{(1-p)\lambda t} = e^{-p\lambda t} \end{aligned}">P(S &gt; t) = \sum_{k \ge 0} e^{-\lambda t} \frac{(\lambda t)^k}{k!} (1-p)^k = e^{-\lambda t}\, e^{(1-p)\lambda t} = e^{-p\lambda t},</div>
+<p>an exponential of rate <span class="m">p\lambda</span> (the sum is the series of <span class="m">e^x</span> at <span class="m">x = (1-p)\lambda t</span>). Each later family-<span class="m">f</span> gap is built like this first one from its own disjoint block of the independent gaps <span class="m">X_i</span> and labels, so all of them are independent copies of <span class="m">S</span>: a renewal process with exponential gaps, that is, a Poisson process. That the families are also independent of one another needs a further argument, which Ross gives <a href="#ref-3">[3]</a>. The workshop draws families uniformly, <span class="m">p = 1/4</span>, so each family arrives with mean gap <span class="m">4 \times 20.83 = 83.33</span> min. The 1,120 family gaps of the test days average only 77.2 min: counted inside a day, long gaps that would run past the last order are never seen, which pulls the expected measured mean down to 78.9 (a simulation of the same measurement), within one standard error, 2.4, of 77.2.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="load">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Load, by hand, and what it leaves out</h2>
+  </div>
+  <div class="col prose">
+
+<p>In plain words, the <strong>load</strong> asks: of all the machine time the shop has, what share is needed just to do the work that comes in? Five machines offer five machine-minutes every minute; orders bring (orders per minute) × (minutes of work per order).</p>
+<div class="define"><p class="define-title">What is the load ρ?</p>
+<p><strong>In plain words:</strong> how busy the machines would have to be, on average, to keep up with the orders, counting only processing on the fastest routes.</p>
+<p><strong>More precisely:</strong> with arrival rate <span class="m">\lambda</span>, expected work per job <span class="m">E[w]</span> and <span class="m">m</span> machines, <span class="m">\rho = \lambda\, E[w] / m</span>. If <span class="m">\rho \ge 1</span>, work arrives faster than the machines could process it even on their fastest routes, and the queue grows without bound; a fortiori once changeovers are counted. <span class="m">\rho &lt; 1</span> is necessary but not sufficient: a single machine can still be overloaded, since some operations can run on one machine only. Only when <span class="m">w</span> is the work actually done (processing on the chosen machines plus changeovers) does <span class="m">\lambda E[w]/m</span> equal the long-run busy fraction, averaged over the machines; with fastest-route <span class="m">w</span> it is a lower bound on that fraction.</p>
+<dl><dt>Fastest-route work</dt><dd>the repository's choice of <span class="m">w</span>: each operation on its quickest eligible machine, <span class="m">W_f</span> in <a href="a03-the-flexible-job-shop.html#workshop" title="The flexible job shop">A3</a>.</dd></dl>
+</div>
+<p><strong>By hand, for the workshop.</strong> The fastest routes of the four families take 46, 61, 70 and 73 minutes; families are equally likely, so</p>
+<div class="math-block" data-narrow="\begin{aligned} E[w] &amp;= \tfrac{46+61+70+73}{4} = 62.5 \text{ min} \\ \tfrac1\lambda &amp;= \tfrac{E[w]}{\rho m} = \tfrac{62.5}{0.60 \times 5} = 20.83 \text{ min} \end{aligned}">E[w] = \frac{46 + 61 + 70 + 73}{4} = 62.5 \text{ min}, \qquad \frac1\lambda = \frac{E[w]}{\rho\, m} = \frac{62.5}{0.60 \times 5} = 20.83 \text{ min}.</div>
+<p>The repository fixes <span class="m">\rho = 0.60</span> and derives the gap, which is what <code>mean_interarrival</code> computes; read backwards, <span class="m">\rho = 62.5 / (20.83 \times 5) = 0.60</span>.</p>
+<p><strong>What <span class="m">\rho</span> ignores</strong>, each item computed from the workshop data:</p>
+<ul>
+<li><em>Non-fastest routes.</em> Routing picks the machine with the earliest expected finish, which may be a slower one with a shorter queue. If every operation took the average time of its eligible machines, <span class="m">E[w]</span> would be 68.00 min and <span class="m">\rho = 0.65</span>.</li>
+<li><em>Changeovers.</em> The mean changeover between two different families is 6.95 min (from 3 to 10). In random order the family would change with probability <span class="m">3/4</span> (a rough estimate: each machine sees only some families), adding about 5.21 min per operation, 20.9 min per job: <span class="m">\rho = 0.80</span>. Changeovers depend on the order of the jobs, which is the decision being studied; that is why the load leaves them out.</li>
+<li><em>Breakdowns.</em> A machine is available a fraction <span class="m">A = 0.857</span> of the time (Part 5), so the fastest-route work per <em>available</em> machine is <span class="m">0.60 / 0.857 = 0.70</span>.</li>
+<li><em>Transport.</em> A job on a cart, 2 or 3 minutes per move, is in the shop but not being processed.</li>
+</ul>
+<p><strong>Measured.</strong> Over the 20 test days without breakdowns, first come, first served (FIFO) spends 67.3 min of processing and 18.1 min of changeover per job: a load of 0.82 with both counted. Shortest setup first (SST) cuts the changeovers to 15.3 min per job (load 0.79) and optimiser re-planning (CP-SAT) to 10.6 (load 0.74). The shop is much busier than 0.60 says, and how much depends on the decisions (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="breakdowns">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Breakdowns and availability</h2>
+  </div>
+  <div class="col prose">
+
+<p>In plain words, each machine lives a cycle: it works, fails, is repaired, works again. The repository draws the working stretch from an exponential of mean MTBF = 120 min, in calendar time from a repair to the next failure whether or not the machine is busy, and the repair from a uniform distribution on <span class="m">[0.5, 1.5] \times \text{MTTR} = [10, 30]</span> min, mean 20 and standard deviation <span class="m">20/\sqrt{12} = 5.77</span>; both are rounded to whole minutes, at least 1.</p>
+<div class="define"><p class="define-title">What is an alternating renewal process?</p>
+<p><strong>In plain words:</strong> a machine that alternates between &quot;up&quot; and &quot;down&quot;, every up-and-down cycle a fresh, independent copy of the same random pair.</p>
+<p><strong>More precisely:</strong> up times <span class="m">U_1, U_2, \dots</span> and down times <span class="m">D_1, D_2, \dots</span>, the pairs <span class="m">(U_i, D_i)</span> independent and identically distributed; cycle <span class="m">i</span> lasts <span class="m">C_i = U_i + D_i</span> minutes.</p>
+<dl><dt>MTBF</dt><dd>here <span class="m">E[U]</span>, the mean time from a repair to the next failure, 120 min. Some texts mean the time between successive failures, <span class="m">E[U] + E[D]</span>; check which.</dd><dt>MTTR</dt><dd><span class="m">E[D]</span>, the mean repair time, 20 min.</dd><dt>Availability</dt><dd><span class="m">A</span>, the long-run fraction of time a machine is up.</dd></dl>
+</div>
+<p><strong>Availability from expected cycle lengths.</strong> Over the first <span class="m">n</span> cycles the machine is up <span class="m">\sum_{i \le n} U_i</span> out of <span class="m">\sum_{i \le n} (U_i + D_i)</span>. Divide both by <span class="m">n</span> and apply the strong law of large numbers to each:</p>
+<div class="math-block" data-narrow="\begin{aligned} \frac{\sum_{i \le n} U_i}{\sum_{i \le n} (U_i + D_i)} &amp;= \frac{\frac1n \sum_{i \le n} U_i}{\frac1n \sum_{i \le n} (U_i + D_i)} \\ &amp;\to \frac{E[U]}{E[U] + E[D]} = A \end{aligned}">\frac{\sum_{i=1}^n U_i}{\sum_{i=1}^n (U_i + D_i)} = \frac{\frac1n \sum_{i=1}^n U_i}{\frac1n \sum_{i=1}^n (U_i + D_i)} \;\xrightarrow[n \to \infty]{}\; \frac{E[U]}{E[U] + E[D]} = A,</div>
+<p>that is, <span class="m">A = \text{MTBF}/(\text{MTBF} + \text{MTTR})</span>. This is the simplest case of the renewal-reward theorem: long-run reward per unit time equals expected reward per cycle over expected cycle length <a href="#ref-3">[3]</a>. To pass from <span class="m">n</span> cycles to a time <span class="m">T</span>, let <span class="m">B(T)</span> be the number of cycles started by <span class="m">T</span>; <span class="m">T</span> lies between the ends of cycles <span class="m">B(T)-1</span> and <span class="m">B(T)</span>, both of which grow like <span class="m">B(T)\, E[C]</span>, so <span class="m">T/B(T) \to E[C]</span>. The up time in <span class="m">[0, T]</span> lies between <span class="m">\sum_{i &lt; B(T)} U_i</span> and <span class="m">\sum_{i \le B(T)} U_i</span>; divided by <span class="m">T = B(T) \cdot (T/B(T))</span>, both bounds tend to <span class="m">E[U]/E[C]</span>, so the up fraction of <span class="m">[0, T]</span> tends to <span class="m">A</span> too. For the workshop,</p>
+<div class="math-block" data-narrow="\begin{aligned} A &amp;= \tfrac{120}{120 + 20} = \tfrac{120}{140} = 0.857 \\ 1 - A &amp;= 0.1429 \end{aligned}">A = \frac{120}{120 + 20} = \frac{120}{140} = 0.857, \qquad 1 - A = 0.1429:</div>
+<p>each machine is down about 14.3 % of the time. Only the means enter <span class="m">A</span>, not the distributions.</p>
+<p><strong>Breakdowns per machine per day.</strong> By the same argument a machine has one breakdown per <span class="m">E[C] = 140</span> minutes in the long run: over <span class="m">T = 1{,}400</span> minutes, about a simulated day with breakdowns, <span class="m">1400/140 = 10.0</span> per machine and 50 for the five. The count <span class="m">B(T)</span> is random; exercise 4 computes its variance.</p>
+<p><strong>On the test days.</strong> The 7,130 cycles <code>make_scenario</code> generates for the 20 test days and 5 machines have mean up time 119.9 min and mean repair 19.98 min: availability 0.857. Over the first 1,400 minutes of the 100 machine-days, the machines are down 13.9 % of the time and break down 9.78 times on average; single machine-days range from 2.9 % to 23.9 % and from 2 to 16 breakdowns. One day is a noisy sample, which is why the course compares methods on twenty.</p>
+<div class="widget" id="aW">
+  <div class="controls">
+    <label class="field"><span>MTBF: <b id="aMV"></b> min</span><span class="row"><input type="range" id="aM" min="30" max="300" step="10" value="120"></span></label>
+    <label class="field"><span>MTTR: <b id="aRV"></b> min</span><span class="row"><input type="range" id="aR" min="5" max="60" step="5" value="20"></span></label>
+    <label class="field"><span>Days: <b id="aDV"></b></span><span class="row"><input type="range" id="aD" min="1" max="60" step="1" value="20"></span></label>
+  </div>
+  <p class="chart-title">Day 1 of the five machines: up (blue band), down (red)</p>
+  <canvas id="aDay" aria-label="Up and down periods of five machines over one day"></canvas>
+  <p class="chart-title">Share of time down, accumulated day after day, against 1 − A (dashed)</p>
+  <canvas id="aRun" aria-label="Running downtime share converging to one minus the availability" aria-describedby="aCap"></canvas>
+  <p class="caption" id="aCap"></p>
+</div>
+<p><strong>What a breakdown does to an operation.</strong> A failure suspends the operation in progress, changeover or processing; the work done is kept and the rest resumes after the repair on the same machine, the &quot;preempt-resume&quot; assumption of the scheduling literature <a href="#ref-2">[2]</a>. The controller learns of the failure and the MTTR, never the actual repair time. Breakdowns lengthen the day: the rules' makespan grows from 1,348 to 1,423 minutes on average.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="little">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Little's law</h2>
+  </div>
+  <div class="col prose">
+
+<p>In plain words: if orders come in at 3 an hour and each stays 2 hours, about 6 orders are inside on average. That is all Little's law says, and it holds for any rule, any routing and any breakdowns.</p>
+<div class="define"><p class="define-title">What is Little's law?</p>
+<p><strong>In plain words:</strong> the average number of jobs inside equals the rate at which they come in times the average time each spends inside.</p>
+<p><strong>More precisely:</strong> observe a system on <span class="m">[0, T]</span>; let <span class="m">N(t)</span> be the number of jobs inside, <span class="m">L_T = \frac1T \int_0^T N(t)\, dt</span> its time average, <span class="m">n</span> the number of arrivals, <span class="m">\lambda_T = n/T</span> and <span class="m">W_T</span> their mean time inside. If the system is empty at <span class="m">0</span> and at <span class="m">T</span>, then <span class="m">L_T = \lambda_T W_T</span> exactly. In the long run <span class="m">L = \lambda W</span>: Little proved it in 1961 for stationary systems <a href="#ref-4">[4]</a>; on a single path it holds whenever the limits <span class="m">\lambda = \lim n/T</span> and <span class="m">W</span> exist and are finite (Stidham, 1974 <a href="#ref-6">[6]</a>; see also Ross <a href="#ref-3">[3]</a>).</p>
+<dl><dt>Flow time</dt><dd><span class="m">F_j = C_j - r_j</span>, the time job <span class="m">j</span> spends in the shop (<a href="a01-what-a-schedule-is.html" title="What a schedule is">A1</a>); <span class="m">W</span> is the mean flow time <span class="m">\bar F</span>, not the fastest-route work <span class="m">W_f</span> of Part 4.</dd><dt>Work in progress</dt><dd><span class="m">L</span>, the average number of jobs in the shop.</dd></dl>
+</div>
+<p><strong>The proof is an area counted twice.</strong> Draw for each job a horizontal bar from its arrival <span class="m">r_j</span> to its completion <span class="m">C_j</span>. At any instant, <span class="m">N(t)</span> is the number of bars crossing <span class="m">t</span>, so the area under <span class="m">N</span> is the total length of the bars:</p>
+<div class="math-block" data-narrow="\begin{aligned} \int_0^T N(t) dt &amp;= \sum_{j=1}^{n} (C_j - r_j) = n W_T \\ \Longrightarrow \tfrac1T \int_0^T N(t) dt &amp;= \tfrac nT \cdot W_T \end{aligned}">\int_0^T N(t)\, dt = \sum_{j=1}^{n} (C_j - r_j) = n\, W_T \quad\Longrightarrow\quad \frac1T \int_0^T N(t)\, dt = \frac nT \cdot W_T .</div>
+<p>If jobs are still inside at <span class="m">T</span>, their bars are cut and the two sides differ by the cut-off parts; divided by <span class="m">T</span>, the difference tends to 0 whenever <span class="m">\lambda</span> and <span class="m">W</span> exist and are finite, which is the sample-path form of Little's theorem <a href="#ref-6">[6]</a>.</p>
+<p><strong>On the worked example.</strong> <span class="m">N(t)</span> is 1 on <span class="m">[0, 5)</span>, 2 on <span class="m">[5, 12)</span>, 3 on <span class="m">[12, 20)</span>, 2 on <span class="m">[20, 40)</span>, 3 on <span class="m">[40, 48)</span>, 2 on <span class="m">[48, 73)</span> and 1 on <span class="m">[73, 108)</span>: an area of <span class="m">5 + 14 + 24 + 40 + 24 + 50 + 35 = 192</span> job-minutes, and the flow times 20, 43, 61 and 68 sum to 192 too. So <span class="m">L = 192/108 = 1.778 = (4/108) \times 48 = \lambda_T W_T</span>. The hero shows this equality at the end of any run, and why it fails in the middle of one.</p>
+<p><strong>On the workshop.</strong> A simulated day starts empty at 0 and ends empty at the makespan <span class="m">C_{\max}</span>, so the proof applies exactly. Re-running the four rules on the 20 test days (flow times identical to <code>runs.csv</code>) and counting <span class="m">N(t)</span> from the executed log, FIFO without breakdowns has a day-average <span class="m">L</span> of 7.146 jobs and <span class="m">\lambda_T W_T = 7.146</span>, to every digit. The nominal rate gives a larger <span class="m">\lambda W = 157.4/20.83 = 7.56</span>: a steady-state reading, the work in progress of a shop whose day never ended, while a real day drains out after its last arrival and <span class="m">\lambda_T</span> is about <span class="m">1/22.3</span> per minute. EDD: 6.581 against 6.99; FIFO with breakdowns: 9.670 against 10.90.</p>
+<p><strong>What it buys.</strong> The area under <span class="m">N</span> is <span class="m">nW</span>, the job-minutes spent in the shop, so the day average is <span class="m">L = nW / C_{\max}</span>, which the mean flow times and makespans of <code>results/runs.csv</code> give for every method:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Method</th>
+<th>No breakdowns: <span class="m">W</span> (min)</th>
+<th>Day-average <span class="m">L</span> (jobs)</th>
+<th>Frequent breakdowns: <span class="m">W</span> (min)</th>
+<th>Day-average <span class="m">L</span> (jobs)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>First come, first served (FIFO)</td>
+<td>157.4</td>
+<td>7.15</td>
+<td>227.0</td>
+<td>9.67</td>
+</tr>
+<tr>
+<td>Shortest job first (SPT)</td>
+<td>147.2</td>
+<td>6.67</td>
+<td>209.0</td>
+<td>8.85</td>
+</tr>
+<tr>
+<td>Most urgent first (EDD)</td>
+<td>145.6</td>
+<td>6.58</td>
+<td>202.9</td>
+<td>8.61</td>
+</tr>
+<tr>
+<td>Shortest setup first (SST)</td>
+<td>141.2</td>
+<td>6.47</td>
+<td>191.0</td>
+<td>8.36</td>
+</tr>
+<tr>
+<td>Self-learning agent (DQN)</td>
+<td>144.0</td>
+<td>6.55</td>
+<td>198.8</td>
+<td>8.60</td>
+</tr>
+<tr>
+<td>Quick re-planning (Greedy replan)</td>
+<td>133.0</td>
+<td>6.00</td>
+<td>183.1</td>
+<td>7.86</td>
+</tr>
+<tr>
+<td>Optimiser re-planning (CP-SAT)</td>
+<td>124.9</td>
+<td>5.69</td>
+<td>177.1</td>
+<td>7.64</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Every method faces the same 60 orders a day, so the job-minutes compare directly: <span class="m">60 \times 157.4 = 9{,}444</span> a day under FIFO, <span class="m">60 \times 124.9 = 7{,}494</span> under CP-SAT, 21 % fewer: shorter flow times <em>are</em> fewer jobs waiting. The day averages divide by days of different lengths, so they differ a little less. Little's law is also the standard check of a simulator's bookkeeping.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="simpy">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>SimPy in a few ideas</h2>
+  </div>
+  <div class="col prose">
+
+<p>An event list by hand is fine for one machine and error-prone for a workshop. SimPy <a href="#ref-5">[5]</a> lets you tell each actor's story in order and keeps the list for you.</p>
+<div class="define"><p class="define-title">What is a SimPy process?</p>
+<p><strong>In plain words:</strong> a function that tells the life of one actor, an order stream, a machine, a cart, in the order things happen to it, saying &quot;wait&quot; wherever time passes.</p>
+<p><strong>More precisely:</strong> a Python generator function registered with <code>env.process(gen)</code>. Each <code>yield</code> hands an event to the <code>simpy.Environment</code> and suspends the generator until the event is triggered; <code>env.timeout(d)</code> is triggered <span class="m">d</span> time units later, so yielding it means &quot;sleep <span class="m">d</span> simulated minutes&quot;. <code>env.run(until=...)</code> repeatedly pops the earliest event from the heap, sets <code>env.now</code> to its time and resumes the processes waiting on it.</p>
+<dl><dt>Event</dt><dd>any <code>simpy.Event</code>; a process can wait on a timeout, on another process, or on an event someone else triggers with <code>succeed()</code>.</dd><dt>Generator</dt><dd>a Python function containing <code>yield</code>; each call to <code>next()</code> on it runs it up to the next <code>yield</code> and pauses it there, keeping its local variables, until it is resumed.</dd><dt>Interrupt</dt><dd><code>proc.interrupt(cause)</code> throws <code>simpy.Interrupt</code> into a waiting process, whose pending timeout no longer resumes it: how a breakdown stops an operation.</dd></dl>
+</div>
+<p>The arrivals of Part 2 as a process: the loop is the story, the timeouts are the gaps, and each arrival schedules the next by resuming the loop.</p>
+<pre><code class="language-python">import simpy
+
+def arrivals(env, gaps):
+    for name, g in zip(&quot;ABCD&quot;, gaps):
+        yield env.timeout(g)              # sleep g simulated minutes
+        print(f&quot;t = {env.now}: order {name} arrives&quot;)
+
+env = simpy.Environment()
+env.process(arrivals(env, [0, 5, 7, 28]))
+env.run()                                 # t = 0, 5, 12, 40
+</code></pre>
+<p>The breakdown of Part 2 as an interrupt: the machine finishes A at 20, starts B's colour change, is interrupted at 25 with 5 minutes left, waits out the 8-minute repair and finishes at 38, as in the trace.</p>
+<pre><code class="language-python">def machine(env):
+    yield env.timeout(20)                 # A is processed from 0 to 20
+    left = 10                             # then the colour change for B
+    while left &gt; 0:
+        start = env.now
+        try:
+            yield env.timeout(left)
+            left = 0
+        except simpy.Interrupt as stop:
+            left -= env.now - start       # keep the work already done
+            yield env.timeout(stop.cause) # wait out the repair
+    print(f&quot;t = {env.now}: changeover done&quot;)
+
+def breakdown(env, victim):
+    yield env.timeout(25)
+    victim.interrupt(8)                   # down for 8 minutes
+
+env = simpy.Environment()
+proc = env.process(machine(env))
+env.process(breakdown(env, proc))
+env.run()                                 # done at 38
+</code></pre>
+<p>The repository refines the second pattern in one way: the machine cannot know the repair time, so the breakdown process triggers an event <code>up_event</code> when the repair is over, and the interrupted operation waits on that event.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The workshop in code</h2>
+  </div>
+  <div class="col prose">
+
+<p>The scenario is drawn before the simulation starts, so the random inputs are the same whatever the decisions.</p>
+<div class="code-walk"><p class="code-src">jobshop/scenario.py · make_scenario</p><pre><code class="language-python">def make_scenario(
+    ws: Workshop,
+    seed: int,
+    n_jobs: int = 60,
+    load: float = 0.60,
+    mtbf: float | None = None,
+    mttr: float = 20.0,
+    tightness: tuple[float, float] = (2.0, 4.0),
+) -&gt; Scenario:
+    &quot;&quot;&quot;Poisson arrivals, uniform job mix, due date = arrival + k x shortest work (k uniform).
+
+    Breakdowns: per machine, exponential time between a repair and the next failure (mean
+    `mtbf`, calendar time), repair time uniform in [0.5, 1.5] x `mttr`. The arrival stream does
+    not depend on `mtbf`: the same seed gives the same jobs at every disturbance level.
+    &quot;&quot;&quot;
+    rng = np.random.default_rng([seed, 1])
+    gaps = rng.exponential(mean_interarrival(ws, load), size=n_jobs)
+    arrivals = np.floor(np.cumsum(gaps)).astype(int)
+    families = rng.integers(0, ws.n_families, size=n_jobs)
+    factors = rng.uniform(tightness[0], tightness[1], size=n_jobs)
+    jobs = tuple(
+        Job(i, int(f), int(a), int(a + round(k * ws.min_remaining_work(int(f), 0))))
+        for i, (a, f, k) in enumerate(zip(arrivals, families, factors))
+    )
+
+    downtime: list[tuple[tuple[int, int], ...]] = []
+    horizon = 4 * int(arrivals[-1]) + 5000  # far beyond any run
+    for m in range(ws.n_machines):
+        spans: list[tuple[int, int]] = []
+        if mtbf is not None:
+            brng = np.random.default_rng([seed, 2, m])
+            t = 0
+            while t &lt; horizon:
+                down = t + max(1, int(round(brng.exponential(mtbf))))
+                up = down + max(1, int(round(brng.uniform(0.5, 1.5) * mttr)))
+                spans.append((down, up))
+                t = up
+        downtime.append(tuple(spans))
+    return Scenario(seed, jobs, tuple(downtime), mttr)</code></pre>
+<p>One generator per purpose and per seed: <code>default_rng([seed, 1])</code> for the arrivals, <code>default_rng([seed, 2, m])</code> for the breakdowns of machine <code>m</code>, so the same seed gives the same jobs with and without breakdowns (<a href="d02-a-fair-benchmark.html#crn" title="A fair benchmark">D2</a>). The gaps are <code>rng.exponential(mean_interarrival(ws, load))</code>, the <span class="m">1/\lambda = 62.5/(0.60 \times 5)</span> of Part 4, and <code>np.floor(np.cumsum(gaps))</code> makes integer arrival minutes. Families are uniform (the thinning of Part 3); due dates are arrival plus <span class="m">k \times W_f</span>, <span class="m">k</span> uniform in <span class="m">[2, 4]</span>. Each machine's downtime is the alternating renewal process of Part 5, <code>down = t + max(1, round(exponential(mtbf)))</code>, <code>up = down + max(1, round(uniform(0.5, 1.5) * mttr))</code>, <code>t = up</code>, repeated far beyond any run and hidden from the controllers.</p>
+</div>
+<p><code>Shop.run</code> starts one process for the arrivals and one per machine with downtime, and runs <code>env.run(until=self._all_done)</code>: until the last job is done, not until a time. <code>Shop._arrivals</code> waits for each scenario arrival time, tells the controller (<code>on_event(..., &quot;arrival&quot;)</code>, where CP-SAT re-plans, chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>) and asks for a routing: one pending timeout at a time, as in the hand trace. A breakdown is handled by two cooperating processes.</p>
+<div class="code-walk"><p class="code-src">jobshop/shop.py · Shop._breakdowns</p><pre><code class="language-python">    def _breakdowns(self, m: MachineRT):
+        for t_down, t_up in self.scenario.downtime[m.idx]:
+            yield self.env.timeout(t_down - self.env.now)
+            m.down = True
+            m.down_since = self.now
+            m.up_event = self.env.event()
+            if m.current is not None and m.seg_start is not None:
+                self._close_segment(m)  # book the work done so far, then stop the operation
+                m.proc.interrupt()
+            self.controller.on_event(self, &quot;breakdown&quot;, machine=m)
+            yield self.env.timeout(t_up - self.env.now)
+            m.down = False
+            m.up_event.succeed()
+            self.controller.on_event(self, &quot;repair&quot;, machine=m)
+            self._try_start(m)</code></pre>
+<p>At <code>t_down</code> the machine is marked down, a fresh <code>up_event</code> is created for the operation to wait on, the running segment is booked into the log by <code>_close_segment</code> (the work done so far, subtracted from what remains), and the operation's process is interrupted. The controller hears of the breakdown and may reroute the queue (chapter <a href="b02-dispatching-rules-in-a-dynamic-shop.html#routing" title="Dispatching rules in a dynamic shop">B2</a>). At <code>t_up</code> the event succeeds, the controller hears of the repair, and <code>_try_start</code> lets an idle machine start again.</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/shop.py · Shop._work</p><pre><code class="language-python">    def _work(self, m: MachineRT, jr: JobRT):
+        &quot;&quot;&quot;Setup then processing of one operation; a breakdown suspends it, the repair resumes it.&quot;&quot;&quot;
+        while m.rem_setup &gt; 0 or m.rem_proc &gt; 0:
+            try:
+                if m.down:
+                    yield m.up_event
+                    continue
+                m.seg_kind = &quot;setup&quot; if m.rem_setup &gt; 0 else &quot;proc&quot;
+                m.seg_start = self.now
+                yield self.env.timeout(m.rem_setup if m.rem_setup &gt; 0 else m.rem_proc)
+                self._close_segment(m)
+            except simpy.Interrupt:
+                pass  # the breakdown process has already closed the segment
+        m.current = None
+        m.proc = None
+        jr.op += 1
+        jr.dest = None
+        if jr.op == jr.n_ops:
+            jr.state = JobState.DONE
+            jr.completion = self.now
+            self.n_done += 1
+            if self.n_done == len(self.scenario.jobs):
+                self._all_done.succeed()
+        else:
+            jr.state = JobState.NEW
+            self._route(jr)
+        self._try_start(m)</code></pre>
+<p>One operation as a loop over segments, so that a breakdown can cut it. While work remains: if the machine is down, wait for <code>up_event</code>; otherwise run the setup (<code>rem_setup</code>), then the processing (<code>rem_proc</code>), each as one timeout, and book it. An interrupt lands in the <code>except</code> and the loop waits for the repair. When nothing remains, the job is routed to its next operation or is done, and the machine asks for its next job.</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/shop.py · Shop._try_start</p><pre><code class="language-python">    def _try_start(self, m: MachineRT) -&gt; None:
+        if m.current is not None or m.down or not m.queue:
+            return
+        jr = self.controller.sequence(self, m)
+        if jr is None:
+            return
+        m.queue.remove(jr)
+        m.current = jr
+        jr.state = JobState.PROCESSING
+        m.rem_setup = self.ws.setup_time(m.idx, m.last_family, jr.family)
+        m.rem_proc = self.ws.proc(jr.family, jr.op, m.idx)
+        m.last_family = jr.family
+        m.seg_start = None
+        m.proc = self.env.process(self._work(m, jr))</code></pre>
+<p>The only place where a machine starts a job, and the only place the simulator asks a controller to sequence. The machine must be idle and up with a non-empty queue; <code>controller.sequence(shop, m)</code> returns a queued job, or <code>None</code> to wait (CP-SAT uses it to keep a machine for a planned job still on its way). The changeover <code>setup_time(m, last_family, family)</code> comes from the data, not from the controller.</p>
+</div>
+<p>Carts follow the same pattern: <code>Shop._transport</code> is one process per mission, an empty leg if needed and the loaded leg, each a timeout logged as a <code>Leg</code>. Requests are served oldest first by the nearest idle cart, for every method: the carts are simulated, not optimised.</p>
+<p><strong>The controller interface.</strong> The simulator takes no decision. It calls <code>controller.route(shop, job)</code> when a job needs a machine for its next operation, <code>controller.sequence(shop, machine)</code> when a machine is free, and <code>controller.on_event(shop, kind, ...)</code> on every arrival, breakdown and repair, where the controller may <code>reroute</code> queued jobs. The physics of the shop is fixed. That makes the comparison fair: FIFO, the DQN agent and CP-SAT are objects with the same three methods, run on the same simulator and scenario and judged by the same checker (chapter <a href="d02-a-fair-benchmark.html" title="A fair benchmark">D2</a>). Exercise 5 writes another.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;One order every 20.83 minutes.&quot;</strong> That is the average, not a timetable: the test gaps range from 0 to 161 minutes, and an hour without any order happens about one hour in 15 on the test days (6.6 %; one in 17.8 in theory).</li>
+<li><strong>&quot;A load of 0.60 means the machines are 60 % busy and nobody waits.&quot;</strong> The 0.60 counts fastest-route processing only; with real routes and changeovers the load is between 0.74 and 0.82, depending on the method, and queues form at any load because arrivals and work are variable.</li>
+<li><strong>&quot;MTBF is the time between two failures.&quot;</strong> In the repository it is the time from a repair to the next failure; the time between failures is MTBF + MTTR = 140 min. Mixing the conventions changes <span class="m">A</span>.</li>
+<li><strong>&quot;One simulated day shows the long-run values.&quot;</strong> A machine-day has between 2 and 16 breakdowns and between 2.9 % and 23.9 % downtime. <span class="m">A</span> and <span class="m">L = \lambda W</span> are long-run statements.</li>
+<li><strong>&quot;Little's law needs Poisson arrivals or FIFO.&quot;</strong> It needs neither. It needs care with the window: exact on one that starts and ends empty, approximate otherwise.</li>
+<li><strong>&quot;Events at the same time happen at the same time.&quot;</strong> The simulator executes them one after the other in tie-breaker order, and results can depend on it (a repair and an arrival at minute 50). SimPy's order makes runs deterministic, but it is a modelling choice.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why does the clock of an event-driven simulator jump rather than tick?</summary>
+<p>Because the state changes only at events: between two events there is nothing to compute, so the clock moves straight to the next event time, without rounding it to a grid.</p>
+</details>
+<details class="sol"><summary>2. In the repository's shop, what can be on the event list at a given moment?</summary>
+<p>The next arrival; for each machine with breakdowns, its next failure or its repair; for each running operation, the end of its current segment; for each cart on a mission, the end of its leg; and SimPy's own bookkeeping events.</p>
+</details>
+<details class="sol"><summary>3. Why is only the next arrival on the list, rather than all 60?</summary>
+<p>The arrival process schedules the next arrival when the current one happens: a single pending timeout. The run is the same and the list stays short.</p>
+</details>
+<details class="sol"><summary>4. A machine has been up for 100 minutes. What is the expected time to its next failure?</summary>
+<p>120 minutes, as if just repaired: the exponential up time is memoryless. Real machines wear, and their failure rate grows with age; the model ignores that.</p>
+</details>
+<details class="sol"><summary>5. What does the load ρ = 0.60 leave out?</summary>
+<p>Changeovers, which depend on the sequence; routes that are not the fastest; breakdowns (85.7 % of machine time is available); and time on the carts. Measured, FIFO loads the machines at 0.82.</p>
+</details>
+<details class="sol"><summary>6. Why does availability depend only on MTBF and MTTR, not on their distributions?</summary>
+<p>The long-run up fraction is <span class="m">\sum U_i / \sum (U_i + D_i)</span>, and by the law of large numbers each sum divided by <span class="m">n</span> tends to its mean. Only <span class="m">E[U]</span> and <span class="m">E[D]</span> survive the limit.</p>
+</details>
+<details class="sol"><summary>7. CP-SAT has a mean flow time of 124.9 min, FIFO 157.4 min, on the same 60 orders a day. How much less work in progress does CP-SAT keep?</summary>
+<p>A day starts and ends empty, so the area under <span class="m">N(t)</span> is <span class="m">nW</span>: <span class="m">60 \times 124.9 = 7{,}494</span> job-minutes against 9,444, 21 % fewer; as day averages <span class="m">nW/C_{\max}</span>, 5.69 against 7.15 jobs. The nominal <span class="m">\lambda W</span>, 6.00 against 7.56, overstates both, because each day drains out after its last arrival.</p>
+</details>
+<details class="sol"><summary>8. Why does the simulator leave every decision to a controller?</summary>
+<p>So that every method runs on the same model and scenario and only the decisions differ.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the code runs from the course folder (or with <code>JOBSHOP_REPO</code> pointing to the repository). Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Trace the paint machine with another rule.</b> Redo the hand trace of Part 2 with shortest setup first (SST: the waiting order that needs no colour change, ties by arrival; the repository's SST breaks ties by due date, which here makes the same choices), same arrivals and breakdown. Write the event list after each event. When does each order leave, how many events does the run take, and what is the sum of the flow times?</p>
+<details class="sol"><summary>Hint</summary>
+<p>At minute 20 the machine is blue and both B (red) and C (blue) wait: SST takes C without changeover, and the breakdown then interrupts C's processing.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>0: A starts (arrival 5, done 20, failure 25). 5 and 12: B and C wait (done 20, failure 25, arrival 40). 20: A leaves; SST picks C, no changeover (failure 25, done 35, arrival 40). 25: failure, 10 of C's 15 min left, &quot;done 35&quot; struck off (repair 33, arrival 40). 33: C resumes (arrival 40, done 43). 40: D waits. 43: C leaves; B and D are red, B arrived first: changeover (setup done 53). 53: B is processed (done 63). 63: B leaves; D is red like B, no changeover (done 88). 88: D leaves.</p>
+<p>Completions A 20, C 43, B 63, D 88, in 11 events instead of 13: two &quot;setup done&quot; fewer. Flow times 20, 31, 58 and 48, sum 157 against 192 for FIFO; on this shorter day <span class="m">L = 157/88 = 1.784</span>. In the hero: worked example, rule SST.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Only the exponential is memoryless.</b> Let <span class="m">X \ge 0</span> be continuous with <span class="m">P(X &gt; s + t \mid X &gt; s) = P(X &gt; t)</span> for all <span class="m">s, t \ge 0</span> and <span class="m">P(X &gt; t) &gt; 0</span> for all <span class="m">t</span>. Prove that <span class="m">X</span> is exponential. Then compute <span class="m">P(X &gt; 30 \mid X &gt; 10)</span> for the workshop's gaps.</p>
+<details class="sol"><summary>Hint</summary>
+<p>With <span class="m">g(t) = P(X &gt; t)</span> the property is <span class="m">g(s + t) = g(s)\, g(t)</span>. Find <span class="m">g</span> on the rationals, then use that <span class="m">g</span> is monotone.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>By induction <span class="m">g(nt) = g(t)^n</span>, so <span class="m">g(1) = g(1/q)^q</span> and <span class="m">g(p/q) = g(1)^{p/q}</span> for integers <span class="m">p, q &gt; 0</span>. Write <span class="m">g(1) = e^{-\lambda}</span>; <span class="m">\lambda</span> is finite since <span class="m">g(1) &gt; 0</span>, and positive since <span class="m">g(1) = 1</span> would give <span class="m">g = 1</span> on the rationals, <span class="m">X = \infty</span>. So <span class="m">g(r) = e^{-\lambda r}</span> for every rational <span class="m">r \ge 0</span>. A survival function is nonincreasing: for rationals <span class="m">r_1 &lt; t &lt; r_2</span>, <span class="m">e^{-\lambda r_2} \le g(t) \le e^{-\lambda r_1}</span>, and letting <span class="m">r_1, r_2 \to t</span> gives <span class="m">g(t) = e^{-\lambda t}</span>.
+For the workshop, <span class="m">P(X &gt; 30 \mid X &gt; 10) = P(X &gt; 20) = e^{-20/20.83} = 0.383</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The first of several clocks.</b> Let <span class="m">X_1, \dots, X_k</span> be independent exponentials with rates <span class="m">\lambda_1, \dots, \lambda_k</span>, <span class="m">M = \min_i X_i</span> and <span class="m">\Lambda = \sum_i \lambda_i</span>. Prove that <span class="m">M</span> is exponential with rate <span class="m">\Lambda</span> and that <span class="m">P(M = X_i) = \lambda_i / \Lambda</span>. Then: (a) with all five machines up, when does the next breakdown come, and on which machine? (b) If orders arrived twice as often, what would <span class="m">\rho</span> be?</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">P(M &gt; t) = \prod_i P(X_i &gt; t)</span>. For <span class="m">P(M = X_i)</span>, condition on <span class="m">X_i = x</span> and integrate the chance that all others exceed <span class="m">x</span>. For (b), <span class="m">\rho</span> is proportional to <span class="m">\lambda</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">P(M &gt; t) = \prod_i e^{-\lambda_i t} = e^{-\Lambda t}</span>, and <span class="m">P(M = X_i) = \int_0^\infty \lambda_i e^{-\lambda_i x} \prod_{j \ne i} e^{-\lambda_j x} \, dx = \lambda_i \int_0^\infty e^{-\Lambda x} dx = \lambda_i / \Lambda</span>.
+(a) Five rates of <span class="m">1/120</span>: the next breakdown comes after an exponential time of mean <span class="m">120/5 = 24</span> min, equally likely on any machine. This is superposition seen from the clocks. (b) Arrivals merge just as clocks do: doubling <span class="m">\lambda</span> halves the mean gap to 10.42 min and gives <span class="m">\rho = 62.5/(10.42 \times 5) = 1.20 &gt; 1</span>. The machines cannot keep up even without changeovers or breakdowns, and the queue grows for as long as orders come; no dispatching rule fixes a load above one.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Measure the breakdowns yourself.</b> Using <code>make_scenario</code> with <code>mtbf=120.0</code>, compute for each of the 20 test seeds and 5 machines the share of the first 1,400 minutes spent down and the number of failures in that window. Compare the means with <span class="m">1 - A</span> and <span class="m">T/140</span>, and the variance of the counts with the renewal central limit theorem, which we only cite <a href="#ref-3">[3]</a>: <span class="m">\operatorname{Var} B(T) \approx T\sigma^2/\mu^3</span> for cycles of mean <span class="m">\mu = 140</span> and variance <span class="m">\sigma^2</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>scenario.downtime[m]</code> is a tuple of <code>(t_down, t_up)</code> spans; clip each to <span class="m">[0, 1400]</span>. The cycle variance is <span class="m">\operatorname{Var} U + \operatorname{Var} D = 120^2 + 20^2/12 = 14{,}433</span>: an exponential has variance equal to its squared mean, and a uniform repair on <span class="m">[10, 30]</span> has variance <span class="m">20^2/12</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">import numpy as np
+from jobshop.scenario import make_scenario, make_workshop
+ws, T = make_workshop(), 1400
+frac, cnt = [], []
+for s in range(20):
+    for spans in make_scenario(ws, s, mtbf=120.0).downtime:
+        frac.append(sum(max(0, min(u, T) - min(d, T)) for d, u in spans) / T)
+        cnt.append(sum(d &lt; T for d, _ in spans))
+print(np.mean(frac), np.mean(cnt), np.var(cnt, ddof=1))            # 0.1385  9.78  7.14
+print(1 - 120 / 140, T / 140, T * (120**2 + 20**2 / 12) / 140**3)   # 0.1429  10.0  7.36
+</code></pre>
+<p>Down 13.9 % against 14.3 %, 9.78 failures against 10.0, variance 7.14 against 7.36: the theory matches within the noise of 100 machine-days. A Poisson count would have variance equal to its mean, 10. Here <span class="m">\operatorname{Var} B(T) \approx (T/\mu) \cdot \sigma^2/\mu^2 = 10 \times 0.74</span>: a cycle is an exponential up time plus a repair that varies little, so cycles are more regular than exponential gaps of the same mean, whose squared coefficient of variation <span class="m">\sigma^2/\mu^2</span> would be 1. Even exponential repairs would give <span class="m">14{,}800/19{,}600 = 0.76</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Write a controller.</b> Write a controller that sequences last come, first served (LIFO: the job that entered the queue most recently) and routes like the rules, through the interface of Part 8. Run it on the 20 test days without breakdowns, check every log with <code>check_schedule</code>, and compare its mean tardiness, worst tardiness and mean flow time with FIFO. What does Little's law say about the two?</p>
+<details class="sol"><summary>Hint</summary>
+<p>A controller is any object with <code>route</code>, <code>sequence</code> and <code>on_event</code>, plus the attributes <code>decision_time_s</code> and <code>n_replans</code>. <code>route_earliest_finish</code> in <code>jobshop/rules.py</code> does the routing; <code>j.queued_at</code> is when a job entered its queue.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">import numpy as np
+from jobshop.checker import check_schedule
+from jobshop.metrics import run_metrics
+from jobshop.rules import route_earliest_finish
+from jobshop.scenario import make_scenario, make_workshop
+from jobshop.shop import simulate
+
+class LIFO:
+    name, decision_time_s, n_replans = &quot;LIFO&quot;, 0.0, 0
+    def route(self, shop, jr): return route_earliest_finish(shop, jr)
+    def sequence(self, shop, m): return max(m.queue, key=lambda j: (j.queued_at, -j.idx))
+    def on_event(self, shop, kind, **info): pass
+
+ws, res = make_workshop(), []
+for s in range(20):
+    sc = make_scenario(ws, s)
+    log = simulate(ws, sc, LIFO())
+    assert check_schedule(ws, sc, log) == []
+    res.append(run_metrics(ws, sc, log))
+print([np.mean([r[k] for r in res]) for k in (&quot;mean_tardiness&quot;, &quot;max_tardiness&quot;, &quot;mean_flow_time&quot;)])
+# [20.1, 243, 151.0]
+</code></pre>
+<p>All 20 logs pass the checker. LIFO's mean flow time is slightly shorter than FIFO's (151.0 against 157.4 min), so by Little's law slightly fewer jobs are in the shop; but its mean tardiness is 20.1 against 15.5 min and its worst job 243 min late on average against 93: a job that keeps being overtaken waits for hours.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Why simulate</strong>: the simulated shop replays the same day under every method, in 5.8 ms under a rule.</div></li>
+<li><div><strong>Event-driven</strong>: pop the earliest event from the list, run its routine, schedule and cancel consequences. Paint example: 13 events for 108 minutes; a real day, 1,680 events on 613 of 1,384 minutes.</div></li>
+<li><div><strong>Poisson arrivals</strong>: exponential gaps, mean and standard deviation <span class="m">1/\lambda = 20.83</span> min; memoryless; merging adds rates, splitting multiplies them by the label's probability. Test days: mean gap 20.14 (standard error 0.60).</div></li>
+<li><div><strong>Load</strong>: <span class="m">\rho = \lambda E[w]/m = 62.5/(20.83 \times 5) = 0.60</span> for fastest routes without changeovers, a lower bound on the busy fraction; FIFO's real load is 0.82.</div></li>
+<li><div><strong>Breakdowns</strong>: an alternating renewal process, <span class="m">A = E[U]/(E[U] + E[D]) = 120/140 = 0.857</span>, 10.0 breakdowns per machine in 1,400 min; measured 13.9 % downtime and 9.78 breakdowns.</div></li>
+<li><div><strong>Little's law</strong>: <span class="m">L = \lambda W</span>, exact on a window that starts and ends empty; a day holds 9,444 job-minutes under FIFO and 7,494 under CP-SAT, day averages of 7.15 and 5.69 jobs. The nominal <span class="m">\lambda W</span> (7.56 for FIFO) overstates a day that drains out.</div></li>
+<li><div><strong>SimPy and the repository</strong>: processes are generators, timeouts waits, interrupts breakdowns; <code>make_scenario</code> draws the inputs, <code>Shop</code> plays them, the controller decides.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Discrete-event simulation</td>
+<td>A model whose state changes only at events; the clock jumps from one to the next.</td>
+</tr>
+<tr>
+<td>Event list</td>
+<td>Priority queue of future events keyed by time, with a tie-breaker.</td>
+</tr>
+<tr>
+<td>Poisson process, rate <span class="m">\lambda</span></td>
+<td>Independent exponential gaps of mean <span class="m">1/\lambda</span>; counts in a window are Poisson.</td>
+</tr>
+<tr>
+<td>Memoryless</td>
+<td><span class="m">P(X &gt; s+t \mid X &gt; s) = P(X &gt; t)</span>; only the exponential has it.</td>
+</tr>
+<tr>
+<td>Superposition, thinning</td>
+<td>Merging independent Poisson streams adds rates; random labels split a stream into Poisson streams.</td>
+</tr>
+<tr>
+<td>Load <span class="m">\rho</span></td>
+<td><span class="m">\lambda E[w]/m</span>: work brought per minute over capacity per minute.</td>
+</tr>
+<tr>
+<td>MTBF, MTTR, availability <span class="m">A</span></td>
+<td>Mean up time, mean repair time, long-run up fraction MTBF/(MTBF + MTTR).</td>
+</tr>
+<tr>
+<td>Alternating renewal process</td>
+<td>Independent, identically distributed up-down cycles.</td>
+</tr>
+<tr>
+<td>Little's law</td>
+<td><span class="m">L = \lambda W</span>: work in progress equals arrival rate times flow time.</td>
+</tr>
+<tr>
+<td>Process, timeout, interrupt</td>
+<td>SimPy's generator telling one actor's story; a fixed wait; an exception thrown into a waiting process.</td>
+</tr>
+<tr>
+<td>Controller interface</td>
+<td><code>route</code>, <code>sequence</code>, <code>on_event</code>: the only places a decision enters the simulation.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> This is a <em>terminating</em> simulation: a day starts empty and ends when the 60th job leaves, so runs are compared day against day, not with a steady state. Breakdowns ignore age and workload, repairs need no resource, and every distribution was chosen, not fitted to data. Law <a href="#ref-1">[1]</a> covers what a real study would add: input modelling, warm-up and output analysis.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>A. M. Law. <em>Simulation Modeling and Analysis</em>, 5th ed. McGraw-Hill, 2015. The next-event time-advance mechanism and event lists, random-variate generation, terminating simulations and output analysis.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>, 5th ed. Springer, 2016. Stochastic and dynamic scheduling, preemption and machine breakdowns.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>S. M. Ross. <em>Introduction to Probability Models</em>, 12th ed. Academic Press, 2019. The exponential distribution and the Poisson process with superposition and thinning; renewal theory, the renewal-reward theorem, alternating renewal processes and the renewal central limit theorem.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>J. D. C. Little. &quot;A proof for the queuing formula: L = λW&quot;. <em>Operations Research</em> 9(3), 383–387, 1961.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>SimPy documentation, simpy.readthedocs.io: processes as generators, <code>Environment</code>, <code>Timeout</code>, <code>Interrupt</code> and the event queue.</div></li>
+<li id="ref-6"><span class="rn">[6]</span><div>S. Stidham Jr. &quot;A last word on L = λW&quot;. <em>Operations Research</em> 22(2), 417–421, 1974. The sample-path proof: no stationarity needed, only the limits.</div></li>
+</ul>
+<p>Next, chapter <a href="b02-dispatching-rules-in-a-dynamic-shop.html" title="Dispatching rules in a dynamic shop">B2</a> puts the rules into the simulator: what a dispatching rule is when jobs keep arriving and machines keep failing, and how the rules fare on the twenty days.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="a03-the-flexible-job-shop.html"><span class="lbl">Previous · A3</span><span class="t">The flexible job shop</span></a>
+  <a class="next" rel="next" href="b02-dispatching-rules-in-a-dynamic-shop.html"><span class="lbl">Next · B2</span><span class="t">Dispatching rules</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter B1 of "Which Job Should the Machine Do Next?" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/jobshop-lib.js?v=20261113225334"></script>
+<script src="interactive/b01.js?v=20261113225334"></script>
+</body>
+</html>

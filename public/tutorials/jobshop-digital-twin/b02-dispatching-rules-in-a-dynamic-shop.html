@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>B2 · Dispatching rules · Which Job Should the Machine Do Next?</title>
+<meta name="description" content="Rules as priority indices; routing by earliest expected finish; rerouting after a breakdown; the four rules on twenty simulated days; the composite ATCS rule as a stronger baseline.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261113225334">
+<style>
+#qTable, #qData, #qSetup { width: auto; min-width: 100%; font-size: 0.84rem; }
+#qTable td, #qTable th, #qData td, #qData th, #qSetup td, #qSetup th { padding: 0.22rem 0.5rem; }
+#qTable td.pick { background: var(--accent-wash); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1.5px var(--accent); }
+#qTable td.done { color: var(--muted); }
+#qTable td.words { white-space: nowrap; }
+#qData .sw { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 2px; margin-right: 0.35em; vertical-align: -0.05em; }
+#demo .seg .btn, #daysW .seg .btn { font-size: 0.84rem; }
+#qGantt, #routeC, #daysC { display: block; width: 100%; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Which Job Should the Machine Do Next?</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Which Job Should the Machine Do Next? · Part B, Simulating the shop · Chapter B2 of 2</span>
+  <h1>Dispatching rules in a dynamic shop</h1>
+  <p class="lede">A machine has just finished an operation and three jobs wait in front of it: which one starts? A dispatching rule answers with one number per waiting job, its priority index, and starts the best, in microseconds and without a plan. This chapter writes the course's four rules as indices, derives the routing formula and the rerouting after a failure, reads the rules on twenty simulated days, and builds a stronger composite index, ATCS, term by term. By the end you will be able to write any rule as an index, compute by hand where a job is routed and which job ATCS starts, and explain why the best rule depends on how often machines fail.</p>
+  <p class="byline">Elie Rouphael · Needs chapters A2 and B1 · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/b02_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="jobshop-digital-twin-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">One machine, one queue: the order the rule produces, and when each order is done against its due date</p>
+      <canvas id="qGantt" aria-label="Timeline of the machine for the chosen rule, with changeovers striped, and below it one row per order with its due date, its completion and its tardiness" aria-describedby="heroStatus"></canvas>
+      <p class="hint" style="margin-top:0.3rem">Colour: the order's family. Striped: a changeover. In each order's row: red tick, its due date; plain tick, its completion; shaded, its tardiness.</p>
+      <p class="chart-title" style="margin-top:0.7rem">The priority index of every waiting order at every decision (the chosen one is framed)</p>
+      <div class="table-wrap"><table class="num" id="qTable" aria-label="Priority indices at each decision"></table></div>
+      <p class="chart-title" style="margin-top:0.7rem">The queue's data</p>
+      <div class="table-wrap"><table class="num" id="qData" aria-label="Family, processing time and due date of each order"></table></div>
+      <div class="table-wrap"><table class="num" id="qSetup" aria-label="Changeover times of the machine"></table></div>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div>
+      <span class="lbl">The queue</span>
+      <div class="seg" id="instSeg" role="group" aria-label="Queue">
+        <button class="btn" type="button" data-inst="paint" aria-pressed="true">paint machine, 4 orders</button>
+        <button class="btn" type="button" data-inst="six" aria-pressed="false">machine m2, 6 orders</button>
+      </div>
+    </div>
+    <div>
+      <span class="lbl">The rule</span>
+      <div class="seg stack" id="ruleSeg" role="group" aria-label="Rule">
+        <button class="btn" type="button" data-rule="FIFO" aria-pressed="false">First come, first served (FIFO)</button>
+        <button class="btn" type="button" data-rule="SPT" aria-pressed="false">Shortest job first (SPT)</button>
+        <button class="btn" type="button" data-rule="EDD" aria-pressed="false">Most urgent first (EDD)</button>
+        <button class="btn" type="button" data-rule="SST" aria-pressed="false">Shortest setup first (SST)</button>
+        <button class="btn" type="button" data-rule="ATCS" aria-pressed="true">Composite index (ATCS)</button>
+      </div>
+    </div>
+    <label class="field"><span>ATCS urgency scale <span class="m">k_1</span>: <b id="k1V"></b></span>
+      <span class="row"><input type="range" id="k1" min="0" max="9" step="1" value="3" aria-label="k1"></span>
+    </label>
+    <label class="field"><span>ATCS changeover scale <span class="m">k_2</span>: <b id="k2V"></b></span>
+      <span class="row"><input type="range" id="k2" min="0" max="9" step="1" value="3" aria-label="k2"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>order</span><span class="v" id="rOrder">–</span>
+      <span>total tardiness</span><span class="v" id="rTot">–</span>
+      <span>changeovers</span><span class="v" id="rSetup">–</span>
+      <span id="rBestL">best of all orders</span><span class="v" id="rBest">–</span>
+    </div>
+    <p class="hint">The paint machine of chapters <a href="a01-what-a-schedule-is.html" title="What a schedule is">A1</a> and <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a>; six orders on the workshop's machine m2, with its real changeovers. The sliders act on ATCS only.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#idea"><span class="n">1</span><span class="t">The question a free machine asks</span><span class="d">What a rule is, and how often it really decides</span></a>
+    <a href="#indices"><span class="n">2</span><span class="t">Four rules as priority indices</span><span class="d">FIFO, SPT, EDD, SST as numbers; static against dynamic</span></a>
+    <a href="#routing"><span class="n">3</span><span class="t">Earliest expected finish, and rerouting</span><span class="d">Where a job goes: the day-0 reroute, then the formula</span></a>
+    <a href="#results"><span class="n">4</span><span class="t">Four rules on twenty days</span><span class="d">Twenty test days: the best rule depends on breakdowns</span></a>
+    <a href="#breakdowns"><span class="n">5</span><span class="t">Why shortest setup first gains under breakdowns</span><span class="d">Saved changeovers, and load near saturation</span></a>
+    <a href="#blind"><span class="n">6</span><span class="t">What a rule cannot see</span><span class="d">Other queues, future arrivals, grouping families</span></a>
+    <a href="#atcs"><span class="n">7</span><span class="t">The composite index ATCS, term by term</span><span class="d">Smith&#x27;s ratio, slack and changeover penalty, by hand</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The code behind it</span><span class="d">rules.py and the simulator&#x27;s calls</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="idea">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The question a free machine asks</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> Machine m2 finishes a job; three jobs of different families, lengths and due dates wait in its buffer, and the controller's <code>sequence</code> method (<a href="b01-discrete-event-simulation.html" title="Discrete-event simulation">B1</a>) says which starts. A <strong>dispatching rule</strong> answers locally: it scores each job in this queue and starts the best, with no plan, in microseconds (<em>completely reactive</em> scheduling, in the survey of Ouelhadj and Petrovic <a href="#ref-7">[7]</a>). Rules are simple, robust and free; they can be beaten because a local look cannot see what is coming (Part 6).</p>
+<p><strong>How often does the choice matter?</strong> A simulated day has 60 jobs of 4 operations, so 240 decisions: each operation starts after one call to <code>sequence</code>. Under most urgent first only 24.1 % of the decisions of a calm day have a real choice, two or more jobs waiting (mean queue 1.30 jobs); with frequent breakdowns, 42.2 % (mean queue 1.60). Rules differ through a minority of decisions, more of them when machines fail.</p>
+<div class="define"><p class="define-title">What is a dispatching rule?</p>
+<p><strong>In plain words:</strong> a recipe a machine applies each time it becomes free: score every waiting job from what is known now, start the best.</p>
+<p><strong>More precisely:</strong> at a decision epoch <span class="m">t</span> (a minute at which machine <span class="m">m</span> is idle and up and its queue <span class="m">\mathcal Q_m(t)</span> is not empty), the rule gives each <span class="m">j \in \mathcal Q_m(t)</span> a priority index <span class="m">\pi_j(t)</span> and starts</p>
+<div class="math-block">j^\star = \arg\min_{j \in \mathcal Q_m(t)} \pi_j(t),</div>
+<p>ties broken by a second index and finally by the job number. The index may use the job's data, the time and the state of machine <span class="m">m</span>, not the other machines' queues: the rule is <em>local</em>.</p>
+<dl><dt>Priority index</dt><dd>The score <span class="m">\pi_j(t)</span>; smallest first here, except for ATCS (largest first).</dd><dt>Non-delay</dt><dd>A free machine with a waiting job starts one; every rule of the course is non-delay.</dd><dt>Policy</dt><dd>A map from the shop's state to a decision, the notion chapter <a href="d01-dispatching-as-reinforcement-learning.html" title="Dispatching as reinforcement learning">D1</a> uses for the learning agent.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="indices">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Four rules as priority indices</h2>
+  </div>
+  <div class="col prose">
+
+<p>The four rules of <code>jobshop/rules.py</code>. Job <span class="m">j</span> waits for operation <span class="m">k</span> on machine <span class="m">m</span>; <span class="m">q_j</span> is when it entered <em>this</em> queue; <span class="m">l</span> is the family <span class="m">m</span> is set up for (that of the last job it ran); <span class="m">s_m(l, f(j))</span> is the changeover of <a href="a03-the-flexible-job-shop.html" title="The flexible job shop">A3</a>.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Rule</th>
+<th>Index <span class="m">\pi_j(t)</span>, smallest first</th>
+<th>Ties</th>
+<th>Depends on <span class="m">t</span> or <span class="m">l</span>?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>First come, first served (FIFO)</td>
+<td><span class="m">q_j</span></td>
+<td>job number</td>
+<td>no: static</td>
+</tr>
+<tr>
+<td>Shortest job first (SPT)</td>
+<td><span class="m">p_{jkm}</span></td>
+<td>job number</td>
+<td>no: static</td>
+</tr>
+<tr>
+<td>Most urgent first (EDD)</td>
+<td><span class="m">d_j</span></td>
+<td>job number</td>
+<td>no: static</td>
+</tr>
+<tr>
+<td>Shortest setup first (SST)</td>
+<td><span class="m">s_m(l, f(j))</span></td>
+<td>due date, then job number</td>
+<td>yes: dynamic</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>FIFO uses the entry into this queue, not the release time <span class="m">r_j</span>; EDD uses the job's due date for every operation; SST breaks ties by due date, so among jobs needing no changeover it is EDD.</p>
+<p><strong>The paint machine, by hand.</strong> One machine set up for blue, colour changes of 10 minutes, four orders: A blue, 20 min, due 30; B red, 10 min, due 25; C blue, 15 min, due 70; D red, 25 min, due 60. The indices at <span class="m">t = 0</span> (FIFO: the arrival rank, all four having waited since before minute 0; SST cells read (changeover, due date), compared left to right):</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Rule</th>
+<th>A</th>
+<th>B</th>
+<th>C</th>
+<th>D</th>
+<th>Order</th>
+<th>Total tardiness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FIFO</td>
+<td>1</td>
+<td>2</td>
+<td>3</td>
+<td>4</td>
+<td>A B C D</td>
+<td>55</td>
+</tr>
+<tr>
+<td>SPT</td>
+<td>20</td>
+<td>10</td>
+<td>15</td>
+<td>25</td>
+<td>B C A D</td>
+<td>75</td>
+</tr>
+<tr>
+<td>EDD</td>
+<td>30</td>
+<td>25</td>
+<td>70</td>
+<td>60</td>
+<td>B A D C</td>
+<td>85</td>
+</tr>
+<tr>
+<td>SST (set up for blue)</td>
+<td>0 · 30</td>
+<td>10 · 25</td>
+<td>0 · 70</td>
+<td>10 · 60</td>
+<td>A C B D</td>
+<td>50</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>FIFO, SPT and EDD just sort the row. SST recomputes: set up for blue, A and C need no change and A is due first; then C; then B and D both need 10 minutes and B is due first. None finds the best of the 24 orders, A B D C with 40 minutes (<a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a>). The hero shows every index.</p>
+<div class="define"><p class="define-title">What separates a static index from a dynamic one?</p>
+<p><strong>In plain words:</strong> a static index is a label on the job, so two waiting jobs never swap ranks while they wait; a dynamic index also depends on the clock or the machine, and ranks can change between decisions.</p>
+<p><strong>More precisely:</strong> <span class="m">\pi_j</span> is static if <span class="m">\pi_j(t)</span> depends on neither <span class="m">t</span> nor the machine's state while <span class="m">j</span> waits. Then, on one machine without arrivals, dispatching produces the jobs sorted by index: at every decision the smallest remaining index is the next element of the sorted list. A dynamic index must be recomputed at every decision, and its sequence is not a sort.</p>
+</div>
+<p><strong>The theorems of A2, here.</strong> On one machine, all jobs present at the start and no changeovers, most urgent first minimises the maximum lateness (Jackson <a href="#ref-4">[4]</a>, proved in <a href="a02-one-machine-when-rules-are-optimal.html#jackson" title="One machine: when a rule is optimal, and when it cannot be">A2</a>). The theorem does not survive the shop, but it leaves a trace: most urgent first has the smallest maximum tardiness of the four rules at both levels (Part 4).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="routing">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Earliest expected finish, and rerouting</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> When a job arrives or finishes an operation, the controller picks which eligible machine does its next one: <strong>routing</strong>. The repository does what a shopper does at the checkouts: estimate when the job would be done at each machine, go where that is earliest. The four rules and the agent of <a href="d01-dispatching-as-reinforcement-learning.html" title="Dispatching as reinforcement learning">D1</a> share this routing, so Part 4 compares sequencing only. When a machine fails, the jobs in its queue are routed again: <strong>rerouting</strong>.</p>
+<p><strong>A real reroute.</strong> Test day 0, frequent breakdowns, shortest setup first: machine m4 fails at minute 124 with job 0 (family 0, operation 2, due at 207) in its queue. The operation can run on m4 (7 min) or m1 (10 min).</p>
+<ul>
+<li>Stay: the job is there, so it could start at 124; m4 is expected back at <span class="m">124 + 20 = 144</span> (the mean repair time), then 13 minutes of the interrupted operation and 17 committed to job 2, on its way: m4 is free for job 0 at 174 and job 0 is done at <span class="m">\max(124, 174) + 7 = 181</span>.</li>
+<li>Move: the cart needs 3 minutes, so the job could start at 127; m1 is up and busy for 22 more minutes, free at 146: done at <span class="m">\max(127, 146) + 10 = 156</span>.</li>
+</ul>
+<p>The job moves to the slower machine and expects to finish 25 minutes earlier. The repair really ends at minute 137, but even then staying would give <span class="m">\max(124, 137 + 13 + 17) + 7 = 174</span>. Job 2, not yet at m4, is counted ahead of job 0, already waiting. The sliders show when the decision flips.</p>
+<div class="widget" id="routeW">
+  <div class="controls">
+    <label class="field"><span>Repair time the controller assumes (MTTR): <b id="rtMV"></b> min</span><span class="row"><input type="range" id="rtM" min="1" max="40" step="1" value="20"></span></label>
+    <label class="field"><span>Work left on m1's current operation <span class="m">R</span>: <b id="rtRV"></b> min</span><span class="row"><input type="range" id="rtR" min="0" max="80" step="1" value="22"></span></label>
+  </div>
+  <canvas id="routeC" aria-label="The two options of job 0 at minute 124 as timelines: stay on m4 behind the repair, the interrupted operation and job 2, or move to m1 after the cart and the current operation" aria-describedby="routeCap"></canvas>
+  <div class="readouts" aria-live="off" style="max-width:22rem">
+    <span>expected finish if it stays</span><span class="v" id="rtStay">–</span>
+    <span>expected finish if it moves</span><span class="v" id="rtMove">–</span>
+    <span>decision</span><span class="v" id="rtDec">–</span>
+  </div>
+  <p class="caption" id="routeCap"></p>
+</div>
+<div class="define"><p class="define-title">What is earliest-expected-finish routing?</p>
+<p><strong>In plain words:</strong> send each job to the machine where, by a rough estimate made now, it would be finished first.</p>
+<p><strong>More precisely:</strong> minimise the expected finish <span class="m">E_m</span> below over the eligible machines, ties by the shorter processing time, then the lower machine number. It assumes all committed work runs before <span class="m">j</span>, counts no changeovers for <span class="m">j</span>, ignores the wait for a cart, and replaces the repair by MTTR <span class="m">= 20</span> min (the real one lasts uniform <span class="m">[10, 30]</span> min).</p>
+</div>
+<p><strong>The formula, one symbol at a time.</strong> Job <span class="m">j</span> needs operation <span class="m">k</span> at time <span class="m">t</span> and stands at station <span class="m">b_j</span> (the station of the machine it is at, or the load station 0). For each eligible machine <span class="m">m \in \mathcal M_{jk}</span>, <code>route_earliest_finish</code> computes:</p>
+<ul>
+<li><span class="m">a_m = t + \tau(b_j, m+1)</span>: when the job could be at <span class="m">m</span>, after the cart's travel (zero if it is already there).</li>
+<li><span class="m">U_m</span>: when <span class="m">m</span> is expected up: <span class="m">t</span> if it is up; if it is down, <span class="m">U_m = \max\big(\operatorname{round}(t^{\text{down}}_m + \text{MTTR}),\ t+1\big)</span>, with <span class="m">t^{\text{down}}_m</span> the minute <span class="m">m</span> failed. The real repair time is hidden (<a href="b01-discrete-event-simulation.html#breakdowns" title="Discrete-event simulation">B1</a>), so the controller assumes the mean; if the repair is already overdue by that estimate, it assumes the machine is back no earlier than the next minute.</li>
+<li><span class="m">R_m</span>: what remains of the operation in progress on <span class="m">m</span>, its changeover included; 0 if <span class="m">m</span> is idle.</li>
+<li><span class="m">W_m = \sum_{i \in \mathcal Q_m \cup \mathcal I_m,\ i \ne j} p_{i k_i m}</span>: the processing committed to <span class="m">m</span> by the jobs in its queue <span class="m">\mathcal Q_m</span> or on their way to it <span class="m">\mathcal I_m</span>, each at its own next operation <span class="m">k_i</span>, <span class="m">j</span> excluded.</li>
+<li><span class="m">F_m = U_m + R_m + W_m</span>: when <span class="m">m</span> is expected free for <span class="m">j</span>.</li>
+<li><span class="m">E_m = \max(a_m, F_m) + p_{jkm}</span>: when <span class="m">j</span> is expected done on <span class="m">m</span>.</li>
+</ul>
+<p>The job goes to <span class="m">\arg\min_m (E_m, p_{jkm}, m)</span>, compared lexicographically. In the example, for m4: <span class="m">a = 124</span>, <span class="m">U = 144</span>, <span class="m">R = 13</span>, <span class="m">W = 17</span>, <span class="m">F = 174</span>, <span class="m">E = 181</span>; for m1: <span class="m">a = 127</span>, <span class="m">U = 124</span>, <span class="m">R = 22</span>, <span class="m">W = 0</span>, <span class="m">F = 146</span>, <span class="m">E = 156</span>.</p>
+<p><strong>Rerouting, and what it is worth.</strong> When machine <span class="m">m</span> fails, each job waiting in its queue is routed again and moved by cart if another machine now gives an earlier finish; jobs on a cart or waiting for one keep their destination, and nothing happens at a repair. With frequent breakdowns shortest setup first moves 16.9 jobs a day out of 34.5 it re-examines. Switching rerouting off raises its mean tardiness from 34.1 to 37.5 min, and that of most urgent first from 37.6 to 39.1 (exercise 5; short simulations that first re-create <code>results/runs.csv</code> exactly).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="results">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Four rules on twenty days</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each rule runs on the same 20 test days at both levels, with the same arrivals, the same breakdowns and the same routing rule (the method of <a href="d02-a-fair-benchmark.html#crn" title="A fair benchmark">D2</a>). From <code>results/runs.csv</code>: means over the days with 95 % bootstrap intervals; the max tardiness is the tardiness of the most tardy job of the day. Differences and ratios are computed before rounding.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Rule</th>
+<th>Mean tardiness (min)</th>
+<th>Max tardiness (min)</th>
+<th>Changeovers (min/day)</th>
+<th>Late jobs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>No breakdowns</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>First come, first served (FIFO)</td>
+<td>15.5 [7.6, 26.7]</td>
+<td>93 [69, 120]</td>
+<td>1089</td>
+<td>29.8 %</td>
+</tr>
+<tr>
+<td>Shortest job first (SPT)</td>
+<td>10.0 [5.4, 16.3]</td>
+<td>106 [65, 167]</td>
+<td>1044</td>
+<td>22.4 %</td>
+</tr>
+<tr>
+<td>Most urgent first (EDD)</td>
+<td><strong>7.0</strong> [3.3, 12.4]</td>
+<td><strong>58</strong> [43, 74]</td>
+<td>1025</td>
+<td>20.2 %</td>
+</tr>
+<tr>
+<td>Shortest setup first (SST)</td>
+<td>9.4 [5.2, 15.2]</td>
+<td>97 [70, 128]</td>
+<td><strong>918</strong></td>
+<td>20.8 %</td>
+</tr>
+<tr>
+<td><strong>Frequent breakdowns</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>First come, first served (FIFO)</td>
+<td>60.8 [41.9, 82.2]</td>
+<td>216 [179, 259]</td>
+<td>1091</td>
+<td>60.4 %</td>
+</tr>
+<tr>
+<td>Shortest job first (SPT)</td>
+<td>45.4 [32.0, 60.8]</td>
+<td>235 [182, 292]</td>
+<td>1036</td>
+<td>54.0 %</td>
+</tr>
+<tr>
+<td>Most urgent first (EDD)</td>
+<td>37.6 [27.1, 50.0]</td>
+<td><strong>155</strong> [133, 178]</td>
+<td>1014</td>
+<td>55.2 %</td>
+</tr>
+<tr>
+<td>Shortest setup first (SST)</td>
+<td><strong>34.1</strong> [24.8, 44.9]</td>
+<td>212 [171, 260]</td>
+<td><strong>820</strong></td>
+<td>46.2 %</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="widget" id="daysW">
+  <div class="controls">
+    <div class="seg" id="dLevel" role="group" aria-label="Disturbance level">
+      <button class="btn" type="button" data-level="no breakdowns" aria-pressed="false">no breakdowns</button>
+      <button class="btn" type="button" data-level="frequent breakdowns" aria-pressed="true">frequent breakdowns</button>
+    </div>
+    <div class="seg" id="dMeasure" role="group" aria-label="Measure">
+      <button class="btn" type="button" data-measure="mean_tardiness" aria-pressed="true">mean tardiness</button>
+      <button class="btn" type="button" data-measure="max_tardiness" aria-pressed="false">max tardiness</button>
+      <button class="btn" type="button" data-measure="setup_time" aria-pressed="false">changeovers</button>
+      <button class="btn" type="button" data-measure="diff" aria-pressed="false">SST − EDD, day by day</button>
+    </div>
+  </div>
+  <canvas id="daysC" aria-label="The 20 test days for each rule, one dot per day, with the mean as a bar; or the day-by-day difference between shortest setup first and most urgent first" aria-describedby="daysCap"></canvas>
+  <p class="caption" id="daysCap"></p>
+</div>
+<ol>
+<li><strong>The best rule depends on the level.</strong> Without breakdowns most urgent first has the lowest mean and is the best of the four on 14 of the 20 days; with breakdowns shortest setup first has the lowest mean and is the best on 11.</li>
+<li><strong>The comparison moves; the reversal is not certain.</strong> Day by day, shortest setup first minus most urgent first is <span class="m">+2.3\ [+0.9, +4.1]</span> min without breakdowns (SST better on 4 days of 20) and <span class="m">-3.5\ [-7.8, +0.6]</span> with them (better on 11, worse on 9). The arrivals are the same at both levels, so the change can be paired too: <span class="m">-5.8\ [-11.1, -1.2]</span> min. Breakdowns really move the comparison towards shortest setup first; whether it ends ahead is not settled.</li>
+<li><strong>Most urgent first protects the most tardy job:</strong> 58 and 155 min, against 97 and 212 for shortest setup first, the trace of Jackson's theorem.</li>
+<li><strong>Shortest job first</strong> has the worst maximum at both levels, 106 and 235: long jobs keep being overtaken.</li>
+<li><strong>Changeovers are what the rules leave on the table:</strong> 820 to 1091 minutes a day, against 635 and 633 for optimiser re-planning (without and with breakdowns), chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>.</li>
+<li><strong>Breakdowns hurt every rule,</strong> multiplying mean tardiness by 3.7 (shortest setup first) to 5.4 (most urgent first).</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="breakdowns">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Why shortest setup first gains under breakdowns</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> A changeover is machine time that produces nothing. Avoiding one makes no particular job earlier but gives capacity back to every job behind, and what that is worth depends on the load. In a calm shop capacity is cheap, queues are short and urgency matters more: most urgent first wins. When machines fail 14 % of the time, each saved minute shortens many waits, and shortest setup first catches up, as avoiding colour changes (50 min) beat most urgent first (85 min) on the paint machine of <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a>.</p>
+<p><strong>Measured.</strong> Shortest setup first spends 107 fewer changeover minutes a day than most urgent first without breakdowns, 195 fewer with them, because it has more to choose from: its decisions with two or more jobs waiting rise from 24.0 % to 40.4 %.</p>
+<p><strong>A rough load calculation.</strong> One job arrives every 20.83 minutes on average and there are 5 machines, so the shop offers <span class="m">5 \times 20.83 = 104.15</span> machine-minutes per arriving job. The course's load <span class="m">\rho = 0.60</span> (<a href="b01-discrete-event-simulation.html#load" title="Discrete-event simulation">B1</a>) counts only fastest-route work: <span class="m">62.5 / 104.15 = 0.60</span>. The real shop does more: 67.1 minutes of processing per job without breakdowns and 67.4 with them (more than the 62.5 of the fastest routes: routing balances machines), plus changeovers: 17.1 minutes per job under most urgent first and 15.3 under shortest setup first in the calm shop, 16.9 and 13.7 with breakdowns. With breakdowns only a share <span class="m">A = 0.857</span> of machine time is available. The <strong>effective load</strong> is work over available capacity:</p>
+<div class="math-block" data-narrow="\rho_{\text{eff}} = \frac{\bar p + \bar s}{5/\lambda}\,\frac1A: \ 0.808 \text{ vs } 0.791 \text{ (calm)}, \ 0.944 \text{ vs } 0.908 \text{ (breakdowns)}">\rho_{\text{eff}} = \frac{\bar p + \bar s}{5 / \lambda} \cdot \frac{1}{A}: \qquad \begin{array}{lcc} &amp; \text{EDD} &amp; \text{SST} \\ \text{no breakdowns} &amp; 0.808 &amp; 0.791 \\ \text{frequent breakdowns} &amp; 0.944 &amp; 0.908 \end{array}</div>
+<p>with <span class="m">A = 1</span> in the calm shop: 0.60 becomes about 0.8 with real routes and changeovers, and above 0.9 with 14 % of machine time lost. For one server with Poisson arrivals and exponential service (M/M/1), the mean wait is the mean service time times <span class="m">\rho / (1 - \rho)</span> (Law <a href="#ref-6">[6]</a>, cited, not derived). With <span class="m">\rho_{\text{eff}}</span> in its place, that factor is 4.22 against 3.78 in the calm shop, a ratio of 1.12, and 16.87 against 9.85 with breakdowns, a ratio of 1.71: the same few points of load cost little at 0.808 and a great deal at 0.944.</p>
+<div class="callout warm">
+<p><strong>A direction, not a model.</strong> The workshop is not an M/M/1 queue and these numbers predict no tardiness. What carries over is the shape: waiting grows like <span class="m">1/(1-\rho)</span>, so capacity saved near saturation is worth far more than capacity saved with slack.</p>
+</div>
+<p><strong>The worst job tells the other half.</strong> Shortest setup first keeps a machine on its family, so a job of another family can wait through several runs: with breakdowns its maximum tardiness exceeds that of most urgent first by <span class="m">+58\ [+24, +96]</span> min day by day, even though its mean is lower.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="blind">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>What a rule cannot see</h2>
+  </div>
+  <div class="col prose">
+
+<p>A rule decides with the queue in front of it, now. Three things are outside its view.</p>
+<p><strong>Other machines' queues.</strong> The index uses only <span class="m">\mathcal Q_m(t)</span> and machine <span class="m">m</span>: it cannot prefer the job whose next machine is idle to one whose next machine is the bottleneck.</p>
+<p><strong>Future arrivals.</strong> Every rule here is non-delay. Take the paint machine set up for blue, with only B (red, 10 min, due 25) waiting at minute 0 and A (blue, 20 min, due 30) arriving at minute 1. Any rule starts B: change, B done at 20, change back, A done at 50, total tardiness 20. Waiting one minute: A done at 21, change, B done at 41, total 16. For a regular objective such as total tardiness, in shops without sequence-dependent changeovers, an optimal schedule always exists among the <em>active</em> schedules (no operation can start earlier without delaying another), which may hold a machine idle, but not always among the non-delay ones (Pinedo <a href="#ref-1">[1]</a>, chapter 2, cited); our example has a changeover, which that result does not cover, but the lesson holds: a non-delay rule can lose.</p>
+<p><strong>Grouping families across a horizon.</strong> Shortest setup first avoids the next changeover, one greedy step at a time; avoiding them over a sequence is the travelling-salesman structure of <a href="a02-one-machine-when-rules-are-optimal.html#setups" title="One machine: when a rule is optimal, and when it cannot be">A2</a>. Yet the fewest changeovers is not the goal. On the six orders of m2 in the hero, shortest setup first spends 20 minutes on changeovers and is 109 minutes late in total; most urgent first spends 46 and is 135 late; the best of all 720 orders, J0 J3 J4 J1 J5 J2, spends 29, more than shortest setup first, and is 101 late.</p>
+<p>A plan over every machine's next operations sees all three: chapters <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a> and <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> build it, and with frequent breakdowns mean tardiness falls from 34.1 min (the best rule) to 19.3, changeovers from 820 to 633 minutes a day. Inside the rule, one thing can still be done: weigh several criteria at once.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="atcs">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The composite index ATCS, term by term</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> A composite rule multiplies three factors: favour jobs short for their importance (they free the machine soon), favour jobs about to be late, penalise jobs that need a changeover. The apparent tardiness cost with setups rule, <strong>ATCS</strong>, of Lee, Bhaskaran and Pinedo <a href="#ref-2">[2]</a> extends the apparent tardiness cost rule (ATC) of Vepsalainen and Morton <a href="#ref-5">[5]</a> with the changeover factor; &quot;apparent&quot; because the index is an estimate, made from the slack now, of the tardiness cost a job will incur if it waits. With weights <span class="m">w_j</span> (all 1 in this course), when the machine is free at <span class="m">t</span> and set up for family <span class="m">l</span>:</p>
+<div class="math-block" data-narrow="\boxed{I_j = \frac{w_j}{p_j}\, e^{-\max(d_j - p_j - t, 0)/(k_1 \bar p)}\, e^{-s_{lj}/(k_2 \bar s)}}">\boxed{I_j(t, l) = \frac{w_j}{p_j}\, \exp\!\left(-\frac{\max(d_j - p_j - t,\ 0)}{k_1 \bar p}\right) \exp\!\left(-\frac{s_{lj}}{k_2 \bar s}\right)}</div>
+<p>and the <strong>largest</strong> index starts. <span class="m">s_{lj}</span> is the changeover from <span class="m">l</span> to the family of <span class="m">j</span>, <span class="m">\bar p</span> the average processing time, <span class="m">\bar s</span> the average changeover, <span class="m">k_1, k_2 &gt; 0</span> two scaling parameters.</p>
+<p><strong>First factor, <span class="m">w_j / p_j</span>: Smith's ratio.</strong> If every waiting job is certain to be late, <span class="m">T_j = C_j - d_j</span> and <span class="m">\sum_j w_j T_j = \sum_j w_j C_j - \sum_j w_j d_j</span>, the last sum independent of the order: weighted tardiness becomes weighted completion time, which Smith's rule <a href="#ref-3">[3]</a> minimises on one machine by ordering on decreasing <span class="m">w_j/p_j</span>. Swapping adjacent jobs <span class="m">i</span> and <span class="m">j</span> changes only their two terms, by <span class="m">w_j p_i - w_i p_j</span> (&quot;<span class="m">i</span> first&quot; minus &quot;<span class="m">j</span> first&quot;), negative exactly when <span class="m">w_i/p_i &gt; w_j/p_j</span>; exercise 1 completes the proof. This is weighted shortest processing time (WSPT), the right rule <em>for jobs already lost</em>.</p>
+<p><strong>Second factor: urgency through the slack.</strong> The slack <span class="m">\sigma_j(t) = d_j - p_j - t</span> is how long <span class="m">j</span> can still wait and finish on time. If <span class="m">\sigma_j \le 0</span> the job cannot be early (with <span class="m">\sigma_j &lt; 0</span> it is late whatever happens): the factor is 1 and ATCS is WSPT among such jobs, as the first factor says it should be. If <span class="m">\sigma_j &gt; 0</span> the job can wait, and its priority is discounted by <span class="m">\exp(-\sigma_j / (k_1 \bar p))</span>: the slack counted in average jobs, divided by <span class="m">k_1</span>. A slack of <span class="m">k_1</span> average jobs keeps <span class="m">e^{-1} = 0.3679</span> of the priority.</p>
+<p><strong>Third factor: the changeover penalty.</strong> <span class="m">\exp(-s_{lj} / (k_2 \bar s))</span> is 1 for a job of the current family and shrinks with the changeover, measured in average changeovers; <span class="m">k_2</span> sets how hard.</p>
+<p><strong>The parameters are scales, and their limits are simple rules</strong> (proved in exercise 2). As <span class="m">k_1, k_2 \to \infty</span> both exponentials tend to 1: WSPT. As <span class="m">k_1 \to 0</span>, among jobs of positive slack the smallest slack wins (the <strong>minimum slack</strong> rule, close to most urgent first when processing times are similar), and any job of non-positive slack beats them all. As <span class="m">k_2 \to 0</span>, the smallest changeover wins: shortest setup first, with ATC breaking ties. Dividing by <span class="m">\bar p</span> and <span class="m">\bar s</span> makes <span class="m">k_1</span>, <span class="m">k_2</span> dimensionless; Lee, Bhaskaran and Pinedo give rules of thumb for them <a href="#ref-2">[2]</a>, which we replace by a scan. On one machine we take <span class="m">\bar p</span> as the mean processing time of the orders and <span class="m">\bar s</span> as the mean changeover over ordered pairs of distinct orders: for the paint machine <span class="m">\bar p = 17.5</span> and <span class="m">\bar s = 6.6667</span>, since 8 of the 12 pairs need a 10-minute change.</p>
+<p><strong>By hand on the paint machine, <span class="m">k_1 = k_2 = 1</span>.</strong> Slack is counted in units of <span class="m">k_1 \bar p = 17.5</span> min, changeovers in units of <span class="m">k_2 \bar s = 6.667</span> min, and a colour change costs the factor <span class="m">e^{-10/6.667} = 0.2231</span>.</p>
+<ul>
+<li><span class="m">t = 0</span>, blue. A: slack 10, <span class="m">I = \frac{1}{20} \times e^{-10/17.5} = \frac{1}{20} \times 0.5647 = 0.02824</span>. B: slack 15 and a change, <span class="m">\frac{1}{10} \times 0.4244 \times 0.2231 = 0.00947</span>. C: slack 55, <span class="m">\frac{1}{15} \times 0.0432 = 0.00288</span>. D: slack 35 and a change, <span class="m">\frac{1}{25} \times 0.1353 \times 0.2231 = 0.00121</span>. <strong>A</strong> starts.</li>
+<li><span class="m">t = 20</span>, blue. B's slack is now negative: <span class="m">\frac{1}{10} \times 0.2231 = 0.02231</span>, against 0.00902 for C and 0.00379 for D. <strong>B</strong>.</li>
+<li><span class="m">t = 40</span>, red. D's slack is negative and it needs no change: <span class="m">\frac{1}{25} = 0.04000</span>, against 0.00631 for C. <strong>D</strong>, then C.</li>
+</ul>
+<p>A B D C completes at 20, 40, 65 and 90, tardiness 0, 15, 5 and 20: <strong>40 minutes, the best of all 24 orders</strong>, found without search: at minute 20 the index saw that B was lost and short, and C could wait.</p>
+<p><strong>Over the slider grid.</strong> On the paint machine a band of parameters reaches the optimum, from any <span class="m">k_2</span> at <span class="m">k_1 = 0.1</span> to <span class="m">k_2 = 2</span> alone at <span class="m">k_1 = 5</span>; too small a <span class="m">k_2</span> gives A C B D (50), large <span class="m">k_1</span> and <span class="m">k_2</span> give B C A D (75). On the six orders of m2 a band from <span class="m">(k_1, k_2) = (0.25, 0.1)</span> to <span class="m">(3, 1.5)</span> reaches 101, the best of 720 orders, against 109 for the best single rule. The band depends on the instance.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>ATCS is not in the repository; its README names it as the missing stronger baseline. The four indices and the choice:</p>
+<div class="code-walk"><p class="code-src">jobshop/rules.py · 16-39</p><pre><code class="language-python">def _fifo(shop: Shop, m: MachineRT, j: JobRT):
+    return (j.queued_at, j.idx)
+
+
+def _spt(shop: Shop, m: MachineRT, j: JobRT):
+    return (shop.ws.proc(j.family, j.op, m.idx), j.idx)
+
+
+def _edd(shop: Shop, m: MachineRT, j: JobRT):
+    return (j.due, j.idx)
+
+
+def _sst(shop: Shop, m: MachineRT, j: JobRT):
+    return (shop.ws.setup_time(m.idx, m.last_family, j.family), j.due, j.idx)
+
+
+# FIFO: first in the queue; SPT: shortest processing time; EDD: earliest due date;
+# SST: shortest setup time (stay on the current family if possible), ties by due date.
+RULES = {&quot;FIFO&quot;: _fifo, &quot;SPT&quot;: _spt, &quot;EDD&quot;: _edd, &quot;SST&quot;: _sst}
+
+
+def pick(rule: str, shop: Shop, m: MachineRT) -&gt; JobRT:
+    key = RULES[rule]
+    return min(m.queue, key=lambda j: key(shop, m, j))</code></pre>
+<p>Each rule returns a tuple and <code>pick</code> takes the <code>min</code> over the queue; Python compares tuples lexicographically, so the later entries are the tie-breaks. <code>_fifo</code> returns <code>queued_at</code>; <code>_edd</code> uses <code>j.due</code> for every operation; <code>_sst</code> asks for the changeover from <code>m.last_family</code>, which is <code>None</code> on a machine that has run nothing (then every changeover is 0 and the due date decides). <code>Shop._try_start</code> calls <code>sequence</code> whenever a machine is free, up and has a queue, and a <code>RuleController</code> always returns a job: non-delay.</p>
+</div>
+<p>The routing formula of Part 3:</p>
+<div class="code-walk"><p class="code-src">jobshop/rules.py · 43-58</p><pre><code class="language-python">def workload(shop: Shop, m: MachineRT, skip: JobRT | None = None) -&gt; int:
+    &quot;&quot;&quot;Processing time committed to a machine: queued and inbound jobs, without `skip`.&quot;&quot;&quot;
+    return sum(shop.ws.proc(j.family, j.op, m.idx) for j in m.queue + m.inbound if j is not skip)
+
+
+def route_earliest_finish(shop: Shop, jr: JobRT) -&gt; int:
+    &quot;&quot;&quot;Eligible machine with the earliest expected finish (travel + work ahead + processing).&quot;&quot;&quot;
+    best, best_key = None, None
+    for machine, proc in shop.ws.alternatives(jr.family, jr.op).items():
+        m = shop.machines[machine]
+        arrival = shop.now + shop.ws.travel[jr.station][shop.ws.station(machine)]
+        free = shop.expected_free(m) + workload(shop, m, skip=jr)
+        key = (max(arrival, free) + proc, proc, machine)
+        if best_key is None or key &lt; best_key:
+            best, best_key = machine, key
+    return best</code></pre>
+<p><code>workload</code> is <span class="m">W_m</span>: processing times on this machine of the jobs queued at it or travelling to it (<code>m.queue + m.inbound</code>), with the condition <code>if j is not skip</code> leaving out the job being routed. In <code>route_earliest_finish</code>, <code>arrival</code> is <span class="m">a_m</span>, <code>free</code> is <span class="m">F_m</span>, and the key <code>(max(arrival, free) + proc, proc, machine)</code> is <span class="m">(E_m, p_{jkm}, m)</span>, compared lexicographically; <code>expected_free</code> (in <code>shop.py</code>) is <span class="m">U_m + R_m</span>. No changeover appears in the key.</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/rules.py · 82-91</p><pre><code class="language-python">    def on_event(self, shop: Shop, kind: str, **info) -&gt; None:
+        if kind != &quot;breakdown&quot;:
+            return
+        t0 = time.perf_counter()
+        m = info[&quot;machine&quot;]
+        for jr in list(m.queue):
+            target = route_earliest_finish(shop, jr)
+            if target != m.idx:
+                shop.reroute(jr, target)
+        self.decision_time_s += time.perf_counter() - t0</code></pre>
+<p><code>RuleController.route</code> and <code>.sequence</code>, just above in the file, answer the simulator's two questions with <code>route_earliest_finish</code> and <code>pick</code>. <code>on_event</code> is the rerouting: it ignores arrivals and repairs; on a breakdown it re-routes every job in a copy of the failed machine's queue (<code>reroute</code> removes jobs from it) and moves a job only when the target changes.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;EDD uses the operation's due date.&quot;</strong> It uses the job's <span class="m">d_j</span> for every operation.</li>
+<li><strong>&quot;The rule decides every time a machine frees.&quot;</strong> Only when two or more jobs wait (Part 1).</li>
+<li><strong>&quot;Routing accounts for changeovers.&quot;</strong> <span class="m">E_m</span> is an estimate from processing minutes, not a schedule.</li>
+<li><strong>&quot;A lower mean means better on every day.&quot;</strong> Shortest setup first has the lower mean with breakdowns, wins 11 days of 20, and its paired interval contains zero (<a href="d02-a-fair-benchmark.html#bootstrap" title="A fair benchmark">D2</a>).</li>
+<li><strong>&quot;Fewer changeovers is always better.&quot;</strong> Changeovers cost capacity; they are not the objective (Part 6).</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. What makes an index static, and why does it matter?</summary>
+<p>It depends only on the job's data. On one machine without arrivals the dispatch order is then a sort; a dynamic index must be recomputed at every decision.</p>
+</details>
+<details class="sol"><summary>2. Why is shortest setup first dynamic?</summary>
+<p>Its index is the changeover from the machine's current family, which changes with every job started.</p>
+</details>
+<details class="sol"><summary>3. Write the routing key, and say what it leaves out.</summary>
+<p><span class="m">E_m = \max(t + \tau(b_j, m+1),\ U_m + R_m + W_m) + p_{jkm}</span>, ties by <span class="m">p_{jkm}</span> then <span class="m">m</span>. It leaves out changeovers, the real service order of the queue, the wait for a cart and the real repair time.</p>
+</details>
+<details class="sol"><summary>4. When a machine fails, which jobs can move?</summary>
+<p>Only those waiting in its queue. Jobs on a cart or waiting for one keep their destination; nothing is rerouted at a repair.</p>
+</details>
+<details class="sol"><summary>5. Why does most urgent first have the smallest maximum tardiness?</summary>
+<p>On one machine, all jobs present at the start and no changeovers, earliest due date minimises the maximum lateness (Jackson <a href="#ref-4">[4]</a>); in the shop the bias remains.</p>
+</details>
+<details class="sol"><summary>6. Give two reasons why shortest setup first gains on most urgent first under breakdowns.</summary>
+<p>Capacity is scarcer, so a saved changeover minute shortens more waits; and queues are longer (40.4 % of its decisions with a choice, not 24.0 %), so it saves more: 195 minutes a day, not 107.</p>
+</details>
+<details class="sol"><summary>7. In ATCS, what happens to a job with negative slack?</summary>
+<p>Its urgency factor is 1: among such jobs ATCS ranks by <span class="m">w_j/p_j</span> times the changeover factor, Smith's rule for jobs already lost.</p>
+</details>
+<details class="sol"><summary>8. What do <span class="m">k_1 \to 0</span> and <span class="m">k_2 \to 0</span> turn ATCS into?</summary>
+<p><span class="m">k_1 \to 0</span>: minimum slack, jobs of non-positive slack first. <span class="m">k_2 \to 0</span>: shortest setup first, with ATC breaking ties.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution. The coding exercises use the repository and its <code>.venv</code>; they do not modify it.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Smith's rule by exchange.</b> Prove that on one machine, all jobs available at 0 and no changeovers, ordering by decreasing <span class="m">w_j / p_j</span> minimises <span class="m">\sum_j w_j C_j</span>; then that if every job is late in every order, the same order minimises <span class="m">\sum_j w_j T_j</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Swap two adjacent jobs and compare the two terms that change. For the second part write <span class="m">T_j = C_j - d_j</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>For adjacent <span class="m">i</span>, <span class="m">j</span> starting at <span class="m">u</span>, the other completion times do not change under a swap. With <span class="m">i</span> first the two terms are <span class="m">w_i (u + p_i) + w_j (u + p_i + p_j)</span>; with <span class="m">j</span> first, <span class="m">w_j (u + p_j) + w_i (u + p_j + p_i)</span>; the difference is <span class="m">w_j p_i - w_i p_j</span>, negative iff <span class="m">w_i/p_i &gt; w_j/p_j</span>. Any order can be turned into the sorted one by such swaps of adjacent out-of-order pairs (bubble sort), none of which increases the cost, so the sorted order is optimal. If every job is late in every order, <span class="m">\sum w_j T_j = \sum w_j C_j - \sum w_j d_j</span> with a constant last sum: the same order is optimal.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The limits of ATCS.</b> Prove: (a) as <span class="m">k_1 \to 0</span>, among jobs of positive slack the smallest slack wins, and a job of non-positive slack beats any job of positive slack; (b) as <span class="m">k_2 \to 0</span>, a strictly smaller changeover wins; (c) as <span class="m">k_1, k_2 \to \infty</span>, ATCS becomes WSPT.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Write the ratio <span class="m">I_a / I_b</span> and see which factor goes to <span class="m">0</span> or <span class="m">\infty</span> while the others stay bounded.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>With <span class="m">\sigma^+ = \max(\sigma, 0)</span>, <span class="m">I_a / I_b = \frac{w_a p_b}{w_b p_a} \exp\!\big(-\frac{\sigma_a^+ - \sigma_b^+}{k_1 \bar p}\big) \exp\!\big(-\frac{s_{la} - s_{lb}}{k_2 \bar s}\big)</span>. (a) For fixed <span class="m">k_2</span> the outer factors are positive constants; if <span class="m">\sigma_a^+ &lt; \sigma_b^+</span> the middle one tends to <span class="m">+\infty</span> as <span class="m">k_1 \to 0</span>, which covers both <span class="m">0 &lt; \sigma_a &lt; \sigma_b</span> and <span class="m">\sigma_a \le 0 &lt; \sigma_b</span>. (b) For fixed <span class="m">k_1</span>, if <span class="m">s_{la} &lt; s_{lb}</span> the last factor tends to <span class="m">+\infty</span> as <span class="m">k_2 \to 0</span>. (c) Both exponentials tend to 1, and <span class="m">I_a/I_b \to (w_a/p_a)/(w_b/p_b)</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>ATCS by hand with another parameter.</b> Compute ATCS on the paint machine with <span class="m">k_1 = 2</span>, <span class="m">k_2 = 1</span>. Which order results, and why does C overtake B at minute 20?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Now <span class="m">k_1 \bar p = 35</span>; the changeover scale is still 6.667 min. At minute 20 B's slack is negative and C's is 35.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>At <span class="m">t = 0</span>: A <span class="m">\frac{1}{20} \times e^{-10/35} = \frac{1}{20} \times 0.7515 = 0.03757</span>, B 0.01454, C 0.01385, D 0.00328: A. At <span class="m">t = 20</span>, still blue: B <span class="m">\frac{1}{10} \times 0.2231 = 0.02231</span>; C's slack is exactly one urgency scale, <span class="m">\frac{1}{15} \times e^{-35/35} = \frac{1}{15} \times 0.3679 = 0.02453</span>, and it needs no change. C overtakes B: the doubled <span class="m">k_1</span> makes C's slack look small, and B pays the colour change. At <span class="m">t = 35</span>, still blue: B 0.02231 against D 0.00893, so B, then D. The order is A C B D, 50 minutes, shortest setup first's order.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Implement ATCS in the shop (coding).</b> Write an <code>ATCSController</code> with the routing and rerouting of <code>RuleController</code> and sequencing by ATCS. For an operation that is not the last, subtract the fastest remaining work after it from the due date. Choose <span class="m">(k_1, k_2)</span> on the validation days 5000–5009 only, then run the 20 test days at both levels, check every schedule with <code>check_schedule</code>, and compare with the best rule day by day.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Subclass <code>RuleController</code> and override <code>sequence</code>. Use <code>shop.ws.min_remaining_work(j.family, j.op + 1)</code>. Take <span class="m">\bar p</span> over the queue and <span class="m">\bar s</span> as the mean off-diagonal changeover of the machine: in the shop the queue changes at every decision, and a fixed per-machine <span class="m">\bar s</span> keeps the changeover scale stable. Score <span class="m">(k_1, k_2)</span> by the mean tardiness over both levels on the validation days.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>A sketch; the full version, with the grid search, is in <code>code/b02_numbers.py</code>.</p>
+<pre><code class="language-python">import math, numpy as np
+from jobshop.rules import RuleController
+from jobshop.scenario import make_workshop
+
+WS = make_workshop()
+SBAR = [np.mean([WS.setup[m][f][g] for f in range(4) for g in range(4) if f != g]) for m in range(5)]
+
+class ATCSController(RuleController):
+    def __init__(self, k1, k2):
+        super().__init__(&quot;SST&quot;); self.name, self.k1, self.k2 = &quot;ATCS&quot;, k1, k2
+    def sequence(self, shop, m):
+        if len(m.queue) == 1:
+            return m.queue[0]
+        p = {j.idx: shop.ws.proc(j.family, j.op, m.idx) for j in m.queue}
+        pbar = np.mean(list(p.values()))
+        def index(j):
+            slack = j.due - shop.ws.min_remaining_work(j.family, j.op + 1) - p[j.idx] - shop.now
+            s = shop.ws.setup_time(m.idx, m.last_family, j.family)
+            return math.exp(-max(slack, 0) / (self.k1 * pbar)) * math.exp(-s / (self.k2 * SBAR[m.idx])) / p[j.idx]
+        return max(m.queue, key=lambda j: (index(j), -j.idx))
+</code></pre>
+<p>Scanning <span class="m">k_1 \in \{0.5, 1, 2, 3, 5\}</span> and <span class="m">k_2 \in \{0.25, 0.5, 1, 2, 5\}</span> on validation gives scores from 22.06 to 26.53, best at <span class="m">k_1 = 3</span>, <span class="m">k_2 = 1</span>. On the test days every schedule passes the checker. Without breakdowns ATCS gives 5.6 min against 7.0 for most urgent first, <span class="m">-1.5\ [-4.0, +0.4]</span> day by day (computed before rounding), better on 9 of 20; with breakdowns 33.1 against 34.1 for shortest setup first, <span class="m">-1.0\ [-4.0, +2.0]</span>, better on 10 of 20. Neither interval excludes zero, and optimiser re-planning is at 1.3 and 19.3. A better rule moves the baseline a little; the gap comes from what no local rule can see (Part 6).</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>How often does the rule matter? (coding).</b> Count, over the 20 test days, the share of calls to <code>sequence</code> with two or more jobs waiting, per rule and level; then switch rerouting off and measure what it was worth.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Subclass <code>RuleController</code>: record <code>len(m.queue)</code> in <code>sequence</code> before calling <code>super().sequence</code>, and make <code>on_event</code> optionally do nothing.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">class Counting(RuleController):
+    def __init__(self, rule, reroute=True):
+        super().__init__(rule); self.q = []; self.reroute_on = reroute
+    def sequence(self, shop, m):
+        self.q.append(len(m.queue)); return super().sequence(shop, m)
+    def on_event(self, shop, kind, **info):
+        if self.reroute_on:
+            super().on_event(shop, kind, **info)
+</code></pre>
+<p>Over the 240 daily decisions (rerouting changes nothing without breakdowns):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>With a choice, calm</th>
+<th>With a choice, breakdowns</th>
+<th>Mean tardiness, breakdowns</th>
+<th>Without rerouting</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FIFO</td>
+<td>28.3 %</td>
+<td>48.0 %</td>
+<td>60.8</td>
+<td>65.7</td>
+</tr>
+<tr>
+<td>SPT</td>
+<td>25.4 %</td>
+<td>44.2 %</td>
+<td>45.4</td>
+<td>46.8</td>
+</tr>
+<tr>
+<td>EDD</td>
+<td>24.1 %</td>
+<td>42.2 %</td>
+<td>37.6</td>
+<td>39.1</td>
+</tr>
+<tr>
+<td>SST</td>
+<td>24.0 %</td>
+<td>40.4 %</td>
+<td>34.1</td>
+<td>37.5</td>
+</tr>
+</tbody>
+</table></div>
+<p>With rerouting on, the runs reproduce <code>results/runs.csv</code> exactly: a test that the subclass changed nothing else.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>A rule is an index</strong> <span class="m">\pi_j(t)</span>, computed when a machine frees: local, non-delay. FIFO, SPT, EDD are static; SST is dynamic.</div></li>
+<li><div><strong>Routing</strong>: <span class="m">E_m = \max(t + \tau(b_j, m+1),\ U_m + R_m + W_m) + p_{jkm}</span>, with MTTR for the repair and no changeovers; rerouting after a failure.</div></li>
+<li><div><strong>Results</strong>: EDD best without breakdowns; with them SST has the lower mean, from changeovers saved near saturation, but an uncertain lead; EDD keeps the smallest worst case.</div></li>
+<li><div><strong>Blind spots</strong>: other queues, future arrivals, grouping across a horizon.</div></li>
+<li><div><strong>ATCS</strong>: Smith's ratio, urgency by slack, changeover penalty; limits WSPT, minimum slack, SST; not significantly better than the best rule in the shop.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dispatching rule</td>
+<td>A local recipe picking the next job of a free machine from its queue.</td>
+</tr>
+<tr>
+<td>Priority index <span class="m">\pi_j(t)</span></td>
+<td>A job's score at a decision; smallest first (ATCS: largest).</td>
+</tr>
+<tr>
+<td>Static, dynamic index</td>
+<td>Fixed while the job waits; or changing with <span class="m">t</span> or the set-up.</td>
+</tr>
+<tr>
+<td>Non-delay</td>
+<td>A free machine with a waiting job never stays idle.</td>
+</tr>
+<tr>
+<td>Active schedule</td>
+<td>No operation can start earlier without delaying another.</td>
+</tr>
+<tr>
+<td>Earliest expected finish <span class="m">E_m</span></td>
+<td><span class="m">\max(a_m, F_m) + p_{jkm}</span>, minimised over the eligible machines.</td>
+</tr>
+<tr>
+<td>Rerouting</td>
+<td>Routing again the queue of a machine that fails.</td>
+</tr>
+<tr>
+<td>Slack <span class="m">\sigma_j(t)</span></td>
+<td><span class="m">d_j - p_j - t</span>: how long the job can wait and be on time.</td>
+</tr>
+<tr>
+<td>WSPT, minimum slack</td>
+<td>Largest <span class="m">w_j/p_j</span> first; smallest slack first.</td>
+</tr>
+<tr>
+<td>ATC, ATCS</td>
+<td>Apparent tardiness cost (with setups); <span class="m">k_1</span>, <span class="m">k_2</span> its urgency and changeover scales.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> Local, non-delay rules with the repository's routing, on one synthetic workshop at one load; rules that look at the next machine's queue are not covered, and learning which rule to use is chapter <a href="d01-dispatching-as-reinforcement-learning.html" title="Dispatching as reinforcement learning">D1</a>.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>, 5th ed. Springer, 2016. Dispatching, composite rules, active schedules.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>Y. H. Lee, K. Bhaskaran and M. Pinedo. &quot;A heuristic to minimize the total weighted tardiness with sequence-dependent setups&quot;. <em>IIE Transactions</em> 29, 1997. The ATCS index.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>W. E. Smith. &quot;Various optimizers for single-stage production&quot;. <em>Naval Research Logistics Quarterly</em> 3, 1956. The ratio rule.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>J. R. Jackson. &quot;Scheduling a production line to minimize maximum tardiness&quot;. Research Report 43, UCLA, 1955. Earliest due date and maximum lateness.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>A. P. J. Vepsalainen and T. E. Morton. &quot;Priority rules for job shops with weighted tardiness costs&quot;. <em>Management Science</em> 33(8), 1987. The ATC rule.</div></li>
+<li id="ref-6"><span class="rn">[6]</span><div>A. M. Law. <em>Simulation Modeling and Analysis</em>, 5th ed. McGraw-Hill, 2015. The single-server queue.</div></li>
+<li id="ref-7"><span class="rn">[7]</span><div>D. Ouelhadj and S. Petrovic. &quot;A survey of dynamic scheduling in manufacturing systems&quot;. <em>Journal of Scheduling</em> 12, 2009. Reactive and predictive-reactive scheduling.</div></li>
+</ul>
+<p>Next, chapter <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a> writes the whole shop as a constraint-programming model, the first step towards a controller that sees what a rule cannot.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="b01-discrete-event-simulation.html"><span class="lbl">Previous · B1</span><span class="t">Discrete-event simulation</span></a>
+  <a class="next" rel="next" href="c01-a-constraint-programming-model.html"><span class="lbl">Next · C1</span><span class="t">A constraint-programming model</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter B2 of "Which Job Should the Machine Do Next?" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/jobshop-lib.js?v=20261113225334"></script>
+<script src="interactive/b02.js?v=20261113225334"></script>
+</body>
+</html>

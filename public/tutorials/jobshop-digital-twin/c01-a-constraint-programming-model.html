@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>C1 · A constraint-programming model · Which Job Should the Machine Do Next?</title>
+<meta name="description" content="Decision variables; optional intervals and exactly-one routing; NoOverlap; the circuit constraint carrying sequence-dependent changeovers; precedence with transport lags; tardiness made linear; the objective; the same problem as a big-M MILP.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261113225334">
+<style>
+#hLower { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 0.8rem; align-items: start; }
+@media (max-width: 700px) { #hLower { grid-template-columns: minmax(0, 1fr); } }
+#hCons { font-size: 0.82rem; }
+#hCons td { padding: 0.3rem 0.45rem; font-weight: 400; vertical-align: middle; }
+#hCons td:first-child { font-weight: 400; white-space: nowrap; }
+#hCons td .katex { white-space: nowrap; }
+#hCons td.ok { color: var(--c4); font-weight: 700; text-align: center; }
+#hCons td.bad { color: var(--warm); font-weight: 700; text-align: center; }
+#hCons tr.bad td { background: var(--warm-wash); }
+#hCons td.grp { font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding-top: 0.55rem; }
+#demo .readouts .v.void { text-decoration: line-through; color: var(--muted); }
+#demo .readouts .v.warn { color: var(--warm); }
+#hArcs { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.3rem 0.5rem; align-items: center; font-size: 0.86rem; }
+#hArcs select { font: inherit; font-size: 0.84rem; padding: 0.25rem 0.35rem; border-radius: 7px; border: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); min-width: 0; }
+#twoW .mats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr)); gap: 0.8rem; }
+#twoW .assign { display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); gap: 0.4rem 0.8rem; }
+#twoW .assign > div { display: flex; align-items: center; gap: 0.4rem; flex-wrap: nowrap; }
+#twoW .assign .btn { min-height: 2.2rem; padding: 0.35rem 0.6rem; }
+#twoW .assign span.o { font-family: var(--font-mono); font-size: 0.85rem; min-width: 4.6rem; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Which Job Should the Machine Do Next?</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Which Job Should the Machine Do Next? · Part C, Optimising · Chapter C1 of 3</span>
+  <h1>A constraint-programming model of the shop</h1>
+  <p class="lede">A dispatching rule says what to do; a model says what is allowed and what is wanted, and leaves the search to a solver. This chapter writes the course's shop as a constraint-programming model, as the repository's solve_snapshot does: optional intervals with exactly-one routing, NoOverlap, a circuit whose arcs carry the changeovers, precedence with transport lags, tardiness made linear. Then it writes the same problem as a big-M MILP, to see why the formulation matters. Below, the paint machine's model checks your values live.</p>
+  <p class="byline">Elie Rouphael · Needs chapter A3 and linear inequalities · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/c01_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="jobshop-digital-twin-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The paint machine's model, with your values plugged in</p>
+      <canvas id="hGantt" aria-label="Timeline of the paint machine with the four orders at the start times you chose, the changeovers the chosen arcs require, and each order's due date and tardiness" aria-describedby="heroStatus"></canvas>
+    </div>
+    <div id="hLower">
+      <canvas id="hGraph" aria-label="The circuit graph: node 0 is the machine set up for blue, nodes A to D the orders, arrows the arc literals you set to 1"></canvas>
+      <div class="table-wrap"><table id="hCons" aria-label="Every constraint of the model with your values"></table></div>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div class="field"><span class="lbl">Arc literals: who directly follows whom</span><div id="hArcs"></div></div>
+    <div class="field"><span class="lbl">Start times <span class="m">S_j</span> (minutes)</span>
+      <label class="field"><span>A (blue, 20 min, due 30): <b id="vA"></b></span><span class="row"><input type="range" id="sA" min="0" max="110" step="1"></span></label>
+      <label class="field"><span>B (red, 10 min, due 25): <b id="vB"></b></span><span class="row"><input type="range" id="sB" min="0" max="110" step="1"></span></label>
+      <label class="field"><span>C (blue, 15 min, due 70): <b id="vC"></b></span><span class="row"><input type="range" id="sC" min="0" max="110" step="1"></span></label>
+      <label class="field"><span>D (red, 25 min, due 60): <b id="vD"></b></span><span class="row"><input type="range" id="sD" min="0" max="110" step="1"></span></label>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="bPack" type="button">Earliest starts for these arcs</button>
+      <button class="btn" id="bFifo" type="button">FIFO: ABCD</button>
+      <button class="btn" id="bOpt" type="button">Optimum: ABDC</button>
+      <button class="btn" id="bForget" type="button">Forget the changeovers</button>
+    </div>
+    <div class="readouts" aria-live="off">
+      <span>total tardiness <span class="m">\sum T_j</span></span><span class="v" id="rT">–</span>
+      <span>total completion <span class="m">\sum C_j</span></span><span class="v" id="rC">–</span>
+      <span><span class="m">10 \sum T_j + \sum C_j</span></span><span class="v" id="rObj">–</span>
+      <span>constraints violated</span><span class="v" id="rViol">–</span>
+    </div>
+    <p class="hint">Four orders wait at minute 0; the machine is set up for blue; a colour change takes 10 min; every time lives in <span class="m">[0, H]</span>, <span class="m">H = 110</span>. You set what a solver sets, the arc literals and the start times; the page computes <span class="m">E_j = S_j + p_j</span> and the smallest feasible <span class="m">T_j</span>, and checks the model of Part 7. While a row is violated the values are not a solution, and their totals are struck through: they mean nothing.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#idea"><span class="n">1</span><span class="t">Describe the rules, let the solver search</span><span class="d">Four sentences instead of a procedure</span></a>
+    <a href="#variables"><span class="n">2</span><span class="t">Starts, ends, intervals and presence literals</span><span class="d">One optional interval per eligible machine</span></a>
+    <a href="#nooverlap"><span class="n">3</span><span class="t">One job at a time on a machine</span><span class="d">A disjunction as one global constraint</span></a>
+    <a href="#circuit"><span class="n">4</span><span class="t">Who directly follows whom, and the changeover</span><span class="d">Arc literals, self-loops, (n + 1)² arcs</span></a>
+    <a href="#precedence"><span class="n">5</span><span class="t">Inside a job, with the transport lag</span><span class="d">Two literals, one lag</span></a>
+    <a href="#objective"><span class="n">6</span><span class="t">Tardiness made linear, the weight 10, the horizon</span><span class="d">Two lower bounds, an exchange rate, a safe H</span></a>
+    <a href="#paint"><span class="n">7</span><span class="t">The paint machine, written out and solved</span><span class="d">OPTIMAL 40, proven</span></a>
+    <a href="#milp"><span class="n">8</span><span class="t">The same problem with big-M constraints</span><span class="d">Same 40, LP bound 0</span></a>
+    <a href="#code"><span class="n">9</span><span class="t">solve_snapshot, piece by piece</span><span class="d">cpsat.py, lines 158 to 251</span></a>
+    <a href="#pitfalls"><span class="n">10</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">11</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">12</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">13</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="idea">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>Describe the rules, let the solver search</h2>
+  </div>
+  <div class="col prose">
+
+<p>The dispatching rules of chapter <a href="b02-dispatching-rules-in-a-dynamic-shop.html" title="Dispatching rules in a dynamic shop">B2</a> are <em>procedures</em>: when a machine frees, compute a priority for each waiting job and start the best. They cannot look ahead. On the paint machine of chapter <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a>, every rule loses to the order A, B, D, C: accept a colour change early to rescue the urgent red order B, then run the second red order D before going back to blue.</p>
+<p>Constraint programming turns the question around: write down <em>what a schedule is</em> and <em>what makes one better</em>, and let a general-purpose solver search. For the paint machine the description is four sentences.</p>
+<ol>
+<li>Each order occupies the machine for its painting time, from a start to an end.</li>
+<li>Two orders never occupy the machine at the same time.</li>
+<li>When an order directly follows one of the other colour, a 10-minute changeover separates them; the first order needs one if it is red, since the machine is set up for blue.</li>
+<li>Among all such schedules, find one with the smallest total tardiness.</li>
+</ol>
+<p>Nothing says which order to try first: the search, and the proof that nothing better exists, are the solver's job (chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html" title="How CP-SAT finds and proves a plan">C2</a>). This chapter is about the description, for the paint machine and for the five-machine workshop that the course's best method, Optimiser re-planning (CP-SAT), re-plans at every event (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>).</p>
+<div class="define"><p class="define-title">What is a constraint-programming model?</p>
+<p><strong>In plain words:</strong> a precise description of the choices to make, the rules every acceptable choice obeys, and the number that says how good it is. A solver reads it and searches; nobody writes the search.</p>
+<p><strong>More precisely:</strong> decision variables with finite integer domains, constraints (relations a full assignment must satisfy), and an integer objective to minimise. A <em>solution</em> satisfies every constraint; an <em>optimal</em> one has the smallest objective. Constraint programming (CP) allows constraints that are not linear inequalities, such as NoOverlap and Circuit below.</p>
+<dl><dt>Decision variable</dt><dd>An unknown with a finite set of allowed integer values.</dd><dt>Feasible</dt><dd>Satisfying every constraint.</dd><dt>Global constraint</dt><dd>One constraint over many variables, with its own reasoning inside the solver.</dd></dl>
+</div>
+<p>In the hero you play the solver: choose who follows whom and when each order starts, and the page checks every constraint. The opening state forgets the changeovers; its total tardiness, 5, looks better than the optimum's 40, but two rows fail, so it is not a schedule at all and its objective means nothing.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="variables">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Starts, ends, intervals and presence literals</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Plain words.</strong> A schedule says, for every operation, <em>where</em> (which machine), <em>when</em> (start and end) and <em>in which order</em> on its machine. The model needs a variable for each answer.</p>
+<p><strong>When.</strong> Every operation <span class="m">(j, k)</span> still to plan has integer variables <span class="m">S_{jk}</span> and <span class="m">E_{jk}</span> in <span class="m">[t_0, H]</span>: <span class="m">t_0</span> is the time of the snapshot, the frozen picture of the running shop that chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> builds, and <span class="m">H</span> is a horizon derived in Part 6. Times are integer minutes, which gives CP-SAT finite domains.</p>
+<p><strong>Where.</strong> For each eligible machine <span class="m">m \in \mathcal M_{jk}</span> (one to three in the workshop), a Boolean variable, a <em>literal</em>, says whether the operation runs there, and exactly one does:</p>
+<div class="math-block">x_{jkm} = 1 \iff (j,k) \text{ runs on } m, \qquad \sum_{m \in \mathcal M_{jk}} x_{jkm} = 1 .</div>
+<p>This <em>exactly-one</em> constraint is routing written as a constraint. The duration depends on the machine, so <span class="m">E_{jk} = S_{jk} + p_{jkm}</span> must hold for the chosen <span class="m">m</span> only. CP-SAT has an object for that.</p>
+<div class="define"><p class="define-title">What is an interval variable, and an optional one?</p>
+<p><strong>In plain words:</strong> a block of time with a start, a length and an end that agree. An <em>optional</em> interval is a block that may or may not exist; a yes-or-no switch decides, and when it is off every rule ignores the block.</p>
+<p><strong>More precisely:</strong> an interval <span class="m">I = (S, p, E)</span> imposes <span class="m">E = S + p</span>. An optional interval <span class="m">(S, p, E, x)</span> adds a <em>presence literal</em> <span class="m">x</span> <a href="#ref-1">[1]</a>. In CP-SAT, if <span class="m">x = 1</span> it imposes <span class="m">E = S + p</span> and takes part in the constraints over it; if <span class="m">x = 0</span> it is <em>absent</em>: <span class="m">S</span> and <span class="m">E</span> keep values, but the size equation is not enforced and constraints such as NoOverlap ignore it <a href="#ref-2">[2]</a>.</p>
+<dl><dt>Presence literal</dt><dd>The Boolean that says whether an optional interval exists.</dd><dt>Absent</dt><dd>Presence 0; the interval constrains nothing.</dd></dl>
+</div>
+<p>So operation <span class="m">(j, k)</span> gets one optional interval per eligible machine, all sharing its start and end, <span class="m">I_{jkm} = (S_{jk}, p_{jkm}, E_{jk}, x_{jkm})</span>. Exactly one is present, so exactly one size equation holds. The first operation of a family-0 job runs on machine 1 in 6 minutes or on machine 2 in 10 (notation): the model holds <span class="m">S, E, x_1, x_2</span>, the intervals <span class="m">(S, 6, E, x_1)</span> and <span class="m">(S, 10, E, x_2)</span>, and <span class="m">x_1 + x_2 = 1</span>. With <span class="m">x_1 = 1</span>, <span class="m">E = S + 6</span> and machine 2 never hears of the operation.</p>
+<p><strong>On the paint machine.</strong> Order A gets <span class="m">S_A, E_A \in [0, 110]</span> and the interval <span class="m">I_A = (S_A, 20, E_A)</span>, always present: there is one machine, so no routing choice and no presence literal. Likewise for B, C and D.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="nooverlap">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>One job at a time on a machine</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Plain words.</strong> A machine paints one order at a time. For A and B on the paint machine: either A ends before B starts, or B ends before A starts. Written as one constraint over all four blocks, that is NoOverlap.</p>
+<div class="define"><p class="define-title">What does NoOverlap mean?</p>
+<p><strong>In plain words:</strong> on one machine's calendar, the blocks that exist share no minute.</p>
+<p><strong>More precisely:</strong> <span class="m">\mathrm{NoOverlap}(I_1, \dots, I_n)</span> holds when every pair of <em>present</em> intervals <span class="m">a \ne b</span> satisfies <span class="m">E_a \le S_b</span> or <span class="m">E_b \le S_a</span>. Absent intervals are ignored; intervals are half-open, <span class="m">[S, E)</span>.</p>
+<dl><dt>Disjunction</dt><dd>An &quot;or&quot; of two constraints: <span class="m">a</span> before <span class="m">b</span>, or <span class="m">b</span> before <span class="m">a</span>.</dd></dl>
+</div>
+<p>The model posts one NoOverlap per machine over every optional interval that could land on it. It is the disjunctive graph of chapter <a href="a03-the-flexible-job-shop.html#graph" title="The flexible job shop">A3</a> for that machine, handed over as one global constraint, so the solver reasons on all pairs together: three present operations of 20, 25 and 30 minutes cannot all fit between minutes 0 and 60, although every pair fits, and a NoOverlap <em>propagator</em> (the routine that removes impossible values, chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html#propagation" title="How CP-SAT finds and proves a plan">C2</a>) sees it without trying the six orders.</p>
+<p>&quot;Or&quot; is not linear: one disjunction allows two half-planes of <span class="m">(S_a, S_b)</span>, a non-convex set, which is why the MILP of Part 8 needs a binary per pair.</p>
+<p><strong>A spoiler.</strong> Here NoOverlap is <em>implied</em> by the circuit of Part 4, which chains direct successors with <span class="m">S_b \ge E_a</span>. The repository keeps it as a <em>redundant constraint</em>, a standard CP device that gives the solver a global view of each machine.</p>
+<p><strong>On the paint machine.</strong> One constraint, <span class="m">\mathrm{NoOverlap}(I_A, I_B, I_C, I_D)</span>, stands for six disjunctions, among them <span class="m">S_B \ge E_A</span> or <span class="m">S_A \ge E_B</span>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="circuit">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Who directly follows whom, and the changeover</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Plain words.</strong> The changeover depends on the order <em>just before</em>: red after blue costs 10 minutes, red after red nothing. NoOverlap does not know who comes directly next, so the model needs a variable for it.</p>
+<p><strong>Arc literals.</strong> For machine <span class="m">m</span>, take a graph whose node 0 is the machine in its current state (free from <span class="m">\phi_m</span>, set up for family <span class="m">g_m</span>) and whose other nodes are the operations that could run on <span class="m">m</span>. For every ordered pair of nodes,</p>
+<div class="math-block">z^m_{uv} = 1 \iff \text{on machine } m,\ v \text{ directly follows } u .</div>
+<p>The arc <span class="m">0 \to v</span> means &quot;<span class="m">v</span> runs first&quot;, <span class="m">u \to 0</span> means &quot;<span class="m">u</span> runs last&quot;. On the paint machine the plan A, B, D, C is <span class="m">z_{0A} = z_{AB} = z_{BD} = z_{DC} = z_{C0} = 1</span>, every other arc 0.</p>
+<div class="define"><p class="define-title">What is the circuit constraint?</p>
+<p><strong>In plain words:</strong> the arcs switched on form one loop that leaves the machine, visits every operation placed on it once, and comes back. Operations placed elsewhere are skipped by looping onto themselves.</p>
+<p><strong>More precisely:</strong> <span class="m">\mathrm{Circuit}(\{(u, v, z_{uv})\})</span> holds when the arcs with <span class="m">z_{uv} = 1</span> form a single loop through every node that does not take its self-loop, each visited exactly once (a <em>Hamiltonian circuit</em> of those nodes); a node with <span class="m">z_{vv} = 1</span> is outside it <a href="#ref-2">[2]</a>.</p>
+<dl><dt>Node 0</dt><dd>The machine's current state, start and end of the tour.</dd><dt>Self-loop</dt><dd><span class="m">z^m_{vv} = \neg x_{vm}</span> (<span class="m">\neg x</span>, &quot;not <span class="m">x</span>&quot;, is <span class="m">1 - x</span>): an operation routed elsewhere loops on itself, one routed to <span class="m">m</span> must be visited; the <code>idle</code> loop <span class="m">z^m_{00} = 1</span> closes the empty tour of an unused machine.</dd><dt>Subtour</dt><dd>A cycle avoiding node 0; forbidden.</dd></dl>
+</div>
+<p><strong>How many arcs.</strong> With <span class="m">n_m</span> candidates: one idle loop, <span class="m">n_m</span> first arcs, <span class="m">n_m</span> last arcs, <span class="m">n_m</span> self-loops and <span class="m">n_m(n_m - 1)</span> successions, in all</p>
+<div class="math-block">1 + 3 n_m + n_m(n_m - 1) = (n_m + 1)^2 ,</div>
+<p>every ordered pair of nodes, loops included. Knowing the direct successor costs quadratic growth: 25 arcs for the paint machine's four orders in solve_snapshot's form (20 without the self-loops and the idle loop, as in Part 7), 196 for a machine with 13 candidates (Part 9).</p>
+<p><strong>The changeover sits on the arcs.</strong> Each arc literal is the <em>enforcement literal</em> of two timing constraints, written <span class="m">\Rightarrow</span>: they must hold when <span class="m">z = 1</span> and are ignored when <span class="m">z = 0</span>. With <span class="m">\alpha_b</span> the time <span class="m">b</span>'s job reaches the machine (Part 5),</p>
+<div class="math-block" data-narrow="z^m_{ab} \Rightarrow \begin{cases} S_b \ge E_a + s_m(f(a), f(b)) \\ S_b \ge \alpha_b + s_m(f(a), f(b)) \end{cases}">z^m_{ab} \Rightarrow S_b \ge E_a + s_m(f(a), f(b)) \ \text{ and } \ S_b \ge \alpha_b + s_m(f(a), f(b)),</div>
+<p>that is <span class="m">S_b \ge \max(E_a, \alpha_b) + s_m(f(a), f(b))</span>: the changeover starts once the machine is free <em>and</em> the job is there, as in the simulator of chapter <a href="b01-discrete-event-simulation.html" title="Discrete-event simulation">B1</a>. The second constraint is posted only for a positive changeover, since <span class="m">S_b \ge \alpha_b</span> holds anyway. The first arc uses the machine's state: <span class="m">z^m_{0b} \Rightarrow S_b \ge \max(\phi_m, \alpha_b) + s_m(g_m, f(b))</span>, with no changeover for a machine that has run nothing (notation). The last arc carries nothing.</p>
+<p><strong>Why only between direct successors.</strong> Three reasons.</p>
+<ol>
+<li><em>Physics.</em> A machine changes over from the family it is set up for, the one just before.</li>
+<li><em>Sums of changeovers are not changeovers.</em> Imposing <span class="m">S_b \ge E_a + s(f(a), f(b))</span> for every <span class="m">a</span> anywhere before <span class="m">b</span> is guaranteed safe by the triangle inequality <span class="m">s(f, h) \le s(f, g) + s(g, h)</span>; what it really needs is <span class="m">s(f, h) \le s(f, g) + p + s(g, h)</span> for every operation in between. The workshop breaks the triangle inequality on 4 of 120 triples (machine 1: family 2 to 0 costs 10 minutes, <span class="m">4 + 3 = 7</span> through family 3); the weaker condition holds only because every operation lasts at least 6 minutes.</li>
+<li><em>The arrival rule is wrong for non-adjacent pairs.</em> Let order D arrive at minute 50 in the plan A, B, D, C. B is red and ends at 40, D is red, so D may start at <span class="m">\max(40, 50) + 0 = 50</span>. A pairwise rule from the blue A would demand <span class="m">S_D \ge 50 + 10 = 60</span>, a changeover nobody performs.</li>
+</ol>
+<p>The circuit gives each operation exactly one predecessor, so exactly the true changeover applies. On the paint machine, <span class="m">z_{AB} \Rightarrow S_B \ge E_A + 10</span> (blue to red) and <span class="m">z_{BD} \Rightarrow S_D \ge E_B</span> (red to red).</p>
+<div class="widget" id="twoW">
+  <p class="chart-title">Two identical paint machines: presence literals, self-loops, one circuit each</p>
+  <div class="assign" id="twoAssign" aria-label="Which machine each order is routed to"></div>
+  <div class="btn-row"><button class="btn" id="twoAll" type="button">All on machine 0</button><button class="btn" id="twoBest" type="button">A best routing</button></div>
+  <canvas id="twoGantt" aria-label="Timelines of the two machines, each running its orders in its best order"></canvas>
+  <div class="mats"><canvas id="twoM0" aria-label="Arc literals of machine 0"></canvas><canvas id="twoM1" aria-label="Arc literals of machine 1"></canvas></div>
+  <p class="caption" id="twoCap"></p>
+</div>
+<p>Each grid holds a machine's arc literals, rows &quot;from&quot;, columns &quot;to&quot;; each machine runs its best tour, found by trying every order. All on machine 0 gives tardiness 40; several two-machine routings reach 0.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="precedence">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Inside a job, with the transport lag</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Plain words.</strong> A job's operations run in order, and between two machines a cart must come, load, drive and unload. So each operation gets one more integer, <span class="m">\alpha_{jk}</span>, the time the job reaches the chosen machine, with <span class="m">S_{jk} \ge \alpha_{jk}</span>. A family-0 job that ends operation 0 on machine 1 at minute 30 is at machine 3 at minute 35.</p>
+<p><strong>First operation.</strong> The snapshot gives a <em>ready time</em> <span class="m">R_{jm}</span> for each machine <span class="m">m</span> the job may go to next (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html#snapshot" title="Rescheduling on a rolling horizon">C3</a> explains the cases; a job already on its way has one). The model posts <span class="m">x_{jkm} \Rightarrow \alpha_{jk} \ge R_{jm}</span>.</p>
+<p><strong>Later operations.</strong> If <span class="m">(j, k-1)</span> runs on <span class="m">m&#x27;</span> and <span class="m">(j, k)</span> on <span class="m">m</span>, the job arrives after the transport lag</p>
+<div class="math-block">\ell(m&#x27;, m) = \begin{cases} 0, &amp; m&#x27; = m, \\ \delta + \tau\bigl(\mathrm{st}(m&#x27;), \mathrm{st}(m)\bigr), &amp; m&#x27; \ne m, \end{cases}</div>
+<p>with <span class="m">\tau</span> the loaded travel time between the stations (machine <span class="m">m</span> at station <span class="m">m + 1</span>) and <span class="m">\delta = 2</span> minutes for a cart to come (notation). The lag depends on two decisions, so it is enforced by two literals at once (<span class="m">\wedge</span>, &quot;and&quot;: both are 1),</p>
+<div class="math-block">x_{j,k-1,m&#x27;} \wedge x_{jkm} \Rightarrow \alpha_{jk} \ge E_{j,k-1} + \ell(m&#x27;, m),</div>
+<p>one constraint per pair <span class="m">(m&#x27;, m)</span>, at most 9 per pair of consecutive operations. Exactly one pair of literals is true, so exactly one lag applies: 4 or 5 minutes between two machines of the workshop, <span class="m">2 + 3 = 5</span> from machine 1 to machine 3.</p>
+<p><strong>What this costs.</strong> A move is a fixed lag; the simulated shop has two carts that may be busy, so the plan drifts from reality until the next re-plan. No method of the course optimises the carts.</p>
+<p><strong>On the paint machine.</strong> Every order is one operation, already at the machine at minute 0: <span class="m">\alpha_j = 0</span>, nothing moves, no lag.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="objective">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Tardiness made linear, the weight 10, the horizon</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>Plain words.</strong> Order A is due at minute 30. Finished at 40, it is 10 minutes late; finished at 25, it is on time, tardiness 0, not <span class="m">-5</span>. <strong>Tardiness is a maximum</strong>, <span class="m">T_j = \max(0, C_j - d_j)</span> with <span class="m">C_j = E_{j, K_j - 1}</span> (chapter <a href="a01-what-a-schedule-is.html" title="What a schedule is">A1</a>), and a maximum is not linear. The model does not write one. It posts <span class="m">T_j \ge C_j - d_j</span> and <span class="m">T_j \ge 0</span> (the domain), which only say that <span class="m">T_j</span> is <em>at least</em> the tardiness; minimisation does the rest. On the paint machine: <span class="m">T_B \ge E_B - 25</span>, <span class="m">T_B \ge 0</span>.</p>
+<div class="callout">
+<p><strong>Claim.</strong> In every optimal solution, <span class="m">T_j = \max(0, C_j - d_j)</span>.</p>
+<p><strong>Proof.</strong> <span class="m">T_j</span> appears only in its two lower bounds and in the objective, with weight <span class="m">10 &gt; 0</span>. If <span class="m">T_j &gt; \max(0, C_j - d_j)</span>, lower it to that value: both bounds still hold, no other constraint mentions <span class="m">T_j</span>, and the objective drops by <span class="m">10\,(T_j - \max(0, C_j - d_j)) &gt; 0</span>. So the solution was not optimal. <span class="m">\square</span></p>
+<p>At a FEASIBLE, non-optimal solution <span class="m">T_j</span> may exceed the true tardiness. On the snapshot of Part 9 the reported objective equals <code>plan_cost</code>, which recomputes it from the plan's end times (4567 = 4567).</p>
+</div>
+<div class="widget" id="tardW">
+  <div class="controls">
+    <label class="field"><span>Completion <span class="m">C_A</span>: <b id="tCV"></b></span><span class="row"><input type="range" id="tC" min="0" max="110" step="1" value="40"></span></label>
+    <label class="field"><span>Tardiness variable <span class="m">T_A</span>: <b id="tTV"></b></span><span class="row"><input type="range" id="tT" min="0" max="80" step="1" value="25"></span></label>
+    <button class="btn" id="tMin" type="button">Let the minimisation choose</button>
+  </div>
+  <canvas id="tardC" aria-label="The feasible region of the tardiness variable of order A against its completion time, with your point"></canvas>
+  <p class="caption" id="tardCap"></p>
+</div>
+<p><strong>The objective</strong> is <span class="m">\min \sum_j (10\, T_j + C_j)</span> over the jobs of the snapshot. The completion term breaks ties: when many plans have zero tardiness it makes the solver finish early, which keeps machines free for jobs not yet arrived (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>).</p>
+<p><strong>What the weight does.</strong> It is an exchange rate, one minute of tardiness for ten of total completion, not a <em>lexicographic</em> priority (tardiness strictly first, completion only to break ties). On the paint machine, minimising <span class="m">w \sum T_j + \sum C_j</span> over every sequence:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Weight <span class="m">w</span></th>
+<th>Best sequence</th>
+<th><span class="m">\sum T_j</span></th>
+<th><span class="m">\sum C_j</span></th>
+<th>Objective</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>CABD</td>
+<td>55</td>
+<td>185</td>
+<td>185</td>
+</tr>
+<tr>
+<td>1</td>
+<td>ACBD (tie with CABD)</td>
+<td>50</td>
+<td>190</td>
+<td>240</td>
+</tr>
+<tr>
+<td>2</td>
+<td>ACBD</td>
+<td>50</td>
+<td>190</td>
+<td>290</td>
+</tr>
+<tr>
+<td>5</td>
+<td>ABDC</td>
+<td>40</td>
+<td>215</td>
+<td>415</td>
+</tr>
+<tr>
+<td>10</td>
+<td>ABDC</td>
+<td>40</td>
+<td>215</td>
+<td>615</td>
+</tr>
+<tr>
+<td>100</td>
+<td>ABDC</td>
+<td>40</td>
+<td>215</td>
+<td>4215</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>From <span class="m">w = 3</span> on, the minimum-tardiness plan wins. In a large shop the trade can bite, so &quot;CP-SAT minimises tardiness&quot; is an approximation of what the model says. The value 10 is the repository's choice; the course does not claim it is the best.</p>
+<p><strong>The horizon.</strong> Every variable needs a finite domain. The repository takes</p>
+<div class="math-block" data-narrow="\begin{aligned} H = {} &amp;\max(t_0, \phi_m, R_{jm}) \\ &amp;+ \textstyle\sum_{(j,k)} (\max_m p_{jkm} + s_{\max} + \ell_{\max}) \end{aligned}">H = \max\bigl(t_0, \max_m \phi_m, \max_{j,m} R_{jm}\bigr) + \sum_{(j,k)} \bigl(\max_m p_{jkm} + s_{\max} + \ell_{\max}\bigr),</div>
+<p>with <span class="m">\ell_{\max} = \delta + \max_{a,b} \tau(a, b)</span>, 5 minutes in the workshop: the latest moment anything is available plus, per operation, its slowest processing time, the longest changeover and the longest lag. For the hand-written paint model of Part 7, with no transport term, <span class="m">H = 70 + 4 \times 10 = 110</span>. The code adds <span class="m">\ell_{\max}</span> even where nothing moves: <code>solve_snapshot</code> on the one-machine paint workshop adds <code>max_lag</code> = 2 per operation and uses <span class="m">H = 118</span>. Both are safe.</p>
+<p><em>Why it cuts off no optimal plan.</em> The objective grows with completion times (it is <em>regular</em>), so some optimal plan is <em>semi-active</em>: no operation can start earlier without changing a routing or an order <a href="#ref-5">[5]</a>. Following, from any operation, the predecessor that sets its start, each step back adds at most <span class="m">\max_m p + s_{\max} + \ell_{\max}</span> and never revisits an operation, so every end is at most <span class="m">H</span> (Exercise 3 writes the proof).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="paint">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The paint machine, written out and solved</h2>
+  </div>
+  <div class="col prose">
+
+<p>Parts 2 to 6 built the pieces; here they are assembled. All four orders wait at minute 0, so the arrival lines vanish; one machine, so every interval is present and no self-loop is allowed. With <span class="m">H = 110</span>:</p>
+<p><strong>Variables.</strong> <span class="m">S_j, E_j, T_j \in \{0, \dots, 110\}</span> for <span class="m">j \in \{A, B, C, D\}</span>; intervals <span class="m">(S_j, p_j, E_j)</span> with <span class="m">p = (20, 10, 15, 25)</span>; arc literals <span class="m">z_{0j}</span>, <span class="m">z_{j0}</span> and <span class="m">z_{ab}</span> (<span class="m">a \ne b</span>): 20 Booleans.</p>
+<p><strong>Constraints and objective.</strong></p>
+<div class="math-block" data-narrow="\begin{aligned} &amp;\mathrm{NoOverlap}(I_A, I_B, I_C, I_D) \\ &amp;\mathrm{Circuit}(\{0, A, B, C, D\},\ 20 \text{ arcs}) \end{aligned}">\mathrm{NoOverlap}(I_A, I_B, I_C, I_D), \qquad \mathrm{Circuit}(\{0, A, B, C, D\},\ 20 \text{ arcs}),</div>
+<div class="math-block">z_{0B} \Rightarrow S_B \ge 10, \qquad z_{0D} \Rightarrow S_D \ge 10,</div>
+<div class="math-block" data-narrow="z_{ab} \Rightarrow S_b \ge E_a + 10 \cdot [\text{colours differ}]">z_{ab} \Rightarrow S_b \ge E_a + 10 \cdot [\text{colour}(a) \ne \text{colour}(b)] \qquad (a \ne b),</div>
+<div class="math-block" data-narrow="\begin{aligned} &amp;T_j \ge E_j - d_j \quad (d = 30, 25, 70, 60) \\ &amp;\min \textstyle\sum_j T_j \end{aligned}">T_j \ge E_j - d_j \quad (d = 30, 25, 70, 60), \qquad \min \textstyle\sum_j T_j .</div>
+<p>The first arcs into A and C carry only <span class="m">S \ge 0</span>; 12 arcs join two orders. In all: 32 variables (12 integers, 20 Booleans), 4 intervals, one NoOverlap, one circuit of 20 arcs, 16 conditional and 4 plain linear constraints.</p>
+<p><strong>CP-SAT's answer</strong> (numbers script): status OPTIMAL, objective 40, best bound 40. The solver found a plan of total tardiness 40 <em>and proved</em> that none is better.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Order</th>
+<th>Arc into it</th>
+<th><span class="m">S_j</span></th>
+<th><span class="m">E_j</span></th>
+<th><span class="m">d_j</span></th>
+<th><span class="m">T_j</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td><span class="m">0 \to A</span></td>
+<td>0</td>
+<td>20</td>
+<td>30</td>
+<td>0</td>
+</tr>
+<tr>
+<td>B</td>
+<td><span class="m">A \to B</span></td>
+<td>30</td>
+<td>40</td>
+<td>25</td>
+<td>15</td>
+</tr>
+<tr>
+<td>D</td>
+<td><span class="m">B \to D</span></td>
+<td>40</td>
+<td>65</td>
+<td>60</td>
+<td>5</td>
+</tr>
+<tr>
+<td>C</td>
+<td><span class="m">D \to C</span></td>
+<td>75</td>
+<td>90</td>
+<td>70</td>
+<td>20</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With <span class="m">C \to 0</span> the arcs form one tour, and the binding constraints are visible: <span class="m">S_B = E_A + 10</span>, <span class="m">S_D = E_B</span>, <span class="m">S_C = E_D + 10</span>. It is the order A, B, D, C that chapter <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a> found by trying all 24 sequences, with the same 40. With the objective <span class="m">10 \sum T_j + \sum C_j</span>: same sequence, 615.</p>
+<p><strong>The repository's own function agrees.</strong> On a one-machine workshop with one family per order (changeover 0 between A and C, and between B and D), set up for A's family, every order ready at 0, <code>solve_snapshot</code> returns OPTIMAL, 615, A, B, D, C, total tardiness 40. Its circuit has 25 arcs: the 20 above, four self-loops and the idle loop, all forced to 0. In the hero, <em>Optimum</em> loads this solution and <em>FIFO</em> the order A, B, C, D: tardiness 55, objective 775.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="milp">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The same problem with big-M constraints</h2>
+  </div>
+  <div class="col prose">
+
+<p>A mixed-integer linear program (MILP) allows only linear constraints over continuous and integer variables. The classic scheduling MILP is Manne's disjunctive formulation <a href="#ref-3">[3]</a>: one binary and two <em>big-M</em> constraints per pair.</p>
+<div class="define"><p class="define-title">What is a big-M constraint?</p>
+<p><strong>In plain words:</strong> a rule with an off switch made of a huge number: when a binary is 1 the rule holds; when it is 0, a large constant makes it true whatever happens.</p>
+<p><strong>More precisely:</strong> <span class="m">g(x) \ge -M(1 - y)</span> with <span class="m">y</span> binary and <span class="m">M</span> at least the largest violation <span class="m">-g(x)</span> on the domain, the MILP version of <span class="m">y \Rightarrow g(x) \ge 0</span>. A <em>linear program</em> (LP) has only continuous variables; the <em>LP relaxation</em> of a MILP lets every binary take any value in <span class="m">[0, 1]</span>, and its optimum is a lower bound.</p>
+</div>
+<p><strong>The paint machine as a MILP.</strong> With <span class="m">y_{ab} = 1</span> when <span class="m">a</span> comes before <span class="m">b</span> (not necessarily directly), for each of the 6 pairs</p>
+<div class="math-block" data-narrow="\begin{aligned} S_b &amp;\ge S_a + p_a + s(a,b) - M(1-y_{ab}) \\ S_a &amp;\ge S_b + p_b + s(b,a) - M y_{ab} \end{aligned}">S_b \ge S_a + p_a + s(a, b) - M(1 - y_{ab}), \qquad S_a \ge S_b + p_b + s(b, a) - M y_{ab},</div>
+<p>plus <span class="m">S_j \ge s(\text{blue}, \text{colour}(j))</span> for every order (binding only for the first), <span class="m">T_j \ge S_j + p_j - d_j</span>, and <span class="m">\min \sum T_j</span>, over the domains <span class="m">S_j \in [0, H - p_j]</span>, <span class="m">T_j \ge 0</span>. Pairwise changeovers are correct here because the paint machine's changeovers satisfy the triangle inequality. The switched-off line needs <span class="m">M</span> at least the largest <span class="m">S_b + p_b + s - S_a</span>, which on these domains is at most <span class="m">H + s_{\max}</span>, so <span class="m">M = 120</span>: 14 variables (6 binary), 20 constraints.</p>
+<p><strong>Same optimum, useless bound.</strong> SCIP (a MILP solver shipped with OR-Tools) finds 40, A, B, D, C, after 6 branch-and-bound nodes. But the plain LP relaxation (before SCIP's presolve, cuts and branching), solved by GLOP, OR-Tools' LP solver, gives a bound of <strong>0</strong>, with starts <span class="m">(0, 10, 0, 10)</span> for A, B, C, D and fractional binaries such as <span class="m">y_{AB} = 0.25</span>: half-switched big-M lines let the orders overlap freely. With <span class="m">M = 1000</span> the bound is still 0.</p>
+<div class="widget" id="bigmW">
+  <div class="controls">
+    <label class="field"><span>Big-M: <b id="bMV"></b></span><span class="row"><input type="range" id="bM" min="50" max="300" step="5" value="120"></span></label>
+    <label class="field"><span>Relaxed binary <span class="m">y_{AB}</span>: <b id="bYV"></b></span><span class="row"><input type="range" id="bY" min="0" max="1" step="0.05" value="0.5"></span></label>
+  </div>
+  <canvas id="bigmC" aria-label="The plane of the start times of orders A and B: the two real half-planes and the region the LP relaxation allows"></canvas>
+  <p class="caption" id="bigmCap"></p>
+</div>
+<p><strong>Why so weak.</strong> Take A and B alone and write <span class="m">d = S_B - S_A</span>. &quot;A before B&quot; is <span class="m">d \ge 30</span> (20 minutes of A, 10 of changeover); &quot;B before A&quot; is <span class="m">d \le -20</span>: two half-planes, blue in the widget. Relaxed, the lines read <span class="m">d \ge 30 - M(1 - y)</span> and <span class="m">d \le -20 + My</span>, that is</p>
+<div class="math-block">\frac{d + 20}{M} \le y \le 1 - \frac{30 - d}{M} .</div>
+<p>A <span class="m">y \in [0, 1]</span> exists when the lower end is at most the upper end (<span class="m">d + 20 \le M - 30 + d</span>, that is <span class="m">M \ge 50</span>), the lower end is at most 1 (<span class="m">d \le M - 20</span>) and the upper end is at least 0 (<span class="m">d \ge 30 - M</span>):</p>
+<div class="math-block">30 - M \le S_B - S_A \le M - 20 \qquad (M \ge 50).</div>
+<p>For <span class="m">M = 120</span>, <span class="m">-90 \le S_B - S_A \le 100</span>: nearly the whole square, diagonal included. For <span class="m">y</span> between <span class="m">20/M</span> and <span class="m">1 - 30/M</span> (1/6 and 0.75 at <span class="m">M = 120</span>) the band contains <span class="m">d = 0</span>, where A and B start together. The relaxation has forgotten the disjunction, and a larger <span class="m">M</span> widens the band: branching must recover what the formulation lost. On four orders that is cheap; this chapter does not measure how it scales. CP reasons on NoOverlap and the circuit directly (and CP-SAT adds linear relaxations where they help, chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html#portfolio" title="How CP-SAT finds and proves a plan">C2</a>).</p>
+<p><strong>The flexible shop as a MILP</strong> needs assignment binaries and, for the direct-predecessor changeover, successor binaries with one-in-one-out equalities: the circuit rewritten, with every switch weakened by an <span class="m">M</span> the size of the horizon. For the snapshot of Part 9 the pairwise part alone would need 50 assignment and 235 order binaries.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>solve_snapshot, piece by piece</h2>
+  </div>
+  <div class="col prose">
+
+<p><code>solve_snapshot</code> first computes a <em>warm-start plan</em>, a quick feasible plan to start from (chapter <a href="c03-rescheduling-on-a-rolling-horizon.html#greedy" title="Rescheduling on a rolling horizon">C3</a>); the model starts with the horizon. In the code, <code>k</code> is a machine, <code>op</code> the operation index (our <span class="m">k</span>), and <code>i</code>, <code>j</code> in the machine loop number the candidate operations (nodes <code>i + 1</code>, <code>j + 1</code>), not jobs.</p>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · 158-165</p><pre><code class="language-python">    horizon = max(snap.machine_free + [snap.now])
+    max_setup = max(max(max(row) for row in mat) for mat in ws.setup)
+    max_lag = allowance + max(max(row) for row in ws.travel)
+    for job in snap.jobs:
+        horizon = max(horizon, max(job.ready.values()))
+    for job in snap.jobs:
+        for op in range(job.first_op, ws.n_ops(job.family)):
+            horizon += max(ws.alternatives(job.family, op).values()) + max_setup + max_lag</code></pre>
+<p>The bound <span class="m">H</span> of Part 6, crude and safe: the latest availability, then per remaining operation its slowest processing time, <code>max_setup</code> and <code>max_lag</code> (allowance plus longest travel, <span class="m">\ell_{\max}</span>, added for every operation).</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · 172-189</p><pre><code class="language-python">    for job in snap.jobs:
+        previous = None
+        for op in range(job.first_op, ws.n_ops(job.family)):
+            key = (job.idx, op)
+            alternatives = ws.alternatives(job.family, op)
+            if op == job.first_op:
+                alternatives = {k: p for k, p in alternatives.items() if k in job.ready}
+            s = m.new_int_var(snap.now, horizon, f&quot;s{key}&quot;)
+            e = m.new_int_var(snap.now, horizon, f&quot;e{key}&quot;)
+            a = m.new_int_var(snap.now, horizon, f&quot;a{key}&quot;)  # arrival of the job at the chosen machine
+            m.add(s &gt;= a)
+            lits = {}
+            for k, p in alternatives.items():
+                lit = m.new_bool_var(f&quot;x{key}_{k}&quot;)
+                iv = m.new_optional_interval_var(s, p, e, lit, f&quot;iv{key}_{k}&quot;)
+                lits[k] = lit
+                on_machine[k].append((key, job.family, s, e, lit, iv, a))
+            m.add_exactly_one(lits.values())</code></pre>
+<p>Per operation: the eligible machines (for the first one, those in <code>job.ready</code>); <code>s</code>, <code>e</code>, <code>a</code> (start, end, arrival) in <span class="m">[t_0, H]</span> with <code>s &gt;= a</code>; per machine a presence literal and an optional interval, kept in <code>on_machine[k]</code>; <code>add_exactly_one</code>, the routing. Lines 190–198 pass the warm start as <em>hints</em>, suggested values the solver tries first (chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html#warm" title="How CP-SAT finds and proves a plan">C2</a>).</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · 199-213</p><pre><code class="language-python">            if previous is None:
+                for k, lit in lits.items():
+                    m.add(a &gt;= job.ready[k]).only_enforce_if(lit)
+            else:
+                for k_prev, lit_prev in present[previous].items():
+                    for k, lit in lits.items():
+                        lag = transport_lag(ws, k_prev, k, allowance)
+                        m.add(a &gt;= ends[previous] + lag).only_enforce_if([lit_prev, lit])
+            starts[key], ends[key], present[key] = s, e, lits
+            previous = key
+        tard = m.new_int_var(0, horizon, f&quot;t{job.idx}&quot;)
+        m.add(tard &gt;= ends[previous] - job.due)
+        if start_plan is not None:
+            hint(tard, max(0, start_plan.ops[previous][2] - job.due))
+        objective.append(10 * tard + ends[previous])</code></pre>
+<p>Precedence: <code>a &gt;= job.ready[k]</code> enforced by <code>lit</code> for the first operation, <code>a &gt;= ends[previous] + lag</code> enforced by the <em>list</em> <code>[lit_prev, lit]</code> (the conjunction of Part 5) for the others. Per job, <code>tard &gt;= ends[previous] - job.due</code> and the term <code>10 * tard + ends[previous]</code>.</p>
+</div>
+<div class="code-walk"><p class="code-src">jobshop/cpsat.py · 215-251</p><pre><code class="language-python">    for k, items in on_machine.items():
+        if not items:
+            continue
+        m.add_no_overlap(item[5] for item in items)
+        # circuit: node 0 is the machine&#x27;s current state, node i + 1 the i-th candidate operation
+        idle = m.new_bool_var(f&quot;idle{k}&quot;)
+        arcs = [(0, 0, idle)]
+        # order of the warm-start plan on this machine: which arcs of the circuit it uses
+        order = []
+        if start_plan is not None:
+            order = sorted((start_plan.ops[item[0]][1], i) for i, item in enumerate(items)
+                           if start_plan.ops[item[0]][0] == k)
+            order = [i for _, i in order]
+            hint(idle, not order)
+        successor = dict(zip(order, order[1:]))
+        for i, (_, fam_i, s_i, e_i, lit_i, _, a_i) in enumerate(items):
+            first = m.new_bool_var(&quot;&quot;)
+            arcs.append((0, i + 1, first))
+            hint(first, bool(order) and order[0] == i)
+            setup = ws.setup_time(k, snap.machine_family[k], fam_i)
+            m.add(s_i &gt;= snap.machine_free[k] + setup).only_enforce_if(first)
+            m.add(s_i &gt;= a_i + setup).only_enforce_if(first)
+            last = m.new_bool_var(&quot;&quot;)
+            arcs.append((i + 1, 0, last))
+            hint(last, bool(order) and order[-1] == i)
+            arcs.append((i + 1, i + 1, lit_i.Not()))
+            for j, (_, fam_j, s_j, _, _, _, a_j) in enumerate(items):
+                if i == j:
+                    continue
+                follows = m.new_bool_var(&quot;&quot;)
+                arcs.append((i + 1, j + 1, follows))
+                hint(follows, successor.get(i) == j)
+                setup = ws.setup_time(k, fam_i, fam_j)
+                m.add(s_j &gt;= e_i + setup).only_enforce_if(follows)
+                if setup:
+                    m.add(s_j &gt;= a_j + setup).only_enforce_if(follows)
+        m.add_circuit(arcs)</code></pre>
+<p>Per machine: <code>add_no_overlap</code> (redundant, Part 3); the <code>idle</code> loop; for candidate <code>i</code> the <code>first</code> arc with its two bounds, the <code>last</code> arc with none, the self-loop <code>lit_i.Not()</code> (no new variable), and a <code>follows</code> literal per other candidate with <code>s_j &gt;= e_i + setup</code> and, for a positive changeover, <code>s_j &gt;= a_j + setup</code>. <code>order</code> and <code>successor</code> only compute hints; <code>add_circuit(arcs)</code> posts the tour.</p>
+</div>
+<p><strong>On a real snapshot.</strong> The numbers script runs the CP-SAT controller on a short day (seed 0, 20 jobs, frequent breakdowns, a budget of 0.2 <em>deterministic time</em> units, a reproducible measure of solver work, chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html#warm" title="How CP-SAT finds and proves a plan">C2</a>): 66 re-plans, 49 proven optimal. It rebuilds the model of the largest snapshot, re-plan 57 at minute 426, by intercepting the solver call.</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Quantity</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Jobs, operations to plan</td>
+<td>8, 25</td>
+</tr>
+<tr>
+<td>Optional intervals (= presence literals)</td>
+<td>50</td>
+</tr>
+<tr>
+<td>Integer variables (<span class="m">S</span>, <span class="m">E</span>, <span class="m">\alpha</span>; <span class="m">T</span>)</td>
+<td>83</td>
+</tr>
+<tr>
+<td>Boolean variables</td>
+<td>625</td>
+</tr>
+<tr>
+<td>Exactly-one, NoOverlap, circuit constraints</td>
+<td>25, 5, 5</td>
+</tr>
+<tr>
+<td>Interval constraints</td>
+<td>50</td>
+</tr>
+<tr>
+<td>Candidates per machine <span class="m">n_m</span></td>
+<td>11, 10, 9, 7, 13</td>
+</tr>
+<tr>
+<td>Arcs per circuit, <span class="m">(n_m + 1)^2</span></td>
+<td>144, 121, 100, 64, 196</td>
+</tr>
+<tr>
+<td>Conditional, plain linear constraints</td>
+<td>946, 33</td>
+</tr>
+<tr>
+<td>All constraints</td>
+<td>1064</td>
+</tr>
+<tr>
+<td>Time domain <span class="m">[t_0, H]</span></td>
+<td>[426, 1315]</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The counts follow the formulas: <span class="m">83 = 3 \times 25 + 8</span>; 625 Booleans are 50 presence literals plus 575 circuit literals (<span class="m">1 + 2n_m + n_m(n_m - 1)</span> per machine); the 33 plain constraints are 25 <code>s &gt;= a</code> and 8 tardiness bounds. Within its budget the solver returns FEASIBLE, objective 4567, not proven optimal; chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html#gap" title="How CP-SAT finds and proves a plan">C2</a> is about that gap.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;NoOverlap orders the operations.&quot;</strong> It forbids overlaps but does not say who is <em>directly</em> next, so it cannot carry a sequence-dependent changeover; the circuit does.</li>
+<li><strong>&quot;Charge the changeover to every earlier operation.&quot;</strong> Valid only by luck for the end-time part (the triangle inequality fails on 4 of 120 triples), and wrong for the arrival part.</li>
+<li><strong>&quot;<span class="m">T_j \ge C_j - d_j</span> makes <span class="m">T_j</span> the tardiness.&quot;</strong> Only with <span class="m">T_j \ge 0</span>, a positive weight in a minimisation, and at an optimal solution; otherwise impose the maximum as an equality (<code>add_max_equality</code> in CP-SAT).</li>
+<li><strong>&quot;The weight 10 means tardiness first.&quot;</strong> It is an exchange rate; weights 1 and 2 pick another paint sequence than 10.</li>
+<li><strong>&quot;A big enough M is safe.&quot;</strong> Too small cuts off schedules; too large is valid but weakens the relaxation further.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why one optional interval per eligible machine rather than a single interval?</summary>
+<p>The duration <span class="m">p_{jkm}</span> depends on the machine and NoOverlap is posted per machine. The intervals share <span class="m">S_{jk}</span> and <span class="m">E_{jk}</span>; exactly one is present, so one size equation holds and the operation sits on one calendar.</p>
+</details>
+<details class="sol"><summary>2. A machine has 3 candidate operations. How many arc literals does its circuit have, and how many new Booleans?</summary>
+<p><span class="m">(3 + 1)^2 = 16</span> arcs. The 3 self-loops reuse negated presence literals, so <span class="m">1 + 2 \times 3 + 3 \times 2 = 13</span> new Booleans.</p>
+</details>
+<details class="sol"><summary>3. What do <span class="m">z^m_{ab} = 1</span> and <span class="m">z^m_{aa} = 1</span> mean?</summary>
+<p><span class="m">b</span> starts directly after <span class="m">a</span> on machine <span class="m">m</span>; and <span class="m">a</span> is not on machine <span class="m">m</span> (<span class="m">z^m_{aa} = \neg x_{am}</span>).</p>
+</details>
+<details class="sol"><summary>4. Why is node 0 needed?</summary>
+<p>It is the machine's state, free time <span class="m">\phi_m</span> and family <span class="m">g_m</span>: the arc <span class="m">0 \to b</span> carries the first changeover, and the tour starts and ends there. With nothing to run, <span class="m">z^m_{00} = 1</span>.</p>
+</details>
+<details class="sol"><summary>5. Write the two arc constraints of <span class="m">z_{DC}</span> on the paint machine.</summary>
+<p>D is red, C blue, so the changeover is 10: <span class="m">z_{DC} \Rightarrow S_C \ge E_D + 10</span> and <span class="m">z_{DC} \Rightarrow S_C \ge \alpha_C + 10 = 10</span>, since C is at the machine from minute 0. The second is implied by the first, and Part 7 drops it.</p>
+</details>
+<details class="sol"><summary>6. Why is the transport-lag precedence enforced by two literals?</summary>
+<p>The lag depends on both machines, both decisions; one constraint per machine pair, under <span class="m">x_{j,k-1,m&#x27;} \wedge x_{jkm}</span>, applies the right one.</p>
+</details>
+<details class="sol"><summary>7. Order A completes at 25. Which values may <span class="m">T_A</span> take, and which does the optimum pick?</summary>
+<p>Any integer in <span class="m">[0, 110]</span>: <span class="m">T_A \ge -5</span> and the domain say nothing more. The optimum picks 0, since <span class="m">T_A</span> has a positive weight and appears only in its two lower bounds; any larger value can be lowered, lowering the objective.</p>
+</details>
+<details class="sol"><summary>8. Both the CP model and the big-M MILP give 40. Why prefer CP?</summary>
+<p>The MILP's LP bound is 0: with fractional <span class="m">y_{ab}</span> the orders overlap freely, so the proof of 40 rests on branching. CP reasons on NoOverlap and the circuit and carries the true changeover on the arcs.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>The code runs in the repository's environment, from its root. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>The start times forbid subtours.</b> Show that if every operation has a positive duration, the constraints <span class="m">z_{ab} \Rightarrow S_b \ge E_a + s(f(a), f(b))</span> alone make infeasible any cycle of length at least 2, of chosen arcs that are not self-loops, avoiding node 0. What does the circuit add?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Add up the constraints along a cycle <span class="m">a_1 \to \dots \to a_r \to a_1</span>, <span class="m">r \ge 2</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Along the cycle <span class="m">S_{a_{i+1}} \ge S_{a_i} + p_{a_i} + s_i</span> with <span class="m">s_i \ge 0</span> (indices mod <span class="m">r</span>). Summing, the starts cancel: <span class="m">0 \ge \sum_i (p_{a_i} + s_i) &gt; 0</span>, a contradiction. The times act as the potentials of Miller, Tucker and Zemlin <a href="#ref-4">[4]</a>. A self-loop carries no timing constraint, which is why it is excluded. The circuit adds the degree structure (one predecessor and one successor per present operation, none for absent ones), the passage through node 0 that charges the first changeover, and reasoning on the whole tour at once.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>A changeover charged to the wrong predecessor.</b> On the paint machine, order D arrives at minute 50; the others wait at 0. In the plan A, C, B, D, find B's and D's earliest starts under the model's rule, then under a pairwise rule that also imposes, for every earlier order <span class="m">a</span>, <span class="m">S_b \ge E_a + s(a, b)</span> and <span class="m">S_b \ge \alpha_b + s(a, b)</span>. Does the pairwise rule change which plan looks best?</p>
+<details class="sol"><summary>Hint</summary>
+<p>A and C are blue, B and D red. C ends at 35.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Model: B follows C, <span class="m">S_B \ge \max(35, 0) + 10 = 45</span>, ends 55; D follows B (red to red), <span class="m">S_D \ge \max(55, 50) + 0 = 55</span>. Total tardiness 50. Pairwise: B from A gives <span class="m">E_A + 10 = 30</span>, from C 45, so still 45; but D from the blue A and C gives <span class="m">\alpha_D + 10 = 60</span>, so D runs from 60 to 85 and the plan scores 55. Over all 24 orders the pairwise rule's best value is 55, reached by A, B, C, D and by A, C, B, D: it overstates the cost of A, C, B, D (truly 50, the optimum of Exercise 4) and may return A, B, C, D, truly 55.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The horizon is safe.</b> Prove that some optimal plan has every end at most <span class="m">H</span>, and compute <span class="m">H</span> for the hand-written paint model.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Left-shift an optimal plan, then follow from any operation the lower bound that is tight at its start.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Left-shifting keeps the routing and orders and never raises a completion time, so with a regular objective a semi-active optimal plan exists. In it each start equals one of its lower bounds: <span class="m">t_0</span>; <span class="m">\max(R_{jm}, \phi_m) + s</span> (first arc); <span class="m">R_{jm} + s</span> or <span class="m">E_q + s</span> for the machine predecessor <span class="m">q</span>; or <span class="m">E_q + \ell</span> (<span class="m">+ s</span>) for the job predecessor <span class="m">q</span>. In the last two cases <span class="m">S_o \le S_q + p_q + s_{\max} + \ell_{\max}</span> with <span class="m">S_q &lt; S_o</span>. Repeating, starts strictly decrease, so the chain has distinct operations and ends at a snapshot bound <span class="m">B = \max(t_0, \phi_m, R_{jm})</span> plus at most one changeover. Summing, <span class="m">E_o \le B + \sum_{q \in \text{chain}} (p_q + s_{\max} + \ell_{\max}) \le H</span>. Also <span class="m">T_j = \max(0, C_j - d_j) \le C_j \le H</span>, because <span class="m">d_j \ge 0</span>, so the domain <span class="m">[0, H]</span> of <span class="m">T_j</span> is safe too. Paint: <span class="m">B = 0</span>, processing 70, no lag, <span class="m">s_{\max} = 10</span>: <span class="m">H = 110</span> (the code's 118 adds <code>max_lag</code> = 2 per operation).</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Model a release time with CP-SAT.</b> Let order D arrive at minute 50, with the rule that a changeover starts once the order is there. Solve with CP-SAT and compare with the old optimum A, B, D, C.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Add <span class="m">S_j \ge r_j</span>, and on each arc with a positive changeover <span class="m">S_b \ge r_b + s</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from ortools.sat.python import cp_model
+
+N, node = &quot;ABCD&quot;, &quot;0ABCD&quot;.index                      # node 0: the machine, set up for blue
+P = dict(A=20, B=10, C=15, D=25); DUE = dict(A=30, B=25, C=70, D=60); R = dict(A=0, B=0, C=0, D=50)
+s = lambda a, b: 10 * ((a in &quot;0AC&quot;) != (b in &quot;0AC&quot;))  # A, C blue; B, D red
+m = cp_model.CpModel()
+S, E, T = ({n: m.new_int_var(0, 200, x + n) for n in N} for x in &quot;SET&quot;)
+m.add_no_overlap([m.new_interval_var(S[n], P[n], E[n], &quot;&quot;) for n in N])
+arcs = []
+for a in N:
+    m.add(S[a] &gt;= R[a]); m.add(T[a] &gt;= E[a] - DUE[a])
+    arcs.append((node(a), 0, m.new_bool_var(&quot;&quot;)))     # a runs last
+    for b in &quot;0&quot; + N:                                 # b directly before a
+        if b != a:
+            z = m.new_bool_var(&quot;&quot;); arcs.append((node(b), node(a), z))
+            if b != &quot;0&quot;: m.add(S[a] &gt;= E[b] + s(b, a)).only_enforce_if(z)
+            if s(b, a): m.add(S[a] &gt;= R[a] + s(b, a)).only_enforce_if(z)
+m.add_circuit(arcs); m.minimize(sum(T.values()))
+sol = cp_model.CpSolver(); print(sol.status_name(sol.solve(m)), sol.objective_value,
+                                 &quot;&quot;.join(sorted(N, key=lambda n: sol.value(S[n]))))   # OPTIMAL 50.0 ACBD
+</code></pre>
+<p>The optimum is 50 with A, C, B, D, confirmed by trying all 24 orders; A, B, D, C now gives 60, since D cannot start before 50 and C ends at 100.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Count the model of a test snapshot.</b> <code>tests/test_cpsat.py</code> defines <code>real_snapshot()</code>, nine jobs on the workshop. Intercept the model <code>solve_snapshot</code> builds for it, count variables, intervals and circuit arcs, and explain why the number of Booleans equals the number of arcs.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Wrap <code>cp_model.CpSolver.solve</code> to keep its model; read <code>model.proto</code> (each constraint has <code>has_interval()</code>, <code>has_circuit()</code>, ...). Tested with OR-Tools 9.15; older versions expose a protobuf instead: <code>model.Proto()</code> and <code>c.HasField(&quot;interval&quot;)</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">import sys; sys.path.insert(0, &quot;tests&quot;)
+from ortools.sat.python import cp_model
+import jobshop.cpsat as cpsat
+from jobshop.scenario import make_workshop
+from test_cpsat import real_snapshot
+
+seen, orig = [], cp_model.CpSolver.solve
+cp_model.CpSolver.solve = lambda self, model, *a, **k: (seen.append(model), orig(self, model, *a, **k))[1]
+cpsat.solve_snapshot(make_workshop(), real_snapshot(), det_time=0.5)
+cp_model.CpSolver.solve = orig
+pr = seen[-1].proto
+booleans = sum(1 for v in pr.variables if list(v.domain) == [0, 1])
+intervals = sum(1 for c in pr.constraints if c.has_interval())
+arcs = sum(len(c.circuit.tails) for c in pr.constraints if c.has_circuit())
+print(len(pr.variables), booleans, intervals, arcs)          # 1308 1197 72 1197
+</code></pre>
+<p>34 operations, 72 optional intervals, 1197 Booleans and 1197 arcs. Every arc has a new Boolean except the self-loops, which reuse the negated presence literals, one per optional interval: Booleans = presence literals + (arcs − self-loops) = arcs.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 13</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>A model, not a procedure</strong>: variables, constraints, an objective; the solver searches and proves.</div></li>
+<li><div><strong>Variables</strong>: <span class="m">S, E, \alpha</span> per operation, <span class="m">\sum_m x_{jkm} = 1</span>, optional intervals, <span class="m">T_j</span> per job.</div></li>
+<li><div><strong>Circuit</strong> per machine, <span class="m">(n_m + 1)^2</span> arcs: <span class="m">z^m_{ab}</span> enforces <span class="m">S_b \ge \max(E_a, \alpha_b) + s_m(f(a), f(b))</span>; NoOverlap is kept as redundant.</div></li>
+<li><div><strong>Precedence</strong> under two literals, lag <span class="m">\ell = \delta + \tau</span>; <strong>tardiness</strong> as two lower bounds, exact at the optimum; the weight 10 an exchange rate.</div></li>
+<li><div><strong>Paint machine</strong>: OPTIMAL 40 by A, B, D, C. <strong>Big-M MILP</strong>: the same 40, an LP bound of 0.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Decision variable, domain</td>
+<td>An unknown the solver sets, and its finite set of allowed values.</td>
+</tr>
+<tr>
+<td>Global constraint</td>
+<td>One constraint over many variables, with its own reasoning in the solver.</td>
+</tr>
+<tr>
+<td>Exactly-one</td>
+<td>Of a set of literals, exactly one is 1: here, the routing.</td>
+</tr>
+<tr>
+<td>Optional interval, presence literal</td>
+<td>A block <span class="m">(S, p, E)</span> that exists only if its Boolean is 1.</td>
+</tr>
+<tr>
+<td>NoOverlap, disjunction</td>
+<td>Present blocks of one machine share no minute; &quot;<span class="m">a</span> before <span class="m">b</span> or <span class="m">b</span> before <span class="m">a</span>&quot;.</td>
+</tr>
+<tr>
+<td>Circuit, arc literal, self-loop</td>
+<td>One tour over the present nodes; <span class="m">z_{ab} = 1</span> if <span class="m">b</span> directly follows <span class="m">a</span>; <span class="m">z_{vv} = \neg x_v</span>.</td>
+</tr>
+<tr>
+<td>Enforcement literal</td>
+<td>A Boolean that switches a constraint on.</td>
+</tr>
+<tr>
+<td>Triangle inequality</td>
+<td><span class="m">s(f, h) \le s(f, g) + s(g, h)</span>: a detour never saves changeover time.</td>
+</tr>
+<tr>
+<td>Transport lag</td>
+<td><span class="m">\ell(m&#x27;, m)</span>: minutes between ending on <span class="m">m&#x27;</span> and being at <span class="m">m</span>, 0 if <span class="m">m&#x27; = m</span>.</td>
+</tr>
+<tr>
+<td>Horizon</td>
+<td><span class="m">H</span>, the upper end of every time domain, large enough to cut off no optimal plan.</td>
+</tr>
+<tr>
+<td>Regular objective, semi-active</td>
+<td>Grows with completion times; no operation can start earlier without changing an order.</td>
+</tr>
+<tr>
+<td>Redundant constraint</td>
+<td>Implied by the others, added to help the solver.</td>
+</tr>
+<tr>
+<td>Big-M, LP relaxation</td>
+<td>A switched inequality with a large constant; binaries relaxed to <span class="m">[0, 1]</span>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> One snapshot's jobs, deterministic durations, transport as a fixed lag, no carts as resources, no knowledge of future arrivals or breakdowns. Chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html" title="How CP-SAT finds and proves a plan">C2</a> explains how CP-SAT searches this model and what its bounds certify; chapter <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> turns it into a controller.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>P. Laborie, J. Rogerie, P. Shaw and P. Vilím. &quot;IBM ILOG CP optimizer for scheduling&quot;. <em>Constraints</em> 23, 2018. Interval variables, optional intervals and NoOverlap.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>Google OR-Tools. CP-SAT solver documentation (developers.google.com/optimization). Optional intervals, <code>add_no_overlap</code>, <code>add_circuit</code> with self-loops, enforcement literals.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>A. S. Manne. &quot;On the job-shop scheduling problem&quot;. <em>Operations Research</em> 8(2), 1960. The disjunctive big-M MILP.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>C. E. Miller, A. W. Tucker and R. A. Zemlin. &quot;Integer programming formulation of traveling salesman problems&quot;. <em>Journal of the ACM</em> 7(4), 1960. Ordering variables that exclude subtours.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>, 5th ed. Springer, 2016. Regular objectives, semi-active schedules, MILP formulations.</div></li>
+</ul>
+<p>Next, chapter <a href="c02-how-cp-sat-finds-and-proves-a-plan.html" title="How CP-SAT finds and proves a plan">C2</a> opens the solver: how it propagates these constraints, searches, learns, and proves the 40 optimal.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="b02-dispatching-rules-in-a-dynamic-shop.html"><span class="lbl">Previous · B2</span><span class="t">Dispatching rules</span></a>
+  <a class="next" rel="next" href="c02-how-cp-sat-finds-and-proves-a-plan.html"><span class="lbl">Next · C2</span><span class="t">How CP-SAT finds and proves a plan</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter C1 of "Which Job Should the Machine Do Next?" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/jobshop-lib.js?v=20261113225334"></script>
+<script src="interactive/c01.js?v=20261113225334"></script>
+</body>
+</html>

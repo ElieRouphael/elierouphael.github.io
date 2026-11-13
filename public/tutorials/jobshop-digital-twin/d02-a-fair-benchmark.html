@@ -1,0 +1,1065 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>D2 · A fair benchmark · Which Job Should the Machine Do Next?</title>
+<meta name="description" content="Common random numbers and the variance of a paired difference, the percentile bootstrap derived from the plug-in principle, training, validation and test seeds, the winner&#x27;s curse of choosing on the test, what to report, and the independent checker as a list of executable invariants.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261113225334">
+<style>
+#dayC, #diffC, #bootC { display: block; width: 100%; }
+.d2-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-family: var(--font-ui); font-size: 0.84rem; color: var(--ink-2); }
+.d2-legend .sw { margin-right: 0.35rem; vertical-align: -0.1rem; }
+#rsChips { display: grid; grid-template-columns: repeat(auto-fill, minmax(6.2rem, 1fr)); gap: 0.3rem; }
+#rsChips span { white-space: nowrap; font-family: var(--font-mono); font-size: 0.74rem; border: 1px solid var(--rule); border-radius: 7px; padding: 0.2rem 0.35rem; color: var(--muted); text-align: center; }
+#rsChips span.on { color: var(--ink); border-color: var(--accent); background: var(--accent-wash); }
+#rsChips span.on2 { color: var(--ink); border-color: var(--warm); background: var(--warm-wash); }
+#rsC, #wcC { display: block; width: 100%; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Which Job Should the Machine Do Next?</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Which Job Should the Machine Do Next? · Part D, Learning, and judging the evidence · Chapter D2 of 2</span>
+  <h1>A fair benchmark</h1>
+  <p class="lede">CP-SAT re-planning is less late than the best rule on the 20 test days: a real difference, or the luck of 20 random days? This chapter teaches how to decide. Run every method on the same days so that the day-to-day variation cancels, put a bootstrap interval on the mean difference, keep the days you tune on apart from the days you report, and check every schedule independently so that a bug cannot pass for a better method. Below, pick any two methods on the 20 test days and see what the pairing buys.</p>
+  <p class="byline">Elie Rouphael · Needs chapters B2, C3 and D1, and basic probability · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/d02_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="jobshop-digital-twin-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The 20 test days of results/runs.csv: mean tardiness of the two methods, day by day</p>
+      <canvas id="dayC" aria-label="Mean tardiness of the two chosen methods on each test day" aria-describedby="heroStatus"></canvas>
+      <div class="d2-legend" id="dayLegend"></div>
+    </div>
+    <div>
+      <p class="chart-title">The daily differences, first method minus second</p>
+      <canvas id="diffC" aria-label="Difference in mean tardiness on each test day"></canvas>
+    </div>
+    <div>
+      <p class="chart-title">10,000 bootstrap resamples of the mean difference: paired against unpaired</p>
+      <canvas id="bootC" aria-label="Bootstrap distributions of the mean difference, paired and unpaired, with their 95 % intervals"></canvas>
+      <div class="d2-legend"><span><span class="sw" style="background:var(--accent)"></span>paired: resample days, keep each day's two results together</span><span><span class="sw" style="background:var(--warm)"></span>unpaired: resample each method's days separately</span></div>
+    </div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div><span class="lbl">Disturbance level</span>
+      <div class="seg" id="hLevel"><button class="btn" data-l="0" aria-pressed="false">No breakdowns</button><button class="btn" data-l="1" aria-pressed="true">Frequent breakdowns</button></div>
+    </div>
+    <label class="field"><span>First method <span class="m">X</span></span><select id="hA"></select></label>
+    <label class="field"><span>Second method <span class="m">Y</span></span><select id="hB"></select></label>
+    <label class="field"><span>Test days used: <b id="hNV"></b></span>
+      <span class="row"><input type="range" id="hN" min="3" max="20" step="1" value="20"></span>
+    </label>
+    <div class="readouts" aria-live="off">
+      <span>mean of <span class="m">X</span></span><span class="v" id="rA">–</span>
+      <span>mean of <span class="m">Y</span></span><span class="v" id="rB">–</span>
+      <span>mean difference</span><span class="v" id="rD">–</span>
+      <span>correlation across days</span><span class="v" id="rR">–</span>
+      <span>paired 95 % interval</span><span class="v" id="rP">–</span>
+      <span>unpaired 95 % interval</span><span class="v" id="rU">–</span>
+      <span>width, unpaired / paired</span><span class="v" id="rW">–</span>
+      <span>days better / equal / worse</span><span class="v" id="rC">–</span>
+    </div>
+    <p class="hint">One dot per test day (seeds 0 to 19), the same arrivals and breakdowns for both methods. Negative differences mean the first method was less late. A 95 % interval is a range that very likely holds the true mean difference (Part 1); these are percentile bootstrap intervals with <span class="m">B = 10{,}000</span>, drawn in your browser.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#crn"><span class="n">1</span><span class="t">The same days for every method</span><span class="d">Common random numbers, synchronised seeds, what an interval says</span></a>
+    <a href="#variance"><span class="n">2</span><span class="t">The variance of a paired difference</span><span class="d">Var(X − Y) and why pairing works</span></a>
+    <a href="#bootstrap"><span class="n">3</span><span class="t">The bootstrap</span><span class="d">Plug-in, resampling, the percentile interval</span></a>
+    <a href="#separation"><span class="n">4</span><span class="t">Training, validation and test days</span><span class="d">Seeds to learn on, to choose with, to report</span></a>
+    <a href="#winners"><span class="n">5</span><span class="t">The winner's curse</span><span class="d">The optimism of choosing on the test</span></a>
+    <a href="#reporting"><span class="n">6</span><span class="t">What a fair report contains</span><span class="d">Intervals, counts, effect sizes</span></a>
+    <a href="#checker"><span class="n">7</span><span class="t">The checker as executable invariants</span><span class="d">Invariants, a planted bug, tests that break logs</span></a>
+    <a href="#code"><span class="n">8</span><span class="t">The code behind it</span><span class="d">bootstrap_ci, level_tables, check_schedule</span></a>
+    <a href="#pitfalls"><span class="n">9</span><span class="t">Common pitfalls</span><span class="d">Six ways to fool yourself</span></a>
+    <a href="#check"><span class="n">10</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">11</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">12</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="crn">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>The same days for every method</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The question.</strong> Under frequent breakdowns, CP-SAT re-planning (<a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>) has a mean tardiness of 19.3 minutes over the 20 test days and the best dispatching rule, shortest setup first (SST, <a href="b02-dispatching-rules-in-a-dynamic-shop.html" title="Dispatching rules in a dynamic shop">B2</a>), 34.1. A day in this course is random: 60 orders arrive at random times, machines break at random times. Run the same method on another 20 days and the average moves. How do we know the 14.8-minute gap is not just the luck of these days?</p>
+<p><strong>Look at one day first.</strong> Seed 7 is a bad day for everybody: in the calm shop first come, first served (FIFO) averages 97.4 minutes of lateness per order and CP-SAT 12.4; under breakdowns FIFO reaches 169.9 and CP-SAT 63.6. It is the worst of the 20 days for all seven methods in the calm shop, and for six of them under breakdowns. That shared variation says nothing about which method is better. Had CP-SAT been tested on days 0 to 19 and SST on days 20 to 39, a few heavy days on one side would decide the comparison.</p>
+<p><strong>The remedy is to give every method the same days.</strong> In the repository a test day <em>is</em> a seed: <code>make_scenario(ws, seed)</code> draws the 60 arrivals, families and due dates and, for each machine, the whole calendar of breakdowns, <em>before</em> any method runs. Every method then faces the same orders and the same failures, and the comparison on day <span class="m">i</span> is a comparison of decisions alone.</p>
+<div class="define"><p class="define-title">What are common random numbers?</p>
+<p><strong>In plain words:</strong> test every method on the same random days, so that a difference in results can only come from a difference in decisions.</p>
+<p><strong>More precisely:</strong> a simulation experiment uses <em>common random numbers</em> (CRN) when the random inputs of replication <span class="m">i</span>, here the arrivals, due dates and breakdown calendars of seed <span class="m">i</span>, are identical for every method compared. The results <span class="m">X_i</span> and <span class="m">Y_i</span> of two methods on replication <span class="m">i</span> are then dependent, usually positively, and the analysis works with the paired differences <span class="m">\Delta_i = X_i - Y_i</span>.</p>
+<dl><dt>Replication</dt><dd>one independent run of the simulated system; here one test day, one seed.</dd><dt>Paired difference</dt><dd><span class="m">\Delta_i = \bar T^{X}_i - \bar T^{Y}_i</span>, the difference of the two methods' mean tardiness on day <span class="m">i</span>; negative means <span class="m">X</span> was less late.</dd><dt>Synchronisation</dt><dd>each random number is used for the same purpose in every run, whatever the controller decides. Without it, the &quot;same seed&quot; does not give the same day.</dd></dl>
+</div>
+<p><strong>Synchronisation is the hard part.</strong> One generator shared by everything would break CRN silently: if failures were drawn only while a machine works, a method that leaves a machine idle would use fewer random numbers, and every later arrival would differ. The repository avoids this by construction:</p>
+<div class="code-walk"><p class="code-src">jobshop/scenario.py · make_scenario</p><pre><code class="language-python">def make_scenario(
+    ws: Workshop,
+    seed: int,
+    n_jobs: int = 60,
+    load: float = 0.60,
+    mtbf: float | None = None,
+    mttr: float = 20.0,
+    tightness: tuple[float, float] = (2.0, 4.0),
+) -&gt; Scenario:
+    &quot;&quot;&quot;Poisson arrivals, uniform job mix, due date = arrival + k x shortest work (k uniform).
+
+    Breakdowns: per machine, exponential time between a repair and the next failure (mean
+    `mtbf`, calendar time), repair time uniform in [0.5, 1.5] x `mttr`. The arrival stream does
+    not depend on `mtbf`: the same seed gives the same jobs at every disturbance level.
+    &quot;&quot;&quot;
+    rng = np.random.default_rng([seed, 1])
+    gaps = rng.exponential(mean_interarrival(ws, load), size=n_jobs)
+    arrivals = np.floor(np.cumsum(gaps)).astype(int)
+    families = rng.integers(0, ws.n_families, size=n_jobs)
+    factors = rng.uniform(tightness[0], tightness[1], size=n_jobs)
+    jobs = tuple(
+        Job(i, int(f), int(a), int(a + round(k * ws.min_remaining_work(int(f), 0))))
+        for i, (a, f, k) in enumerate(zip(arrivals, families, factors))
+    )
+
+    downtime: list[tuple[tuple[int, int], ...]] = []
+    horizon = 4 * int(arrivals[-1]) + 5000  # far beyond any run
+    for m in range(ws.n_machines):
+        spans: list[tuple[int, int]] = []
+        if mtbf is not None:
+            brng = np.random.default_rng([seed, 2, m])
+            t = 0
+            while t &lt; horizon:
+                down = t + max(1, int(round(brng.exponential(mtbf))))
+                up = down + max(1, int(round(brng.uniform(0.5, 1.5) * mttr)))
+                spans.append((down, up))
+                t = up
+        downtime.append(tuple(spans))
+    return Scenario(seed, jobs, tuple(downtime), mttr)</code></pre>
+<p>The arrival stream has its own generator, <code>np.random.default_rng([seed, 1])</code>, and draws all 60 gaps, families and due-date factors at once. Each machine has its own breakdown generator, <code>default_rng([seed, 2, m])</code>, so the failures of machine 3 do not depend on how many numbers machine 1 used. And the breakdowns are in <em>calendar</em> time, drawn far beyond any run and stored in <code>scenario.downtime</code>: a machine fails at the same minute whether or not it is working, so no decision can shift a later failure. Law <a href="#ref-2">[2]</a> treats this synchronisation as what makes CRN work.</p>
+</div>
+<p>The hero shows what this buys: pick FIFO and CP-SAT, and the two series of dots rise and fall together while the differences below are far more regular than either method.</p>
+<p>The hero's readouts quote 95 % intervals and whether they &quot;exclude zero&quot;; both words are used from now on.</p>
+<div class="define"><p class="define-title">What does a 95 % interval say?</p>
+<p><strong>In plain words:</strong> a range computed from the 20 days that very likely contains the true mean difference, the average over all the days the shop could have.</p>
+<p><strong>More precisely:</strong> a 95 % interval is a <em>procedure</em>: applied to many independent sets of 20 days, it would contain the true mean difference <span class="m">\mu_\Delta</span> in about 95 % of them. If it excludes zero, the data are hard to explain by the luck of the days alone. For a roughly normal mean it is close to the mean <span class="m">\pm 1.96</span> standard errors, 1.96 being the 97.5 % quantile of the standard normal, so that <span class="m">\pm 1.96</span> standard deviations hold 95 % of a normal distribution. Part 3 shows how the bootstrap computes such an interval without assuming normality.</p>
+<dl><dt>Standard error</dt><dd>the standard deviation of a mean: <span class="m">\sigma/\sqrt n</span> for <span class="m">n</span> independent days of spread <span class="m">\sigma</span>, how much the mean itself would move from one set of <span class="m">n</span> days to another.</dd><dt>Excludes zero</dt><dd>the whole interval lies on one side of 0, so the sign of the difference is settled at that confidence.</dd></dl>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="variance">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>The variance of a paired difference</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> When both methods do badly on the same days, subtracting their results cancels the shared part. Three days with <span class="m">X = (10, 20, 60)</span> and <span class="m">Y = (14, 26, 68)</span> minutes: each method spreads from tens to sixty, but the differences <span class="m">X - Y = (-4, -6, -8)</span> barely move. <em>Covariance</em> measures how much two results go up and down together, positive when they are high on the same days; <em>correlation</em> is covariance rescaled to lie between <span class="m">-1</span> and <span class="m">1</span>. (Here <span class="m">\rho</span> is a correlation, not the load <span class="m">\rho = 0.60</span> of <a href="b01-discrete-event-simulation.html#load" title="Discrete-event simulation">B1</a>.)</p>
+<p><strong>By hand.</strong> The means are 30 and 36, so the deviations are <span class="m">(-20, -10, 30)</span> and <span class="m">(-22, -10, 32)</span>. The sample variances are <span class="m">s_X^2 = (400 + 100 + 900)/2 = 700</span> and <span class="m">s_Y^2 = (484 + 100 + 1024)/2 = 804</span>, the sample covariance <span class="m">\big((-20)(-22) + (-10)(-10) + (30)(32)\big)/2 = 750</span>, and the correlation <span class="m">750/\sqrt{700 \times 804} = 0.9997</span>. Then <span class="m">s_X^2 + s_Y^2 - 2\,\widehat{\mathrm{Cov}} = 700 + 804 - 1500 = 4</span>, exactly the variance of <span class="m">(-4, -6, -8)</span>: <span class="m">(4 + 0 + 4)/2 = 4</span>. The identity below says why.</p>
+<p><strong>The identity.</strong> Let <span class="m">X</span> and <span class="m">Y</span> be the two methods' results on one random day, with variances <span class="m">\sigma_X^2</span>, <span class="m">\sigma_Y^2</span> and covariance <span class="m">\mathrm{Cov}(X, Y) = \mathbb E[(X - \mu_X)(Y - \mu_Y)]</span>. Expanding the square,</p>
+<div class="math-block">\mathrm{Var}(X - Y) = \mathbb E\big[\big((X - \mu_X) - (Y - \mu_Y)\big)^2\big] = \sigma_X^2 + \sigma_Y^2 - 2\,\mathrm{Cov}(X, Y).</div>
+<p>With the correlation <span class="m">\rho = \mathrm{Cov}(X, Y) / (\sigma_X \sigma_Y)</span>, <span class="m">\mathrm{Var}(X - Y) = \sigma_X^2 + \sigma_Y^2 - 2 \rho \sigma_X \sigma_Y</span>.</p>
+<p><strong>Averaged over <span class="m">n</span> days.</strong> The test days are independent (each has its own seed and starts from an empty shop), so the <span class="m">n</span> differences <span class="m">\Delta_i</span> are independent copies of <span class="m">X - Y</span> and their mean <span class="m">\bar\Delta</span> has variance <span class="m">\mathrm{Var}(X - Y)/n</span>. Compare two designs with <span class="m">n</span> days per method:</p>
+<div class="math-block">\begin{aligned} \text{common days:} \quad \mathrm{Var}(\bar\Delta) &amp;= \frac{\sigma_X^2 + \sigma_Y^2 - 2\rho\sigma_X\sigma_Y}{n}, \\ \text{independent days:} \quad \mathrm{Var}(\bar X - \bar Y&#x27;) &amp;= \frac{\sigma_X^2 + \sigma_Y^2}{n}, \end{aligned}</div>
+<p>where <span class="m">\bar Y&#x27;</span> is the mean of <span class="m">Y</span> over other days, independent of <span class="m">\bar X</span>. Their ratio is</p>
+<div class="math-block">\frac{\mathrm{Var}(\bar\Delta)}{\mathrm{Var}(\bar X - \bar Y&#x27;)} = 1 - \rho\, c, \qquad c = \frac{2\sigma_X\sigma_Y}{\sigma_X^2 + \sigma_Y^2} \in (0, 1],</div>
+<p>with <span class="m">c = 1</span> when the two spreads are equal (<span class="m">c \le 1</span> because <span class="m">(\sigma_X - \sigma_Y)^2 \ge 0</span>). Two consequences. Pairing helps exactly when <span class="m">\rho &gt; 0</span>. And for <span class="m">\rho \ge 0</span> the ratio is at least <span class="m">1 - \rho</span>: the variance can shrink at most to the share <span class="m">1 - \rho</span>, reached when the methods spread equally.</p>
+<p><strong>The numbers, for CP-SAT minus SST under breakdowns.</strong> From the 20 test days of <code>results/runs.csv</code>: <span class="m">s_X = 17.55</span> minutes for CP-SAT, <span class="m">s_Y = 24.02</span> for SST, covariance 411.8, correlation <span class="m">r = 0.977</span>. Then</p>
+<div class="math-block">s_X^2 + s_Y^2 - 2\,\widehat{\mathrm{Cov}} = 308.0 + 576.9 - 823.6 = 61.3,</div>
+<p>a standard deviation of 7.83 minutes for the daily difference, against <span class="m">\sqrt{884.9}</span> for unrelated days. Here <span class="m">c = 0.953</span> and <span class="m">1 - rc = 0.069</span>: pairing divides the variance by about 14. The standard error of the mean difference over the 20 days is <span class="m">7.83/\sqrt{20} = 1.75</span> minutes paired, 6.65 unpaired.</p>
+<p><strong>Correlations are high everywhere.</strong> The 21 correlations between pairs of the seven methods run from 0.82 to 0.99 in the calm shop (median 0.96) and from 0.88 to 0.98 under breakdowns (median 0.95); the lowest involve quick re-planning (Greedy replan). A burst of arrivals or a long repair is hard for every controller.</p>
+<p><strong>What it changes.</strong> The README compares CP-SAT, Greedy replan and the self-learning agent (DQN, <a href="d01-dispatching-as-reinforcement-learning.html" title="Dispatching as reinforcement learning">D1</a>) with the best rule, most urgent first (EDD) in the calm shop and SST under breakdowns, and CP-SAT with Greedy replan. For each, the paired interval next to the one the same 20 days give when the two methods' days are treated as unrelated (the unpaired bootstrap of Part 3):</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Comparison</th>
+<th>Level</th>
+<th>Mean difference</th>
+<th>Paired 95 %</th>
+<th>Unpaired 95 %</th>
+<th><span class="m">r</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CP-SAT − EDD</td>
+<td>calm</td>
+<td>−5.7</td>
+<td>[−9.6, −2.9]</td>
+<td>[−11.0, −1.7]</td>
+<td>0.92</td>
+</tr>
+<tr>
+<td>Greedy replan − EDD</td>
+<td>calm</td>
+<td>−3.9</td>
+<td>[−7.5, −1.4]</td>
+<td>[−9.5, +0.4]</td>
+<td>0.82</td>
+</tr>
+<tr>
+<td>CP-SAT − Greedy replan</td>
+<td>calm</td>
+<td>−1.7</td>
+<td>[−2.7, −0.9]</td>
+<td>[−4.2, +0.6]</td>
+<td>0.93</td>
+</tr>
+<tr>
+<td>DQN − EDD</td>
+<td>calm</td>
+<td>+0.4</td>
+<td>[−0.7, +1.5]</td>
+<td>[−6.0, +6.5]</td>
+<td>0.97</td>
+</tr>
+<tr>
+<td>CP-SAT − SST</td>
+<td>breakdowns</td>
+<td>−14.8</td>
+<td>[−18.4, −11.7]</td>
+<td>[−27.9, −2.7]</td>
+<td>0.98</td>
+</tr>
+<tr>
+<td>Greedy replan − SST</td>
+<td>breakdowns</td>
+<td>−10.1</td>
+<td>[−15.0, −5.3]</td>
+<td>[−23.9, +3.2]</td>
+<td>0.88</td>
+</tr>
+<tr>
+<td>CP-SAT − Greedy replan</td>
+<td>breakdowns</td>
+<td>−4.7</td>
+<td>[−8.9, −1.3]</td>
+<td>[−16.7, +6.7]</td>
+<td>0.90</td>
+</tr>
+<tr>
+<td>DQN − SST</td>
+<td>breakdowns</td>
+<td>+1.3</td>
+<td>[−2.1, +5.1]</td>
+<td>[−13.8, +16.2]</td>
+<td>0.95</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Six of the eight paired intervals exclude zero; treated as unpaired, only two would. The solver's contribution on top of re-planning, CP-SAT minus Greedy replan, is invisible without pairing at both levels. The interval of CP-SAT minus SST is 6.7 minutes wide paired and 25.2 unpaired (25.3 in the hero, whose resamples are drawn in your browser; see Part 3), 3.8 times wider; since widths shrink like <span class="m">1/\sqrt n</span>, the unpaired design would need about 14 times as many days, 286 instead of 20.</p>
+<p><strong>With truly independent days.</strong> The unpaired column only ignores the pairing of common days. For the real cost, the numbers script runs the four rules on 500 fresh days (seeds 200000 to 200499, used nowhere else). Under breakdowns, SST − EDD on 20 common days is <span class="m">-0.7</span> <span class="m">[-4.6, +2.6]</span>, 7.2 minutes wide; with EDD on 20 other days, <span class="m">-2.0</span> <span class="m">[-17.3, +15.6]</span>, 32.9 wide; over 200 such experiments the average widths are 7.8 and 34.8 minutes. The 500-day truth is <span class="m">-3.97</span>.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="bootstrap">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>The bootstrap</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>The problem.</strong> We have 20 numbers <span class="m">\Delta_1, \dots, \Delta_{20}</span> with mean <span class="m">\bar\Delta = -14.8</span> and want an interval for the true mean difference <span class="m">\mu_\Delta</span>. The textbook interval <span class="m">\bar\Delta \pm t_{19}\, s/\sqrt n</span> uses <span class="m">t_{19} = 2.093</span>, the 97.5 % quantile of Student's <span class="m">t</span> distribution with 19 degrees of freedom, which replaces 1.96 when the spread <span class="m">s</span> is estimated; it assumes <span class="m">\bar\Delta</span> roughly normal, while tardiness is <em>skewed</em>, with a long tail of very bad days such as day 7. The bootstrap <a href="#ref-1">[1]</a> reads the distribution of <span class="m">\bar\Delta</span> from the data instead. At <span class="m">n = 20</span> it is not more accurate than the <span class="m">t</span>-interval in general, and here the two nearly agree, <span class="m">[-18.4, -11.7]</span> and <span class="m">[-18.5, -11.2]</span>; its value is that it needs no formula and works the same for any statistic.</p>
+<p><strong>In plain words.</strong> We cannot draw new days from the shop, but we have 20 days that came from it. So we pretend these 20 days <em>are</em> the distribution, draw new sets of 20 from them with replacement, and watch how much the mean moves from set to set: that movement stands in for the movement between real sets of 20 days.</p>
+<div class="define"><p class="define-title">What is the percentile bootstrap?</p>
+<p><strong>In plain words:</strong> resample your own data, many times, to see how much a statistic would change from one sample to another, and read an interval from the spread.</p>
+<p><strong>More precisely:</strong> let <span class="m">\hat F_n</span> be the empirical distribution of the sample, mass <span class="m">1/n</span> on each <span class="m">\Delta_i</span>. Draw <span class="m">B</span> bootstrap samples <span class="m">\Delta^{*b}_1, \dots, \Delta^{*b}_n</span> independently from <span class="m">\hat F_n</span>, that is, <span class="m">n</span> days chosen uniformly with replacement, and compute each mean <span class="m">\bar\Delta^{*b}</span>. The 95 % percentile interval is <span class="m">[\hat q_{0.025}, \hat q_{0.975}]</span>, the 2.5 % and 97.5 % quantiles of the <span class="m">B</span> resample means. The course uses <span class="m">B = 10{,}000</span>.</p>
+<dl><dt>Plug-in principle</dt><dd>estimate a property <span class="m">t(F)</span> of the unknown distribution by the same property of the empirical one, <span class="m">t(\hat F_n)</span>.</dd><dt>Bootstrap distribution</dt><dd>the distribution of <span class="m">\bar\Delta^*</span> when the sample is held fixed and only the resampling is random.</dd><dt>Paired resampling</dt><dd>resample whole days, so that day <span class="m">i</span>'s two results stay together; resampling <span class="m">\Delta_i</span> does exactly that.</dd><dt>Unpaired resampling</dt><dd>resample <span class="m">X</span>'s <span class="m">n</span> days and <span class="m">Y</span>'s <span class="m">n</span> days independently and subtract the two resample means; it ignores that day <span class="m">i</span> is the same day for both.</dd></dl>
+</div>
+<p><strong>Why it works: the plug-in principle.</strong> We need the distribution of <span class="m">\bar\Delta - \mu_\Delta</span>, which depends on the unknown distribution <span class="m">F</span> of a day. The plug-in principle replaces <span class="m">F</span> by <span class="m">\hat F_n</span>: under <span class="m">\hat F_n</span> the &quot;true mean&quot; is <span class="m">\bar\Delta</span> itself and a sample of <span class="m">n</span> days is a resample, so <span class="m">\bar\Delta^* - \bar\Delta</span> stands for <span class="m">\bar\Delta - \mu_\Delta</span>. Taken literally, with <span class="m">\hat q</span> the quantiles of <span class="m">\bar\Delta^*</span>,</p>
+<div class="math-block" data-narrow="\mu_\Delta \in \big[2\bar\Delta - \hat q_{0.975},\ 2\bar\Delta - \hat q_{0.025}\big]">\begin{aligned} &amp;P\big(\hat q_{0.025} - \bar\Delta \le \bar\Delta - \mu_\Delta \le \hat q_{0.975} - \bar\Delta\big) \approx 0.95 \\ \iff\ &amp;\mu_\Delta \in \big[2\bar\Delta - \hat q_{0.975},\ 2\bar\Delta - \hat q_{0.025}\big], \end{aligned}</div>
+<p>the <em>basic</em> bootstrap interval, <span class="m">[-17.9, -11.3]</span> for CP-SAT − SST. The approximation is good when <span class="m">\hat F_n</span> is close to <span class="m">F</span>, that is, when <span class="m">n</span> is not too small.</p>
+<p><strong>The percentile interval rests on a different argument</strong> (Efron and Tibshirani <a href="#ref-1">[1]</a>, chapter 13). Suppose some increasing function <span class="m">g</span> makes <span class="m">g(\bar\Delta) - g(\mu_\Delta)</span> normal with mean 0 and some variance <span class="m">c^2</span>, in the real and the bootstrap world alike. The exact 95 % interval for <span class="m">g(\mu_\Delta)</span> is then <span class="m">g(\bar\Delta) \pm 1.96c</span>. In the bootstrap world <span class="m">g(\bar\Delta^*)</span> has quantiles <span class="m">g(\bar\Delta) \pm 1.96c</span> too, and since <span class="m">g</span> is increasing, the quantiles of <span class="m">\bar\Delta^*</span> are <span class="m">\hat q = g^{-1}\big(g(\bar\Delta) \pm 1.96c\big)</span>: exactly the ends of that interval mapped back. So the percentile interval is right without our knowing <span class="m">g</span>. The two intervals agree when the bootstrap distribution is symmetric about <span class="m">\bar\Delta</span>; here the percentile ends lie 3.57 below and 3.09 above the mean, so they differ by about half a minute.</p>
+<p><strong>One thing can be computed exactly.</strong> For a single draw <span class="m">\Delta^*</span> from <span class="m">\hat F_n</span>, <span class="m">\mathbb E^*[\Delta^*] = \frac1n \sum_i \Delta_i = \bar\Delta</span> and <span class="m">\mathrm{Var}^*(\Delta^*) = \frac1n \sum_i (\Delta_i - \bar\Delta)^2 = \hat\sigma^2</span>, the plug-in variance. The <span class="m">n</span> draws of a resample are independent, so</p>
+<div class="math-block">\mathrm{Var}^*(\bar\Delta^*) = \frac{\hat\sigma^2}{n} = \frac{n - 1}{n} \cdot \frac{s^2}{n},</div>
+<p>the familiar squared standard error, slightly shrunk because <span class="m">\hat\sigma^2</span> divides by <span class="m">n</span> where <span class="m">s^2</span> divides by <span class="m">n - 1</span>. For CP-SAT − SST, <span class="m">\hat\sigma = 7.63</span> and the bootstrap standard error is <span class="m">7.63/\sqrt{20} = 1.71</span>, against <span class="m">s/\sqrt n = 1.75</span>.</p>
+<p><strong>A hand-sized example.</strong> Take three days with differences <span class="m">-3</span>, <span class="m">-6</span> and <span class="m">-15</span>; their mean is <span class="m">-8</span>. There are <span class="m">3^3 = 27</span> ordered resamples, all equally likely, and their means are</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Resample mean</th>
+<th>−15</th>
+<th>−12</th>
+<th>−11</th>
+<th>−9</th>
+<th>−8</th>
+<th>−7</th>
+<th>−6</th>
+<th>−5</th>
+<th>−4</th>
+<th>−3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resamples</td>
+<td>1</td>
+<td>3</td>
+<td>3</td>
+<td>3</td>
+<td>6</td>
+<td>3</td>
+<td>1</td>
+<td>3</td>
+<td>3</td>
+<td>1</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>(three times <span class="m">-15</span> gives <span class="m">-15</span>; two <span class="m">-15</span> and one <span class="m">-6</span> gives <span class="m">-12</span>, in 3 orders; one of each gives <span class="m">-8</span>, in 6 orders; and so on). The plug-in variance is <span class="m">\hat\sigma^2 = (25 + 4 + 49)/3 = 26</span>, and the variance of the 27 means is exactly <span class="m">26/3 = 8.6667</span>, a standard error of 2.94 where <span class="m">s/\sqrt n</span> gives 3.61. But the percentile interval is useless here: the smallest mean has probability <span class="m">1/27 = 0.037</span>, more than 2.5 %, so the 95 % interval is the whole range <span class="m">[-15, -3]</span>, and <code>bootstrap_ci</code> returns exactly that. With 20 days there are <span class="m">20^{20} \approx 1.05 \times 10^{26}</span> ordered resamples; <span class="m">B = 10{,}000</span> random ones approximate their distribution.</p>
+<div class="widget" id="rsW">
+  <div class="controls">
+    <button class="btn" id="rsOne">Draw one resample</button>
+    <button class="btn" id="rsMany">Draw 1,000 more</button>
+    <button class="btn" id="rsReset">Start again</button>
+  </div>
+  <p class="chart-title">The 20 daily differences of CP-SAT − SST under breakdowns; highlighted: the days in the last resample (orange: drawn twice or more)</p>
+  <div id="rsChips"></div>
+  <canvas id="rsC" aria-label="Histogram of the resample means drawn so far"></canvas>
+  <p class="caption" id="rsCap"></p>
+</div>
+<p><strong>What <span class="m">B</span> buys.</strong> Drawing <span class="m">B</span> random resamples instead of all of them adds Monte Carlo error: over 100 resampling seeds with <span class="m">B = 10{,}000</span>, the ends of the paired CP-SAT − SST interval have a standard deviation of 0.049 and 0.032 minutes, those of the wider unpaired one 0.175 and 0.166. Hence the hero, which resamples in the browser with another generator, shows the unpaired interval as <span class="m">[-27.7, -2.4]</span> against NumPy's <span class="m">[-27.9, -2.7]</span>, and the paired one, <span class="m">[-18.4, -11.7]</span>, to the digit.</p>
+<p><strong>What it assumes.</strong> Three things, and the first matters most.</p>
+<ol>
+<li><em>Independent days</em>, true here by construction. In a real plant consecutive days share leftover work and resampling single days would understate the uncertainty; a block bootstrap, which resamples runs of consecutive days, is the usual remedy <a href="#ref-1">[1]</a>.</li>
+<li><em>Enough days for <span class="m">\hat F_n</span> to resemble <span class="m">F</span></em>, as the three-day example shows.</li>
+<li><em>A statistic that some increasing transformation makes roughly normal</em>, the condition of the percentile argument above. With skewed data at small <span class="m">n</span> it holds only roughly; the bias-corrected and accelerated (BCa) interval <a href="#ref-1">[1]</a> corrects for this, and the course only cites it.</li>
+</ol>
+<p><strong>Does it deliver 95 %?</strong> On 1,000 samples of 20 days from the 500-day pool, the percentile interval for SST's mean covers the pool average 90.8 % of the time in the calm shop and 91.2 % under breakdowns; for the paired difference SST − EDD, 92.7 % and 93.3 %. Even with normal data it would cover only 92.9 % at <span class="m">n = 20</span>, the probability that <span class="m">|t_{19}| &lt; 1.96\sqrt{19/20}</span>, because it behaves like <span class="m">\bar\Delta \pm 1.96\,\hat\sigma/\sqrt n</span> instead of using <span class="m">t_{19}</span> and <span class="m">s</span>; the rest of the single mean's shortfall comes from its skewness (2.23 and 1.61).</p>
+<p><strong>How the interval shrinks with the number of days.</strong> Because <span class="m">\mathrm{Var}(\bar\Delta) = \sigma_\Delta^2/n</span>, the half-width is about <span class="m">1.96\, \sigma_\Delta/\sqrt n</span>: four times as many days for half the width, on average. Move the hero's <em>Test days used</em> slider: with the first 5, 10, 15 and 20 days, the paired interval of CP-SAT − SST is 10.4, 12.0, 8.4 and 6.7 minutes wide, the unpaired one 25.1, 40.8, 30.1 and 25.3. Not monotone, because the sample standard deviation rises from 6.27 minutes over the first 6 days to 10.53 over the first 8, as the heavy days 6 and 7 (differences <span class="m">-29.6</span> and <span class="m">-35.4</span>) enter.</p>
+<p><strong>How many days would settle the DQN question?</strong> DQN is <span class="m">+1.3</span> minutes behind SST under breakdowns, with an interval <span class="m">[-2.1, +5.1]</span> that includes zero, and the daily difference has a standard deviation of 8.50 minutes. A half-width of 1.3 minutes needs <span class="m">n \approx (1.96 \times 8.50/1.3)^2 = 164</span> days. Twenty days cannot resolve a difference that small; the honest summary is &quot;no difference detected&quot;, not &quot;equal&quot;.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="separation">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Training, validation and test days</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> A method adjusted while looking at the test days has, in part, learned those days. Its test score measures how well it fits them, not how it will do tomorrow. The cure: separate the days.</p>
+<div class="define"><p class="define-title">What are training, validation and test sets?</p>
+<p><strong>In plain words:</strong> three disjoint sets of days, one to learn on, one to choose with, and one to report, used once.</p>
+<p><strong>More precisely:</strong> the <em>training</em> days are those a method may learn from (the DQN agent's episodes); the <em>validation</em> days serve every choice made while developing (hyper-parameters, checkpoints, the CP-SAT settings, the shop's load); the <em>test</em> days are run once, after every choice is frozen, and only their results are reported. A choice made on the test turns its score into an optimistic one.</p>
+</div>
+<p><strong>In the repository</strong> the three sets are seed ranges.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Set</th>
+<th>Seeds</th>
+<th>Used for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Training</td>
+<td>100001 to 105500 (100000 + 1000 × training seed + episode, episodes 1 to 1500)</td>
+<td>the DQN agent's learning episodes</td>
+</tr>
+<tr>
+<td>Validation</td>
+<td>5000 to 5009, both disturbance levels</td>
+<td>the agent's checkpoints (every 25 episodes) and the choice among its five training seeds; the README adds the CP-SAT settings and the shop's load and due dates, all fixed before the test</td>
+</tr>
+<tr>
+<td>Test</td>
+<td>0 to 19</td>
+<td><code>scripts/evaluate.py</code>, run once with everything fixed</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The README lists these under &quot;Choices made before the test&quot;, and a comment on <code>CPSAT_SETTINGS</code> in <code>scripts/evaluate.py</code> says they were fixed on validation seeds.</p>
+<p><strong>What choosing on the test would have reported.</strong> <code>scripts/train_dqn.py</code> trains five agents from five training seeds and keeps the one with the best validation score. All five were then evaluated on the test days, so we can see what the other choice would have done:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Training seed</th>
+<th>Validation score</th>
+<th>Test, calm</th>
+<th>Test, breakdowns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>23.27</td>
+<td>7.2</td>
+<td>33.6</td>
+</tr>
+<tr>
+<td>1</td>
+<td>23.23</td>
+<td>7.0</td>
+<td>36.3</td>
+</tr>
+<tr>
+<td>2</td>
+<td>24.81</td>
+<td>7.8</td>
+<td>37.7</td>
+</tr>
+<tr>
+<td>3 (kept)</td>
+<td>21.98</td>
+<td>7.4</td>
+<td>35.4</td>
+</tr>
+<tr>
+<td>4</td>
+<td>24.02</td>
+<td>8.1</td>
+<td>37.0</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The agent kept on validation scores 7.4 and 35.4 on the test. Picking &quot;the best agent&quot; by its test score would report 7.0 in the calm shop (seed 1) and 33.6 under breakdowns (seed 0), two different agents, the second &quot;beating&quot; SST's 34.1. That claim would not survive a fair test: agent 0 against SST on the same days is <span class="m">-0.55</span> <span class="m">[-3.4, +2.1]</span>, and the lowest of five noisy scores is low partly by luck that will not repeat. The agents may differ a little (2 of the 20 paired comparisons among them exclude zero), but the next part shows how large a gap selection alone produces.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="winners">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>The winner's curse</h2>
+  </div>
+  <div class="col prose">
+
+<p><strong>In plain words.</strong> Run several equally good methods on the same 20 days and report the best. Its result is low partly because the days happened to suit it; on fresh days that luck does not repeat. The name comes from auction theory, where the winning bid tends to be the one that overestimated the most.</p>
+<p><strong>The mathematics.</strong> Take <span class="m">K</span> methods with the same true mean <span class="m">\mu</span> and the same daily spread <span class="m">\sigma</span>, any two correlated <span class="m">\rho</span> on a common day. A convenient model writes a day's result for method <span class="m">k</span> as <span class="m">\mu + \sigma(\sqrt\rho\, Z_i + \sqrt{1 - \rho}\, \varepsilon_{ki})</span>: a shared day effect <span class="m">Z_i</span> and a method-specific part <span class="m">\varepsilon_{ki}</span>, all independent standard normals. Averaged over <span class="m">n</span> days,</p>
+<div class="math-block" data-narrow="\bar X_k = \mu + \tfrac{\sigma}{\sqrt n}\big(\sqrt\rho\, G_0 + \sqrt{1 - \rho}\, G_k\big)">\bar X_k = \mu + \frac{\sigma}{\sqrt n}\left(\sqrt\rho\, G_0 + \sqrt{1 - \rho}\, G_k\right), \qquad G_0 = \sqrt n\, \bar Z,\ \ G_k = \sqrt n\, \bar\varepsilon_k,</div>
+<p>where <span class="m">\bar Z</span> and <span class="m">\bar\varepsilon_k</span> are the day averages of <span class="m">Z_i</span> and <span class="m">\varepsilon_{ki}</span>, so that <span class="m">G_0, G_1, \dots, G_K</span> are independent standard normals. The shared term is the same for every <span class="m">k</span>, so it does not affect which method wins:</p>
+<div class="math-block" data-narrow="\min_k \bar X_k = \mu + \tfrac{\sigma}{\sqrt n}\big(\sqrt\rho\, G_0 + \sqrt{1 - \rho}\, \min_k G_k\big)">\min_k \bar X_k = \mu + \frac{\sigma}{\sqrt n}\left(\sqrt\rho\, G_0 + \sqrt{1 - \rho}\, \min_k G_k\right).</div>
+<p>Take expectations, with <span class="m">\mathbb E[G_0] = 0</span> and <span class="m">\mathbb E[\min_k G_k] = -e_K</span>:</p>
+<div class="math-block">\begin{aligned} \mathbb E\Big[\min_k \bar X_k\Big] - \mu &amp;= -\,\sigma\sqrt{1 - \rho}\;\frac{e_K}{\sqrt n}, \\ e_K = \mathbb E\Big[\max_{k \le K} W_k\Big] &amp;= \int_{-\infty}^{\infty} w\, K \varphi(w)\, \Phi(w)^{K-1}\, dw, \end{aligned}</div>
+<p>where <span class="m">W_k = -G_k</span> are independent standard normals (<span class="m">\min_k G_k = -\max_k W_k</span>), and <span class="m">K\varphi(w)\Phi(w)^{K-1}</span> is the density of their maximum, the derivative of <span class="m">P(\max W_k \le w) = \Phi(w)^K</span>. Numerically, <span class="m">e_2 = 0.564</span> (exactly <span class="m">1/\sqrt\pi</span>, exercise 3), <span class="m">e_3 = 0.846</span>, <span class="m">e_4 = 1.029</span>, <span class="m">e_5 = 1.163</span>, <span class="m">e_{10} = 1.539</span> and <span class="m">e_{20} = 1.867</span>: the curse grows with the number of candidates, slowly, asymptotically like <span class="m">\sqrt{2 \ln K}</span> (a standard result on the maximum of normal variables, cited, not proved here; at <span class="m">K = 20</span> it still gives 2.45).</p>
+<p><strong>Read the formula.</strong> The optimism shrinks like <span class="m">1/\sqrt n</span>, grows with <span class="m">K</span>, and common random numbers reduce it by <span class="m">\sqrt{1 - \rho}</span>, because only method-specific luck can make one method win. With <span class="m">\sigma = 24.0</span> minutes (SST's spread over the test days under breakdowns), <span class="m">n = 20</span> and <span class="m">K = 4</span>: independent days give an expected optimism of 5.53 minutes, common days with <span class="m">\rho = 0.90</span> only 1.75. With <span class="m">K = 10</span> the figures are 8.26 and 2.61; with <span class="m">K = 4</span>, <span class="m">\rho = 0.90</span> and only 5 days, 3.50.</p>
+<p>In the widget the orange and blue histograms differ only by that shift; the dashed markers show their means. Set <span class="m">\rho</span> to 0 and the winner looks 5.5 minutes better than it is; raise <span class="m">\rho</span> and the curse shrinks.</p>
+<div class="widget" id="wcW">
+  <div class="controls">
+    <label class="field"><span>Candidates <span class="m">K</span>: <b id="wcKV"></b></span><span class="row"><input type="range" id="wcK" min="2" max="20" step="1" value="4"></span></label>
+    <label class="field"><span>Correlation <span class="m">\rho</span>: <b id="wcRV"></b></span><span class="row"><input type="range" id="wcR" min="0" max="0.95" step="0.05" value="0.9"></span></label>
+    <label class="field"><span>Test days <span class="m">n</span>: <b id="wcNV"></b></span><span class="row"><input type="range" id="wcN" min="5" max="60" step="1" value="20"></span></label>
+    <button class="btn" id="wcAgain">Draw again</button>
+  </div>
+  <canvas id="wcC" aria-label="Histogram of the winner's score on the test days and on fresh days"></canvas>
+  <p class="caption" id="wcCap"></p>
+</div>
+<p><strong>In the real shop the four rules are not equal.</strong> The 500-day pool gives each rule's true mean with a standard error of 0.39 to 2.26 minutes. On 2,000 random sets of 20 pool days, the truly best rule (EDD calm, SST under breakdowns) has the lowest mean 97.3 % and 97.7 % of the time, and the winner's score is optimistic by only 0.04 and 0.13 minutes on average: the rules differ by more than the paired noise. If instead the rule is chosen on 10 other days and its score read on the 20 test days, the report is off the rule's true mean by <span class="m">+0.03</span> and <span class="m">-0.01</span> minutes on average: no optimism. The five DQN agents are the opposite case, nearly equal candidates, where the curse can account for most of the gap.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="reporting">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>What a fair report contains</h2>
+  </div>
+  <div class="col prose">
+
+<p>A comparison is fair when a reader can see the size of the difference, its uncertainty and how it was produced. For CP-SAT against SST under breakdowns:</p>
+<ol class="steps">
+<li><div><strong>The protocol.</strong> 20 test days (seeds 0 to 19), the same for every method, run once after all choices were made on other seeds; all 480 runs of the evaluation passed the independent checker.</div></li>
+<li><div><strong>Each method, with its interval.</strong> CP-SAT 19.3 <span class="m">[12.3, 27.1]</span>, SST 34.1 <span class="m">[24.8, 44.9]</span> minutes of mean tardiness.</div></li>
+<li><div><strong>The paired difference, with its interval.</strong> <span class="m">-14.8</span> <span class="m">[-18.4, -11.7]</span> minutes, CP-SAT minus SST. The two methods' own intervals overlap; the paired one is far from zero.</div></li>
+<li><div><strong>Days better, equal and worse.</strong> 20, 0 and 0. The smallest gain on a day is 4.3 minutes, the largest 35.4; the median difference is <span class="m">-11.9</span>.</div></li>
+<li><div><strong>Effect sizes.</strong> Absolute: 14.8 minutes per order. Relative: <span class="m">1 - 19.3/34.1 = 43\ \%</span> less tardiness. Standardised: <span class="m">d_z = \bar\Delta / s_\Delta = -1.89</span>, the mean difference in units of its daily spread.</div></li>
+</ol>
+<p><strong>Counts of days are a test of their own.</strong> If neither method were better and days were independent, each day would favour CP-SAT with probability <span class="m">\tfrac12</span>, and all 20 days falling on one side would have probability <span class="m">2 \times 0.5^{20} = 1.9 \times 10^{-6}</span>. This is the sign test: crude, since it ignores the sizes, but free of any assumption on the distribution of tardiness. For DQN − SST the same report gives <span class="m">+1.3</span> <span class="m">[-2.1, +5.1]</span>, <span class="m">d_z = 0.15</span>, better on 11 days of 20: no detectable difference either way.</p>
+<p><strong>Relative sizes can mislead.</strong> In the calm shop CP-SAT cuts EDD's tardiness by 81 %, but the gain is 5.7 minutes and <span class="m">d_z = -0.71</span>: there is little tardiness to remove. Report the absolute difference first.</p>
+<p><strong>Many comparisons, a few false alarms.</strong> Seven methods make 21 pairs per level; if no pair differed, about <span class="m">0.05 \times 21 = 1.05</span> intervals per level would still exclude zero by chance. <code>scripts/evaluate.py</code> fixes its comparisons in code, each non-rule method against the best rule at that level, and the README reports all of them, plus CP-SAT against Greedy replan, including the DQN ones that found nothing.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="checker">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The checker as executable invariants</h2>
+  </div>
+  <div class="col prose">
+
+<p>Statistics cannot rescue a wrong simulator. If the simulation of <a href="b01-discrete-event-simulation.html#simpy" title="Discrete-event simulation">B1</a> let a method break a rule of the shop, it would look better on every day, with a tight paired interval: the bug has to be caught in the schedules.</p>
+<p><strong>A small instance first.</strong> On the paint machine of <a href="a01-what-a-schedule-is.html" title="What a schedule is">A1</a>, set up for blue, a log that paints A (blue, minutes 0 to 20) and then B (red) from 20 to 30, with no 10-minute colour change, finishes B at 30 instead of 40. One line of code, &quot;before each job, the changeover from the previous colour&quot;, reads the log and catches it.</p>
+<div class="define"><p class="define-title">What is an executable invariant?</p>
+<p><strong>In plain words:</strong> a rule of the shop written as code that inspects a finished schedule and complains if the rule was broken, run on every schedule, not trusted.</p>
+<p><strong>More precisely:</strong> an invariant is a property every valid executed schedule must satisfy. <code>jobshop/checker.py:check_schedule(ws, scenario, log)</code> takes only the workshop data, the scenario and the executed log (machine work segments and the legs of the automated carts, AGVs) and returns the list of violated invariants; an empty list means the schedule is valid. It reads nothing from the simulator's internal state and nothing from a solver model, so a simulator or solver bug that makes a schedule break a rule of the shop cannot hide from it. Bugs that keep every invariant, such as a controller peeking at future breakdowns, a wrong due date in the scenario or a slip in <code>run_metrics</code>, need other tests.</p>
+</div>
+<p><strong>What it checks.</strong> Four groups of invariants, re-derived from the log alone:</p>
+<ol>
+<li><em>Every operation, once, correctly</em>: on a single eligible machine <span class="m">m \in \mathcal M_{jk}</span>, for exactly its time <span class="m">p_{jkm}</span>, with no changeover work after processing began and no work logged for an operation that does not exist.</li>
+<li><em>Machines</em>: no two segments overlap; no work during a breakdown <span class="m">[t_{\text{down}}, t_{\text{up}})</span>; no operation interleaved with another; before each operation, exactly the changeover <span class="m">s_m(f, g)</span> from the previous family.</li>
+<li><em>Carts</em>: every leg takes the layout's travel time <span class="m">\tau(a, b)</span>, starts where the previous one ended, and never overlaps another leg of the same cart.</li>
+<li><em>Jobs move physically</em>: operation <span class="m">k+1</span> starts after operation <span class="m">k</span> ends, and the job is carried by cart legs to the right machine's station before processing starts.</li>
+</ol>
+<p><strong>A bug the checker catches.</strong> The numbers script builds a simulator with a plausible bug: it reads every changeover as zero. Under breakdowns, the four rules then report a mean tardiness of 6.2 (FIFO), 4.1 (shortest job first, SPT), 3.3 (EDD) and 3.3 (SST) minutes, against 60.8, 45.4, 37.6 and 34.1 with the real simulator. SST and EDD become identical, because without changeovers SST falls back on its tie-break, the due date. The checker, given the true workshop, rejects 20 of 20 runs of every rule, with 2,998, 2,907, 2,934 and 2,934 violations such as &quot;job 7 op 0 got 0 min of setup, needs 6&quot;. A subtler bug would favour one method: one in the plan-following code that let a planned job start before its cart delivered it would help CP-SAT only, and invariant group 4 exists for that case.</p>
+<p><strong>Testing the tester.</strong> A checker that accepts everything passes every run, so <code>tests/test_checker.py</code> takes a valid EDD log (seed 42, 40 jobs, frequent breakdowns: 277 work segments, 248 cart legs, 0 violations) and breaks it in one way per test:</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>What it breaks</th>
+<th>Caught by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>overlap on a machine</td>
+<td>two segments at the same time</td>
+<td>&quot;overlap&quot;</td>
+</tr>
+<tr>
+<td>precedence inside a job</td>
+<td>operation 1 moved before operation 0 ends</td>
+<td>&quot;before the job is available&quot;</td>
+</tr>
+<tr>
+<td>operation before delivery</td>
+<td>start moved to the cart's departure</td>
+<td>processing time and position</td>
+</tr>
+<tr>
+<td>setup time shortened, setup skipped</td>
+<td>one minute or the whole changeover removed</td>
+<td>&quot;of setup, needs&quot;</td>
+</tr>
+<tr>
+<td>processing time shortened</td>
+<td>one minute removed</td>
+<td>&quot;processed … needs&quot;</td>
+</tr>
+<tr>
+<td>work during downtime</td>
+<td>a segment extended into a breakdown</td>
+<td>&quot;downtime&quot;</td>
+</tr>
+<tr>
+<td>ineligible machine</td>
+<td>operation moved to a machine not in <span class="m">\mathcal M_{jk}</span></td>
+<td>&quot;not eligible&quot;</td>
+</tr>
+<tr>
+<td>missing operation</td>
+<td>an operation deleted</td>
+<td>&quot;never processed&quot;</td>
+</tr>
+<tr>
+<td>AGV in two places, AGV teleports, AGV too fast</td>
+<td>a leg overlapped, a wrong origin, one minute shorter</td>
+<td>&quot;in two places&quot;, &quot;but the AGV is at&quot;, &quot;leg duration&quot;</td>
+</tr>
+<tr>
+<td>job moved without an AGV</td>
+<td>a loaded leg deleted</td>
+<td>&quot;but the job is at station&quot;</td>
+</tr>
+<tr>
+<td>two jobs on one leg</td>
+<td>a second job on a cart's leg</td>
+<td>&quot;in two places&quot;</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>All 14 injected violations are caught, which the numbers script verifies again. And <code>scripts/evaluate.py</code> refuses to write results if any of its runs fails the checker.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>Every interval of the course comes from one short function.</p>
+<div class="code-walk"><p class="code-src">jobshop/metrics.py · bootstrap_ci</p><pre><code class="language-python">def bootstrap_ci(
+    values: Sequence[float],
+    *,
+    confidence: float = 0.95,
+    resamples: int = 10_000,
+    seed: int = 0,
+) -&gt; tuple[float, float]:
+    &quot;&quot;&quot;Percentile bootstrap confidence interval for the mean.&quot;&quot;&quot;
+    values = np.asarray(values, dtype=float)
+    if len(values) &lt; 2:
+        return float(&quot;nan&quot;), float(&quot;nan&quot;)
+    rng = np.random.default_rng(seed)
+    samples = rng.choice(values, size=(resamples, len(values)), replace=True)
+    alpha = (1.0 - confidence) / 2.0
+    low, high = np.quantile(samples.mean(axis=1), [alpha, 1.0 - alpha])
+    return float(low), float(high)</code></pre>
+<p><code>rng.choice(values, size=(resamples, len(values)), replace=True)</code> draws every resample at once: row <span class="m">b</span> is <span class="m">n</span> days drawn with replacement from <span class="m">\hat F_n</span>. <code>samples.mean(axis=1)</code> gives the <span class="m">B</span> means <span class="m">\bar\Delta^{*b}</span>, and <code>np.quantile</code> at <code>alpha = 0.025</code> and <code>1 - alpha</code> reads the percentile interval; NumPy interpolates between neighbouring order statistics where the browser demo takes the lower one, another source of last-digit differences. The fixed <code>seed=0</code> makes every table reproducible.</p>
+</div>
+<p>The paired comparison is built in <code>level_tables</code>, which writes the result tables. Its first statement sorts each method's runs by seed:</p>
+<div class="code-walk"><p class="code-src">scripts/evaluate.py · 102-104</p><pre><code class="language-python">def level_tables(rows: list[dict], level: str, methods: list[str]) -&gt; list[str]:
+    by = {m: sorted((r for r in rows if r[&quot;level&quot;] == level and r[&quot;method&quot;] == m), key=lambda r: r[&quot;seed&quot;])
+          for m in methods}</code></pre>
+<p>After this sort, position <span class="m">i</span> of every list <code>by[m]</code> is test day <span class="m">i</span>: the sorting <em>is</em> the pairing, and where a careless script would go wrong.</p>
+</div>
+<div class="code-walk"><p class="code-src">scripts/evaluate.py · 127-147</p><pre><code class="language-python">    rules = [m for m in methods if m in RULES]
+    others = [m for m in methods if m not in RULES]
+    if rules and others:
+        best = min(rules, key=lambda m: np.mean([x[&quot;mean_tardiness&quot;] for x in by[m]]))
+        ref = np.array([x[&quot;mean_tardiness&quot;] for x in by[best]])
+        out += [
+            &quot;&quot;,
+            f&quot;Paired comparison with the best single rule on mean tardiness at this level ({best}), seed by seed:&quot;,
+            &quot;&quot;,
+            &quot;| method | difference in mean tardiness (min) | difference in max tardiness (min) | seeds better / equal / worse |&quot;,
+            &quot;| --- | --- | --- | --- |&quot;,
+        ]
+        ref_max = np.array([x[&quot;max_tardiness&quot;] for x in by[best]])
+        for m in others:
+            d = np.array([x[&quot;mean_tardiness&quot;] for x in by[m]]) - ref
+            dmax = np.array([x[&quot;max_tardiness&quot;] for x in by[m]]) - ref_max
+            out.append(
+                f&quot;| {m} | {cell(d, &#x27;{:+.1f}&#x27;)} | {cell(dmax, &#x27;{:+.0f}&#x27;)} &quot;
+                f&quot;| {int((d &lt; 0).sum())} / {int((d == 0).sum())} / {int((d &gt; 0).sum())} |&quot;
+            )
+    return out</code></pre>
+<p>The best rule is chosen on the test means (<code>best = min(rules, ...)</code>), a small use of the test that Part 5 shows is harmless for four well-separated rules. Then <code>d</code> is the vector of <span class="m">\Delta_i</span>, <code>cell(d, ...)</code> prints its mean with <code>bootstrap_ci(d)</code>, which resamples days and so keeps each pair together, and the three sums count the days better, equal and worse.</p>
+</div>
+<p>And the checker, whose four groups are the comments in its body.</p>
+<div class="code-walk"><p class="code-src">jobshop/checker.py · check_schedule</p><pre><code class="language-python">def check_schedule(ws: Workshop, scenario: Scenario, log: RunLog) -&gt; list[str]:
+    &quot;&quot;&quot;Return the list of violations (empty list = the executed schedule is valid).&quot;&quot;&quot;
+    errors: list[str] = []
+    jobs = {j.idx: j for j in scenario.jobs}
+
+    by_op: dict[tuple[int, int], list] = defaultdict(list)
+    by_machine: dict[int, list] = defaultdict(list)
+    for s in log.segments:
+        if s.end &lt;= s.start:
+            errors.append(f&quot;segment with non-positive length: {s}&quot;)
+        if s.kind not in (&quot;setup&quot;, &quot;proc&quot;):
+            errors.append(f&quot;unknown segment kind: {s}&quot;)
+        by_op[(s.job, s.op)].append(s)
+        by_machine[s.machine].append(s)
+
+    # 1. every operation of every job is done once, on one eligible machine, for its full duration
+    op_machine: dict[tuple[int, int], int] = {}
+    op_first: dict[tuple[int, int], int] = {}
+    op_last: dict[tuple[int, int], int] = {}
+    for job in jobs.values():
+        for op in range(ws.n_ops(job.family)):
+            segs = sorted(by_op.get((job.idx, op), []), key=lambda s: s.start)
+            if not segs:
+                errors.append(f&quot;job {job.idx} op {op}: never processed&quot;)
+                continue
+            machines = {s.machine for s in segs}
+            machine = segs[0].machine
+            op_machine[(job.idx, op)] = machine
+            op_first[(job.idx, op)] = segs[0].start
+            op_last[(job.idx, op)] = segs[-1].end
+            if len(machines) &gt; 1:
+                errors.append(f&quot;job {job.idx} op {op}: split over machines {sorted(machines)}&quot;)
+                continue
+            alternatives = ws.alternatives(job.family, op)
+            if machine not in alternatives:
+                errors.append(f&quot;job {job.idx} op {op}: machine {machine} is not eligible&quot;)
+                continue
+            done = sum(s.end - s.start for s in segs if s.kind == &quot;proc&quot;)
+            if done != alternatives[machine]:
+                errors.append(f&quot;job {job.idx} op {op}: processed {done} min, needs {alternatives[machine]}&quot;)
+            kinds = [s.kind for s in segs]
+            if &quot;proc&quot; in kinds and &quot;setup&quot; in kinds[kinds.index(&quot;proc&quot;):]:
+                errors.append(f&quot;job {job.idx} op {op}: setup work after processing started&quot;)
+    for job_idx, op in by_op:
+        if job_idx not in jobs or op &gt;= ws.n_ops(jobs[job_idx].family):
+            errors.append(f&quot;work logged for unknown operation ({job_idx}, {op})&quot;)
+
+    # 2. one thing at a time on a machine, no work while down, setup times respected
+    for machine, segs in by_machine.items():
+        segs.sort(key=lambda s: (s.start, s.end))
+        for a, b in zip(segs, segs[1:]):
+            if b.start &lt; a.end:
+                errors.append(f&quot;machine {machine}: overlap between {a} and {b}&quot;)
+        for s in segs:
+            for down, up in scenario.downtime[machine]:
+                if s.start &lt; up and down &lt; s.end:
+                    errors.append(f&quot;machine {machine}: work during downtime [{down}, {up}): {s}&quot;)
+        order: list[tuple[int, int]] = []  # operations in the order the machine ran them
+        for s in segs:
+            if not order or order[-1] != (s.job, s.op):
+                order.append((s.job, s.op))
+        if len(order) != len(set(order)):
+            errors.append(f&quot;machine {machine}: an operation was interleaved with another one&quot;)
+        previous_family = None
+        for job_idx, op in order:
+            if job_idx not in jobs:
+                continue
+            family = jobs[job_idx].family
+            needed = ws.setup_time(machine, previous_family, family)
+            done = sum(s.end - s.start for s in by_op[(job_idx, op)] if s.kind == &quot;setup&quot; and s.machine == machine)
+            if done != needed:
+                errors.append(
+                    f&quot;machine {machine}: job {job_idx} op {op} got {done} min of setup, needs {needed} &quot;
+                    f&quot;(family {previous_family} -&gt; {family})&quot;
+                )
+            previous_family = family
+
+    # 3. each AGV follows a continuous path in space and time, at the travel times of the layout
+    legs_by_job: dict[int, list] = defaultdict(list)
+    legs_by_agv: dict[int, list] = defaultdict(list)
+    for leg in log.legs:
+        legs_by_agv[leg.agv].append(leg)
+        if leg.job is not None:
+            legs_by_job[leg.job].append(leg)
+    for agv, legs in legs_by_agv.items():
+        if not 0 &lt;= agv &lt; ws.n_agvs:
+            errors.append(f&quot;unknown AGV {agv}&quot;)
+        legs.sort(key=lambda g: (g.start, g.end))
+        position, free_at = LOAD_STATION, 0
+        for leg in legs:
+            if leg.origin == leg.dest or leg.end - leg.start != ws.travel[leg.origin][leg.dest]:
+                errors.append(f&quot;AGV {agv}: leg duration does not match the layout: {leg}&quot;)
+            if leg.start &lt; free_at:
+                errors.append(f&quot;AGV {agv}: in two places at once, leg starts before the previous one ends: {leg}&quot;)
+            if leg.origin != position:
+                errors.append(f&quot;AGV {agv}: leg starts at station {leg.origin} but the AGV is at {position}: {leg}&quot;)
+            position, free_at = leg.dest, leg.end
+
+    # 4. precedence inside a job, with the job physically carried from station to station
+    used_legs = 0
+    for job in jobs.values():
+        legs = sorted(legs_by_job.get(job.idx, []), key=lambda g: g.start)
+        position, available = LOAD_STATION, job.arrival
+        for op in range(ws.n_ops(job.family)):
+            key = (job.idx, op)
+            if key not in op_machine:
+                break
+            first = op_first[key]
+            if first &lt; available:
+                errors.append(f&quot;job {job.idx} op {op}: starts at {first}, before the job is available ({available})&quot;)
+            moves = [g for g in legs if available &lt;= g.start and g.end &lt;= first]
+            used_legs += len(moves)
+            for leg in moves:
+                if leg.origin != position:
+                    errors.append(f&quot;job {job.idx}: picked up at station {leg.origin} but it is at {position}: {leg}&quot;)
+                if leg.start &lt; available:
+                    errors.append(f&quot;job {job.idx}: carried before it is available: {leg}&quot;)
+                position, available = leg.dest, leg.end
+            if position != ws.station(op_machine[key]):
+                errors.append(
+                    f&quot;job {job.idx} op {op}: processed at station {ws.station(op_machine[key])} &quot;
+                    f&quot;but the job is at station {position}&quot;
+                )
+                position = ws.station(op_machine[key])
+            available = op_last[key]
+    if used_legs != sum(len(v) for v in legs_by_job.values()):
+        errors.append(&quot;some loaded AGV legs do not fit between two operations of the job they carry&quot;)
+    return errors</code></pre>
+<p>Group 1 gathers each operation's segments (<code>by_op</code>) and checks one machine, eligibility (<code>ws.alternatives</code>) and the processing total against <span class="m">p_{jkm}</span>. Group 2 sorts each machine's segments, compares neighbours for overlap, intersects them with <code>scenario.downtime[machine]</code>, recovers the order of operations and checks each changeover against <code>ws.setup_time</code>. Group 3 replays each cart from the load station, leg by leg; group 4 replays each job, its position and availability advanced only by its own legs and operations. Every error is a string saying what broke, which is what the tests assert on.</p>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;The two intervals overlap, so the methods are not different.&quot;</strong> CP-SAT's <span class="m">[12.3, 27.1]</span> and SST's <span class="m">[24.8, 44.9]</span> overlap, yet the paired difference is <span class="m">[-18.4, -11.7]</span>. Separate intervals ignore the correlation; judge the interval of the difference.</li>
+<li><strong>&quot;Same seed, same day.&quot;</strong> Only if the random numbers are synchronised. A shared generator whose draws depend on decisions gives each method a different day under the same seed.</li>
+<li><strong>Tuning on the test.</strong> Every look at the test that changes a choice, a hyper-parameter, a checkpoint, which of several runs to report, makes the reported score optimistic. Choose on validation, report the test once.</li>
+<li><strong>&quot;Not significant&quot; read as &quot;equal&quot;.</strong> DQN − SST is <span class="m">[-2.1, +5.1]</span>: the agent could be 2 minutes better or 5 worse. About 164 days would be needed to pin the 1.3-minute gap to <span class="m">\pm 1.3</span>.</li>
+<li><strong>Trusting the percentile interval at its word.</strong> With 20 skewed days it covers about 91 to 93 % of the time, and with 3 days it returns the data range. More days help more than more resamples.</li>
+<li><strong>Trusting the simulator's own numbers.</strong> A bug can make a method look better on every day. Check every schedule with code that shares nothing with the simulator, test that code by breaking schedules on purpose, and remember that bugs keeping every invariant (a controller peeking at the breakdown calendar, a wrong due date) need other tests.</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. Why does running every method on the same seeds make the comparison more precise?</summary>
+<p>A day's difficulty affects every method alike, so the results are positively correlated and <span class="m">\mathrm{Var}(X - Y) = \sigma_X^2 + \sigma_Y^2 - 2\rho\sigma_X\sigma_Y</span> is much smaller than <span class="m">\sigma_X^2 + \sigma_Y^2</span>. For CP-SAT − SST under breakdowns, 61.3 instead of 884.9.</p>
+</details>
+<details class="sol"><summary>2. What does the repository do so that a seed gives the same day to every method?</summary>
+<p>It draws the arrivals and each machine's breakdowns from separate generators, <code>[seed, 1]</code> and <code>[seed, 2, m]</code>, all before the run, and puts the failures in calendar time. No decision can change which random number is used for what.</p>
+</details>
+<details class="sol"><summary>3. When can pairing hurt?</summary>
+<p>When the two methods' results are negatively correlated, <span class="m">\rho &lt; 0</span>: then <span class="m">-2\rho\sigma_X\sigma_Y &gt; 0</span> and the paired difference is noisier than independent days would be. With a shared day effect this is rare; here every correlation is between 0.82 and 0.99.</p>
+</details>
+<details class="sol"><summary>4. What is the plug-in principle, applied to the mean difference?</summary>
+<p>Estimate the unknown distribution of a day by the empirical distribution of the 20 observed days, and the sampling distribution of <span class="m">\bar\Delta</span> by that of the mean of 20 days drawn from it with replacement.</p>
+</details>
+<details class="sol"><summary>5. Why is the bootstrap interval for three days the whole data range?</summary>
+<p>Each extreme resample, all three draws equal to the most extreme day, has probability <span class="m">1/27 = 0.037 &gt; 0.025</span>, so the 2.5 % and 97.5 % quantiles are the smallest and largest values. Three days are too few for the empirical distribution to resemble the true one.</p>
+</details>
+<details class="sol"><summary>6. Why must the bootstrap resample days, not each method's results separately?</summary>
+<p>Resampling days keeps each day's two results, and so their correlation, together; resampling separately throws the correlation away, which gives the unpaired interval, 3.8 times wider for CP-SAT − SST.</p>
+</details>
+<details class="sol"><summary>7. Why does picking the best of five agents on the test overstate its performance, and by how much here?</summary>
+<p>The lowest of five noisy scores is low partly by luck that will not repeat. The agent kept on validation scores 35.4 under breakdowns; the best test score of the five is 33.6. In the equal-means model the expected optimism is <span class="m">\sigma\sqrt{1-\rho}\,e_K/\sqrt n</span>.</p>
+</details>
+<details class="sol"><summary>8. What does the checker look at, and why must it not look at anything else?</summary>
+<p>The workshop data, the scenario and the executed log only. If it used the simulator's state or the solver's model, it would share their bugs. It still cannot see a bug that keeps every invariant.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>The code runs from the repository folder (or the course zip) with its environment. Try first, then peek.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Pairing for DQN against SST.</b> Under breakdowns the 20 test days give, for DQN (<span class="m">X</span>) and SST (<span class="m">Y</span>), <span class="m">s_X = 26.01</span> and <span class="m">s_Y = 24.02</span> minutes, and <span class="m">r = 0.945</span>. (a) Compute the variance of the daily difference, and the standard error of the mean difference over 20 days, paired and unpaired. (b) How many independent days per method would match the precision of 20 paired days? (c) Show that if <span class="m">r</span> were <span class="m">-0.5</span>, pairing would make the variance larger than with independent days.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Use <span class="m">s_X^2 + s_Y^2 - 2 r s_X s_Y</span>, divide by <span class="m">n</span> for the squared standard error, and equate <span class="m">(s_X^2 + s_Y^2)/m</span> with the paired variance over 20.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>(a) <span class="m">s_X^2 + s_Y^2 = 676.5 + 576.9 = 1253.5</span>, and <span class="m">2 r s_X s_Y = 1181</span> with the rounded <span class="m">r</span>, so the paired variance is about 73 (72.2 from the unrounded data, a standard deviation of 8.50). Standard errors over 20 days: <span class="m">\sqrt{72.2/20} = 1.90</span> paired, <span class="m">\sqrt{1253.5/20} = 7.92</span> unpaired. (b) <span class="m">m = 20 \times 1253.5/72.2 = 347</span> days per method. (c) With <span class="m">r = -0.5</span>, <span class="m">-2 r s_X s_Y = +s_X s_Y &gt; 0</span>, so the paired variance is <span class="m">1253.5 + 624.8 = 1878.3</span>, larger than 1253.5: negatively correlated results add their noise.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>An exact bootstrap interval for four days.</b> Take four days with differences <span class="m">(-2, -4, -6, -20)</span>. (a) Show that the exact bootstrap variance of the resample mean is 12.5. (b) Enumerate the <span class="m">4^4 = 256</span> ordered resamples and find the exact percentile interval, the smallest <span class="m">v</span> with <span class="m">P^*(\bar x^* \le v) \ge 0.025</span> and the smallest with <span class="m">P^*(\bar x^* \le v) \ge 0.975</span>. (c) Unlike the three-day example, is it the data range? Why?</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">\mathrm{Var}^*(\bar x^*) = \hat\sigma^2/n</span>. For (b), sort the 256 means and count from each end; <span class="m">1/256 = 0.0039 &lt; 0.025</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>(a) <span class="m">\bar x = -8</span>, deviations <span class="m">6, 4, 2, -12</span>, so <span class="m">\hat\sigma^2 = (36 + 16 + 4 + 144)/4 = 50</span> and <span class="m">\mathrm{Var}^* = 50/4 = 12.5</span>.</p>
+<pre><code class="language-python">import itertools, numpy as np
+h = [-2, -4, -6, -20]
+means = np.sort([sum(c) / 4 for c in itertools.product(h, repeat=4)])   # the 256 ordered resamples
+v, c = np.unique(means, return_counts=True); cum = np.cumsum(c) / 256
+print(means.var(), v[np.argmax(cum &gt;= 0.025)], v[np.argmax(cum &gt;= 0.975)])   # 12.5 -16.0 -3.0
+</code></pre>
+<p>(b) The lowest means are <span class="m">-20</span> (1 resample, cumulative 0.0039), <span class="m">-16.5</span> (4, 0.0195) and <span class="m">-16</span> (4, 0.0352), so the lower end is <span class="m">-16</span>; from the top, <span class="m">-2</span> (1), <span class="m">-2.5</span> (4) and <span class="m">-3</span> (10) take the cumulative from 0.9805 upwards, so the upper end is <span class="m">-3</span>. The interval is <span class="m">[-16, -3]</span>, which <code>bootstrap_ci</code> also returns. (c) No: with four days each extreme resample has probability <span class="m">1/256</span>, below 2.5 %, so the quantiles move inside the range <span class="m">[-20, -2]</span>. The bad day <span class="m">-20</span> still drags the lower end far from the mean: the interval is skewed, <span class="m">8</span> below and <span class="m">5</span> above.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>The winner's curse for two candidates.</b> Two methods with the same true mean <span class="m">\mu</span> have <span class="m">n</span>-day means <span class="m">\bar X_1</span>, <span class="m">\bar X_2</span>, jointly normal with standard deviation <span class="m">\sigma/\sqrt n</span> each and correlation <span class="m">\rho</span>. Show that <span class="m">\mathbb E[\min(\bar X_1, \bar X_2)] = \mu - \sigma\sqrt{1 - \rho}/\sqrt{\pi n}</span>, and hence <span class="m">e_2 = 1/\sqrt\pi</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p><span class="m">\min(a, b) = \tfrac12(a + b) - \tfrac12|a - b|</span>, and for <span class="m">V \sim \mathcal N(0, v^2)</span>, <span class="m">\mathbb E|V| = v\sqrt{2/\pi}</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p><span class="m">\mathbb E[\tfrac12(\bar X_1 + \bar X_2)] = \mu</span>. The difference <span class="m">V = \bar X_1 - \bar X_2</span> is normal with mean 0 and variance <span class="m">2\sigma^2(1 - \rho)/n</span>, so <span class="m">\mathbb E|V| = \sigma\sqrt{2(1-\rho)/n}\,\sqrt{2/\pi} = 2\sigma\sqrt{1-\rho}/\sqrt{\pi n}</span>. Hence <span class="m">\mathbb E[\min] = \mu - \tfrac12 \mathbb E|V| = \mu - \sigma\sqrt{1-\rho}/\sqrt{\pi n}</span>. Comparing with the general formula <span class="m">\mu - \sigma\sqrt{1-\rho}\, e_2/\sqrt n</span> gives <span class="m">e_2 = 1/\sqrt\pi = 0.564</span>. The shared day effect cancels in <span class="m">V</span>, which is why the curse scales with <span class="m">\sqrt{1 - \rho}</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Paired against unpaired, from runs.csv.</b> With <code>results/runs.csv</code> and <code>jobshop.metrics.bootstrap_ci</code>, compute the paired interval of CP-SAT minus Greedy replan under frequent breakdowns, and an unpaired interval obtained by resampling the two methods' days independently. Which one says the solver helps?</p>
+<details class="sol"><summary>Hint</summary>
+<p>Sort each method's rows by seed before subtracting. For the unpaired interval, resample each method's 20 values separately and subtract the means.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">import csv, numpy as np
+from jobshop.metrics import bootstrap_ci
+rows = [r for r in csv.DictReader(open(&quot;results/runs.csv&quot;)) if r[&quot;level&quot;] == &quot;frequent breakdowns&quot;]
+get = lambda m: np.array([float(r[&quot;mean_tardiness&quot;]) for r in sorted((r for r in rows if r[&quot;method&quot;] == m),
+                                                                    key=lambda r: int(r[&quot;seed&quot;]))])
+x, y = get(&quot;CP-SAT&quot;), get(&quot;Greedy replan&quot;)
+print((x - y).mean(), bootstrap_ci(x - y))                  # -4.7, about (-8.9, -1.3)
+rng = np.random.default_rng(0)
+dx = rng.choice(x, size=(10_000, 20)).mean(axis=1); dy = rng.choice(y, size=(10_000, 20)).mean(axis=1)
+print(np.quantile(dx - dy, [0.025, 0.975]))                  # about (-16.7, +6.7)
+</code></pre>
+<p>Only the paired interval excludes zero. The unpaired one is 23.3 minutes wide against 7.6 and says nothing, because it treats two strongly correlated sets of days (<span class="m">r = 0.90</span>) as unrelated.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Break the simulator, let the checker catch it.</b> Build a workshop whose changeovers are all zero, run SST on it for test seed 0 under frequent breakdowns, compute the mean tardiness from the log and check the log against the <em>true</em> workshop.</p>
+<details class="sol"><summary>Hint</summary>
+<p><code>Workshop</code> is a frozen dataclass: <code>dataclasses.replace(ws, setup=...)</code> returns a modified copy. <code>run_metrics</code> reads the log only. <code>simulate(ws, scenario, controller)</code> is shorthand for <code>Shop(ws, scenario, controller).run()</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from dataclasses import replace
+from jobshop.checker import check_schedule
+from jobshop.metrics import run_metrics
+from jobshop.rules import RuleController
+from jobshop.scenario import make_scenario, make_workshop
+from jobshop.shop import simulate
+ws = make_workshop()
+bug = replace(ws, setup=tuple(tuple(tuple(0 for _ in r) for r in mat) for mat in ws.setup))
+sc = make_scenario(ws, 0, mtbf=120.0)
+log = simulate(bug, sc, RuleController(&quot;SST&quot;))
+print(run_metrics(ws, sc, log)[&quot;mean_tardiness&quot;])            # far below the real simulator's value
+errors = check_schedule(ws, sc, log)
+print(len(errors), errors[0])                                # &quot;... got 0 min of setup, needs ...&quot;
+</code></pre>
+<p>Over the 20 test days the bugged simulator reports 3.3 minutes for SST instead of 34.1, and the checker rejects every run.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Write a new invariant.</b> Every job needs at least its fastest-route work: <span class="m">C_j \ge r_j + W_{f(j)}</span>, with <span class="m">W_f</span> the shortest total processing time (<code>ws.min_remaining_work(f, 0)</code>). Write a function that checks it on a log, verify that a valid EDD run passes, then shift every segment of one job 1,000 minutes earlier and verify that your check fails. Is the invariant implied by the checker's existing ones?</p>
+<details class="sol"><summary>Hint</summary>
+<p>A job's completion is the largest <code>end</code> among its segments. The shift puts the job's work before its arrival.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from dataclasses import replace
+from jobshop.rules import RuleController
+from jobshop.scenario import make_scenario, make_workshop
+from jobshop.shop import simulate
+ws = make_workshop(); sc = make_scenario(ws, 3, mtbf=120.0)
+
+def check_min_flow(ws, sc, log):
+    end = {}
+    for s in log.segments:                                   # a job's completion: its latest segment end
+        end[s.job] = max(end.get(s.job, s.end), s.end)
+    return [f&quot;job {j.idx} done at {end[j.idx]}, needs at least {j.arrival + ws.min_remaining_work(j.family, 0)}&quot;
+            for j in sc.jobs if end[j.idx] &lt; j.arrival + ws.min_remaining_work(j.family, 0)]
+
+log = simulate(ws, sc, RuleController(&quot;EDD&quot;))
+print(check_min_flow(ws, sc, log))                           # []
+log.segments[:] = [replace(s, start=s.start - 1000, end=s.end - 1000) if s.job == 10 else s for s in log.segments]
+print(check_min_flow(ws, sc, log)[:1])                       # ['job 10 done at -636, needs at least 250']
+</code></pre>
+<p>It is implied: groups 1 and 4 already force every operation to start after the job is available and to last <span class="m">p_{jkm} \ge \min_m p_{jkm}</span>, in order. A redundant invariant is still useful as a cheap second line of defence, and it gives a clearer message.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 12</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>Common random numbers</strong>: the same seeds for every method, with synchronised streams.</div></li>
+<li><div><strong>The paired variance</strong>: <span class="m">\mathrm{Var}(X - Y) = \sigma_X^2 + \sigma_Y^2 - 2\,\mathrm{Cov}(X, Y)</span>; for CP-SAT − SST, 61.3 instead of 884.9, an interval 6.7 instead of 25.2 minutes wide.</div></li>
+<li><div><strong>The bootstrap</strong>: the plug-in principle yields the basic interval, a normalising transformation the percentile one; it assumes independent days and covers about 91 to 93 % at <span class="m">n = 20</span>.</div></li>
+<li><div><strong>Separation</strong>: train from seed 100001, choose on 5000 to 5009, report 0 to 19 once; choosing among five agents on the test would have reported 33.6 instead of 35.4.</div></li>
+<li><div><strong>The winner's curse</strong>: the best of <span class="m">K</span> equal candidates is optimistic by <span class="m">\sigma\sqrt{1-\rho}\,e_K/\sqrt n</span>.</div></li>
+<li><div><strong>The report</strong>: means and paired differences with intervals, days better / equal / worse, effect sizes, every comparison the code fixes.</div></li>
+<li><div><strong>The checker</strong>: invariants checked on every schedule from the log alone; a simulator that forgot changeovers is rejected on 20 of 20 runs. Bugs that keep every invariant need other tests.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Replication</td>
+<td>One independent run of the simulated system; here one test day, one seed.</td>
+</tr>
+<tr>
+<td>Common random numbers (CRN)</td>
+<td>The same random inputs for every method on a replication.</td>
+</tr>
+<tr>
+<td>Synchronisation</td>
+<td>Each random number serves the same purpose in every run, whatever the decisions.</td>
+</tr>
+<tr>
+<td>Paired difference <span class="m">\Delta_i</span></td>
+<td>The two methods' results on the same day, subtracted.</td>
+</tr>
+<tr>
+<td>Standard error</td>
+<td>The standard deviation of a mean, <span class="m">\sigma/\sqrt n</span>.</td>
+</tr>
+<tr>
+<td>Covariance, correlation</td>
+<td>How two results move together across days; <span class="m">\rho = \mathrm{Cov}/(\sigma_X\sigma_Y)</span>.</td>
+</tr>
+<tr>
+<td>Empirical distribution <span class="m">\hat F_n</span></td>
+<td>Mass <span class="m">1/n</span> on each observed value.</td>
+</tr>
+<tr>
+<td>Plug-in principle</td>
+<td>Estimate <span class="m">t(F)</span> by <span class="m">t(\hat F_n)</span>.</td>
+</tr>
+<tr>
+<td>Percentile interval</td>
+<td>The 2.5 % and 97.5 % quantiles of the <span class="m">B</span> resample statistics.</td>
+</tr>
+<tr>
+<td>Coverage</td>
+<td>How often an interval procedure contains the true value.</td>
+</tr>
+<tr>
+<td>Training, validation, test</td>
+<td>Days to learn on, to choose with, and to report once.</td>
+</tr>
+<tr>
+<td>Winner's curse</td>
+<td>The optimism of the best of several noisy scores.</td>
+</tr>
+<tr>
+<td>Effect size</td>
+<td>The size of a difference: absolute, relative, or standardised (<span class="m">d_z</span>).</td>
+</tr>
+<tr>
+<td>Invariant</td>
+<td>A property every valid schedule satisfies, checked by code on every run.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Scope.</strong> The chapter compares methods on a fixed, synthetic workshop whose days are independent by construction. A real plant has dependent days, a changing product mix and no ground truth; the same principles hold there but need a block bootstrap, longer horizons and a checker fed by real event logs.</p>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>B. Efron and R. J. Tibshirani. <em>An Introduction to the Bootstrap</em>. Chapman &amp; Hall, 1993. The plug-in principle, the bootstrap standard error, the percentile interval and its transformation argument (chapter 13), BCa, and the block bootstrap for dependent data.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>A. M. Law. <em>Simulation Modeling and Analysis</em>, 5th ed. McGraw-Hill, 2015. Comparing simulated systems, common random numbers and the synchronisation of random-number streams.</div></li>
+</ul>
+<p>This is the course's last chapter: the results table of <a href="b02-dispatching-rules-in-a-dynamic-shop.html" title="Dispatching rules in a dynamic shop">B2</a>, <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> and <a href="d01-dispatching-as-reinforcement-learning.html" title="Dispatching as reinforcement learning">D1</a> can now be read for what it is, paired, checked and honest about its uncertainty.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="d01-dispatching-as-reinforcement-learning.html"><span class="lbl">Previous · D1</span><span class="t">Dispatching as reinforcement learning</span></a>
+  <a class="next" href="index.html"><span class="lbl">Course</span><span class="t">Back to the overview</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter D2 of "Which Job Should the Machine Do Next?" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/jobshop-lib.js?v=20261113225334"></script>
+<script src="interactive/d02.js?v=20261113225334"></script>
+</body>
+</html>

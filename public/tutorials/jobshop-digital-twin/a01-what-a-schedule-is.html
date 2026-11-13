@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A1 · What a schedule is · Which Job Should the Machine Do Next?</title>
+<meta name="description" content="Jobs, machines and time; the Gantt chart; completion, lateness, tardiness, flow time and makespan; regular measures and why a sequence is enough; what makes a schedule valid; Graham&#x27;s three-field notation and where this course&#x27;s problem sits in it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../kit/kit.css">
+<link rel="stylesheet" href="course.css?v=20261113225334">
+<style>
+.seqchips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.chip { display: inline-flex; align-items: center; gap: 0.1rem; border: 2px solid var(--c); border-radius: 10px; padding: 0.15rem; background: var(--surface); cursor: grab; }
+.chip b { font-family: var(--font-mono); font-size: 0.95rem; padding: 0 0.25rem; color: var(--c); }
+.chip .btn { padding: 0.1rem 0.3rem; font-size: 0.8rem; line-height: 1.2; min-width: 0; }
+.chip.dragging { opacity: 0.4; }
+#heroT, #heroTw table { font-size: 0.82rem; }
+#heroTw td, #heroTw th { padding: 0.2rem 0.45rem; }
+#presets .btn { flex: 1 1 4.2rem; }
+.fzin { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; align-items: center; }
+.fzin label { display: inline-flex; gap: 0.35rem; align-items: center; font-family: var(--font-ui); font-size: 0.9rem; }
+.fzin input { width: 4.2rem; font: inherit; padding: 0.25rem 0.35rem; border-radius: 7px; border: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); }
+#feasErr { font-family: var(--font-ui); font-size: 0.9rem; color: var(--ink-2); }
+#allC, #runsC, #feasC { display: block; width: 100%; cursor: default; }
+#allC { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<nav class="site-back col" aria-label="Site"><a href="index.html">&larr; Which Job Should the Machine Do Next?</a><a href="/">Elie Rouphael</a></nav>
+
+<header class="hero col">
+  <span class="eyebrow">Which Job Should the Machine Do Next? · Part A, Scheduling problems · Chapter A1 of 3</span>
+  <h1>What a schedule is</h1>
+  <p class="lede">A workshop runs on one decision taken thousands of times a day: this machine is free, which job next? Answering it needs two precise notions: what a schedule is, and how one schedule beats another. This chapter defines both, from one paint machine with four orders to the course's simulated workshop. You will compute every measure by hand, see why "regular" measures reduce the search to orders, write the course's problem in Graham's three-field notation, and see why the benchmark judges methods on tardiness, not makespan.</p>
+  <p class="byline">Elie Rouphael · Needs nothing beyond arithmetic · Every number is checked in Python</p>
+  
+  <div class="downloads">
+    <a class="btn" href="code/a01_numbers.py" download>The numbers script (.py)</a>
+<a class="btn ghost" href="jobshop-digital-twin-course.zip" download>Full course (.zip)</a>
+  </div>
+</header>
+
+<div class="wide">
+<div class="demo" id="demo">
+  <div class="stage">
+    <div>
+      <p class="chart-title">The paint machine: one sequence, its timetable, and every measure</p>
+      <canvas id="heroG" aria-label="Gantt chart of the paint machine: changeovers striped, orders coloured by paint; below, one row per order from its arrival to its completion, red where it is late" aria-describedby="heroStatus"></canvas>
+      <div class="legend"><span class="key"><span class="sw" style="background:#2a78d6"></span>blue order</span><span class="key"><span class="sw" style="background:#d9534f"></span>red order</span><span class="key"><span class="sw" style="background:rgba(217,83,79,0.3)"></span>late: after the due tick</span><span class="key"><span class="sw" style="background:repeating-linear-gradient(135deg,#9aa4b0 0 2px,transparent 2px 5px)"></span>changeover (striped)</span><span class="key"><span class="sw" style="background:#9aa4b0"></span>waiting (grey)</span></div>
+    </div>
+    <div class="table-wrap" id="heroTw"><table class="num" id="heroT"></table></div>
+    <p class="status" id="heroStatus" role="status" aria-live="polite"></p>
+  </div>
+  <div class="panel">
+    <div><span class="lbl">The sequence: drag an order (mouse) or use its arrows</span><div class="seqchips" id="seqChips"></div></div>
+    <div><span class="lbl">Or let a rule choose</span>
+      <div class="btn-row" id="presets"><button class="btn" data-p="FIFO">FIFO</button><button class="btn" data-p="SPT">SPT</button><button class="btn" data-p="EDD">EDD</button><button class="btn" data-p="SST">SST</button><button class="btn" data-p="bestT">best ΣT</button><button class="btn" data-p="bestC">best ΣC</button></div>
+    </div>
+    <label class="check"><input type="checkbox" id="stagger"> Orders arrive five minutes apart: A at 0, B at 5, C at 10, D at 15</label>
+    <div class="readouts" aria-live="off">
+      <span>makespan <span class="m">C_{\max}</span></span><span class="v" id="rCmax">–</span>
+      <span>total completion <span class="m">\sum C_j</span></span><span class="v" id="rSumC">–</span>
+      <span>total flow time <span class="m">\sum F_j</span></span><span class="v" id="rSumF">–</span>
+      <span>worst lateness <span class="m">L_{\max}</span></span><span class="v" id="rLmax">–</span>
+      <span>worst tardiness <span class="m">T_{\max}</span></span><span class="v" id="rTmax">–</span>
+      <span>total tardiness <span class="m">\sum T_j</span></span><span class="v" id="rSumT">–</span>
+      <span>mean tardiness <span class="m">\bar T</span></span><span class="v" id="rMeanT">–</span>
+      <span>late orders <span class="m">\sum U_j</span></span><span class="v" id="rU">–</span>
+      <span>changeover time</span><span class="v" id="rSetup">–</span>
+      <span>rank for <span class="m">\sum T_j</span></span><span class="v" id="rRank">–</span>
+    </div>
+    <p class="hint">Set up for blue; a colour change takes 10 minutes. A rule picks, each time the machine is free, among the orders that have arrived; "best" tries all 24 orders. Times in minutes.</p>
+  </div>
+</div>
+</div>
+
+<section class="col" aria-label="Contents" style="padding-top:0">
+  <nav class="toc">
+    <a href="#plain"><span class="n">1</span><span class="t">One machine, four orders</span><span class="d">The paint machine, one sequence, one Gantt chart</span></a>
+    <a href="#schedule"><span class="n">2</span><span class="t">Jobs, timetables, and what makes one valid</span><span class="d">Release, due date, the validity inequality, the checker</span></a>
+    <a href="#measures"><span class="n">3</span><span class="t">Measuring a schedule</span><span class="d">Completion, lateness, tardiness, flow time, makespan</span></a>
+    <a href="#regular"><span class="n">4</span><span class="t">Regular measures, and why an order is enough</span><span class="d">The left-shift theorem; semi-active and non-delay</span></a>
+    <a href="#notation"><span class="n">5</span><span class="t">Graham's three fields</span><span class="d">α | β | γ field by field; hardness travels upward</span></a>
+    <a href="#objective"><span class="n">6</span><span class="t">Why the objective matters</span><span class="d">24 paint orders and 280 benchmark runs, four measures</span></a>
+    <a href="#code"><span class="n">7</span><span class="t">The code behind it</span><span class="d">run_metrics, line by line</span></a>
+    <a href="#pitfalls"><span class="n">8</span><span class="t">Common pitfalls</span><span class="d">Five confusions</span></a>
+    <a href="#check"><span class="n">9</span><span class="t">Check your understanding</span><span class="d">Eight questions with answers</span></a>
+    <a href="#exercises"><span class="n">10</span><span class="t">Exercises</span><span class="d">With hints and solutions</span></a>
+    <a href="#summary"><span class="n">11</span><span class="t">The chapter on one page</span><span class="d">Summary, vocabulary, references</span></a>
+  </nav>
+</section>
+
+<!-- =================================================================== -->
+<section id="plain">
+  <div class="col part-head">
+    <span class="part-num">Part 1</span>
+    <h2>One machine, four orders</h2>
+  </div>
+  <div class="col prose">
+
+<p>A paint shop has one machine. It is set up for <strong>blue</strong>, and a colour change takes <strong>10 minutes</strong> of cleaning. Four orders wait at minute 0, listed in the order they came in:</p>
+<div class="table-wrap"><table class="num">
+<thead>
+<tr>
+<th>Order</th>
+<th>Colour</th>
+<th>Painting time (min)</th>
+<th>Due at minute</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>blue</td>
+<td>20</td>
+<td>30</td>
+</tr>
+<tr>
+<td>B</td>
+<td>red</td>
+<td>10</td>
+<td>25</td>
+</tr>
+<tr>
+<td>C</td>
+<td>blue</td>
+<td>15</td>
+<td>70</td>
+</tr>
+<tr>
+<td>D</td>
+<td>red</td>
+<td>25</td>
+<td>60</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The shop decides only the <strong>order</strong> in which they are painted. Take first come, first served (FIFO): A, B, C, D. The machine paints A from 0 to 20. B is red: cleaning 20 to 30, painting 30 to 40. C is blue: cleaning 40 to 50, painting 50 to 65. D is red: cleaning 65 to 75, painting 75 to 100.</p>
+<p>That timetable is a <strong>schedule</strong>; its picture, one bar per task along a time axis, is a <strong>Gantt chart</strong>, the top row of the hero. The rows below follow each order from arrival (grey) through painting (coloured), with a tick at its due time and red where it is still unfinished after it.</p>
+<p><strong>How good is it?</strong> A is done at 20, ten minutes early. B is done at 40, due at 25: fifteen minutes late. C is done at 65, five minutes early. D is done at 100, due at 60: forty minutes late. In total the orders are 55 minutes late, 13.75 minutes per order on average, and the machine stops at minute 100, after 70 minutes of painting and 30 of cleaning.</p>
+<p>Now reorder. Move D before C in the hero: ABDC paints D straight after B, with no colour change between them. The orders are now <strong>40 minutes</strong> late in total, and none of the 24 possible orders does better. Press SST, shortest setup first: ACBD changes colour once and finishes at minute <strong>80</strong>, the earliest possible, yet it is 50 minutes late in total. Press EDD, most urgent first: 85 minutes late, because serving B first costs a colour change at minute 0, and the due dates then alternate the colours: A, D, C.</p>
+<p>Three lessons, made precise below: a schedule must be <strong>valid</strong> (no two orders at once, no skipped colour change); it must be <strong>measured</strong>, and reasonable measures disagree on the best order; and on one machine the decision is an <strong>order</strong>, <span class="m">4! = 24</span> of them here, <span class="m">3{,}628{,}800</span> for 10 orders.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="schedule">
+  <div class="col part-head">
+    <span class="part-num">Part 2</span>
+    <h2>Jobs, timetables, and what makes one valid</h2>
+  </div>
+  <div class="col prose">
+
+<div class="define"><p class="define-title">What is a schedule?</p>
+<p><strong>In plain words:</strong> a timetable that says, for every piece of work, which machine does it and from when to when, and that could really be carried out.</p>
+<p><strong>More precisely:</strong> jobs <span class="m">j \in \mathcal J = \{0, \dots, n-1\}</span> are processed on machines <span class="m">\mathcal M</span>; job <span class="m">j</span> is a chain of operations <span class="m">(j, k)</span>, <span class="m">k = 0, \dots, K_j - 1</span>. A schedule gives each operation a machine <span class="m">m_{jk}</span> and a start <span class="m">S_{jk}</span>, with end <span class="m">E_{jk} = S_{jk} + p_{jk m_{jk}}</span>. It is <strong>valid</strong> (feasible) when every constraint of the shop holds.</p>
+<dl><dt>Job, operation</dt><dd>an order of a customer; one of its steps on one machine. The paint example has <span class="m">K_j = 1</span>, the workshop <span class="m">K_j = 4</span>.</dd><dt>Release time <span class="m">r_j</span></dt><dd>when the job becomes available. Nothing of it can start before.</dd><dt>Due date <span class="m">d_j</span></dt><dd>when the job was promised. Missing it is allowed, and penalised by the measures of Part 3.</dd><dt>Changeover <span class="m">s_m(f, g)</span></dt><dd>the time machine <span class="m">m</span> needs to switch from family <span class="m">f</span> (for the paint machine: the colour) to family <span class="m">g</span>; zero when <span class="m">f = g</span>, and none before a machine's first operation.</dd></dl>
+</div>
+<p><strong>The paint machine, written precisely.</strong> With one operation per job, a job is described by its start <span class="m">S_j</span> and completion <span class="m">C_j = S_j + p_j</span>. Let <span class="m">\pi = (\pi(1), \dots, \pi(n))</span> be the order on the machine and <span class="m">s_{\pi(q)}</span> the changeover before the <span class="m">q</span>-th job (<span class="m">q</span> counts positions; <span class="m">k</span> stays an operation): 10 if its colour differs from the previous job's (or from blue for the first), else 0. A timetable is valid when, for every position <span class="m">q</span> (with <span class="m">C_{\pi(0)} = 0</span>),</p>
+<div class="math-block">\boxed{S_{\pi(q)} - s_{\pi(q)} \ \ge\ \max\left(C_{\pi(q-1)},\ r_{\pi(q)}\right)} .</div>
+<p>The changeover occupies <span class="m">[S_{\pi(q)} - s_{\pi(q)}, S_{\pi(q)})</span>; it cannot begin while the previous job is painting (<strong>capacity</strong>) nor before the job has arrived (<strong>release</strong>), and it cannot be skipped (<strong>changeover</strong>). As in the repository, a changeover needs the job at the machine; a shop that prepares machines in advance would relax that.</p>
+<p><strong>A worked example with release times.</strong> Three jobs, one machine, no changeovers: <span class="m">(r, p, d) = (0, 8, 10)</span> for job 1, <span class="m">(5, 4, 12)</span> for job 2, <span class="m">(12, 6, 25)</span> for job 3. In the order 1, 2, 3: job 1 runs 0–8, job 2 8–12, job 3 12–18. In the order 2, 1, 3, job 2 cannot start before 5, so the machine is <strong>idle</strong> from 0 to 5 although job 1 is waiting; then job 2 runs 5–9, job 1 9–17, job 3 17–23. Both are valid.</p>
+<p><strong>In the workshop</strong> (five machines, alternative routes, two carts called AGVs, automated guided vehicles), a valid schedule satisfies:</p>
+<ol>
+<li><strong>Completeness and eligibility</strong>: each operation is processed for <span class="m">p_{jkm}</span> minutes on one machine <span class="m">m</span> of its eligible set <span class="m">\mathcal M_{jk}</span>; a breakdown may suspend it, and it resumes on the same machine with nothing else in between.</li>
+<li><strong>Capacity</strong>: a machine does one thing at a time, and nothing while it is down.</li>
+<li><strong>Changeovers</strong>: before each operation the machine spends exactly <span class="m">s_m(f, g)</span> minutes, <span class="m">f</span> the family of the operation it ran before; none before its first.</li>
+<li><strong>Precedence and release</strong>: the changeover of <span class="m">(j, k)</span>, if any, and so <span class="m">S_{jk} - s</span>, starts after <span class="m">(j, k-1)</span> has ended and the job has been carried to the machine; for <span class="m">(j, 0)</span>, after <span class="m">r_j</span>.</li>
+<li><strong>Transport</strong>: a cart is in one place at a time and needs <span class="m">\tau(a, b)</span> minutes from station <span class="m">a</span> to station <span class="m">b</span>.</li>
+</ol>
+<p>The repository's independent checker, <code>jobshop/checker.py:check_schedule</code>, re-derives each of them from the executed log without looking at how the schedule was made; all 480 runs of the benchmark pass it. Chapters <a href="a03-the-flexible-job-shop.html" title="The flexible job shop">A3</a> and <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a> write these constraints as mathematics and as a solver model.</p>
+<p>Try it on the paint machine: type start times, the order is read from them, and a small checker applies the boxed inequality.</p>
+<div class="widget" id="feasW">
+  <div class="fzin"><label>A starts at <input type="number" id="fzA" step="5" value="0"></label><label>B at <input type="number" id="fzB" step="5" value="30"></label><label>C at <input type="number" id="fzC" step="5" value="50"></label><label>D at <input type="number" id="fzD" step="5" value="75"></label></div>
+  <div class="tryit"><button class="btn" id="fzShift">As early as possible, same order</button><button class="btn" id="fzDelay">Delay B and all after it by 5</button><button class="btn" id="fzHero">Copy the hero's timetable</button><label class="check"><input type="checkbox" id="fzStagger"> arrivals at 0, 5, 10, 15</label><label class="check"><input type="checkbox" id="fzMeas"> show the measures (Parts 3 and 4)</label></div>
+  <canvas id="feasC" aria-label="Gantt chart of the typed timetable" aria-describedby="feasErr"></canvas>
+  <p id="feasErr" role="status" aria-live="polite"></p>
+  <p class="caption" id="feasCap"></p>
+</div>
+<p>Set B to 25: its colour change would start at 15, while A paints until 20, and the checker refuses. Press &quot;Delay B and all after it by 5&quot;: still valid, no longer as early as possible.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="measures">
+  <div class="col part-head">
+    <span class="part-num">Part 3</span>
+    <h2>Measuring a schedule</h2>
+  </div>
+  <div class="col prose">
+
+<p>A measure, or <strong>objective</strong>, turns a timetable into one number to be made small. The common ones are built from completion times.</p>
+<div class="define"><p class="define-title">What are completion, lateness, tardiness and flow time?</p>
+<p><strong>In plain words:</strong> when a job is finished; how far that is from its promise, negative when early; how late it is, counting early as zero; how long it spent in the shop.</p>
+<p><strong>More precisely:</strong> for job <span class="m">j</span>,</p>
+<dl><dt>Completion time</dt><dd><span class="m">C_j = E_{j, K_j-1}</span>, the end of its last operation.</dd><dt>Lateness</dt><dd><span class="m">L_j = C_j - d_j</span>.</dd><dt>Tardiness</dt><dd><span class="m">T_j = \max(0, L_j)</span>; earliness <span class="m">e_j = \max(0, -L_j)</span> (lower case: <span class="m">E_{jk}</span> stays the end of an operation), so <span class="m">L_j = T_j - e_j</span>.</dd><dt>Late indicator</dt><dd><span class="m">U_j = 1</span> if <span class="m">C_j &gt; d_j</span>, else 0.</dd><dt>Flow time</dt><dd><span class="m">F_j = C_j - r_j</span>, from arrival to completion.</dd></dl>
+</div>
+<p>The measures of a schedule are sums, means and maxima of these:</p>
+<div class="math-block">\begin{gathered} C_{\max} = \max_j C_j, \qquad L_{\max} = \max_j L_j, \qquad T_{\max} = \max_j T_j, \\ \sum_j C_j, \qquad \sum_j F_j, \qquad \sum_j T_j, \qquad \sum_j U_j . \end{gathered}</div>
+<p>The everyday &quot;minutes late&quot; of Part 1 is tardiness; lateness keeps the sign, so early jobs count negative. <span class="m">C_{\max}</span> is the <strong>makespan</strong>, when the last job leaves, counted from minute 0. The <strong>mean tardiness</strong> <span class="m">\bar T = \frac1n \sum_j T_j</span> is the headline measure of the course: the average delay per order, early orders counting as on time.</p>
+<p><strong>FIFO, measured.</strong> With <span class="m">C = (20, 40, 65, 100)</span> for A, B, C, D and <span class="m">d = (30, 25, 70, 60)</span>,</p>
+<div class="math-block">\begin{gathered} L = (-10,\ 15,\ -5,\ 40), \qquad T = (0,\ 15,\ 0,\ 40), \\ \sum_j T_j = 55, \qquad \bar T = 55/4 = 13.75, \end{gathered}</div>
+<p><span class="m">L_{\max} = T_{\max} = 40</span>, two late orders, <span class="m">\sum_j C_j = 225</span>, <span class="m">C_{\max} = 100</span>. All orders wait from 0, so <span class="m">F_j = C_j</span>. Tick the arrivals box in the hero: ABCD's timetable is unchanged, since each order has arrived when its turn comes, but <span class="m">\sum_j F_j = 225 - 30 = 195</span>.</p>
+<p><strong>The three-job example, measured.</strong> Order 1, 2, 3: <span class="m">C = (8, 12, 18)</span>, no tardiness, <span class="m">\sum C_j = 38</span>, <span class="m">\sum F_j = 21</span>, <span class="m">C_{\max} = 18</span>. Order 2, 1, 3: <span class="m">C = (17, 9, 23)</span> for jobs 1, 2, 3, <span class="m">T_1 = 7</span>, <span class="m">L_{\max} = 7</span>, <span class="m">\bar T = 7/3 = 2.33</span>, <span class="m">\sum C_j = 49</span>, <span class="m">\sum F_j = 32</span>, <span class="m">C_{\max} = 23</span>. The first is better on every measure.</p>
+<p><strong>Weighted sums.</strong> With weights <span class="m">w_j \ge 0</span>, <span class="m">\sum_j w_j C_j</span> and <span class="m">\sum_j w_j T_j</span> favour important customers: with <span class="m">w = (3, 1, 1)</span>, order 1, 2, 3 scores <span class="m">3 \cdot 8 + 12 + 18 = 54</span>, order 2, 1, 3 scores 83. Weights also combine measures. The CP-SAT planner of chapter <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a> minimises</p>
+<div class="math-block">J = 10 \sum_j T_j + \sum_j C_j ,</div>
+<p>summed over the jobs planned at each event: a minute of tardiness weighs ten minutes of completion, so among plans of equal tardiness the earlier one wins. It is a trade, not a strict priority. FIFO scores <span class="m">10 \cdot 55 + 225 = 775</span>, SST <span class="m">10 \cdot 50 + 190 = 690</span>, and the best of the 24 orders is again ABDC with <span class="m">10 \cdot 40 + 215 = 615</span>.</p>
+<p><strong>Relations</strong>, each one line of algebra:</p>
+<ul>
+<li><span class="m">T_{\max} = \max(0, L_{\max})</span>, because <span class="m">\max(0, \cdot)</span> is non-decreasing: minimising <span class="m">L_{\max}</span> also minimises <span class="m">T_{\max}</span>, not conversely (when no job is late, all have <span class="m">T_{\max} = 0</span>).</li>
+<li><span class="m">\sum_j F_j = \sum_j C_j - \sum_j r_j</span> and <span class="m">\sum_j L_j = \sum_j C_j - \sum_j d_j</span>, where <span class="m">\sum_j r_j</span> and <span class="m">\sum_j d_j</span> are data: total flow time, total completion time and total lateness have the same minimisers (exercise 2, pitfall 1).</li>
+<li><span class="m">\bar T = \frac1n \sum_j T_j</span>: mean and total tardiness rank schedules alike.</li>
+<li>With every <span class="m">d_j = 0</span>, <span class="m">T_j = L_j = C_j</span>: total tardiness becomes <span class="m">\sum_j C_j</span> and <span class="m">L_{\max}</span> becomes <span class="m">C_{\max}</span>. Part 5 uses this.</li>
+</ul>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="regular">
+  <div class="col part-head">
+    <span class="part-num">Part 4</span>
+    <h2>Regular measures, and why an order is enough</h2>
+  </div>
+  <div class="col prose">
+
+<p>All the measures above share one property: finishing a job later never improves them.</p>
+<div class="define"><p class="define-title">What is a regular measure?</p>
+<p><strong>In plain words:</strong> a measure that can only get worse, or stay the same, when any job finishes later. Waiting never helps.</p>
+<p><strong>More precisely:</strong> <span class="m">\gamma(C_0, \dots, C_{n-1})</span> is <strong>regular</strong> if <span class="m">C_j \le C&#x27;_j</span> for all <span class="m">j</span> implies <span class="m">\gamma(C) \le \gamma(C&#x27;)</span>.</p>
+<dl><dt>Regular</dt><dd><span class="m">C_{\max}</span>, <span class="m">\sum C_j</span>, <span class="m">\sum w_j C_j</span>, <span class="m">\sum F_j</span>, <span class="m">L_{\max}</span>, <span class="m">T_{\max}</span>, <span class="m">\sum T_j</span>, <span class="m">\sum w_j T_j</span>, <span class="m">\sum U_j</span>, and nonnegative weighted sums of them, such as <span class="m">10 \sum T_j + \sum C_j</span>.</dd><dt>Not regular</dt><dd>total earliness <span class="m">\sum e_j</span>, or the just-in-time cost <span class="m">\sum (e_j + T_j)</span>.</dd></dl>
+</div>
+<p>In <a href="#feasW">the timetable widget</a>, tick &quot;show the measures&quot; and press &quot;Delay B and all after it by 5&quot; on the FIFO timetable (A 0, B 30, C 50, D 75): total tardiness rises from 55 to 65, the makespan from 100 to 105, <span class="m">L_{\max}</span> from 40 to 45, but total earliness falls from 15 to 10, as C now finishes exactly on time.</p>
+<p>A timetable in which every job starts as early as its order on the machine allows is called <strong>semi-active</strong> <a href="#ref-2">[2]</a>.</p>
+<div class="callout">
+<p><strong>Theorem (left shift).</strong> On one machine with release times and sequence-dependent changeovers, every regular measure has an optimal schedule that is semi-active. It is determined by its sequence, so an optimum is found among the <span class="m">n!</span> sequences.</p>
+</div>
+<p><em>Proof.</em> Take a valid schedule <span class="m">S</span> with order <span class="m">\pi</span>, and build the semi-active timetable of the same order:</p>
+<div class="math-block">S&#x27;_{\pi(q)} = \max\left(C&#x27;_{\pi(q-1)},\ r_{\pi(q)}\right) + s_{\pi(q)}, \quad C&#x27;_{\pi(0)} = 0 .</div>
+<p>The changeovers are the same, since they depend only on the order. By induction, <span class="m">C&#x27;_{\pi(q)} \le C_{\pi(q)}</span> for all <span class="m">q</span>. It holds for <span class="m">q = 0</span>. If it holds for <span class="m">q - 1</span>, then, using it inside the maximum and then the validity of <span class="m">S</span>,</p>
+<div class="math-block">\begin{aligned} C&#x27;_{\pi(q)} &amp;= \max\left(C&#x27;_{\pi(q-1)}, r_{\pi(q)}\right) + s_{\pi(q)} + p_{\pi(q)} \\ &amp;\le \max\left(C_{\pi(q-1)}, r_{\pi(q)}\right) + s_{\pi(q)} + p_{\pi(q)} \\ &amp;\le S_{\pi(q)} + p_{\pi(q)} = C_{\pi(q)} . \end{aligned}</div>
+<p><span class="m">S&#x27;</span> is valid by construction and no job finishes later, so <span class="m">\gamma(C&#x27;) \le \gamma(C)</span>. So for every valid <span class="m">S</span>, the semi-active schedule of its order is at least as good. The best of the <span class="m">n!</span> semi-active schedules is therefore at least as good as every valid schedule, which proves both that an optimum exists and that one is semi-active. <span class="m">\square</span></p>
+<p>In the workshop the same induction runs over all operations at once, in order of their start times, which respects every job's route and every machine's order. With a fixed transport lag, as in the CP-SAT model of <a href="c01-a-constraint-programming-model.html" title="A constraint-programming model of the shop">C1</a>, no operation starts later, so a plan is fixed by an order on each machine plus as-early-as-possible starts (<a href="a03-the-flexible-job-shop.html" title="The flexible job shop">A3</a>); with real carts, whose trips depend on the timing, only approximately. Non-regular measures break the argument: one job with <span class="m">p = 20</span>, <span class="m">d = 30</span> has earliness 10 when started at 0, none when started at 10.</p>
+<p><strong>Semi-active is not &quot;never idle&quot;.</strong> A <strong>non-delay</strong> schedule never leaves a machine idle while a job waits <a href="#ref-2">[2]</a>; dispatching rules (rules such as FIFO that, whenever a machine frees, pick the next job from those waiting) produce such schedules, and with release times they can miss the optimum. Job 1 with <span class="m">(r, p, d) = (0, 10, 100)</span>, job 2 with <span class="m">(1, 1, 2)</span>: non-delay starts job 1 at 0, and job 2 ends 9 minutes late; waiting one minute, job 2 runs 1–2 and job 1 2–12, both on time. Both are semi-active; only the worse is non-delay. The re-planning controller of <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a> can hold a machine for a planned job already in the shop; nothing can wait for an order not yet released, since arrivals are not known in advance.</p>
+<p>On the paint machine with everything waiting, a semi-active schedule has no idle time: the 24 permutations are all there is, and the hero's &quot;best&quot; buttons enumerate them. With arrivals, DCBA must idle until D arrives at 15 and ends at 125.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="notation">
+  <div class="col part-head">
+    <span class="part-num">Part 5</span>
+    <h2>Graham's three fields</h2>
+  </div>
+  <div class="col prose">
+
+<p>Problems differ in their machines, constraints and measure. Graham, Lawler, Lenstra and Rinnooy Kan <a href="#ref-1">[1]</a> gave each a one-line name with three fields, <span class="m">\alpha \mid \beta \mid \gamma</span>. The paint machine is <span class="m">1 \mid s_{jk} \mid \sum T_j</span>: one machine; changeovers that depend on the sequence; total tardiness.</p>
+<div class="define"><p class="define-title">What does α | β | γ say?</p>
+<p><strong>In plain words:</strong> the machines, then the special rules of the shop, then what is minimised.</p>
+<p><strong>More precisely</strong> (with Pinedo's conventions <a href="#ref-2">[2]</a>). The notation has its own letters: in <span class="m">s_{ijk}</span>, <span class="m">i</span> is a machine and <span class="m">j, k</span> are two consecutive jobs; in <span class="m">Pm</span>, <span class="m">m</span> counts machines. Elsewhere in the course <span class="m">m</span> is a machine, <span class="m">k</span> an operation and <span class="m">i</span> a test day.</p>
+<dl><dt><span class="m">\alpha</span>, machines</dt><dd><span class="m">1</span> one machine; <span class="m">Pm</span> <span class="m">m</span> identical parallel machines, a job goes to any one; <span class="m">Fm</span> flow shop, every job visits the machines in the same order; <span class="m">Jm</span> job shop, each job its own route, one machine per operation; <span class="m">FJm</span> flexible job shop, each operation on any machine of an eligible set, with machine-dependent times. (Pinedo's <span class="m">FJc</span> means <span class="m">c</span> work centres of identical parallel machines; ours, with overlapping eligible sets, is Brandimarte's flexible job shop <a href="#ref-6">[6]</a>, with no single standard symbol: we write <span class="m">FJm</span>, eligibility included.)</dd><dt><span class="m">\beta</span>, constraints</dt><dd>empty means the defaults: all jobs at time 0, no changeovers, no interruptions. <span class="m">r_j</span> release times; <span class="m">s_{jk}</span> sequence-dependent changeovers, <span class="m">s_{ijk}</span> if they also depend on the machine; <span class="m">prec</span> precedences; <span class="m">brkdwn</span> breakdowns.</dd><dt><span class="m">\gamma</span>, objective</dt><dd>a measure of Part 3: <span class="m">C_{\max}</span>, <span class="m">L_{\max}</span>, <span class="m">\sum C_j</span>, <span class="m">\sum w_j C_j</span>, <span class="m">\sum T_j</span>, <span class="m">\sum w_j T_j</span>, <span class="m">\sum U_j</span>.</dd></dl>
+</div>
+<p>From the simplest to this course's:</p>
+<ul>
+<li><span class="m">1 \mid\mid \sum C_j</span>: one machine, minimise total completion time. Shortest job first (SPT) is optimal (Smith <a href="#ref-3">[3]</a>), proved in chapter <a href="a02-one-machine-when-rules-are-optimal.html#interchange" title="One machine: when a rule is optimal, and when it cannot be">A2</a>.</li>
+<li><span class="m">1 \mid\mid L_{\max}</span>: most urgent first (EDD) is optimal (Jackson <a href="#ref-4">[4]</a>), also in <a href="a02-one-machine-when-rules-are-optimal.html#jackson" title="One machine: when a rule is optimal, and when it cannot be">A2</a>.</li>
+<li><span class="m">1 \mid\mid \sum T_j</span>: no simple rule is optimal; the problem is <strong>NP-hard</strong> (Du and Leung <a href="#ref-5">[5]</a>), in the ordinary sense. NP-hard means: no algorithm is known that solves every <strong>instance</strong> (every set of numbers for the problem) in a time growing like a power of <span class="m">n</span>, and finding one would solve thousands of other open problems; in practice, exact solution time explodes with <span class="m">n</span>. Chapter <a href="a02-one-machine-when-rules-are-optimal.html#nphard" title="One machine: when a rule is optimal, and when it cannot be">A2</a> gives the argument.</li>
+<li><span class="m">1 \mid s_{jk} \mid C_{\max}</span> and <span class="m">1 \mid s_{jk} \mid \sum T_j</span>: the paint machine is an instance of both; its makespan with all orders waiting is <span class="m">70 + 10 \times</span> (colour changes), so minimising it minimises changeover time, the travelling-salesman view of <a href="a02-one-machine-when-rules-are-optimal.html#setups" title="One machine: when a rule is optimal, and when it cannot be">A2</a> (colours visited like cities, changeovers as distances).</li>
+<li><span class="m">P2 \mid\mid C_{\max}</span>: two identical machines, already NP-hard <a href="#ref-2">[2]</a>. Jobs of 3, 3, 2, 2, 2: 3 + 3 against 2 + 2 + 2 reaches the bound <span class="m">\sum_j p_j / 2 = 6</span>; longest first to the less loaded machine gives 7 and 5.</li>
+<li><span class="m">Jm \mid\mid C_{\max}</span>: the classical job shop, a batch released at once; NP-hard <a href="#ref-2">[2]</a>. Chapter <a href="a03-the-flexible-job-shop.html#graph" title="The flexible job shop">A3</a> turns it into a disjunctive graph whose longest path is the makespan.</li>
+</ul>
+<p><strong>This course's problem</strong> is</p>
+<div class="math-block">FJm \mid r_j,\ s_{ijk} \mid \sum_j T_j \qquad (m = 5),</div>
+<p>that is, a flexible job shop whose operations <span class="m">(j, k)</span> may run on one to three machines <span class="m">\mathcal M_{jk}</span> with times <span class="m">p_{jkm}</span>; release times; changeovers depending on the machine and on the families of consecutive jobs <span class="m">j, j&#x27;</span>, <span class="m">s_{ijj&#x27;} = s_i(f(j), f(j&#x27;))</span>; total tardiness, equivalently <span class="m">\bar T</span>. The line leaves out what the course also models: arrivals revealed only when they happen (a dynamic, or online, problem <a href="#ref-7">[7]</a>); random breakdowns (<span class="m">brkdwn</span> says that they happen, not how); two carts with travel times <span class="m">\tau(a, b)</span>; and a measure averaged over 20 random test days (<a href="d02-a-fair-benchmark.html" title="A fair benchmark">D2</a>).</p>
+<p><strong>Hardness travels upward.</strong> Problem <span class="m">A</span> is a <strong>special case</strong> of <span class="m">B</span> if every instance of <span class="m">A</span> can be rewritten, in polynomial time, as an instance of <span class="m">B</span> with the same optimal schedules: one machine is a flexible job shop with one machine and one operation per job; <span class="m">\sum C_j</span> is <span class="m">\sum T_j</span> with every <span class="m">d_j = 0</span>. A fast algorithm for <span class="m">B</span> would then solve <span class="m">A</span>, so if <span class="m">A</span> is NP-hard, so is <span class="m">B</span>. With <span class="m">1 \mid\mid \sum T_j</span> as a special case (<span class="m">r_j = 0</span>, no changeovers), the general problem <span class="m">FJm \mid r_j, s_{ijk} \mid \sum T_j</span>, for any <span class="m">n</span> and any data, is NP-hard even before the randomness: the course compares methods rather than looking for a formula.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="objective">
+  <div class="col part-head">
+    <span class="part-num">Part 6</span>
+    <h2>Why the objective matters</h2>
+  </div>
+  <div class="col prose">
+
+<p>Here are all 24 paint orders at once, on four measures.</p>
+<div class="widget" id="allW">
+  <p class="chart-title">The 24 sequences on four measures (click a dot to load it)</p>
+  <canvas id="allC" aria-label="Dot plot of the 24 sequences on makespan, total completion time, worst lateness and total tardiness" aria-describedby="allCap"></canvas>
+  <p class="caption" id="allCap"></p>
+</div>
+<p>With all orders waiting, the makespan takes four values, 80 to 110, reached by 4, 8, 8 and 4 sequences; FIFO's 100 is shared by eight sequences, ranked 13th to 20th, while FIFO is 3rd for total tardiness. Choosing the measure is choosing the schedule.</p>
+<p><strong>On the benchmark.</strong> The repository runs seven methods on the same 20 simulated days of 60 jobs: the four rules, the self-learning agent (DQN), quick re-planning (Greedy replan) and optimiser re-planning (CP-SAT) (<a href="b02-dispatching-rules-in-a-dynamic-shop.html" title="Dispatching rules in a dynamic shop">B2</a>, <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>, <a href="d01-dispatching-as-reinforcement-learning.html" title="Dispatching as reinforcement learning">D1</a>). The widget shows mean measures from <code>results/runs.csv</code>, among them the <strong>utilisation</strong>, the share of the five machines' time from 0 to <span class="m">C_{\max}</span> spent processing.</p>
+<div class="widget" id="runsW">
+  <div class="controls"><span class="seg" id="runsLv"><button class="btn" data-l="no breakdowns">No breakdowns</button><button class="btn" data-l="frequent breakdowns">Frequent breakdowns</button></span></div>
+  <canvas id="runsC" aria-label="Bar charts of makespan, utilisation, mean flow time and mean tardiness for the seven methods" aria-describedby="runsCap"></canvas>
+  <p class="caption" id="runsCap"></p>
+</div>
+<p>Without breakdowns, the highest mean tardiness, 15.54 minutes, is 11.66 times the lowest, 1.33 (the rounded 15.5 / 1.3 give 11.9). Under frequent breakdowns the spreads are 2.7 % (makespan), 3.0 % (utilisation), 28.1 % (flow time) and a factor of 3.15 (tardiness). Without breakdowns, the shortest makespan belongs to shortest setup first, only fifth on tardiness; optimiser re-planning has a shorter makespan than FIFO on 15 of the 20 days, but a lower mean tardiness on all 20.</p>
+<p><strong>Why the makespan cannot tell them apart.</strong> Jobs arrive all day, the last one on average at minute 1,208.2 (between 895 and 1,491). The makespan is the last arrival plus the time to clear what remains, 139.4 minutes on average without breakdowns: the demand sets it, a method moves only its tail. Utilisation divides processing time, set by the routing (the choice of machine for each operation), by <span class="m">5\,C_{\max}</span>, so it barely moves either. Makespan suits a batch released at once; a shop that promises dates and takes orders all day is judged on its promises.</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="code">
+  <div class="col part-head">
+    <span class="part-num">Part 7</span>
+    <h2>The code behind it</h2>
+  </div>
+  <div class="col prose">
+
+<p>Every measure is computed from the executed log, never from a plan; the same log goes to the checker, and <code>scripts/evaluate.py</code> writes <code>runs.csv</code> only if no run has a checker error.</p>
+<div class="code-walk"><p class="code-src">jobshop/metrics.py · run_metrics</p><pre><code class="language-python">def run_metrics(ws: Workshop, scenario: Scenario, log: RunLog) -&gt; dict[str, float]:
+    completion: dict[int, int] = {}
+    proc_total = setup_total = 0
+    for s in log.segments:
+        completion[s.job] = max(completion.get(s.job, 0), s.end)
+        if s.kind == &quot;proc&quot;:
+            proc_total += s.end - s.start
+        else:
+            setup_total += s.end - s.start
+    tardiness = np.array([max(0, completion[j.idx] - j.due) for j in scenario.jobs], dtype=float)
+    flow = np.array([completion[j.idx] - j.arrival for j in scenario.jobs], dtype=float)
+    makespan = max(completion.values())
+    empty = sum(g.end - g.start for g in log.legs if g.job is None)
+    loaded = sum(g.end - g.start for g in log.legs if g.job is not None)
+    return {
+        &quot;makespan&quot;: float(makespan),
+        &quot;mean_tardiness&quot;: float(tardiness.mean()),
+        &quot;max_tardiness&quot;: float(tardiness.max()),
+        &quot;tardy_share&quot;: float((tardiness &gt; 0).mean()),
+        &quot;mean_flow_time&quot;: float(flow.mean()),
+        # share of the machine-time available until the last job leaves that is spent processing
+        &quot;utilisation&quot;: proc_total / (ws.n_machines * makespan),
+        &quot;setup_time&quot;: float(setup_total),
+        &quot;agv_empty_share&quot;: empty / max(1, empty + loaded),
+    }</code></pre>
+<p>The log holds <code>segments</code> (<code>machine</code>, <code>job</code>, <code>op</code>, <code>kind</code> &quot;setup&quot; or &quot;proc&quot;, <code>start</code>, <code>end</code>) and <code>legs</code>, one per cart trip. The first loop makes <span class="m">C_j</span> the largest end among job <span class="m">j</span>'s segments, the end of its last operation, and adds up processing and changeover minutes. <code>tardiness</code> is <span class="m">T_j = \max(0, C_j - d_j)</span>, <code>flow</code> is <span class="m">F_j = C_j - r_j</span> (<code>j.arrival</code> is <span class="m">r_j</span>, <code>j.due</code> is <span class="m">d_j</span>). The dictionary holds <span class="m">\bar T</span> (<code>mean_tardiness</code>), <span class="m">T_{\max}</span>, the late share <span class="m">\frac1n \sum_j U_j</span> (<code>tardy_share</code>), the mean flow time, the utilisation (changeovers excluded, over <span class="m">5\,C_{\max}</span>), the changeover total and the carts' empty share.</p>
+</div>
+<p><strong>One day, checked by hand.</strong> FIFO on test day 0 without breakdowns: 386 machine segments, 348 cart legs, no checker error, and <code>run_metrics</code> returns the row of <code>runs.csv</code> exactly. From the segments, 16 of the 60 jobs are late, 408 minutes in total, so <span class="m">\bar T = 408/60 = 6.8</span>; <span class="m">\sum C_j - \sum r_j = 49{,}720 - 40{,}936 = 8{,}784</span>, a mean flow time of 146.4. The machines processed for 4,077 minutes and changed over for 1,039, of <span class="m">5 \times 1381 = 6{,}905</span> machine-minutes: utilisation 0.5904. Those changeover minutes are what a better choice of the next job can win back (<a href="b02-dispatching-rules-in-a-dynamic-shop.html" title="Dispatching rules in a dynamic shop">B2</a>, <a href="c03-rescheduling-on-a-rolling-horizon.html" title="Rescheduling on a rolling horizon">C3</a>).</p>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="pitfalls">
+  <div class="col part-head">
+    <span class="part-num">Part 8</span>
+    <h2>Common pitfalls</h2>
+  </div>
+  <div class="col prose">
+
+<ol>
+<li><strong>&quot;Minimising total lateness keeps orders on time.&quot;</strong> <span class="m">\sum_j L_j = \sum_j C_j - \sum_j d_j</span>, with <span class="m">\sum_j d_j = 185</span> for the paint orders whatever the order: it is minimised by CABD, 55 minutes late in total. Early jobs cancel late ones in a sum of <span class="m">L_j</span>; the <span class="m">\max(0, \cdot)</span> of tardiness stops that.</li>
+<li><strong>&quot;Makespan tells how well the shop is run.&quot;</strong> Only for a batch released at once. With arrivals all day and no breakdowns, the seven methods' means differ by 1.3 %.</li>
+<li><strong>&quot;Higher utilisation is better.&quot;</strong> Sending a job to a slower machine raises the processing minutes, hence the utilisation, while delaying the job.</li>
+<li><strong>&quot;A schedule is a sequence.&quot;</strong> Only for regular measures on one machine; in the workshop it also assigns machines, and under a just-in-time measure idle time is a decision too.</li>
+<li><strong>&quot;All measures rank methods alike.&quot;</strong> Under breakdowns optimiser re-planning beats quick re-planning on mean tardiness (19.3 against 24.0 minutes), not on the share of late jobs (0.447 against 0.441). Choose the headline measure before looking (<a href="d02-a-fair-benchmark.html#reporting" title="A fair benchmark">D2</a>).</li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="check">
+  <div class="col part-head">
+    <span class="part-num">Part 9</span>
+    <h2>Check your understanding</h2>
+  </div>
+  <div class="col prose">
+
+<div class="qa">
+<p>Try to answer each question before opening it.</p>
+<details class="sol"><summary>1. On one machine with all jobs at time 0 and no changeovers, why do all semi-active schedules have the same makespan?</summary>
+<p>They have no idle time, so the machine works from 0 to <span class="m">\sum_j p_j</span>. With changeovers, <span class="m">C_{\max} = \sum_j p_j + \sum_q s_{\pi(q)}</span> depends on the order: 80 to 110 for the paint machine.</p>
+</details>
+<details class="sol"><summary>2. Why does the course count tardiness rather than lateness?</summary>
+<p><span class="m">L_j</span> is negative for an early job, so a sum of lateness lets early jobs cancel late ones, and is equivalent to total completion time. <span class="m">T_j = \max(0, L_j)</span> counts only broken promises.</p>
+</details>
+<details class="sol"><summary>3. Why do <span class="m">\sum_j F_j</span> and <span class="m">\sum_j C_j</span> have the same minimisers?</summary>
+<p><span class="m">\sum_j F_j = \sum_j C_j - \sum_j r_j</span>, and the release times are data. The objectives differ by a constant.</p>
+</details>
+<details class="sol"><summary>4. Which are regular: <span class="m">L_{\max}</span>, <span class="m">\sum U_j</span>, <span class="m">\sum e_j</span>, <span class="m">10 \sum T_j + \sum C_j</span>?</summary>
+<p>All but <span class="m">\sum e_j</span>, which decreases when a job finishes later, closer to its due date.</p>
+</details>
+<details class="sol"><summary>5. Why may a search for minimum total tardiness on one machine look only at sequences?</summary>
+<p>Total tardiness is regular, so by the left-shift theorem some optimal schedule is semi-active, and a semi-active schedule is determined by its sequence.</p>
+</details>
+<details class="sol"><summary>6. Read <span class="m">1 \mid s_{jk} \mid \sum T_j</span> field by field.</summary>
+<p>One machine; sequence-dependent changeovers, otherwise the defaults (all jobs at time 0, no interruptions); minimise total tardiness. The paint machine's problem.</p>
+</details>
+<details class="sol"><summary>7. Why is the course's problem, in general, NP-hard?</summary>
+<p>For any <span class="m">n</span> and any data, it contains <span class="m">1 \mid\mid \sum T_j</span>, NP-hard by Du and Leung, as the special case with one machine, one operation per job, no releases and no changeovers. A fixed small instance is not &quot;NP-hard&quot;: the term is about how solution time grows with <span class="m">n</span>.</p>
+</details>
+<details class="sol"><summary>8. Why does the benchmark rank methods by mean tardiness, not makespan?</summary>
+<p>With arrivals all day, the makespan is the last arrival plus a short tail (without breakdowns the methods differ by 1.3 %), while the promises, which the shop is judged on, differ by a factor of 11.66.</p>
+</details>
+</div>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="exercises">
+  <div class="col part-head">
+    <span class="part-num">Part 10</span>
+    <h2>Exercises</h2>
+  </div>
+  <div class="col prose">
+
+<p>Each exercise has a hint and a solution; the coding exercise runs from the course download.</p>
+<ol class="exercises">
+<li><div class="ex"><p><b>Every measure, by hand.</b> For the EDD sequence B, A, D, C (all orders waiting at 0, machine set up for blue), draw the Gantt chart and compute <span class="m">C_j</span>, <span class="m">L_j</span>, <span class="m">T_j</span>, then <span class="m">C_{\max}</span>, <span class="m">\sum C_j</span>, <span class="m">L_{\max}</span>, <span class="m">\sum T_j</span>, <span class="m">\bar T</span>, <span class="m">\sum U_j</span> and the changeover time. Check with the hero.</p>
+<details class="sol"><summary>Hint</summary>
+<p>B is red, so the machine changes colour first; after that, every consecutive pair alternates.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>B: changeover 0–10, paints 10–20, <span class="m">L = -5</span>. A: changeover 20–30, paints 30–50, <span class="m">L = 20</span>. D: changeover 50–60, paints 60–85, <span class="m">L = 25</span>. C: changeover 85–95, paints 95–110, <span class="m">L = 40</span>. So <span class="m">T = (20, 0, 40, 25)</span> for A, B, C, D, <span class="m">C_{\max} = 110</span>, <span class="m">\sum C_j = 20 + 50 + 85 + 110 = 265</span>, <span class="m">L_{\max} = 40</span>, <span class="m">\sum T_j = 85</span>, <span class="m">\bar T = 21.25</span>, three late orders, 40 minutes of changeover.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Sums and maxima of flow time.</b> (a) Write out the one-line proof that <span class="m">\sum_j F_j</span> and <span class="m">\sum_j C_j</span> have the same minimisers; in the hero, tick the arrivals, press best ΣC and read <span class="m">\sum F_j = \sum C_j - 30</span>. (b) Is the same true of <span class="m">C_{\max}</span> and <span class="m">F_{\max} = \max_j F_j</span>? Try one machine, no changeovers, three jobs with <span class="m">(r, p) = (0, 10)</span>, <span class="m">(0, 10)</span>, <span class="m">(10, 1)</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>(a) What in <span class="m">\sum_j C_j - \sum_j r_j</span> depends on the schedule? (b) A constant can be pulled out of a sum, not out of a maximum: each <span class="m">F_j</span> subtracts its own <span class="m">r_j</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>(a) <span class="m">\sum_j F_j = \sum_j C_j - R</span> with <span class="m">R = \sum_j r_j</span> fixed by the data, so the two order all valid schedules identically. With arrivals at 0, 5, 10, 15, <span class="m">R = 30</span>, and ACBD is best for both: <span class="m">\sum C_j = 190</span>, <span class="m">\sum F_j = 160</span>.</p>
+<p>(b) No. The four orders not starting with job 3 have <span class="m">C_{\max} = 21</span> (starting with job 3 idles the machine: 31). <span class="m">F_{\max}</span> is 20 for 1, 2, 3 and 2, 1, 3, but 21 for 1, 3, 2 and 2, 3, 1, whose last job ends at 21 with <span class="m">r = 0</span>. Four orders minimise <span class="m">C_{\max}</span>, two minimise <span class="m">F_{\max}</span>.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Which measures are regular.</b> Prove that a nonnegative weighted sum and a maximum of regular measures are regular. Then decide, with a proof or a two-job counterexample: <span class="m">\sum_j U_j</span>; <span class="m">\sum_j T_j^2</span>; <span class="m">C_{\max} - \min_j C_j</span> (the spread of the completions).</p>
+<details class="sol"><summary>Hint</summary>
+<p>Regular means non-decreasing in each <span class="m">C_j</span>. For the spread, delay only the first job to finish.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>If <span class="m">C \le C&#x27;</span> componentwise and <span class="m">\gamma_1, \gamma_2</span> are regular, then <span class="m">w_1 \gamma_1(C) + w_2 \gamma_2(C) \le w_1 \gamma_1(C&#x27;) + w_2 \gamma_2(C&#x27;)</span> for <span class="m">w_1, w_2 \ge 0</span>, and <span class="m">\max(\gamma_1(C), \gamma_2(C)) \le \max(\gamma_1(C&#x27;), \gamma_2(C&#x27;))</span>.</p>
+<p><span class="m">\sum_j U_j</span>: each <span class="m">U_j = [C_j &gt; d_j]</span> is a non-decreasing step, so the sum is regular. <span class="m">\sum_j T_j^2</span>: <span class="m">T_j \ge 0</span> is non-decreasing in <span class="m">C_j</span> and <span class="m">x \mapsto x^2</span> is non-decreasing on <span class="m">x \ge 0</span>: regular. The spread is not: with completions <span class="m">(10, 20)</span> it is 10; delaying the first job to 15 gives <span class="m">(15, 20)</span> and spread 5, smaller although a job finished later.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Name the problem.</b> Write <span class="m">\alpha \mid \beta \mid \gamma</span> for: (a) a printer with jobs queued at 8 a.m., to minimise the mean time until a job is printed; (b) two identical ovens and a batch of trays ready at once, to finish all as early as possible; (c) the paint machine judged on its worst delay; (d) three machines visited in the same order by every job, all ready at 0, minimise the makespan. Then show that <span class="m">1 \mid\mid \sum C_j</span> is a special case of <span class="m">1 \mid\mid \sum T_j</span>.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Mean and total completion time are equivalent. For the last part, pick due dates that make <span class="m">T_j = C_j</span>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>(a) <span class="m">1 \mid\mid \sum C_j</span>. (b) <span class="m">P2 \mid\mid C_{\max}</span>. (c) <span class="m">1 \mid s_{jk} \mid L_{\max}</span> (or <span class="m">T_{\max}</span>). (d) <span class="m">F3 \mid\mid C_{\max}</span>. Given an instance of <span class="m">1 \mid\mid \sum C_j</span>, set every <span class="m">d_j = 0</span>: since <span class="m">C_j \ge 0</span>, <span class="m">T_j = C_j</span>, so <span class="m">\sum_j T_j = \sum_j C_j</span> for every schedule and an optimum of one is an optimum of the other. An algorithm for total tardiness therefore solves total completion time.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Forced idle time.</b> With arrivals at A 0, B 5, C 10, D 15, compute the timetable of C, D, A, B, then <span class="m">C_{\max}</span>, <span class="m">\sum T_j</span> and <span class="m">\sum F_j</span>. Where is the machine idle? Is the timetable semi-active, non-delay?</p>
+<details class="sol"><summary>Hint</summary>
+<p>C cannot start before 10, and C is blue.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<p>Idle 0–10; C paints 10–25; D: changeover 25–35, paints 35–60; A: changeover 60–70, paints 70–90; B: changeover 90–100, paints 100–110. <span class="m">C_{\max} = 110</span>, <span class="m">T = (60, 85, 0, 0)</span> for A, B, C, D, <span class="m">\sum T_j = 145</span>, <span class="m">F = (90, 105, 15, 45)</span>, <span class="m">\sum F_j = 255</span>. Semi-active, since no job of this order can start earlier; not non-delay, since A waits from 0 while the machine is idle.</p>
+</details>
+</div></li>
+<li><div class="ex"><p><b>Your own measures, against the repository's.</b> Write <code>my_metrics(scenario, log)</code> returning <span class="m">\sum C_j</span>, <span class="m">\sum F_j</span>, <span class="m">\sum r_j</span>, <span class="m">C_{\max}</span>, <span class="m">\bar T</span> and <span class="m">L_{\max}</span> from a run's log. Simulate most urgent first and shortest setup first on test days 0, 1, 2 without breakdowns, compare with <code>run_metrics</code>, and check the identity <span class="m">\sum F_j = \sum C_j - \sum r_j</span> against its independently computed mean flow time.</p>
+<details class="sol"><summary>Hint</summary>
+<p>Completion is the largest <code>end</code> over a job's segments. A rule is <code>RuleController(&quot;EDD&quot;)</code>, a day <code>make_scenario(ws, seed, mtbf=None)</code>, a run <code>Shop(ws, scenario, controller).run()</code>.</p>
+</details>
+<details class="sol"><summary>Solution</summary>
+<pre><code class="language-python">from jobshop.metrics import run_metrics
+from jobshop.rules import RuleController
+from jobshop.scenario import make_scenario, make_workshop
+from jobshop.shop import Shop
+
+def my_metrics(scenario, log):
+    C = {}
+    for s in log.segments:
+        C[s.job] = max(C.get(s.job, 0), s.end)
+    jobs = scenario.jobs
+    return dict(sumC=sum(C[j.idx] for j in jobs), sumF=sum(C[j.idx] - j.arrival for j in jobs),
+                sum_r=sum(j.arrival for j in jobs), Cmax=max(C.values()),
+                meanT=sum(max(0, C[j.idx] - j.due) for j in jobs) / len(jobs),
+                Lmax=max(C[j.idx] - j.due for j in jobs))
+
+ws = make_workshop()
+for rule in (&quot;EDD&quot;, &quot;SST&quot;):
+    for seed in range(3):
+        sc = make_scenario(ws, seed, mtbf=None)
+        log = Shop(ws, sc, RuleController(rule)).run()
+        mine, theirs = my_metrics(sc, log), run_metrics(ws, sc, log)
+        print(rule, seed, mine[&quot;Cmax&quot;], theirs[&quot;makespan&quot;], round(mine[&quot;meanT&quot;], 2),
+              theirs[&quot;mean_tardiness&quot;], mine[&quot;Lmax&quot;],
+              abs((mine[&quot;sumC&quot;] - mine[&quot;sum_r&quot;]) / len(sc.jobs) - theirs[&quot;mean_flow_time&quot;]) &lt; 1e-9)
+</code></pre>
+<p>EDD: makespans 1384, 1270, 1403, mean tardiness 2.95, 11.60, 2.08; SST: 1367, 1252, 1403 and 6.13, 9.27, 2.20, all as <code>run_metrics</code>, the flow identity included. On day 0, SST is about twice as late as EDD for a similar makespan.</p>
+</details>
+</div></li>
+</ol>
+
+  </div>
+</section>
+<!-- =================================================================== -->
+<section id="summary">
+  <div class="col part-head">
+    <span class="part-num">Part 11</span>
+    <h2>The chapter on one page</h2>
+  </div>
+  <div class="col prose">
+
+<ol class="steps">
+<li><div><strong>A schedule</strong> gives every operation a machine and a start time, and must be <strong>valid</strong>: capacity, changeovers, precedence, release, eligibility, transport, as the repository's checker verifies.</div></li>
+<li><div><strong>Measures</strong> come from completion times: <span class="m">L_j</span>, <span class="m">T_j = \max(0, L_j)</span>, <span class="m">F_j</span>, <span class="m">U_j</span>, then their maxima, sums, means and weighted sums. <span class="m">\sum F_j</span>, <span class="m">\sum C_j</span> and <span class="m">\sum L_j</span> differ by constants.</div></li>
+<li><div><strong>Regular measures</strong> never improve when a job finishes later; for them an optimal <strong>semi-active</strong> schedule exists, so on one machine the decision is a sequence. <strong>Non-delay</strong> schedules can miss the optimum.</div></li>
+<li><div><strong>Three fields</strong> <span class="m">\alpha \mid \beta \mid \gamma</span> name a problem; this course's, <span class="m">FJm \mid r_j, s_{ijk} \mid \sum T_j</span>, is NP-hard in general because it contains <span class="m">1 \mid\mid \sum T_j</span>, with online arrivals, breakdowns and carts on top.</div></li>
+<li><div><strong>Paint machine</strong>: FIFO 55 minutes late, the best order ABDC 40, the shortest makespan 80 at 50 minutes late or more. <strong>Workshop, without breakdowns</strong>: makespan and utilisation differ by 1.3 % and 1.2 % across methods, mean tardiness by a factor of 11.66.</div></li>
+</ol>
+<h3>The vocabulary, in one table</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Job, operation</td>
+<td>An order; one of its steps on one machine.</td>
+</tr>
+<tr>
+<td>Release <span class="m">r_j</span>, due date <span class="m">d_j</span></td>
+<td>When the job can start; when it was promised.</td>
+</tr>
+<tr>
+<td>Changeover <span class="m">s_m(f, g)</span>; valid (feasible)</td>
+<td>Time to switch machine <span class="m">m</span> from family <span class="m">f</span> to <span class="m">g</span>; meeting every constraint of the shop.</td>
+</tr>
+<tr>
+<td>Gantt chart</td>
+<td>Bars along a time axis, one row per machine or job.</td>
+</tr>
+<tr>
+<td><span class="m">C_j</span>, <span class="m">L_j</span>, <span class="m">T_j</span>, <span class="m">e_j</span>, <span class="m">F_j</span></td>
+<td>Completion; signed distance to the due date; delay, zero if early; earliness; time in the shop.</td>
+</tr>
+<tr>
+<td>Makespan <span class="m">C_{\max}</span>, mean tardiness <span class="m">\bar T</span></td>
+<td>When the last job ends; the average delay per job.</td>
+</tr>
+<tr>
+<td>Utilisation</td>
+<td>Share of machine time up to <span class="m">C_{\max}</span> spent processing.</td>
+</tr>
+<tr>
+<td>Regular measure</td>
+<td>Non-decreasing in every completion time.</td>
+</tr>
+<tr>
+<td>Semi-active, non-delay</td>
+<td>Every job as early as its order allows; no machine idle while a job waits.</td>
+</tr>
+<tr>
+<td>Dispatching rule</td>
+<td>Picks the next job whenever a machine frees.</td>
+</tr>
+<tr>
+<td><span class="m">\alpha \mid \beta \mid \gamma</span></td>
+<td>Machines, constraints, objective.</td>
+</tr>
+<tr>
+<td>Special case, NP-hard</td>
+<td>Rewritable, in polynomial time, inside a larger problem; no known algorithm polynomial in <span class="m">n</span>.</td>
+</tr>
+</tbody>
+</table></div>
+<ul class="refs">
+<li id="ref-1"><span class="rn">[1]</span><div>R. L. Graham, E. L. Lawler, J. K. Lenstra and A. H. G. Rinnooy Kan. &quot;Optimization and approximation in deterministic sequencing and scheduling: a survey&quot;. <em>Annals of Discrete Mathematics</em> 5, 1979, 287–326. The three-field notation.</div></li>
+<li id="ref-2"><span class="rn">[2]</span><div>M. L. Pinedo. <em>Scheduling: Theory, Algorithms, and Systems</em>, 5th ed. Springer, 2016. Machine environments, constraints and objectives; semi-active and non-delay schedules; the complexity of the classical problems.</div></li>
+<li id="ref-3"><span class="rn">[3]</span><div>W. E. Smith. &quot;Various optimizers for single-stage production&quot;. <em>Naval Research Logistics Quarterly</em> 3, 1956, 59–66.</div></li>
+<li id="ref-4"><span class="rn">[4]</span><div>J. R. Jackson. &quot;Scheduling a production line to minimize maximum tardiness&quot;. Research Report 43, Management Science Research Project, UCLA, 1955.</div></li>
+<li id="ref-5"><span class="rn">[5]</span><div>J. Du and J. Y.-T. Leung. &quot;Minimizing total tardiness on one machine is NP-hard&quot;. <em>Mathematics of Operations Research</em> 15(3), 1990, 483–495.</div></li>
+<li id="ref-6"><span class="rn">[6]</span><div>P. Brandimarte. &quot;Routing and scheduling in a flexible job shop by tabu search&quot;. <em>Annals of Operations Research</em> 41, 1993, 157–183.</div></li>
+<li id="ref-7"><span class="rn">[7]</span><div>D. Ouelhadj and S. Petrovic. &quot;A survey of dynamic scheduling in manufacturing systems&quot;. <em>Journal of Scheduling</em> 12, 2009, 417–431.</div></li>
+</ul>
+<p>Next, chapter <a href="a02-one-machine-when-rules-are-optimal.html" title="One machine: when a rule is optimal, and when it cannot be">A2</a> asks for which measures a simple rule provably finds the best order, and why none can for total tardiness with changeovers.</p>
+
+  </div>
+</section>
+
+<nav class="col pager" aria-label="Chapters">
+  <a class="prev" rel="prev" href="index.html"><span class="lbl">Course</span><span class="t">The overview</span></a>
+  <a class="next" rel="next" href="a02-one-machine-when-rules-are-optimal.html"><span class="lbl">Next · A2</span><span class="t">When a rule is optimal</span></a>
+</nav>
+
+<footer class="col">
+  <p>Chapter A1 of "Which Job Should the Machine Do Next?" by Elie Rouphael. The demos run in your browser with the same algorithms as the course's code; the numbers script reproduces every number on the page. Math rendered with KaTeX, code highlighted with highlight.js. MIT licensed.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="../kit/kit.js"></script>
+<script src="interactive/jobshop-lib.js?v=20261113225334"></script>
+<script src="interactive/a01.js?v=20261113225334"></script>
+</body>
+</html>
