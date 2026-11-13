@@ -9,10 +9,14 @@ What it runs (about 9 minutes on the author's 14-thread laptop; CP-SAT always wi
     (the benchmark's medium limit), each run twice;
   * run-to-run noise: CP-SAT (greedy hint, as in the benchmark) on medium seed 0, 30 s, random seeds 0 to 4;
   * one capstone check: CP-SAT on medium seed 0, 60 s, hinted with the 60-min rolling plan instead of greedy;
-  * the 20-minute benchmark's numbers and the memory sweep, read from results/benchmark.json (cited, not rerun).
+  * the benchmark's numbers and the memory sweep, read from results/benchmark.json (cited, not rerun): greedy,
+    CP-SAT and the MILP (HiGHS) on 1 thread with no start and on 8 threads started from greedy's plan, and
+    rolling CP-SAT with 1 h blocks.
 Every plan goes through satplan.checker.
 
-Usage:  python code/ch10_numbers.py
+Usage:  python code/ch10_numbers.py                (everything, about 9 minutes)
+        python code/ch10_numbers.py --bench-only   (keep the measured runs already in ch10-data.js and refresh
+                                                    only the numbers cited from results/benchmark.json)
 satplan is imported from the course archive (satplan/ next to code/) or, failing that, from the
 repository path in SATPLAN_REPO (default: the author's working copy).
 """
@@ -84,8 +88,69 @@ def sweep(name, inst, limit, whole_min, reps=2):
     return rows
 
 
+METHODS = {"greedy": "greedy", "cpsat": f"cpsat-{WORKERS}t+hint", "rolling": "rolling-cpsat-60min",
+           "milp": f"milp-highs-{WORKERS}t+hint", "cpsat1": "cpsat-1t", "milp1": "milp-highs-1t"}
+
+
+def cite_benchmark(data):
+    """The benchmark's records (results/benchmark.json), and the medium seed 0 bracket that combines them with the
+    runs of this script. 'cpsat' and 'milp' are the 8-thread warm runs, 'cpsat1' and 'milp1' the 1-thread cold ones."""
+    bj = json.loads((REPO / "results" / "benchmark.json").read_text())
+    bench = []
+    for r in bj["records"]:
+        res = {x["method"]: x for x in r["results"]}
+        rec = {"size": r["size"], "seed": r["seed"], "limit": r["time_limit_s"], "opps": r["stats"]["opportunities"],
+               "pairs": r["stats"]["conflict_pairs"]}
+        bounds = []
+        for k, m in METHODS.items():
+            rec[k] = res[m]["objective"]
+            rec["t_" + k] = round(res[m]["time_s"], 2)
+            if res[m]["bound"] is not None:
+                rec[k + "_bound"] = round(res[m]["bound"], 3)
+                bounds.append(res[m]["bound"])
+        rec["best_bound"] = round(min(bounds), 3)
+        bench.append(rec)
+        best = rec["best_bound"]
+        bv = max(rec[k] for k in METHODS)
+        print(f"   [bench] {r['size']} {r['seed']}: best bound {best:.0f}, best value {bv}; "
+              + ", ".join(f"{k} {rec[k]} ({100 * (best - rec[k]) / best:.1f} %, {rec['t_' + k]} s)" for k in METHODS))
+    data["bench"] = bench
+    data["memory"] = bj["memory_sweep"]
+    print("   [memory sweep, cited]", [(m["memory_budget_s"], m["greedy"], m["cpsat"], m["cpsat_bound"], m["status"])
+                                       for m in bj["memory_sweep"]])
+
+    # medium seed 0: the best value ever seen in this script and the benchmark, for the true-gap bracket
+    m0 = next(b for b in bench if b["size"] == "medium" and b["seed"] == 0)
+    bench_best = max(m0[k] for k in METHODS)
+    seen = [bench_best] + [n["value"] for n in data["noise"]] + [v for r in data["medium"]["rows"] for v in r["values"]] \
+        + [data["seeded"]["value"]]
+    best_seen = max(seen)
+    bounds = [m0["best_bound"]] + [n["bound"] for n in data["noise"]] + [data["seeded"]["bound"]]
+    best_bound = min(bounds)
+    c = m0["cpsat"]
+    print(f"   [medium 0] best value seen anywhere: {best_seen} (benchmark: {bench_best}); best bound proved anywhere: "
+          f"{best_bound:.0f} -> the optimum is in [{best_seen}, {best_bound:.0f}]; CP-SAT's benchmark {c} (8t warm) is between "
+          f"{100 * (best_seen - c) / best_seen:.1f} % and {100 * (best_bound - c) / best_bound:.1f} % below it")
+    data["best_seen_medium"] = best_seen
+    data["best_bound_medium"] = best_bound
+
+
+def write(data):
+    OUT.write_text("/* Satellite Pass Planning from Scratch, chapter 10: rolling-horizon block sweeps (small and medium, seed 0),\n"
+                   "   CP-SAT run-to-run noise and the benchmark's numbers, exported by code/ch10_numbers.py. */\n"
+                   "window.SAT_CH10 = " + json.dumps(data, separators=(",", ":")) + ";\n", encoding="utf-8")
+    print(f"wrote {OUT} ({OUT.stat().st_size // 1024} KB)")
+
+
 def main():
     t_all = time.perf_counter()
+    if "--bench-only" in sys.argv:
+        js = OUT.read_text(encoding="utf-8")
+        data = json.loads(js[js.index("{"): js.rindex("}") + 1])
+        print(f"[--bench-only] measured runs kept from {OUT.name}: small and medium sweeps, noise, seeded run")
+        cite_benchmark(data)
+        write(data)
+        return
     data = {"limits": {"small": 20.0, "medium": 60.0, "noise": 30.0, "workers": WORKERS}}
 
     # ---------------- small instance: block sizes against the whole-horizon optimum
@@ -142,43 +207,10 @@ def main():
     print(f"   [seeded] CP-SAT medium seed 0, 60 s, hinted with the 60-min rolling plan ({r60['objective']}): "
           f"value {c['objective']}, bound {c['bound']:.0f}")
 
-    # ---------------- the benchmark, cited
-    bj = json.loads((REPO / "results" / "benchmark.json").read_text())
-    bench = []
-    for r in bj["records"]:
-        res = {x["method"]: x for x in r["results"]}
-        gr, cp, mi, rh = res["greedy"], res["cpsat+hint"], res["milp-highs"], res["rolling-cpsat-60min"]
-        best = min(b for b in (cp["bound"], mi["bound"]) if b is not None)
-        bench.append({"size": r["size"], "seed": r["seed"], "limit": r["time_limit_s"], "opps": r["stats"]["opportunities"],
-                      "pairs": r["stats"]["conflict_pairs"], "greedy": gr["objective"], "cpsat": cp["objective"],
-                      "rolling": rh["objective"], "milp": mi["objective"], "cpsat_bound": round(cp["bound"], 3),
-                      "milp_bound": round(mi["bound"], 3), "best_bound": round(best, 3),
-                      "t": [round(gr["time_s"], 2), round(cp["time_s"], 2), round(rh["time_s"], 2), round(mi["time_s"], 2)]})
-        bv = max(gr["objective"], cp["objective"], rh["objective"], mi["objective"])
-        print(f"   [bench] {r['size']} {r['seed']}: best bound {best:.0f}, best value {bv}; "
-              + ", ".join(f"{k} {v} ({100 * (best - v) / best:.1f} %)" for k, v in
-                          (("greedy", gr["objective"]), ("cpsat", cp["objective"]), ("rolling", rh["objective"]),
-                           ("milp", mi["objective"]))))
-    data["bench"] = bench
-    data["memory"] = bj["memory_sweep"]
-    print("   [memory sweep, cited]", [(m["memory_budget_s"], m["cpsat"], m["cpsat_bound"], m["status"]) for m in bj["memory_sweep"]])
-
-    # medium seed 0: the best value ever seen in this script and the benchmark, for the true-gap bracket
-    seen = [557] + vals + [v for r in rowsm for v in r["values"]] + [c["objective"]]
-    best_seen = max(seen)
-    bounds = [575.0, 576.0] + [n["bound"] for n in noise] + [c["bound"]]  # benchmark CP-SAT and HiGHS, then this script
-    best_bound = min(bounds)
-    print(f"   [medium 0] best value seen anywhere: {best_seen}; best bound proved anywhere: {best_bound:.0f} -> the optimum "
-          f"is in [{best_seen}, {best_bound:.0f}]; CP-SAT's benchmark 557 is between {100 * (best_seen - 557) / best_seen:.1f} % "
-          f"and {100 * (best_bound - 557) / best_bound:.1f} % below it (the benchmark's gap against 575: "
-          f"{100 * (575 - 557) / 575:.1f} %)")
-    data["best_seen_medium"] = best_seen
-    data["best_bound_medium"] = best_bound
-
-    OUT.write_text("/* Satellite Pass Planning from Scratch, chapter 10: rolling-horizon block sweeps (small and medium, seed 0),\n"
-                   "   CP-SAT run-to-run noise and the benchmark's numbers, exported by code/ch10_numbers.py. */\n"
-                   "window.SAT_CH10 = " + json.dumps(data, separators=(",", ":")) + ";\n", encoding="utf-8")
-    print(f"wrote {OUT} ({OUT.stat().st_size // 1024} KB); total {time.perf_counter() - t_all:.0f} s")
+    # ---------------- the benchmark, cited, and the medium seed 0 bracket
+    cite_benchmark(data)
+    write(data)
+    print(f"total {time.perf_counter() - t_all:.0f} s")
 
 
 if __name__ == "__main__":

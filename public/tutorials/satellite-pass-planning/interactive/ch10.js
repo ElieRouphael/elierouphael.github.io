@@ -187,10 +187,13 @@ function drawSweep() {
 /* ---------------- (4) gaps as ranges ---------------- */
 const METHODS = [
   { k: "greedy", label: "greedy", c: "--prior" },
-  { k: "cpsat", label: "CP-SAT", c: "--post" },
+  { k: "cpsat", label: "CP-SAT, 8 threads", c: "--post" },
   { k: "rolling", label: "rolling", c: "--c4" },
-  { k: "milp", label: "MILP", c: "--warm" },
+  { k: "milp", label: "MILP, 8 threads", c: "--warm" },
 ];
+// cpsat and milp are the benchmark's 8-thread runs started from greedy; cpsat1 and milp1 (1 thread, no start) are
+// in the table under the chart and count for the best known plan and the best bound.
+const ALL = ["greedy", "cpsat", "rolling", "milp", "cpsat1", "milp1"];
 let gapMode = "range";
 function drawGaps() {
   const cv = $("#gapC"), narrow = narrowOf(cv, 600);
@@ -200,7 +203,7 @@ function drawGaps() {
   const gw = X(1) - X(0), bw = gw * 0.8 / METHODS.length;
   ctx.font = "11px " + css("--font-mono");
   recs.forEach((r, i) => {
-    const bestKnown = Math.max(r.greedy, r.cpsat, r.rolling, r.milp);
+    const bestKnown = Math.max(...ALL.map(k => r[k]));
     METHODS.forEach((m, j) => {
       const v = r[m.k];
       const gHi = 100 * (r.best_bound - v) / r.best_bound, gLo = 100 * (bestKnown - v) / bestKnown;
@@ -218,9 +221,11 @@ function drawGaps() {
     ctx.textBaseline = "alphabetic";
   });
   const m0 = D.bench.find(r => r.size === "medium" && r.seed === 0);
+  const m0best = Math.max(...ALL.map(k => m0[k]));
+  const gapB = 100 * (m0.best_bound - m0.cpsat) / m0.best_bound, gapK = 100 * (m0best - m0.cpsat) / m0best;
   const txt = {
-    range: `Each bar is the range in which the <b>true</b> gap of a plan must lie: its top (coloured dot) is the gap against the best bound either exact solver proved, as in results.md; its bottom (black dot) is the gap against the best plan any method found on that instance. The optimum is somewhere between those two numbers, so the true gap is too. On small the two coincide: the bound is the optimum. On medium and large the ranges are wide: CP-SAT's medium seed 0 plan, 557, is 3.1% below the bound ${fmt(m0.best_bound, 0)} but 0% below the best known plan, and the true value is in between.`,
-    bound: `The gaps as results.md reports them: (best bound − value) / best bound, with the best bound proved by CP-SAT or HiGHS on that instance. On small the bound is the optimum and these are true gaps. On medium and large they are upper estimates: the bound is loose, so every method looks worse than it is, by an unknown amount that is the same for all methods on one instance. Off-scale bars (the MILP on large) are labelled.`,
+    range: `Each bar is the range in which the <b>true</b> gap of a plan must lie: its top (coloured dot) is the gap against the best bound any exact run proved, as in results.md; its bottom (black dot) is the gap against the best plan any method found on that instance. The optimum is somewhere between those two numbers, so the true gap is too. On small the two coincide: the bound is the optimum. On medium and large the ranges are wide: CP-SAT's medium seed 0 plan, ${m0.cpsat}, is ${fmt(gapB, 1)}% below the bound ${fmt(m0.best_bound, 0)} but ${fmt(gapK, 1)}% below the best known plan, and the true value is in between. The exact solvers are shown in the benchmark's 8-thread setting, both started from greedy's plan.`,
+    bound: `The gaps as results.md reports them: (best bound − value) / best bound, with the best bound proved by CP-SAT or HiGHS on that instance. On small the bound is the optimum and these are true gaps. On medium and large they are upper estimates: the bound is loose, so every method looks worse than it is, by an unknown amount that is the same for all methods on one instance.`,
     known: `Gaps against the best plan any method found, (best known − value) / best known: a lower estimate of the true gap, since the optimum is at least as good as the best known plan. The method that found the best plan scores 0% by definition, which says nothing about how far it is from the optimum. Read together with the bound view, this brackets the truth.`,
   };
   caption($("#gapCap"), txt[gapMode]);
@@ -251,7 +256,7 @@ function drawMemory() {
     ctx.fillStyle = css("--post"); ctx.fillText(String(M[i].cpsat), X(i), Y(M[i].cpsat) - 9);
     if (M[i].status === "OPTIMAL") { ctx.fillStyle = css("--ink"); ctx.fillText("proved optimal", X(i) + (narrow ? 22 : 0), Y(M[i].cpsat) + 16); }
   });
-  caption($("#memCap"), `The memory sweep of results.md on medium seed 0 (cited): CP-SAT with the greedy hint and 30 s per budget (blue), its proven bound (dashed), and greedy (grey). The orange band, drawn across the chart for comparison, is the spread measured by this chapter's script: five CP-SAT runs at the default memory of 600 s with the same 30 s limit and random seeds 0 to 4 gave ${noise.join(", ")} (dots), a spread of ${nhi - nlo} points. At 200 s the memory is the binding constraint: the value drops to ${M[0].cpsat}, and CP-SAT proves it optimal: with so few tasks able to fit, the search closes quickly. At 300 s the bound is still below the 575 of larger budgets (${fmt(M[1].cpsat_bound, 0)}), so memory very probably still binds, though the bound only proves that no plan exceeds it. From 450 s on, the bound stays at ${fmt(M[2].cpsat_bound, 0)} and the values ${M.slice(2).map(r => r.cpsat).join(", ")} ${M.slice(2).every(r => r.cpsat >= nlo - 1 && r.cpsat <= nhi + 1) ? "all lie inside the noise band, to within a point" : "differ by no more than a few points, the size of the measured noise"}: as far as these runs can tell, more memory changes nothing, and what limits collection there is reconfiguration time and the power budget.`);
+  caption($("#memCap"), `The memory sweep of results.md on medium seed 0 (cited): CP-SAT with the greedy hint and 30 s per budget (blue), its proven bound (dashed), and greedy (grey). The orange band, drawn across the chart for comparison, is the spread measured by this chapter's script: five CP-SAT runs at the default memory of 600 s with the same 30 s limit and random seeds 0 to 4 gave ${noise.join(", ")} (dots), a spread of ${nhi - nlo} points. At 200 s the memory is the binding constraint: the value drops to ${M[0].cpsat}, and CP-SAT proves it optimal: with so few tasks able to fit, the search closes quickly. At 300 s the bound is still below the 575 of larger budgets (${fmt(M[1].cpsat_bound, 0)}), so memory very probably still binds, though the bound only proves that no plan exceeds it. From 450 s on, the bound stays at ${fmt(M[2].cpsat_bound, 0)} and the values ${M.slice(2).map(r => r.cpsat).join(", ")} ${M.slice(2).every(r => r.cpsat >= nlo - 1 && r.cpsat <= nhi + 1) ? "all lie inside the noise band, to within a point" : `differ by at most ${Math.max(...M.slice(2).map(r => r.cpsat)) - Math.min(...M.slice(2).map(r => r.cpsat))} points, about the size of the measured noise${M.slice(2).every((r, i, a) => i === 0 || r.cpsat <= a[i - 1].cpsat) ? ", and they even fall as the memory grows, which more memory cannot cause (a plan that fits a smaller memory fits a larger one)" : ""}`}: as far as these runs can tell, more memory changes nothing, and what limits collection there is reconfiguration time and the power budget.`);
 }
 
 function drawAll() { drawHero(); drawCases(); drawSweep(); drawGaps(); drawMemory(); }

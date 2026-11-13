@@ -435,7 +435,7 @@ def main() -> None:
     Gm = Greedy(im)
     om = Gm.orders()
     assert Gm.run(om["density"]) == gm["plan"]
-    print(f"greedy {gm['objective']} in {gm['time_s']:.3f} s; benchmark CP-SAT 557, best bound 575 (results.md)")
+    print(f"greedy {gm['objective']} in {gm['time_s']:.3f} s; benchmark CP-SAT (8 threads, warm) 555, best bound 575 (results.md)")
     for name, od in om.items():
         p = Gm.run(od)
         assert not check_plan(im, p)

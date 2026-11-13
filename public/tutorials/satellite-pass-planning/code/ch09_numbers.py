@@ -7,8 +7,10 @@ What it computes (about one minute in all):
   * how fractional the LP optimum is, and how many precedence rows it leaves switched off;
   * the smallest big-M of every pair against a naive M equal to the horizon;
   * one real two-way pair of the small instance for the page's (t_a, t_b) widget;
-  * one MILP solve of the small instance (independent check of the optimum 219);
-  * the 20-minute benchmark's numbers, read from results/benchmark.json (cited, not rerun).
+  * one MILP solve of the small instance with satplan.milp.solve_milp (HiGHS through highspy, 1 thread,
+    no start: independent check of the optimum 219), and the same MILP with every big-M set to the horizon;
+  * the benchmark's numbers, read from results/benchmark.json (cited, not rerun): every method in the two
+    matched settings of the repository, 1 thread cold and 8 threads warm-started from greedy.
 
 Usage:  python code/ch09_numbers.py
 satplan is imported from the course archive (satplan/ next to code/) or, failing that, from the
@@ -36,6 +38,9 @@ for cand in (HERE.parent, Path(os.environ.get("SATPLAN_REPO", r"C:/Users/rouphae
 
 from satplan.checker import check_plan  # noqa: E402
 from satplan.milp import build_milp, solve_milp  # noqa: E402
+
+METHODS = {"greedy": "greedy", "cpsat1": "cpsat-1t", "milp1": "milp-highs-1t",
+           "cpsat8": "cpsat-8t+hint", "milp8": "milp-highs-8t+hint", "rolling": "rolling-cpsat-60min"}
 from satplan.scenario import ScenarioConfig, build_instance  # noqa: E402
 
 OUT = HERE.parent / "interactive" / "ch09-data.js"
@@ -165,6 +170,32 @@ def analyse(name, inst):
     return out
 
 
+def highs_solve(c, cons, bounds, integrality, time_limit_s, threads=1):
+    """The same HiGHS call as satplan.milp.solve_milp (highspy, mip_rel_gap = 0, no start), for a variant model."""
+    import highspy
+    A = cons.A.tocsc()
+    inf = highspy.kHighsInf
+    lp = highspy.HighsLp()
+    lp.num_col_, lp.num_row_ = A.shape[1], A.shape[0]
+    lp.col_cost_ = c
+    lp.col_lower_, lp.col_upper_ = bounds.lb, bounds.ub
+    lp.row_lower_ = np.where(np.isfinite(cons.lb), cons.lb, -inf)
+    lp.row_upper_ = np.where(np.isfinite(cons.ub), cons.ub, inf)
+    lp.a_matrix_.format_ = highspy.MatrixFormat.kColwise
+    lp.a_matrix_.start_, lp.a_matrix_.index_, lp.a_matrix_.value_ = A.indptr, A.indices, A.data
+    lp.integrality_ = [highspy.HighsVarType.kInteger if f else highspy.HighsVarType.kContinuous for f in integrality]
+    highspy.Highs.resetGlobalScheduler(True)
+    h = highspy.Highs()
+    for k, v in (("output_flag", False), ("threads", int(threads)), ("time_limit", float(time_limit_s)),
+                 ("random_seed", 0), ("mip_rel_gap", 0.0)):
+        h.setOptionValue(k, v)
+    h.passModel(lp)
+    t0 = time.perf_counter()
+    h.run()
+    return {"value": int(round(-h.getInfo().objective_function_value)), "status": h.modelStatusToString(h.getModelStatus()),
+            "time_s": time.perf_counter() - t0}
+
+
 def pick_pair(inst):
     """A two-way pair of the small instance with long, overlapping windows, for the widget."""
     opps = inst.opportunities
@@ -198,20 +229,33 @@ def benchmark():
     recs = []
     for r in d["records"]:
         res = {x["method"]: x for x in r["results"]}
-        g, c, m, rh = res["greedy"], res["cpsat+hint"], res["milp-highs"], res["rolling-cpsat-60min"]
-        recs.append({"size": r["size"], "seed": r["seed"], "opps": r["stats"]["opportunities"],
-                     "pairs": r["stats"]["conflict_pairs"], "limit": r["time_limit_s"],
-                     "greedy": g["objective"], "cpsat": c["objective"], "rolling": rh["objective"], "milp": m["objective"],
-                     "cpsat_bound": round(c["bound"], 3), "milp_bound": round(m["bound"], 3) if m["bound"] is not None else None,
-                     "t_greedy": round(g["time_s"], 2), "t_cpsat": round(c["time_s"], 4),  # 4 decimals: the page's
-                     "t_rolling": round(rh["time_s"], 2), "t_milp": round(m["time_s"], 4),  # ratios round correctly
-                     "cpsat_status": c["status"], "milp_status": m["status"]})
+        rec = {"size": r["size"], "seed": r["seed"], "opps": r["stats"]["opportunities"],
+               "pairs": r["stats"]["conflict_pairs"], "limit": r["time_limit_s"]}
+        bounds = []
+        for k, m in METHODS.items():
+            x = res[m]
+            rec[k] = x["objective"]
+            rec["t_" + k] = round(x["time_s"], 4)  # 4 decimals: the page's ratios round correctly
+            if x["bound"] is not None:
+                rec[k + "_bound"] = round(x["bound"], 3)
+                rec[k + "_status"] = x["status"]
+                bounds.append(x["bound"])
+        rec["best_bound"] = round(min(bounds), 3)  # the lowest upper bound proven by any exact run
+        recs.append(rec)
     print("[benchmark.json, cited]")
     for r in recs:
-        ratio = r["t_milp"] / r["t_cpsat"] if r["size"] == "small" else None
-        print(f"   {r['size']} {r['seed']}: greedy {r['greedy']}, CP-SAT {r['cpsat']} (bound {r['cpsat_bound']:.0f}, "
-              f"{r['t_cpsat']} s), MILP {r['milp']} (bound {r['milp_bound']:.2f}, {r['t_milp']} s, {r['milp_status']})"
-              + (f", MILP/CP-SAT time ratio {ratio:.1f}" if ratio else ""))
+        U = r["best_bound"]
+        print(f"   {r['size']} {r['seed']} (best bound {U:.0f}): " + ", ".join(
+            f"{k} {r[k]} ({100 * (U - r[k]) / U:.1f} %, {r['t_' + k]:.2f} s{', ' + r[k + '_status'] if k + '_status' in r else ''})"
+            for k in METHODS))
+    sm = [r for r in recs if r["size"] == "small"]
+    for k in ("cpsat1", "milp1", "cpsat8", "milp8"):
+        print(f"   small, {k}: proved {sum(r[k + '_status'] == 'OPTIMAL' for r in sm)}/3, times "
+              f"{[round(r['t_' + k], 1) for r in sm]}")
+    best_milp = min(min(r["t_milp1"], r["t_milp8"]) for r in sm)
+    print(f"   small: CP-SAT 8t warm {min(r['t_cpsat8'] for r in sm):.1f} to {max(r['t_cpsat8'] for r in sm):.1f} s; "
+          f"HiGHS's fastest small run {best_milp:.1f} s; per seed, HiGHS best / CP-SAT 8t: "
+          f"{[round(min(r['t_milp1'], r['t_milp8']) / r['t_cpsat8'], 1) for r in sm]}")
     return recs
 
 
@@ -225,20 +269,18 @@ def main():
         if name == "small":
             data["pair"] = pick_pair(inst)
     # one MILP solve of the small instance
-    r = solve_milp(insts["small"], 60.0)
+    r = solve_milp(insts["small"], 60.0, threads=1)
     assert not check_plan(insts["small"], r["plan"])
     data["small"]["milp_solve"] = {"value": r["objective"], "bound": r["bound"], "time_s": round(r["time_s"], 1),
                                    "status": r["status"]}
     print(f"[small] MILP solve: value {r['objective']}, bound {r['bound']:.2f}, {r['status']}, {r['time_s']:.1f} s "
-          f"(benchmark run: 8.8 s); plan passes the checker")
+          f"(benchmark, 1 thread cold: 4.8 s); plan passes the checker")
     # the same MILP with every big-M equal to the horizon (exercise 2)
     cn, csn, bn = build_variant(insts["small"], "naive")
     integ = np.ones(len(cn)); integ[len(insts["small"].opportunities):2 * len(insts["small"].opportunities)] = 0
-    t0 = time.perf_counter()
-    rn = milp(cn, constraints=csn, bounds=bn, integrality=integ, options={"time_limit": 120.0, "disp": False})
-    dtn = time.perf_counter() - t0
-    data["small"]["milp_naive"] = {"value": int(round(-rn.fun)), "status": int(rn.status), "time_s": round(dtn, 1)}
-    print(f"[small] MILP with M = horizon: value {-rn.fun:.0f}, status {rn.status} (0 = optimal), {dtn:.1f} s "
+    rn = highs_solve(cn, csn, bn, integ, 120.0)
+    data["small"]["milp_naive"] = {"value": rn["value"], "status": rn["status"], "time_s": round(rn["time_s"], 1)}
+    print(f"[small] MILP with M = horizon (HiGHS, 1 thread): value {rn['value']}, {rn['status']}, {rn['time_s']:.1f} s "
           f"(tight M in the same script: {r['time_s']:.1f} s)")
     for name in ("small", "medium"):
         inst = insts[name]
@@ -285,9 +327,12 @@ def main():
           f"so of LP {data['small']['lp']['tight']['bound']:.2f} - 219, {-rp.fun - 219:.0f} points are reconfiguration")
     lp, opt = data["small"]["lp"]["tight"]["bound"], 219
     print(f"[small] LP bound {lp:.2f} vs optimum {opt}: {100 * (lp - opt) / opt:.1f} % above; floor (integer weights) {int(np.floor(lp + 1e-9))}")
-    lpm = data["medium"]["lp"]["tight"]["bound"]
-    print(f"[medium] LP bound {lpm:.2f} vs CP-SAT bound 575 and best value 557: {100 * (lpm - 575) / 575:.1f} % above the bound")
     data["bench"] = benchmark()
+    lpm = data["medium"]["lp"]["tight"]["bound"]
+    bm = next(b for b in data["bench"] if b["size"] == "medium" and b["seed"] == 0)
+    bestm = max(bm[k] for k in METHODS)
+    print(f"[medium] LP bound {lpm:.2f} vs best bound {bm['best_bound']:.0f} and best value {bestm}: "
+          f"{100 * (lpm - bm['best_bound']) / bm['best_bound']:.1f} % above the bound")
     OUT.write_text("/* Satellite Pass Planning from Scratch, chapter 09: LP relaxations, model sizes, a real pair and the\n"
                    "   benchmark's numbers, exported by code/ch09_numbers.py. */\nwindow.SAT_CH09 = "
                    + json.dumps(data, separators=(",", ":")) + ";\n", encoding="utf-8")

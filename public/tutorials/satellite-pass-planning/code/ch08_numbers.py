@@ -229,7 +229,7 @@ def main() -> None:
     print("\n== medium instance, seed 0: benchmark trace (results/benchmark.json) ==")
     bench = json.loads((REPO / "results" / "benchmark.json").read_text())
     rec = next(r for r in bench["records"] if r["size"] == "medium" and r["seed"] == 0)
-    cm = next(x for x in rec["results"] if x["method"] == "cpsat+hint")
+    cm = next(x for x in rec["results"] if x["method"] == "cpsat-8t+hint")
     gm_b = next(x for x in rec["results"] if x["method"] == "greedy")
     print(f"benchmark: value {cm['objective']} bound {cm['bound']:.0f} status {cm['status']} time {cm['time_s']:.1f} s; "
           f"greedy {gm_b['objective']}; {len(cm['trace'])} improving plans")
@@ -238,7 +238,7 @@ def main() -> None:
     for sz in ("small", "large"):
         for r in bench["records"]:
             if r["size"] == sz:
-                c = next(x for x in r["results"] if x["method"] == "cpsat+hint")
+                c = next(x for x in r["results"] if x["method"] == "cpsat-8t+hint")
                 print(f"   {sz} seed {r['seed']}: value {c['objective']} bound {c['bound']:.0f} {c['status']} {c['time_s']:.1f} s")
     data["benchMedium"] = {"values": [[round(t, 2), v] for t, v in cm["trace"]], "bound": cm["bound"],
                            "value": cm["objective"], "time": round(cm["time_s"], 1), "greedy": gm_b["objective"]}

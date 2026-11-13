@@ -180,7 +180,7 @@ let ladderSize = "small";
 function benchRec(size, seed = 0) { return D.bench.find(r => r.size === size && r.seed === seed); }
 function ladderRows(size) {
   const d = D[size], b = benchRec(size), lp = d.lp;
-  const best = Math.max(b.greedy, b.cpsat, b.rolling, b.milp);
+  const best = Math.max(b.greedy, b.cpsat1, b.milp1, b.cpsat8, b.milp8, b.rolling);
   const rowsL = [
     { k: "every reachable target collected", v: d.stats.reachable_weight, c: "--muted" },
     { k: "LP: one per target and budgets only", v: lp.bare.bound, c: "--prior" },
@@ -189,8 +189,8 @@ function ladderRows(size) {
     { k: "LP of milp.py with M = horizon", v: lp.naive.bound, c: "--post" },
   ];
   if (lp.cliques) rowsL.push({ k: `LP of milp.py + ${lp.cliques.count} clique rows`, v: lp.cliques.bound, c: "--c5" });
-  rowsL.push({ k: `HiGHS bound after ${b.limit} s`, v: b.milp_bound, c: "--warm" });
-  rowsL.push({ k: `CP-SAT bound after ${b.limit} s`, v: b.cpsat_bound, c: "--c4" });
+  rowsL.push({ k: `HiGHS bound after ${b.limit} s (8 threads)`, v: b.milp8_bound, c: "--warm" });
+  rowsL.push({ k: `CP-SAT bound after ${b.limit} s (8 threads)`, v: b.cpsat8_bound, c: "--c4" });
   rowsL.push({ k: size === "small" ? "optimum (both solvers)" : "best plan found by any method", v: best, c: "--ink" });
   return { rowsL, best, b };
 }
@@ -226,7 +226,7 @@ function drawLadder() {
   });
   const d = D[ladderSize], lp = d.lp.tight;
   const same = Math.abs(d.lp.naive.bound - lp.bound) < 1e-6 && Math.abs(d.lp.noprec.bound - lp.bound) < 1e-6;
-  caption($("#ladCap"), `The ${ladderSize} instance, seed 0 (${d.stats.opportunities} opportunities, ${d.stats.conflict_pairs} conflict pairs). Each dot is an upper bound on the collected priority; the dashed line is the best plan known, ${best}. The LP relaxation of milp.py gives ${fmt(lp.bound, 2)}, ${same ? "and it gives <b>exactly the same number</b> with every big-M set to the horizon and with the precedence rows deleted altogether: the reconfiguration constraints, the heart of the problem, contribute nothing to the bound." : `against ${fmt(d.lp.naive.bound, 2)} with every big-M set to the horizon and ${fmt(d.lp.noprec.bound, 2)} with the precedence rows deleted.`} What the LP does see are the budgets and the one-per-target rows, which already cut the trivial bound of ${d.stats.reachable_weight} down to ${fmt(d.lp.bare.bound, 2)}. At the LP optimum ${lp.fractional} of the ${d.stats.opportunities} selection variables are fractional, and ${int(lp.pairs_off)} of the ${int(lp.pairs_prec)} precedence pairs have [[x_a + x_b \\le 1]], so their rows are switched off completely.${ladderSize === "small" ? ` Branch and bound must close the remaining distance, from ${fmt(lp.bound, 2)} to ${best}, by branching alone.` : ` After ${b.limit} s of branching HiGHS had moved its bound only to ${fmt(b.milp_bound, 0)}, and CP-SAT to ${fmt(b.cpsat_bound, 0)}.`}`);
+  caption($("#ladCap"), `The ${ladderSize} instance, seed 0 (${d.stats.opportunities} opportunities, ${d.stats.conflict_pairs} conflict pairs). Each dot is an upper bound on the collected priority; the dashed line is the best plan known, ${best}. The LP relaxation of milp.py gives ${fmt(lp.bound, 2)}, ${same ? "and it gives <b>exactly the same number</b> with every big-M set to the horizon and with the precedence rows deleted altogether: the reconfiguration constraints, the heart of the problem, contribute nothing to the bound." : `against ${fmt(d.lp.naive.bound, 2)} with every big-M set to the horizon and ${fmt(d.lp.noprec.bound, 2)} with the precedence rows deleted.`} What the LP does see are the budgets and the one-per-target rows, which already cut the trivial bound of ${d.stats.reachable_weight} down to ${fmt(d.lp.bare.bound, 2)}. At the LP optimum ${lp.fractional} of the ${d.stats.opportunities} selection variables are fractional, and ${int(lp.pairs_off)} of the ${int(lp.pairs_prec)} precedence pairs have [[x_a + x_b \\le 1]], so their rows are switched off completely.${ladderSize === "small" ? ` Branch and bound must close the remaining distance, from ${fmt(lp.bound, 2)} to ${best}, by branching alone.` : ` After ${b.limit} s on 8 threads HiGHS had moved its bound only to ${fmt(b.milp8_bound, 0)}, and CP-SAT to ${fmt(b.cpsat8_bound, 0)}.`}`);
 }
 $$("#ladSeg .btn").forEach(btn => btn.addEventListener("click", () => {
   ladderSize = btn.dataset.size;
@@ -235,24 +235,30 @@ $$("#ladSeg .btn").forEach(btn => btn.addEventListener("click", () => {
 }));
 
 /* ---------------- (4) the benchmark ---------------- */
-const METHODS = [
-  { k: "greedy", t: 0, label: "greedy", c: "--prior" },
-  { k: "cpsat", t: 1, label: "CP-SAT", c: "--post" },
-  { k: "rolling", t: 2, label: "rolling CP-SAT", c: "--c4" },
-  { k: "milp", t: 3, label: "MILP (HiGHS)", c: "--warm" },
-];
-let benchMetric = "value";
+// Two matched settings, as in the repository: 1 thread and no start ("cold"), 8 threads and greedy's plan as
+// the start ("warm"); rolling CP-SAT (8 threads, 1 h blocks) is shown with the warm setting.
+const SETTINGS = {
+  cold: [
+    { k: "greedy", c: "--prior" },
+    { k: "cpsat1", c: "--post" },
+    { k: "milp1", c: "--warm" },
+  ],
+  warm: [
+    { k: "greedy", c: "--prior" },
+    { k: "cpsat8", c: "--post" },
+    { k: "rolling", c: "--c4" },
+    { k: "milp8", c: "--warm" },
+  ],
+};
+let benchMetric = "value", benchSet = "cold";
+const gapOf = (r, k) => 100 * (r.best_bound - r[k]) / r.best_bound;
+const span = (xs, d = 1) => { const lo = Math.min(...xs), hi = Math.max(...xs); return fmt(lo, d) === fmt(hi, d) ? fmt(lo, d) : `${fmt(lo, d)} to ${fmt(hi, d)}`; };
 function drawBench() {
   const cv = $("#benchC"), narrow = narrowOf(cv, 600);
-  const recs = D.bench;
+  const recs = D.bench, METHODS = SETTINGS[benchSet];
   const n = recs.length;
   const isTime = benchMetric === "time";
-  const tkey = { greedy: "t_greedy", cpsat: "t_cpsat", rolling: "t_rolling", milp: "t_milp" };
-  const yv = (r, m) => {
-    if (isTime) return Math.log10(Math.max(0.005, r[tkey[m.k]]));
-    const best = Math.min(r.cpsat_bound, r.milp_bound == null ? Infinity : r.milp_bound);
-    return 100 * r[m.k] / best;
-  };
+  const yv = (r, m) => isTime ? Math.log10(Math.max(0.005, r["t_" + m.k])) : 100 * r[m.k] / r.best_bound;
   const fr = frame(cv, narrow ? 1.1 : 2.3, { x: [0, n], y: isTime ? [-2.5, 2.5] : [0, 100],
     xticks: false, yticks: isTime ? [-2, -1, 0, 1, 2] : [0, 20, 40, 60, 80, 100],
     yfmt: isTime ? (v => (10 ** v >= 1 ? String(10 ** v) : (10 ** v).toFixed(-v))) : (v => v + "%"),
@@ -273,17 +279,36 @@ function drawBench() {
     if (!narrow) { ctx.fillStyle = css("--muted"); ctx.fillText(`${int(r.pairs)} pairs`, X(i + 0.5), Y(isTime ? -2.5 : 0) + 20); }
   });
   ctx.textBaseline = "alphabetic";
-  const l0 = benchRec("large"), l1 = benchRec("large", 1);
-  const sm = recs.filter(r => r.size === "small"), mn = k => Math.min(...sm.map(r => r[k])), mx = k => Math.max(...sm.map(r => r[k]));
-  const ratios = sm.map(r => r.t_milp / r.t_cpsat);
-  const med = recs.filter(r => r.size === "medium"), belowGreedy = med.filter(r => r.milp < r.greedy);
-  caption($("#benchCap"), isTime
-    ? `Solve time of each method on the benchmark's eight instances (log scale; the dashed line is the time limit: 20 s small, 60 s medium, 120 s large). On the small instances both exact methods stop because they have <b>proved</b> optimality: CP-SAT in ${fmt(mn("t_cpsat"), 1)} to ${fmt(mx("t_cpsat"), 1)} s, HiGHS in ${fmt(mn("t_milp"), 1)} to ${fmt(mx("t_milp"), 1)} s, ${fmt(Math.min(...ratios), 1)} to ${fmt(Math.max(...ratios), 1)} times longer. From medium on, both run into the limit. Greedy takes at most a fifth of a second everywhere. Times from results/benchmark.json (one run, CP-SAT on 8 threads, HiGHS on 1).`
-    : `Collected priority of each method as a percentage of the best upper bound proven on that instance (the smaller of the CP-SAT and HiGHS bounds), on the benchmark's eight instances${narrow ? " (S, M, L = small, medium, large, then the seed)" : ""}. On the small instances CP-SAT and the MILP reach 100%: two independent formulations prove the same optimum. On medium the MILP stays below CP-SAT${belowGreedy.length ? `, and on seed ${belowGreedy.map(r => r.seed).join(", ")} it is even below greedy (${belowGreedy.map(r => `${r.milp} against ${r.greedy}`).join("; ")})` : ""}. On large it collapses: ${l0.milp} on seed 0 and ${l1.milp} on seed 1, against ${l0.greedy} and ${l1.greedy} for greedy, which runs in a fraction of a second. Values from results/benchmark.json, cited, not rerun.`);
+  $$("#benchW .legend .key").forEach(el => { el.style.display = METHODS.some(m => m.k === el.dataset.k) ? "" : "none"; });
+  const by = sz => recs.filter(r => r.size === sz);
+  const sm = by("small"), med = by("medium"), lg = by("large");
+  const proved = k => sm.filter(r => r[k + "_status"] === "OPTIMAL");
+  const list = (rs, k) => rs.map(r => r[k]).join(", ");
+  const tl = (rs, k) => span(rs.map(r => r["t_" + k]));
+  const src = " Values from results/benchmark.json, one run per instance, cited, not rerun.";
+  let s;
+  if (benchSet === "cold" && !isTime) {
+    const unp = sm.filter(r => r.cpsat1_status !== "OPTIMAL");
+    s = `Collected priority as a percentage of the best upper bound proven on that instance by any exact run, <b>1 thread each, no starting plan</b>${narrow ? " (S, M, L = small, medium, large, then the seed)" : ""}. On small, HiGHS proves all three optima; CP-SAT proves ${proved("cpsat1").length} of 3 (${unp.map(r => `${r.cpsat1} against ${r.best_bound} on seed ${r.seed}`).join("; ")} at the 20 s limit). From medium on, a single CP-SAT worker falls <b>below greedy</b>: ${list(med, "cpsat1")} on medium against greedy's ${list(med, "greedy")}, and ${list(lg, "cpsat1")} on large. HiGHS on one thread reaches ${list(med, "milp1")} on medium and ${list(lg, "milp1")} on large, ${span([...med, ...lg].map(r => gapOf(r, "milp1")))} % from the best bound.` + src;
+  } else if (benchSet === "cold") {
+    const cp = proved("cpsat1");
+    s = `Solve time on one thread with no start (log scale; the dashed line is the time limit: 20 s small, 60 s medium, 120 s large). On small, HiGHS proves the three optima in ${tl(sm, "milp1")} s; CP-SAT proves ${cp.length} of them, in ${cp.map(r => fmt(r.t_cpsat1, 1)).join(" and ")} s, and stops at the limit on the third. On one thread, HiGHS is as fast as CP-SAT and more reliable. From medium on, every exact run stops at the limit; greedy takes at most a fifth of a second everywhere.` + src;
+  } else if (!isTime) {
+    s = `Collected priority as a percentage of the best proven bound, <b>8 threads each, both started from greedy's plan</b>, and rolling CP-SAT on 8 threads with 1 h blocks${narrow ? " (S, M, L = small, medium, large, then the seed)" : ""}. Small: both exact solvers prove the optimum. Medium: a tie, CP-SAT ${list(med, "cpsat8")} against HiGHS ${list(med, "milp8")} (gaps ${span(med.map(r => gapOf(r, "cpsat8")))} % and ${span(med.map(r => gapOf(r, "milp8")))} %). Large: the MILP gives the best plans, ${list(lg, "milp8")} (${span(lg.map(r => gapOf(r, "milp8")))} %), then rolling CP-SAT ${list(lg, "rolling")} (${span(lg.map(r => gapOf(r, "rolling")))} %), whole-horizon CP-SAT ${list(lg, "cpsat8")} (${span(lg.map(r => gapOf(r, "cpsat8")))} %) and greedy ${list(lg, "greedy")}.` + src;
+  } else {
+    const ratios = sm.map(r => Math.min(r.t_milp1, r.t_milp8) / r.t_cpsat8);
+    s = `Solve time with 8 threads and greedy's plan as the start (log scale; dashed: the time limit). On small, CP-SAT proves the optima in ${tl(sm, "cpsat8")} s and HiGHS in ${tl(sm, "milp8")} s; instance by instance, HiGHS's faster run of the two settings takes ${span(ratios)} times as long as CP-SAT's. HiGHS gains nothing from the extra threads here (${tl(sm, "milp1")} s on one thread), while CP-SAT's portfolio of workers does. Rolling CP-SAT ends early: ${tl([...sm, ...med], "rolling")} s on small and medium, ${tl(lg, "rolling")} s on large.` + src;
+  }
+  caption($("#benchCap"), s);
 }
 $$("#benchSeg .btn").forEach(btn => btn.addEventListener("click", () => {
   benchMetric = btn.dataset.m;
   $$("#benchSeg .btn").forEach(x => x.setAttribute("aria-pressed", x === btn));
+  drawBench();
+}));
+$$("#benchSet .btn").forEach(btn => btn.addEventListener("click", () => {
+  benchSet = btn.dataset.s;
+  $$("#benchSet .btn").forEach(x => x.setAttribute("aria-pressed", x === btn));
   drawBench();
 }));
 
