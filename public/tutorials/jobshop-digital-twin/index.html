@@ -3,233 +3,561 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Rescheduling a Flexible Job Shop</title>
-<meta name="description" content="A simulated workshop with alternative routings, sequence-dependent changeovers, AGVs, random arrivals and breakdowns, and three ways to decide what runs next: dispatching rules, event-driven CP-SAT rescheduling and a DQN agent, compared on 20 seeds with an independent schedule checker.">
+<title>Which Job Should the Machine Do Next?</title>
+<meta name="description" content="A workshop must constantly decide which order each machine works on next, while orders arrive and machines break down. A beginner-friendly explanation of the problem, with a worked example, and a fair comparison of three ways to decide: rules of thumb, an optimiser that replans at every disruption, and a self-learning agent.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <link rel="stylesheet" href="style.css">
+<style>
+  .diagram { margin: 1.6rem 0; }
+  .diagram-svg { width: 100%; height: auto; display: block; }
+  .diagram-svg text { font-family: var(--font-display); fill: var(--ink); }
+  .diagram-svg .d-lbl { font-size: 15px; font-weight: 700; }
+  .diagram-svg .d-sub { font-size: 13px; fill: var(--muted); }
+  .diagram-svg .d-tick { font-size: 12.5px; fill: var(--muted); }
+  .diagram-svg .d-job { font-size: 15px; font-weight: 700; fill: #ffffff; }
+  .diagram-svg .d-late { font-size: 12.5px; font-weight: 700; fill: #d9534f; }
+  .diagram-svg .d-tot { font-size: 16px; font-weight: 700; fill: var(--ink-2); }
+  .diagram-svg .d-tot.best { fill: var(--accent); }
+  .diagram-svg .d-box { fill: var(--surface); stroke: var(--rule); stroke-width: 1.5; }
+  .diagram-svg .d-line { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+  .diagram-svg .d-acc { stroke: var(--accent); stroke-width: 2.2; fill: none; }
+  .diagram figcaption { margin-top: 0.6rem; }
+  .vocab { display: grid; grid-template-columns: max-content 1fr; gap: 0.45rem 1rem; margin: 1rem 0; }
+  .vocab dt { font-family: var(--font-display); font-weight: 700; }
+  .vocab dd { margin: 0; color: var(--ink-2); }
+  .orders td, .orders th { text-align: center; }
+  .chip { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 2px; vertical-align: -0.05em; }
+  .chip.blue { background: #2a78d6; } .chip.red { background: #d9534f; }
+  .arch-card h3 { margin: 0; font-size: 1.1rem; }
+  .arch-card .pro, .arch-card .con { font-size: 0.93rem; color: var(--ink-2); }
+  .arch-card .pro b { color: #1a7f4b; } .arch-card .con b { color: #c0392b; }
+  .takeaway { border-left: 3px solid var(--accent); padding: 0.4rem 0 0.4rem 1rem; margin: 1.2rem 0; background: var(--accent-wash); }
+  details.curious { border: 1px solid var(--rule); border-radius: 10px; padding: 0.6rem 1rem; margin: 0.8rem 0; background: var(--surface); }
+  details.curious summary { cursor: pointer; font-family: var(--font-display); font-weight: 700; }
+  @media (max-width: 34rem) { .vocab { grid-template-columns: 1fr; } .vocab dd { margin-bottom: 0.4rem; } }
+</style>
 </head>
 <body>
 
 <nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">Elie Rouphael</a></nav>
 
 <header class="hero col">
-  <span class="eyebrow">Discrete-event simulation · dynamic scheduling · constraint programming · reinforcement learning</span>
-  <h1>Rescheduling a flexible job shop</h1>
-  <p class="lede">A small workshop: five machines, two AGVs that carry the jobs between them, four product
-  families that need a changeover whenever a machine switches family, orders arriving at random, and machines
-  that break down. Every time something happens, a controller has to decide again which machine each job goes
-  to and in which order the machines work. This page compares three ways of deciding, on the same simulated
-  days: the <strong>dispatching rules</strong> a shop floor uses, <strong>rescheduling with a constraint-programming
-  model</strong> (OR-Tools CP-SAT) at every event, and a <strong>reinforcement-learning agent</strong> (DQN) that
-  learns which rule to apply. Every schedule any method executes is verified by an independent checker.</p>
-  <p class="byline">Elie Rouphael · A side project, far from my research on tyres and vehicle dynamics · Python, SimPy, OR-Tools, PyTorch</p>
+  <span class="eyebrow">Factory scheduling, explained from zero · a side project</span>
+  <h1>Which job should the machine do next?</h1>
+  <p class="lede">Picture a small workshop. Orders come in all day, each needs several steps on different
+  machines, and the machines sometimes break down. Every few minutes, someone (or something) has to answer a
+  question that sounds simple: <strong>which order does this machine work on next?</strong> A good answer
+  delivers orders on time; a poor one makes customers wait. This page explains the problem from scratch, with
+  a small example you can follow by hand, and then compares three ways of answering it on a simulated
+  workshop: <strong>rules of thumb</strong>, an <strong>optimiser that re-plans whenever something
+  happens</strong>, and a <strong>self-learning AI</strong>.</p>
+  <p class="byline">Elie Rouphael · No background in scheduling needed · The code is open source (Python)</p>
   <div class="downloads">
-    <a class="btn" href="https://github.com/ElieRouphael/jobshop-digital-twin">The repository on GitHub</a>
-    <a class="btn ghost" href="jobshop-digital-twin-code.zip" download>Download the code (.zip)</a>
+    <a class="btn" href="#one-machine">Start with the example</a>
     <a class="btn ghost" href="#results">Skip to the results</a>
+    <a class="btn ghost" href="https://github.com/ElieRouphael/jobshop-digital-twin">The code on GitHub</a>
   </div>
 </header>
 
-<section class="wide" aria-label="Executed schedule under breakdowns">
-  <figure class="output-figure hero-figure">
-    <img src="gantt_breakdowns.png" alt="Gantt chart of five machines and two AGVs over the first 480 minutes of a simulated day: coloured blocks are operations by product family, grey blocks are changeovers, hatched red blocks are breakdowns, and the AGV rows show short loaded and empty trips" width="1950" height="690">
-    <figcaption><b>One simulated morning.</b> The schedule actually executed on test seed 0 under frequent breakdowns, with CP-SAT rescheduling at every event: operations coloured by product family (numbers are job ids), changeovers in grey, breakdowns hatched in red, and the two AGVs' trips underneath. Notice the runs of the same colour on a machine: grouping a family avoids changeovers, and that is where most of the gain over the rules comes from.</figcaption>
+<section class="col prose" aria-labelledby="shop">
+  <h2 id="shop">1 · The workshop</h2>
+  <p>The workshop in this study is imaginary but realistic. It is a <em>job shop</em>: a shop where each order
+  follows its own route through the machines, as in a mechanical workshop or a print shop, rather than a single
+  assembly line.</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 760 360" class="diagram-svg" role="img" aria-labelledby="shopT shopD">
+      <title id="shopT">The simulated workshop</title>
+      <desc id="shopD">Orders enter at a load station on the left. Five machines stand in the shop, each set up for a product family. Machine 4 is broken. Two automated carts carry orders between stations. One example order visits machine 1, machine 2, machine 5 and machine 3 in turn.</desc>
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+      </defs>
+      <rect x="10" y="135" width="150" height="90" rx="10" class="d-box"/>
+      <text x="85" y="168" text-anchor="middle" class="d-lbl">Load station</text>
+      <text x="85" y="190" text-anchor="middle" class="d-sub">new orders arrive</text>
+      <text x="85" y="207" text-anchor="middle" class="d-sub">at random times</text>
+      <rect x="230" y="40" width="150" height="80" rx="10" class="d-box"/>
+      <text x="305" y="74" text-anchor="middle" class="d-lbl">Machine 1</text>
+      <text x="305" y="96" text-anchor="middle" class="d-sub">set up for family A</text>
+      <rect x="420" y="40" width="150" height="80" rx="10" class="d-box"/>
+      <text x="495" y="74" text-anchor="middle" class="d-lbl">Machine 2</text>
+      <text x="495" y="96" text-anchor="middle" class="d-sub">set up for family C</text>
+      <rect x="600" y="40" width="150" height="80" rx="10" class="d-box"/>
+      <text x="675" y="74" text-anchor="middle" class="d-lbl">Machine 3</text>
+      <text x="675" y="96" text-anchor="middle" class="d-sub">set up for family B</text>
+      <rect x="320" y="225" width="160" height="90" rx="10" class="d-box" style="stroke:#d9534f;stroke-dasharray:6 4"/>
+      <text x="400" y="257" text-anchor="middle" class="d-lbl">Machine 4</text>
+      <text x="400" y="279" text-anchor="middle" class="d-sub" style="fill:#d9534f;font-weight:700">broken down</text>
+      <text x="400" y="297" text-anchor="middle" class="d-sub" style="fill:#d9534f">repair takes 10–30 min</text>
+      <rect x="530" y="225" width="150" height="90" rx="10" class="d-box"/>
+      <text x="605" y="262" text-anchor="middle" class="d-lbl">Machine 5</text>
+      <text x="605" y="284" text-anchor="middle" class="d-sub">set up for family A</text>
+      <path d="M160,165 C195,150 205,110 228,92" class="d-acc" marker-end="url(#arr)"/>
+      <path d="M380,80 L418,80" class="d-acc" marker-end="url(#arr)"/>
+      <path d="M520,120 C540,165 570,185 590,223" class="d-acc" marker-end="url(#arr)"/>
+      <path d="M680,225 C700,190 700,160 690,122" class="d-acc" marker-end="url(#arr)"/>
+      <text x="230" y="20" class="d-sub" style="fill:var(--accent);font-weight:700">Blue arrows: one order's route, 4 steps on 4 machines</text>
+      <rect x="185" y="262" width="58" height="28" rx="6" style="fill:var(--accent-wash);stroke:var(--accent)"/>
+      <circle cx="199" cy="294" r="5" style="fill:var(--muted)"/><circle cx="229" cy="294" r="5" style="fill:var(--muted)"/>
+      <text x="214" y="281" text-anchor="middle" class="d-sub" style="fill:var(--ink);font-weight:700">cart</text>
+      <rect x="60" y="262" width="58" height="28" rx="6" style="fill:var(--accent-wash);stroke:var(--accent)"/>
+      <circle cx="74" cy="294" r="5" style="fill:var(--muted)"/><circle cx="104" cy="294" r="5" style="fill:var(--muted)"/>
+      <text x="89" y="281" text-anchor="middle" class="d-sub" style="fill:var(--ink);font-weight:700">cart</text>
+      <text x="10" y="345" class="d-sub">2 automated carts carry the parts between stations (2–3 min a trip)</text>
+    </svg>
+    <figcaption><b>The simulated workshop.</b> Five machines, a load station where orders arrive, and two
+    automated carts that carry the parts. Each order visits four machines in turn; for most steps, two or three
+    machines can do the work, at different speeds. Machines break down at random and are repaired after 10 to
+    30 minutes.</figcaption>
   </figure>
+  <p>A few words, used throughout the page:</p>
+  <dl class="vocab">
+    <dt>Order (or job)</dt><dd>One thing to make, for one customer. It arrives at a random time and has a <b>due time</b>, when the customer expects it.</dd>
+    <dt>Step (operation)</dt><dd>Each order needs 4 steps, in a fixed order, each on a machine. Most steps can be done on 2 or 3 different machines: that is the "flexible" in flexible job shop.</dd>
+    <dt>Product family</dt><dd>Orders come in 4 families (think: 4 colours of paint, or 4 sizes of part).</dd>
+    <dt>Changeover</dt><dd>When a machine switches from one family to another, it must be re-set (cleaned, re-tooled): 3 to 10 minutes during which it produces nothing. Two orders of the same family in a row need no changeover.</dd>
+    <dt>Lateness</dt><dd>How long after its due time an order is finished, or 0 if it is on time. The goal is to keep the <b>average lateness per order</b> as small as possible. (Schedulers call this "tardiness".)</dd>
+  </dl>
 </section>
 
-<section class="col prose" aria-labelledby="question">
-  <h2 id="question">The question</h2>
-  <p>A dispatching rule looks at one machine's queue at a time: when the machine is free, take the job that
-  arrived first (FIFO), the shortest one (SPT), the most urgent one (EDD) or the one that needs the shortest
-  changeover (SST). Rules are instantaneous and robust, and they are what most shops run. A model-based planner
-  looks at the whole shop and the next few hours, but it costs computing time and is only as good as its model.
-  A learned policy promises the best of both, if it can learn something the rules do not already know.</p>
-  <p>Which of the three gives jobs that are less late, how much of the difference survives breakdowns, and where
-  does it come from? To answer it fairly, the three controllers face the same jobs and the same breakdowns, and
-  the comparison is paired seed by seed.</p>
-  <p><b>Everything here is synthetic.</b> The workshop, its processing and changeover times, the layout, the
-  arrivals and the breakdowns are drawn from seeded random generators: no data from a real plant, no connection
-  to real equipment. It is a modelling and comparison exercise, not a production tool.</p>
-</section>
-
-<section class="col" aria-labelledby="shop">
-  <h2 id="shop">The workshop</h2>
-  <p class="section-lede">A discrete-event simulation in SimPy plays the role of the real shop. It takes no
-  decision itself: it asks the controller and logs every piece of work and every AGV trip.</p>
+<section class="col prose" id="one-machine" aria-labelledby="onem">
+  <h2 id="onem">2 · The decision, on a single machine</h2>
+  <p>Before the full workshop, take one machine, because the whole difficulty is already there. The machine
+  paints parts. It is set up for <span class="chip blue"></span> blue, and switching colour takes
+  <b>10 minutes</b>. Four orders are waiting, in this order of arrival:</p>
   <div class="md">
-  <table>
-    <thead><tr><th>Element</th><th>Model</th></tr></thead>
+  <table class="orders">
+    <thead><tr><th>Order</th><th>Colour</th><th>Painting time</th><th>Due at minute</th></tr></thead>
     <tbody>
-      <tr><td>Machines</td><td>5 machines, one station each, plus a load station where jobs enter</td></tr>
-      <tr><td>Products</td><td>4 families of 4 operations; each operation can run on 1 to 3 machines, with machine-dependent times (6 to 30 min)</td></tr>
-      <tr><td>Changeovers</td><td>Sequence-dependent, 3 to 10 min and asymmetric, when a machine switches family; none within a family. A changeover starts once the machine is free and the job is there</td></tr>
-      <tr><td>Transport</td><td>2 AGVs, one job at a time, 2 to 3 min between stations; requests go first come first served to the nearest idle AGV, for every method</td></tr>
-      <tr><td>Arrivals</td><td>60 jobs per run, Poisson arrivals (one every 20.8 min on average: machines loaded at 60 % before changeovers), uniform family mix</td></tr>
-      <tr><td>Due dates</td><td>Arrival plus 2 to 4 times the job's shortest total processing time</td></tr>
-      <tr><td>Breakdowns</td><td>Exponential time between failures per machine, repair 10 to 30 min; the interrupted operation resumes. A controller learns that a machine failed and the mean repair time, not the actual one</td></tr>
-      <tr><td>Two levels</td><td><b>No breakdowns</b>, and <b>frequent breakdowns</b>: mean time between failures 120 min per machine, about 14 % downtime</td></tr>
+      <tr><td><b>A</b></td><td><span class="chip blue"></span> blue</td><td>20 min</td><td>30</td></tr>
+      <tr><td><b>B</b></td><td><span class="chip red"></span> red</td><td>10 min</td><td>25</td></tr>
+      <tr><td><b>C</b></td><td><span class="chip blue"></span> blue</td><td>15 min</td><td>70</td></tr>
+      <tr><td><b>D</b></td><td><span class="chip red"></span> red</td><td>25 min</td><td>60</td></tr>
     </tbody>
   </table>
   </div>
-</section>
-
-<section class="col prose" aria-labelledby="methods">
-  <h2 id="methods">Three ways to decide</h2>
-  <h3>Dispatching rules</h3>
-  <p>Routing is the same for the rules and for the agent: send the job to the eligible machine with the earliest
-  expected finish, counting the travel, the work already committed there and the expected end of a repair. The
-  rule only decides the sequence. When a machine fails, the jobs waiting in front of it are routed again.</p>
-  <h3>Event-driven rescheduling with CP-SAT</h3>
-  <p>At every arrival, breakdown and repair, the controller takes a snapshot of the shop (where each job is, what
-  each machine is doing, when a broken machine should be back) and solves a flexible job-shop model of the jobs
-  present:</p>
+  <p>In which order should the machine paint them? A real shop usually answers with a <b>rule of thumb</b>,
+  applied every time the machine becomes free. Four classic ones, each with its usual abbreviation:</p>
   <ul>
-    <li>one start and one end per remaining operation, and one <b>optional interval</b> per eligible machine, exactly one of them present: that is the routing decision;</li>
-    <li><b>NoOverlap</b> on each machine, and a <b>circuit</b> over its operations whose arcs mean "b directly follows a" and carry the <b>sequence-dependent changeover</b>: start of b ≥ max(end of a, arrival of b) + setup(family of a, family of b);</li>
-    <li>precedence inside a job, with a transport lag that depends on the two machines chosen;</li>
-    <li>objective: 10 × total tardiness + total completion time;</li>
-    <li>a warm start from greedy schedules and from the previous plan re-timed on the new snapshot, passed as a complete hint; the solver stops on a deterministic-time budget, so a run reproduces exactly.</li>
+    <li><b>First come, first served</b> (FIFO): the order that arrived first.</li>
+    <li><b>Shortest job first</b> (SPT): the quickest order, to clear the queue fast.</li>
+    <li><b>Most urgent first</b> (EDD, "earliest due date"): the order due soonest.</li>
+    <li><b>Avoid colour changes</b> (SST, "shortest setup time"): an order of the colour already loaded, if there is one.</li>
   </ul>
-  <p>Only the beginning of each plan is ever executed: the next event replaces it. What the model does not
-  contain is the AGVs. A move is a fixed lag (travel plus a 2-minute allowance, the median wait for an AGV
-  measured in simulation), while the simulated shop moves real AGVs, so the plan and the shop drift apart and the
-  next replan absorbs the difference. The model knows nothing about future arrivals or failures.</p>
-  <p>The model reuses the patterns of my <a href="../satellite-pass-planning/index.html">satellite pass
-  planning</a> study: optional intervals, NoOverlap, and sequence-dependent transitions between consecutive
-  tasks.</p>
-  <h3>A DQN agent that picks the rule</h3>
-  <p>At each sequencing decision (a machine is free and at least two jobs wait for it) the agent chooses one of
-  the four rules, and the job that rule selects starts. Its state has 29 features: for the job each rule would
-  pick, its processing time, changeover, slack, remaining operations and waiting time, plus queue and shop
-  statistics. The reward is minus the increase in the tardiness the shop is already committed to, so the rewards
-  of a run sum exactly to minus its total tardiness. It is a Double DQN with a replay buffer and a soft target
-  update, built on the code of my <a href="../dqn-cartpole/index.html">CartPole DQN tutorial</a>.</p>
+  <p>Here is what each rule does with the four orders, and, at the bottom, the best possible order, found by
+  simply trying all 24 sequences:</p>
+  <figure class="diagram">
+<!-- TOY_GANTT:BEGIN -->
+<svg viewBox="0 0 865 360" role="img" aria-labelledby="toyT toyD" class="diagram-svg">
+<title id="toyT">Five ways to order the same four paint jobs</title>
+<desc id="toyD">For each method, a timeline of the machine: grey striped blocks are colour changes, blue and red blocks are the orders A to D, and the total lateness is written on the right.</desc>
+<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--surface)"/><line x1="0" y1="0" x2="0" y2="6" style="stroke:var(--muted);stroke-width:2.2"/></pattern></defs>
+<line x1="200.0" y1="32" x2="200.0" y2="332" style="stroke:var(--rule)"/>
+<text x="200.0" y="26" text-anchor="middle" class="d-tick">0</text>
+<line x1="246.0" y1="32" x2="246.0" y2="332" style="stroke:var(--rule)"/>
+<text x="246.0" y="26" text-anchor="middle" class="d-tick">10</text>
+<line x1="292.0" y1="32" x2="292.0" y2="332" style="stroke:var(--rule)"/>
+<text x="292.0" y="26" text-anchor="middle" class="d-tick">20</text>
+<line x1="338.0" y1="32" x2="338.0" y2="332" style="stroke:var(--rule)"/>
+<text x="338.0" y="26" text-anchor="middle" class="d-tick">30</text>
+<line x1="384.0" y1="32" x2="384.0" y2="332" style="stroke:var(--rule)"/>
+<text x="384.0" y="26" text-anchor="middle" class="d-tick">40</text>
+<line x1="430.0" y1="32" x2="430.0" y2="332" style="stroke:var(--rule)"/>
+<text x="430.0" y="26" text-anchor="middle" class="d-tick">50</text>
+<line x1="476.0" y1="32" x2="476.0" y2="332" style="stroke:var(--rule)"/>
+<text x="476.0" y="26" text-anchor="middle" class="d-tick">60</text>
+<line x1="522.0" y1="32" x2="522.0" y2="332" style="stroke:var(--rule)"/>
+<text x="522.0" y="26" text-anchor="middle" class="d-tick">70</text>
+<line x1="568.0" y1="32" x2="568.0" y2="332" style="stroke:var(--rule)"/>
+<text x="568.0" y="26" text-anchor="middle" class="d-tick">80</text>
+<line x1="614.0" y1="32" x2="614.0" y2="332" style="stroke:var(--rule)"/>
+<text x="614.0" y="26" text-anchor="middle" class="d-tick">90</text>
+<line x1="660.0" y1="32" x2="660.0" y2="332" style="stroke:var(--rule)"/>
+<text x="660.0" y="26" text-anchor="middle" class="d-tick">100</text>
+<line x1="706.0" y1="32" x2="706.0" y2="332" style="stroke:var(--rule)"/>
+<text x="706.0" y="26" text-anchor="middle" class="d-tick">110</text>
+<text x="188" y="26" text-anchor="end" class="d-tick">minute</text>
+<text x="188" y="54" text-anchor="end" class="d-lbl">First come, first served</text>
+<text x="188" y="71" text-anchor="end" class="d-sub">FIFO</text>
+<rect x="200.0" y="40" width="92.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="246.0" y="61" text-anchor="middle" class="d-job">A</text>
+<rect x="292.0" y="40" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="338.0" y="40" width="46.0" height="30" rx="3" fill="#d9534f"/>
+<text x="361.0" y="61" text-anchor="middle" class="d-job">B</text>
+<text x="382.0" y="85" text-anchor="end" class="d-late">15 min late</text>
+<rect x="384.0" y="40" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="430.0" y="40" width="69.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="464.5" y="61" text-anchor="middle" class="d-job">C</text>
+<rect x="499.0" y="40" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="545.0" y="40" width="115.0" height="30" rx="3" fill="#d9534f"/>
+<text x="602.5" y="61" text-anchor="middle" class="d-job">D</text>
+<text x="658.0" y="85" text-anchor="end" class="d-late">40 min late</text>
+<text x="724.4" y="54" class="d-tot">55 min</text>
+<text x="724.4" y="71" class="d-sub">late in total</text>
+<text x="188" y="116" text-anchor="end" class="d-lbl">Shortest job first</text>
+<text x="188" y="133" text-anchor="end" class="d-sub">SPT</text>
+<rect x="200.0" y="102" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="246.0" y="102" width="46.0" height="30" rx="3" fill="#d9534f"/>
+<text x="269.0" y="123" text-anchor="middle" class="d-job">B</text>
+<rect x="292.0" y="102" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="338.0" y="102" width="69.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="372.5" y="123" text-anchor="middle" class="d-job">C</text>
+<rect x="407.0" y="102" width="92.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="453.0" y="123" text-anchor="middle" class="d-job">A</text>
+<text x="497.0" y="147" text-anchor="end" class="d-late">35 min late</text>
+<rect x="499.0" y="102" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="545.0" y="102" width="115.0" height="30" rx="3" fill="#d9534f"/>
+<text x="602.5" y="123" text-anchor="middle" class="d-job">D</text>
+<text x="658.0" y="147" text-anchor="end" class="d-late">40 min late</text>
+<text x="724.4" y="116" class="d-tot">75 min</text>
+<text x="724.4" y="133" class="d-sub">late in total</text>
+<text x="188" y="178" text-anchor="end" class="d-lbl">Most urgent first</text>
+<text x="188" y="195" text-anchor="end" class="d-sub">EDD</text>
+<rect x="200.0" y="164" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="246.0" y="164" width="46.0" height="30" rx="3" fill="#d9534f"/>
+<text x="269.0" y="185" text-anchor="middle" class="d-job">B</text>
+<rect x="292.0" y="164" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="338.0" y="164" width="92.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="384.0" y="185" text-anchor="middle" class="d-job">A</text>
+<text x="428.0" y="209" text-anchor="end" class="d-late">20 min late</text>
+<rect x="430.0" y="164" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="476.0" y="164" width="115.0" height="30" rx="3" fill="#d9534f"/>
+<text x="533.5" y="185" text-anchor="middle" class="d-job">D</text>
+<text x="589.0" y="209" text-anchor="end" class="d-late">25 min late</text>
+<rect x="591.0" y="164" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="637.0" y="164" width="69.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="671.5" y="185" text-anchor="middle" class="d-job">C</text>
+<text x="704.0" y="209" text-anchor="end" class="d-late">40 min late</text>
+<text x="724.4" y="178" class="d-tot">85 min</text>
+<text x="724.4" y="195" class="d-sub">late in total</text>
+<text x="188" y="240" text-anchor="end" class="d-lbl">Avoid colour changes</text>
+<text x="188" y="257" text-anchor="end" class="d-sub">SST</text>
+<rect x="200.0" y="226" width="92.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="246.0" y="247" text-anchor="middle" class="d-job">A</text>
+<rect x="292.0" y="226" width="69.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="326.5" y="247" text-anchor="middle" class="d-job">C</text>
+<rect x="361.0" y="226" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="407.0" y="226" width="46.0" height="30" rx="3" fill="#d9534f"/>
+<text x="430.0" y="247" text-anchor="middle" class="d-job">B</text>
+<text x="451.0" y="271" text-anchor="end" class="d-late">30 min late</text>
+<rect x="453.0" y="226" width="115.0" height="30" rx="3" fill="#d9534f"/>
+<text x="510.5" y="247" text-anchor="middle" class="d-job">D</text>
+<text x="566.0" y="271" text-anchor="end" class="d-late">20 min late</text>
+<text x="724.4" y="240" class="d-tot">50 min</text>
+<text x="724.4" y="257" class="d-sub">late in total</text>
+<text x="188" y="302" text-anchor="end" class="d-lbl">Best possible order</text>
+<text x="188" y="319" text-anchor="end" class="d-sub">all 24 orders tried</text>
+<rect x="200.0" y="288" width="92.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="246.0" y="309" text-anchor="middle" class="d-job">A</text>
+<rect x="292.0" y="288" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="338.0" y="288" width="46.0" height="30" rx="3" fill="#d9534f"/>
+<text x="361.0" y="309" text-anchor="middle" class="d-job">B</text>
+<text x="382.0" y="333" text-anchor="end" class="d-late">15 min late</text>
+<rect x="384.0" y="288" width="115.0" height="30" rx="3" fill="#d9534f"/>
+<text x="441.5" y="309" text-anchor="middle" class="d-job">D</text>
+<text x="497.0" y="333" text-anchor="end" class="d-late">5 min late</text>
+<rect x="499.0" y="288" width="46.0" height="30" fill="url(#hatch)"/>
+<rect x="545.0" y="288" width="69.0" height="30" rx="3" fill="#2a78d6"/>
+<text x="579.5" y="309" text-anchor="middle" class="d-job">C</text>
+<text x="612.0" y="333" text-anchor="end" class="d-late">20 min late</text>
+<text x="724.4" y="302" class="d-tot best">40 min</text>
+<text x="724.4" y="319" class="d-sub">late in total</text>
+</svg>
+<!-- TOY_GANTT:END -->
+    <figcaption><b>The same four orders, five ways.</b> Each row is the machine's timeline. Striped grey blocks
+    are colour changes, when the machine paints nothing. Red notes show how late each late order is.</figcaption>
+  </figure>
+  <p>Three things to notice:</p>
+  <ul>
+    <li><b>"Most urgent first" is the worst here</b>, although it sounds the most sensible. By chasing due dates
+    it switches colour four times and wastes 40 minutes on changeovers, which makes everything later.</li>
+    <li><b>"Avoid colour changes" is the best rule</b>, but order B, due at minute 25, is not finished until minute 55.</li>
+    <li><b>The best plan beats every rule</b> (40 minutes late in total, against 50 for the best rule). It does
+    something no rule can: it <em>looks ahead</em>, and balances urgency against changeovers over the whole sequence.</li>
+  </ul>
+  <p class="takeaway">A rule of thumb looks at one thing (arrival, length, urgency or colour) and one decision at
+  a time. A plan looks at everything together. With 4 orders we can try all 24 sequences by hand; the question of
+  this project is what happens in a real-sized shop, where that is impossible.</p>
 </section>
 
-<section class="col prose" aria-labelledby="checker">
-  <h2 id="checker">Trusting a schedule: the independent checker</h2>
-  <p>A simulation can hide bugs that make a method look good. So every executed schedule, of every method, goes
-  through a checker that never looks at the simulator's state or at a solver model. From the workshop data, the
-  scenario and the raw log alone, it re-derives every constraint: each operation done once, on an eligible
-  machine, for its full duration; no overlap and no work during downtime; the exact changeover between
-  consecutive families; each AGV on a continuous path at the layout's travel times; each job physically carried
-  from station to station before its next operation. The tests inject each kind of violation into a valid log and
-  check that it is caught. <b>All 480 test runs passed it.</b></p>
+<section class="col prose" aria-labelledby="whole">
+  <h2 id="whole">3 · From one machine to a whole workshop</h2>
+  <p>The full workshop is the same decision, made much harder in four ways:</p>
+  <ul>
+    <li><b>Too many possibilities.</b> Ten orders on one machine can be sequenced in 3.6 million ways; twenty, in
+    more than 10<sup>18</sup>. And here there are five machines, and for most steps a choice of machine too.</li>
+    <li><b>Everything is connected.</b> An order cannot start its third step before finishing its second, on
+    another machine, and being carried over by a cart.</li>
+    <li><b>New orders keep arriving</b>, at random: about one every 21 minutes, 60 in a simulated day.</li>
+    <li><b>Machines break down.</b> In the "frequent breakdowns" setting, each machine is down about 14 % of the
+    time. A plan made at 9:00 can be wrong by 9:10.</li>
+  </ul>
+  <p>So there are two questions at every moment: <b>which machine</b> should each order go to next, and
+  <b>in which order</b> should each machine work through its queue.</p>
+</section>
+
+<section class="col" aria-labelledby="methods">
+  <h2 id="methods">4 · Three ways to decide</h2>
+  <div class="arch">
+    <div class="arch-card">
+      <h3>1. Rules of thumb</h3>
+      <p>Whenever a machine is free, apply one of the four rules above to its queue. Send each order to the machine
+      expected to finish it soonest.</p>
+      <p class="pro"><b>+</b> Instant, simple, what most shops do.</p>
+      <p class="con"><b>−</b> Looks at one machine and one decision at a time.</p>
+    </div>
+    <div class="arch-card accent">
+      <h3>2. An optimiser that re-plans</h3>
+      <p>Every time something happens (a new order, a breakdown, a repair), build a complete new plan for the whole
+      shop with an optimisation solver, and follow it until the next event.</p>
+      <p class="pro"><b>+</b> Looks ahead and sees the whole shop.</p>
+      <p class="con"><b>−</b> Needs a model of the shop, and about 1.6 s of computing per re-plan.</p>
+    </div>
+    <div class="arch-card">
+      <h3>3. A self-learning AI</h3>
+      <p>An agent that learns, by trial and error over thousands of simulated days, which of the four rules to use
+      in each situation.</p>
+      <p class="pro"><b>+</b> Fast once trained; adapts the rule to the situation.</p>
+      <p class="con"><b>−</b> Can only be as good as what it manages to learn.</p>
+    </div>
+  </div>
+</section>
+
+<section class="col prose" aria-labelledby="optimiser">
+  <h3 id="optimiser">How the optimiser works</h3>
+  <p>An optimiser is a program that, given the <b>rules a plan must respect</b> and a <b>goal</b>, searches for
+  the best plan. Here the rules are the shop's physical constraints, written once:</p>
+  <ul>
+    <li>each step of an order runs on exactly one of the machines able to do it;</li>
+    <li>a machine does one thing at a time, and a change of family costs a changeover;</li>
+    <li>an order's steps happen in sequence, with time to carry it between machines;</li>
+    <li>a broken machine is unavailable until its expected repair.</li>
+  </ul>
+  <p>The goal: as little lateness as possible (and, as a tie-breaker, orders finished early rather than late).
+  The solver used is <b>CP-SAT</b>, a free <em>constraint programming</em> solver from Google's OR-Tools. It
+  does not try every plan, which would take forever: it reasons about the rules to cut away whole families of
+  bad plans at once, and it can often <b>prove</b> that no better plan exists (it did for about half of the
+  plans here).</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 760 170" class="diagram-svg" role="img" aria-labelledby="loopT loopD">
+      <title id="loopT">Re-planning at every event</title>
+      <desc id="loopD">A time line with four events: a new order, a breakdown, a repair and another new order. At each event a new plan is computed; between events the current plan is followed.</desc>
+      <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+      <line x1="30" y1="95" x2="735" y2="95" class="d-line" marker-end="url(#arr2)"/>
+      <text x="735" y="118" text-anchor="end" class="d-tick">time</text>
+      <g>
+        <circle cx="90" cy="95" r="8" style="fill:var(--accent)"/>
+        <text x="90" y="60" text-anchor="middle" class="d-lbl">new order</text>
+        <circle cx="270" cy="95" r="8" style="fill:#d9534f"/>
+        <text x="270" y="60" text-anchor="middle" class="d-lbl">machine 4 breaks</text>
+        <circle cx="470" cy="95" r="8" style="fill:#1a7f4b"/>
+        <text x="470" y="60" text-anchor="middle" class="d-lbl">machine 4 repaired</text>
+        <circle cx="640" cy="95" r="8" style="fill:var(--accent)"/>
+        <text x="640" y="60" text-anchor="middle" class="d-lbl">new order</text>
+      </g>
+      <g class="d-sub">
+        <text x="90" y="80" text-anchor="middle" class="d-sub">→ new plan</text>
+        <text x="270" y="80" text-anchor="middle" class="d-sub">→ new plan</text>
+        <text x="470" y="80" text-anchor="middle" class="d-sub">→ new plan</text>
+        <text x="640" y="80" text-anchor="middle" class="d-sub">→ new plan</text>
+      </g>
+      <rect x="100" y="112" width="160" height="22" rx="5" style="fill:var(--accent-wash)"/>
+      <rect x="280" y="112" width="180" height="22" rx="5" style="fill:var(--accent-wash)"/>
+      <rect x="480" y="112" width="150" height="22" rx="5" style="fill:var(--accent-wash)"/>
+      <text x="180" y="127" text-anchor="middle" class="d-sub" style="fill:var(--ink)">follow plan 1</text>
+      <text x="370" y="127" text-anchor="middle" class="d-sub" style="fill:var(--ink)">follow plan 2</text>
+      <text x="555" y="127" text-anchor="middle" class="d-sub" style="fill:var(--ink)">follow plan 3</text>
+      <text x="30" y="160" class="d-sub">Each plan covers all the orders in the shop for the next hours, but only its beginning is ever carried out.</text>
+    </svg>
+    <figcaption><b>Re-plan, follow, re-plan.</b> In a simulated day with breakdowns this happens about 160
+    times. The plan never sees the future: it does not know when the next order will come or the next machine will
+    fail. It just keeps its plan up to date.</figcaption>
+  </figure>
+  <p>To find out whether the solver itself matters, or just the habit of re-planning, there is a fourth,
+  in-between method: <b>quick re-planning</b>. Same loop, but each new plan is built by a simple quick procedure
+  instead of the solver.</p>
+
+  <h3>How the self-learning AI works</h3>
+  <p>The AI is a <em>reinforcement learning</em> agent (a "DQN", deep Q-network, the method a program famously used
+  to learn Atari video games from the screen alone). Each time a machine is free and several orders wait, it
+  looks at the situation (how urgent the waiting orders are, how long they take, which colour is loaded, how many
+  machines are down…) and picks one of the four rules. After each choice it receives a score: minus the extra
+  lateness that choice has committed the shop to. A small neural network learns, over 1,500 simulated days, to
+  estimate which choice leads to the least lateness in each situation. The method is explained step by step in my <a href="../dqn-cartpole/index.html">tutorial on
+  teaching a network to balance a pole</a>.</p>
+</section>
+
+<section class="col prose" aria-labelledby="fair">
+  <h2 id="fair">5 · A fair comparison</h2>
+  <p>Nobody can test scheduling methods on a real factory for weeks, so the workshop is a <b>computer
+  simulation</b> (written with SimPy): a program that plays out the shop minute by minute, moves the carts,
+  breaks the machines, and asks the method under test what to do whenever a decision is needed. Such a
+  simulation is sometimes called a <em>digital twin</em> of the shop.</p>
+  <ul>
+    <li><b>Same days for everyone.</b> 20 test days, each with its own random orders and breakdowns, and every
+    method plays exactly the same 20 days. So methods can be compared day by day, not just on average.</li>
+    <li><b>Two settings.</b> A calm shop with no breakdowns, and a shop with frequent breakdowns.</li>
+    <li><b>Nothing tuned on the test.</b> All settings, and the AI's training, used other simulated days; the 20
+    test days were played once, at the end.</li>
+    <li><b>Every schedule is checked.</b> A simulation can have bugs that make a method look better than it is. So
+    an independent program re-checks every schedule actually carried out, from scratch: no machine doing two
+    things at once, every changeover respected, no work on a broken machine, every part carried by a cart before
+    it is worked on. All 480 schedules passed.</li>
+  </ul>
 </section>
 
 <section class="col" id="results" aria-labelledby="results-h">
-  <h2 id="results-h">Results</h2>
-  <p class="section-lede">20 test seeds, 60 jobs per run, two disturbance levels, 7 methods. Mean over the seeds
-  with a 95 % bootstrap interval. "Greedy replan" is an ablation: the same event-driven loop as CP-SAT, but the
-  plan is the greedy warm start, without the solver.</p>
+  <h2 id="results-h">6 · Results</h2>
+  <p class="section-lede">Average lateness per order, over the 20 test days. The thin black lines show the
+  uncertainty (95 % confidence): they are wide because some days are much harder than others.</p>
 </section>
 
-<section class="wide" aria-label="Mean tardiness by method">
+<section class="wide" aria-label="Average lateness by method">
   <figure class="output-figure">
-    <img src="tardiness.png" alt="Two horizontal bar charts of mean tardiness per job for seven methods. Without breakdowns: FIFO 15.5, SPT 10.0, EDD 7.0, SST 9.4, DQN 7.4, greedy replan 3.1, CP-SAT 1.3 minutes. With frequent breakdowns: FIFO 60.8, SPT 45.4, EDD 37.6, SST 34.1, DQN 35.4, greedy replan 24.0, CP-SAT 19.3 minutes." width="1500" height="630">
-    <figcaption><b>Mean tardiness per job.</b> Grey: the four rules; purple: the DQN agent; light blue: replanning without the solver; blue: CP-SAT rescheduling. Error bars are 95 % bootstrap intervals over the 20 seeds; they are wide because the seeds differ a lot, which is why the comparisons below are paired seed by seed.</figcaption>
+    <img src="tardiness.png" alt="Two bar charts of average lateness per order. Calm shop: first come first served 15.5 min, shortest job first 10.0, most urgent first 7.0, avoid colour changes 9.4, self-learning AI 7.4, quick re-planning 3.1, optimiser re-planning 1.3. Frequent breakdowns: 60.8, 45.4, 37.6, 34.1, 35.4, 24.0 and 19.3 minutes." width="1500" height="630">
+    <figcaption><b>Average lateness per order.</b> Grey: the four rules of thumb; purple: the self-learning AI;
+    light blue: quick re-planning; dark blue: the optimiser re-planning at every event.</figcaption>
   </figure>
 </section>
 
-<section class="col">
-  <div class="md">
-  <table>
-    <thead><tr><th>Frequent breakdowns</th><th>mean tardiness (min)</th><th>max tardiness (min)</th><th>changeover time (min)</th><th>decision time per run</th></tr></thead>
-    <tbody>
-      <tr><td>FIFO</td><td>60.8 [41.9, 82.2]</td><td>216</td><td>1091</td><td>1 ms</td></tr>
-      <tr><td>SPT</td><td>45.4 [32.0, 60.8]</td><td>235</td><td>1036</td><td>2 ms</td></tr>
-      <tr><td>EDD</td><td>37.6 [27.1, 50.0]</td><td>155</td><td>1014</td><td>2 ms</td></tr>
-      <tr><td>SST (best rule)</td><td>34.1 [24.8, 44.9]</td><td>212</td><td>820</td><td>1 ms</td></tr>
-      <tr><td>DQN</td><td>35.4 [25.1, 47.0]</td><td>183</td><td>904</td><td>20 ms</td></tr>
-      <tr><td>Greedy replan</td><td>24.0 [15.8, 33.6]</td><td>131</td><td>618</td><td>81 ms (159 replans)</td></tr>
-      <tr><td><b>CP-SAT</b></td><td><b>19.3 [12.3, 27.1]</b></td><td><b>116</b></td><td>633</td><td>256 s (1.6 s per replan)</td></tr>
-    </tbody>
-  </table>
-  <table>
-    <thead><tr><th>Paired differences in mean tardiness (min)</th><th>no breakdowns</th><th>frequent breakdowns</th></tr></thead>
-    <tbody>
-      <tr><td>CP-SAT vs best rule (EDD, then SST)</td><td>−5.7 [−9.6, −2.9], better on 20 of 20 seeds</td><td>−14.8 [−18.4, −11.7], better on 20 of 20</td></tr>
-      <tr><td>Greedy replan vs best rule</td><td>−3.9 [−7.5, −1.4], 18 of 20</td><td>−10.1 [−15.0, −5.3], 17 of 20</td></tr>
-      <tr><td>CP-SAT vs greedy replan</td><td>−1.7 [−2.7, −0.9], 19 of 20</td><td>−4.7 [−8.9, −1.3], 17 of 20</td></tr>
-      <tr><td>DQN vs best rule</td><td>+0.4 [−0.7, +1.5], 6 of 20</td><td>+1.3 [−2.1, +5.1], 11 of 20</td></tr>
-    </tbody>
-  </table>
-  </div>
-</section>
-
 <section class="col prose" aria-labelledby="reading">
-  <h2 id="reading">What the numbers say</h2>
+  <h3 id="reading">What this says, in plain words</h3>
   <ul>
-    <li><b>Rescheduling with a model beats every rule, on every seed.</b> Mean tardiness drops from 7.0 min (EDD,
-    the best rule) to 1.3 min without breakdowns, and from 34.1 min (SST) to 19.3 min with frequent breakdowns,
-    43 % less. The worst job is 116 min late instead of 155 (EDD) or 212 (SST).</li>
-    <li><b>The gain comes from changeovers.</b> The rules spend 820 to 1,091 min per run changing over;
-    rescheduling spends about 635. A plan over the next operations groups a family on a machine, which a rule
-    looking at one queue at a time cannot do, even SST.</li>
-    <li><b>Most of the gain comes from replanning with a look-ahead, not from the solver.</b> Replanning at every
-    event with a greedy schedule already gives 3.1 and 24.0 min. The solver adds 1.7 and 4.7 min on top, both
-    intervals excluding zero, at 1.6 s per replan against well under a millisecond. About half the replans are
-    proven optimal (56 % and 42 %).</li>
-    <li><b>The DQN agent does not beat the rules.</b> It stays within the interval of the best rule at both levels,
-    and the five training seeds tell the same story. The best rule is not the same at the two levels and the
-    agent, trained on both, stays close to the better one each time, which is something, but it does not
-    improve on it. This is a result about this agent, this state and this training budget, not about
-    reinforcement learning in general.</li>
-    <li><b>Makespan and utilisation do not separate the methods</b> (every method processes the same jobs, and the
-    last arrival sets the makespan). Tardiness and changeover time do.</li>
+    <li><b>Re-planning with the optimiser wins, every single day.</b> With frequent breakdowns, orders are on
+    average 19 minutes late instead of 34 with the best rule of thumb: <b>43 % less lateness</b>. It was better
+    than the best rule on all 20 test days, in both settings. In the calm shop, lateness almost disappears (1.3
+    minutes instead of 7.0).</li>
+    <li><b>The gain comes from changeovers, exactly as in the small example.</b> With the rules, machines spend
+    between 820 and 1,090 minutes a day changing over; with re-planning, about 635. A plan groups orders of the
+    same family on a machine, which a rule looking at one queue at a time cannot do.</li>
+    <li><b>Most of the gain comes from re-planning itself.</b> Quick re-planning, without the solver, already gets
+    24 minutes. The solver adds a further 5 minutes, a real but smaller improvement, at the price of 1.6 s of
+    computing per plan.</li>
+    <li><b>The self-learning AI does not beat the rules.</b> At 35 minutes it is as good as the best rule, not
+    better. It learned to stay close to whichever rule works best in each setting, which is not nothing, but it
+    never discovered anything the rules miss. With more information, or freedom to plan rather than to pick a
+    rule, it might; this experiment does not show it.</li>
   </ul>
+  <details class="curious">
+    <summary>The full numbers, with uncertainty and day-by-day comparisons</summary>
+    <div class="md">
+    <table>
+      <thead><tr><th>Frequent breakdowns</th><th>avg lateness (min)</th><th>worst order (min late)</th><th>changeovers (min/day)</th><th>computing per day</th></tr></thead>
+      <tbody>
+        <tr><td>First come, first served</td><td>60.8 [41.9, 82.2]</td><td>216</td><td>1091</td><td>1 ms</td></tr>
+        <tr><td>Shortest job first</td><td>45.4 [32.0, 60.8]</td><td>235</td><td>1036</td><td>2 ms</td></tr>
+        <tr><td>Most urgent first</td><td>37.6 [27.1, 50.0]</td><td>155</td><td>1014</td><td>2 ms</td></tr>
+        <tr><td>Avoid colour changes (best rule)</td><td>34.1 [24.8, 44.9]</td><td>212</td><td>820</td><td>1 ms</td></tr>
+        <tr><td>Self-learning AI</td><td>35.4 [25.1, 47.0]</td><td>183</td><td>904</td><td>20 ms</td></tr>
+        <tr><td>Quick re-planning</td><td>24.0 [15.8, 33.6]</td><td>131</td><td>618</td><td>81 ms</td></tr>
+        <tr><td><b>Optimiser re-planning</b></td><td><b>19.3 [12.3, 27.1]</b></td><td><b>116</b></td><td>633</td><td>256 s</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Day-by-day difference in avg lateness (min)</th><th>calm shop</th><th>frequent breakdowns</th></tr></thead>
+      <tbody>
+        <tr><td>Optimiser vs best rule</td><td>−5.7 [−9.6, −2.9], better on 20 of 20 days</td><td>−14.8 [−18.4, −11.7], better on 20 of 20</td></tr>
+        <tr><td>Quick re-planning vs best rule</td><td>−3.9 [−7.5, −1.4], 18 of 20</td><td>−10.1 [−15.0, −5.3], 17 of 20</td></tr>
+        <tr><td>Optimiser vs quick re-planning</td><td>−1.7 [−2.7, −0.9], 19 of 20</td><td>−4.7 [−8.9, −1.3], 17 of 20</td></tr>
+        <tr><td>Self-learning AI vs best rule</td><td>+0.4 [−0.7, +1.5], 6 of 20</td><td>+1.3 [−2.1, +5.1], 11 of 20</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Brackets are 95 % bootstrap confidence intervals over the 20 days. The best rule is "most urgent first" in
+    the calm shop and "avoid colour changes" with breakdowns; it was chosen after seeing the test, which, if
+    anything, favours the rules.</p>
+  </details>
 </section>
 
-<section class="col prose" aria-labelledby="honest">
-  <h2 id="honest">How the test was kept honest</h2>
-  <ul>
-    <li>The 20 test seeds were run once, after every choice was fixed on other seeds: shop load and due-date
-    tightness, the CP-SAT transport allowance, warm start and strict plan following, the DQN reward and
-    hyper-parameters (validation seeds 5000 to 5009, training scenarios from seed 100000).</li>
-    <li>The reported agent is the one of five training seeds with the best validation score; the other four are
-    reported too.</li>
-    <li>The "best rule" is chosen after the fact on the test seeds, which favours the rules: the comparison is
-    harder on CP-SAT and DQN than a fixed choice would be.</li>
-    <li>Same scenario for every method on a seed, so the comparison is paired; a run reproduces exactly (the
-    solver stops on deterministic time, not wall clock).</li>
-  </ul>
+<section class="wide" aria-label="One simulated morning">
+  <figure class="output-figure">
+    <img src="gantt_breakdowns.png" alt="Gantt chart of five machines and two carts over the first 480 minutes of a simulated day with breakdowns: coloured blocks are orders by product family, grey blocks changeovers, hatched red blocks breakdowns" width="1950" height="690">
+    <figcaption><b>What a real plan looks like.</b> The first 8 hours of test day 0, with breakdowns, under the
+    optimiser. Each row is a machine (and, at the bottom, the two carts); each coloured block is one step of one
+    order, coloured by family, with the order's number on it. Grey: changeovers. Hatched red: breakdowns. Notice
+    the runs of the same colour on a machine: that is the grouping that saves changeovers.</figcaption>
+  </figure>
 </section>
 
 <section class="col prose" aria-labelledby="limits">
-  <h2 id="limits">Limitations</h2>
+  <h2 id="limits">7 · What this does not show</h2>
   <ul>
-    <li>Synthetic data, one workshop, one load level, 60 jobs from an empty shop: no steady-state analysis, and no
-    claim about a real plant.</li>
-    <li>The CP-SAT model treats transport as a fixed lag and ignores the AGVs; it does not see future arrivals or
-    failures. Its computing time is not charged to the simulated clock.</li>
-    <li>Controllers are told the mean repair time, and interrupted work resumes without loss.</li>
-    <li>The rules are the classical single-criterion ones; a composite rule built for tardiness with setups
-    (ATCS) would be a stronger baseline and might close part of the gap.</li>
-    <li>The agent only picks among four rules at one machine; routing is not learned.</li>
+    <li><b>It is a simulation</b>, with invented data: one workshop, one level of busyness, 60 orders a day. It says
+    nothing about any real factory, and is connected to no real machine.</li>
+    <li><b>The optimiser's model is simplified.</b> It treats the carts as a fixed travel time instead of planning
+    them, and it does not know the future. Its 1.6 s of thinking time is not counted in the simulated clock.</li>
+    <li><b>Breakdowns are convenient:</b> the controllers know the average repair time, and interrupted work
+    resumes without loss.</li>
+    <li><b>Stronger rules exist.</b> Rules that combine urgency and changeovers (such as ATCS) might close part of the
+    gap; they are a natural next comparison.</li>
+    <li><b>One AI design.</b> The agent only picks among four rules at one machine. A different design might do
+    better; this one did not.</li>
   </ul>
-  <p>Natural next steps: ATCS and a simulation-based rollout as baselines, AGV missions inside the model, solver
-  time charged to the clock, and an agent that decides when to replan.</p>
+</section>
+
+<section class="col prose" aria-labelledby="curious-h">
+  <h2 id="curious-h">8 · For the technically curious</h2>
+  <details class="curious">
+    <summary>The workshop data</summary>
+    <p>5 machines, one station each, plus a load station. 4 families of 4 operations; each operation can run on
+    1 to 3 machines with machine-dependent times of 6 to 30 min. Sequence-dependent changeovers of 3 to 10 min,
+    asymmetric, none within a family; a changeover starts once the machine is free and the job is there. 2 AGVs,
+    one job at a time, 2 to 3 min between stations, requests served first come first served by the nearest idle
+    AGV. 60 jobs per run, Poisson arrivals (mean 20.8 min, machines loaded at 60 % before changeovers). Due date =
+    arrival + k × shortest total processing time, k uniform in [2, 4]. Breakdowns: exponential time between
+    failures (mean 120 min per machine at the "frequent" level), repair uniform in [10, 30] min. Integer minutes.</p>
+  </details>
+  <details class="curious">
+    <summary>The CP-SAT model</summary>
+    <ul>
+      <li>One start and one end per remaining operation, one optional interval per eligible machine, exactly one present (routing).</li>
+      <li>NoOverlap per machine, and a circuit constraint over its operations whose arcs mean "b directly follows a" and enforce start_b ≥ max(end_a, arrival_b) + setup(family_a, family_b).</li>
+      <li>Precedence inside a job with a transport lag (travel + 2 min, the median wait for an AGV measured in simulation) that depends on the two machines chosen.</li>
+      <li>Objective: 10 × total tardiness + total completion time, over the 25 most urgent jobs present.</li>
+      <li>Warm start from greedy schedules and the previous plan, passed as a complete hint; 0.2 deterministic-time units per solve with 8 interleaved workers, so a run reproduces exactly; about 1.6 s per replan.</li>
+      <li>Rolling horizon: re-solved at every arrival, breakdown and repair; between events each machine follows the planned order.</li>
+    </ul>
+  </details>
+  <details class="curious">
+    <summary>The DQN agent</summary>
+    <p>Decision point: a machine is free and at least two jobs wait. Action: FIFO, SPT, EDD or SST. State: 29
+    features (for the job each rule would pick: processing time, changeover, slack, remaining operations, waiting
+    time; queue and shop statistics: queue length, slack statistics, jobs in the shop, share of late jobs, machines
+    down, pending transport requests). Reward: minus the increase in the tardiness the shop is already committed
+    to, so a run's rewards sum to minus its total tardiness. Double DQN, replay buffer, soft target update, Huber
+    loss; 5 training seeds of 1,500 episodes, the one with the best validation score kept (the other four are
+    reported in the repository and give the same picture).</p>
+  </details>
+  <details class="curious">
+    <summary>The test protocol and the checker</summary>
+    <p>Test seeds 0–19, run once after every choice was fixed on validation seeds 5000–5009 and training seeds from
+    100000. Paired comparison seed by seed, 95 % percentile bootstrap (10,000 resamples). The checker never reads
+    the simulator's state or a solver model: from the workshop data, the scenario and the executed log it re-derives
+    every constraint (each operation once, on an eligible machine, for its full time; no overlap, no work during
+    downtime; exact changeovers; continuous AGV paths at layout speeds; jobs carried between operations). The test
+    suite (64 tests) injects each kind of violation into valid logs, and compares CP-SAT optima with brute force on
+    snapshots small enough to enumerate.</p>
+  </details>
 </section>
 
 <section class="col prose" aria-labelledby="reproduce">
-  <h2 id="reproduce">Reproduce it</h2>
-  <p>The repository has 64 tests: hand-made shops with known answers, injected checker violations, CP-SAT plans
-  compared with brute force on snapshots small enough to enumerate, and the DQN's Bellman targets. The
-  evaluation writes the tables above from scratch in about 40 minutes on a 14-thread machine; the trained agents
-  are included.</p>
+  <h2 id="reproduce">Run it yourself</h2>
+  <p>Everything is open source: the simulation, the three methods, the checker, the tests and the trained AI.</p>
 <pre><code>python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
 .venv/Scripts/python -m pytest                            # 64 tests, about 1 min
-.venv/Scripts/python scripts/evaluate.py                  # results/results.md, about 40 min</code></pre>
-  <p><a href="https://github.com/ElieRouphael/jobshop-digital-twin">github.com/ElieRouphael/jobshop-digital-twin</a>
-  · MIT licensed.</p>
+.venv/Scripts/python scripts/evaluate.py                  # all results, about 40 min</code></pre>
+  <div class="downloads">
+    <a class="btn" href="https://github.com/ElieRouphael/jobshop-digital-twin">The code on GitHub</a>
+    <a class="btn ghost" href="jobshop-digital-twin-code.zip" download>Download the code (.zip)</a>
+  </div>
 </section>
 
 <footer class="col">
-  <p>Rescheduling a Flexible Job Shop, by Elie Rouphael. Every number on this page comes from the repository's
-  <code>results/runs.csv</code>, regenerated by its evaluation script.</p>
+  <p>Which Job Should the Machine Do Next?, by Elie Rouphael. Every result on this page comes from the
+  repository's <code>results/runs.csv</code>; the worked example is computed by
+  <code>scripts/jobshop_toy_example.py</code> in the site's repository.</p>
 </footer>
 
 </body>

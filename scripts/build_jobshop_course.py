@@ -8,7 +8,9 @@ produces the files next to it, all from the jobshop-digital-twin repository:
     tardiness.png                   mean tardiness per method at both disturbance levels, with the
                                     95 % bootstrap intervals, read from results/runs.csv
     gantt_breakdowns.png            the repository's executed CP-SAT schedule under breakdowns
-    cover.png                       preview image for the tutorials card
+    index.html (in place)           the worked example's schedules, drawn by jobshop_toy_example.py
+
+cover.png (the tutorials card image) is a static file and is not redrawn by this script.
 
 Usage:  python scripts/build_jobshop_course.py [path/to/jobshop-digital-twin]
 Needs numpy and matplotlib; the default path is the author's local working copy.
@@ -34,6 +36,11 @@ MEMBERS = [
 GLOBS = ["jobshop/*.py", "scripts/*.py", "tests/*.py", "models/*.pt", "models/training.json"]
 
 METHODS = ["FIFO", "SPT", "EDD", "SST", "DQN", "Greedy replan", "CP-SAT"]
+PLAIN = {  # the names the page uses
+    "FIFO": "First come, first served", "SPT": "Shortest job first", "EDD": "Most urgent first",
+    "SST": "Avoid colour changes", "DQN": "Self-learning AI", "Greedy replan": "Quick re-planning",
+    "CP-SAT": "Optimiser re-planning",
+}
 LEVELS = ["no breakdowns", "frequent breakdowns"]
 
 
@@ -84,9 +91,10 @@ def make_chart(table, path: Path) -> None:
             ax.barh(yi, mean, color=c, height=0.62)
             ax.errorbar(mean, yi, xerr=[[mean - low], [high - mean]], fmt="none", ecolor=ink, elinewidth=1, capsize=3)
             ax.text(high + 1, yi, f"{mean:.1f}", va="center", fontsize=9, color=ink)
-        ax.set_yticks(y, METHODS, fontsize=9.5, color=ink)
-        ax.set_title(level.capitalize(), fontsize=11, color=ink, loc="left")
-        ax.set_xlabel("mean tardiness per job (min)", fontsize=9, color=muted)
+        ax.set_yticks(y, [PLAIN[m] for m in METHODS], fontsize=9.5, color=ink)
+        ax.set_title({"no breakdowns": "Calm shop (no breakdowns)",
+                      "frequent breakdowns": "Frequent breakdowns"}[level], fontsize=11, color=ink, loc="left")
+        ax.set_xlabel("average lateness per order (min)", fontsize=9, color=muted)
         ax.set_xlim(0, max(table[(level, m)][2] for m in METHODS) * 1.18)
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
@@ -137,8 +145,18 @@ def main() -> None:
     print(f"  {z.name}: {len(zipfile.ZipFile(z).namelist())} members")
     table = tardiness_table(repo)
     make_chart(table, OUT / "tardiness.png")
-    make_cover(repo, table, OUT / "cover.png")
+    # cover.png is a static asset now (the question-led picture, light variant, 1280x800); not redrawn here
     shutil.copy(repo / "results" / "gantt_breakdowns.png", OUT / "gantt_breakdowns.png")
+    # worked example: the schedules are computed and drawn by jobshop_toy_example.py, inlined in the page
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import re
+    import jobshop_toy_example
+    page = OUT / "index.html"
+    text = page.read_text(encoding="utf-8")
+    text = re.sub(r"<!-- TOY_GANTT:BEGIN -->.*?<!-- TOY_GANTT:END -->",
+                  lambda _: "<!-- TOY_GANTT:BEGIN -->\n" + jobshop_toy_example.svg() + "\n<!-- TOY_GANTT:END -->",
+                  text, flags=re.S)
+    page.write_text(text, encoding="utf-8", newline="\n")
     for (level, m), (mean, low, high) in table.items():
         if m in ("EDD", "SST", "DQN", "Greedy replan", "CP-SAT"):
             print(f"  {level:20s} {m:14s} {mean:5.1f} [{low:.1f}, {high:.1f}]")
