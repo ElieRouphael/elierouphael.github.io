@@ -63,4 +63,9 @@ def check(cid: str) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(max(check(c) for c in sys.argv[1:]) if len(sys.argv) > 1 else print(__doc__))
+    args = sys.argv[1:]
+    if args[:1] == ["--course"] and len(args) >= 2:   # another course folder, e.g. --course jobshop-digital-twin
+        SRC = SITE / "courses" / args[1]
+        OUT = SITE / "public" / "tutorials" / args[1]
+        args = args[2:]
+    sys.exit(max(check(c) for c in args) if args else print(__doc__))

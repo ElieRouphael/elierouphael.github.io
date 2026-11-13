@@ -1,165 +1,218 @@
-"""Build the generated assets of the "Rescheduling a Flexible Job Shop" tutorial.
+"""Build the course "Which Job Should the Machine Do Next?" (public/tutorials/jobshop-digital-twin/).
 
-The page itself (public/tutorials/jobshop-digital-twin/index.html) is hand-written; this script
-produces the files next to it, all from the jobshop-digital-twin repository:
+The chapters are Markdown in courses/jobshop-digital-twin/chapters/<id>.md, in the dialect of
+scripts/course_md.py, listed in courses/jobshop-digital-twin/course.yaml. This script renders:
 
-    jobshop-digital-twin-code.zip   the package, scripts, tests, trained DQN weights, README,
-                                    LICENSE, requirements and the raw results (results.md, runs.csv)
-    tardiness.png                   mean tardiness per method at both disturbance levels, with the
-                                    95 % bootstrap intervals, read from results/runs.csv
-    gantt_breakdowns.png            the repository's executed CP-SAT schedule under breakdowns
-    index.html (in place)           the worked example's schedules, drawn by jobshop_toy_example.py
+    <slug>.html                one page per chapter
+    index.html                 the landing page (from courses/jobshop-digital-twin/index.md)
+    notation.html              the notation and the course's workshop (from notation.md)
+    concepts.html              every definition box and code walk, with its chapter and part
+    tardiness.png              mean tardiness per method at both levels, from the repository's runs.csv
+    gantt_breakdowns.png       the repository's executed CP-SAT schedule under breakdowns
+    jobshop-digital-twin-course.zip   the repository (package, scripts, tests, trained agents, results)
+                               and code/, one script per chapter printing every number on its page
 
-cover.png (the tutorials card image) is a static file and is not redrawn by this script.
+The chapter demos are hand-written: interactive/jobshop-lib.js (shared) and interactive/<id>.js.
+cover.png (the tutorials card) is a static file and is not redrawn here.
 
-Usage:  python scripts/build_jobshop_course.py [path/to/jobshop-digital-twin]
-Needs numpy and matplotlib; the default path is the author's local working copy.
+Usage:
+    python scripts/build_jobshop_course.py                 # everything
+    python scripts/build_jobshop_course.py --only a02      # one chapter page only (safe while others work)
+Needs markdown-it-py, mdit-py-plugins, pyyaml; the charts need numpy and matplotlib.
 """
 from __future__ import annotations
 
 import csv
+import html
+import re
 import shutil
 import sys
+import time
 import zipfile
 from pathlib import Path
 
-SITE = Path(__file__).resolve().parents[1]
-OUT = SITE / "public" / "tutorials" / "jobshop-digital-twin"
-DEFAULT_REPO = Path(r"C:/Users/rouphaee/Documents/PostDoc_v2/jobshop-digital-twin")
-ZIP_NAME = "jobshop-digital-twin-code.zip"
-ARCHIVE_FOLDER = "jobshop-digital-twin"
+import yaml
 
-MEMBERS = [
-    "README.md", "LICENSE", "requirements.txt", "pyproject.toml",
-    "results/results.md", "results/runs.csv",
-]
-GLOBS = ["jobshop/*.py", "scripts/*.py", "tests/*.py", "models/*.pt", "models/training.json"]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import course_md  # noqa: E402
+import build_mpc_course as base  # noqa: E402  (its page helpers; SRC/OUT are re-pointed below)
+from course_md import MD, chapter_page, load_course, mark_heading_ids, page_head, page_scripts, postprocess, render_chapter_file, resolve_refs  # noqa: E402
+
+SITE = Path(__file__).resolve().parents[1]
+SRC = SITE / "courses" / "jobshop-digital-twin"
+OUT = SITE / "public" / "tutorials" / "jobshop-digital-twin"
+base.SRC, base.OUT = SRC, OUT
+GITHUB = "https://github.com/ElieRouphael/jobshop-digital-twin"
 
 METHODS = ["FIFO", "SPT", "EDD", "SST", "DQN", "Greedy replan", "CP-SAT"]
-PLAIN = {  # the names the page uses
-    "FIFO": "First come, first served", "SPT": "Shortest job first", "EDD": "Most urgent first",
-    "SST": "Avoid colour changes", "DQN": "Self-learning AI", "Greedy replan": "Quick re-planning",
-    "CP-SAT": "Optimiser re-planning",
-}
-LEVELS = ["no breakdowns", "frequent breakdowns"]
+PLAIN = {"FIFO": "First come, first served", "SPT": "Shortest job first", "EDD": "Most urgent first",
+         "SST": "Shortest setup first", "DQN": "Self-learning agent", "Greedy replan": "Quick re-planning",
+         "CP-SAT": "Optimiser re-planning"}
 
 
-def write_zip(repo: Path) -> Path:
-    path = OUT / ZIP_NAME
-    files = [repo / rel for rel in MEMBERS]
-    for pattern in GLOBS:
-        files += sorted(repo.glob(pattern))
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        for src in files:
-            if not src.exists():
-                print(f"  (skipped, not found: {src.relative_to(repo)})")
-                continue
-            z.write(src, f"{ARCHIVE_FOLDER}/{src.relative_to(repo).as_posix()}")
-    return path
+def build_chapter(course, ch) -> bool:
+    src = SRC / "chapters" / f"{ch.id}.md"
+    if not src.exists():
+        return False
+    r = render_chapter_file(src, course, ch)
+    for key in ("lede", "result", "build", "needs"):
+        if r.meta.get(key):
+            setattr(ch, key, r.meta[key])
+    ch.parts = r.meta.get("parts", [])
+    (OUT / f"{ch.slug}.html").write_text(chapter_page(course, ch, r), encoding="utf-8")
+    for want in ([f"interactive/{ch.id}.js"] if ch.script else []) + ([f"code/{ch.id}_numbers.py"] if ch.numbers else []):
+        if not (OUT / want).exists():
+            print(f"  warning: {ch.id} has no {want}")
+    return True
 
 
-def tardiness_table(repo: Path) -> dict[tuple[str, str], tuple[float, float, float]]:
-    sys.path.insert(0, str(repo))
-    import numpy as np
-    from jobshop.metrics import bootstrap_ci  # the interval the repository reports
+def index_page(course, intro: dict) -> str:
+    zip_name = f"{course.folder}-course.zip"
+    parts_html = []
+    for part in course.parts:
+        chapters = course.in_part(part["key"])
+        cards = "\n".join(base.chapter_card(ch) for ch in chapters)
+        parts_html.append(f"""
+<section class="col" aria-labelledby="part-{part['key']}">
+  <h2 id="part-{part['key']}">Part {part['key']} · {html.escape(part['title'])}</h2>
+  <p class="section-lede">{part['lede']}</p>
+  <ol class="chapter-list">
+{cards}
+  </ol>
+</section>""")
+    first = course.chapters[0]
+    return page_head(course.name, intro["description"]) + f"""
+<nav class="site-back col" aria-label="Site"><a href="/tutorials">&larr; All tutorials</a><a href="/">{html.escape(course.author)}</a></nav>
 
-    rows = list(csv.DictReader(open(repo / "results" / "runs.csv", encoding="utf-8")))
-    out = {}
-    for level in LEVELS:
-        for m in METHODS:
-            v = np.array([float(r["mean_tardiness"]) for r in rows if r["level"] == level and r["method"] == m])
-            low, high = bootstrap_ci(v)
-            out[(level, m)] = (float(v.mean()), low, high)
-    return out
+<header class="hero col">
+  <span class="eyebrow">{intro['eyebrow']}</span>
+  <h1>{html.escape(course.name)}</h1>
+  <p class="lede">{intro['lede']}</p>
+  <p class="byline">{html.escape(course.author)} · {intro['assumes']}</p>
+  <div class="downloads">
+    <a class="btn" href="{first.slug}.html">Start with chapter {first.label}</a>
+    <a class="btn ghost" href="{GITHUB}">The repository on GitHub</a>
+    <a class="btn ghost" href="{zip_name}" download>Download the course (.zip)</a>
+  </div>
+</header>
+
+<div class="col prose">
+{intro['body']}
+</div>
+{''.join(parts_html)}
+
+<section class="col prose" aria-labelledby="run">
+  <h2 id="run">Running it yourself</h2>
+  <p>Every chapter runs its demos in the browser and quotes numbers computed in Python. To reproduce them,
+  <a href="{zip_name}" download>download the course</a>: the repository's <code>jobshop</code> package with its
+  tests, scripts, trained agents and results, and in <code>code/</code> one script per chapter that prints every
+  number quoted on that chapter's page. From the unzipped folder:</p>
+  <pre><code class="language-bash">pip install -r requirements.txt
+python -m pytest                      # the repository's 64 tests
+python code/c01_numbers.py            # every number on chapter C1's page</code></pre>
+</section>
+
+<section class="col prose" aria-labelledby="more">
+  <h2 id="more">Reference pages</h2>
+  <ul>
+    <li><a href="notation.html">Notation and the course's workshop</a>: every symbol, the method names, the worked example and the workshop's data.</li>
+    <li><a href="concepts.html">Concept index</a>: each concept with the chapter and part that defines it, and each function of the repository a chapter reads line by line.</li>
+  </ul>
+</section>
+
+<footer class="col">
+  <p>{html.escape(course.name)}, by {html.escape(course.author)}. {course.license} Everything is synthetic: no data from a
+  real plant. Math by KaTeX, code highlighting by highlight.js.</p>
+</footer>
+""" + page_scripts([])
 
 
-def make_chart(table, path: Path) -> None:
+def write_charts(repo: Path) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
+    def bootstrap_ci(values, confidence=0.95, resamples=10_000, seed=0):
+        """Same as jobshop/metrics.py:bootstrap_ci (percentile bootstrap of the mean), without importing SimPy."""
+        values = np.asarray(values, dtype=float)
+        samples = np.random.default_rng(seed).choice(values, size=(resamples, len(values)), replace=True)
+        alpha = (1.0 - confidence) / 2.0
+        low, high = np.quantile(samples.mean(axis=1), [alpha, 1.0 - alpha])
+        return float(low), float(high)
 
+    rows = list(csv.DictReader(open(repo / "results" / "runs.csv", encoding="utf-8")))
     ink, muted, rule, bg = "#16202a", "#6b7581", "#dcdfd8", "#ffffff"
-    colours = {"rule": "#a7b0ba", "DQN": "#8f6fd1", "Greedy replan": "#7fb0e6", "CP-SAT": "#2a78d6"}
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), dpi=150, sharey=False)
+    colours = {"DQN": "#8f6fd1", "Greedy replan": "#7fb0e6", "CP-SAT": "#2a78d6"}
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), dpi=150)
     fig.patch.set_facecolor(bg)
-    for ax, level in zip(axes, LEVELS):
+    for ax, level, title in zip(axes, ("no breakdowns", "frequent breakdowns"), ("Calm shop (no breakdowns)", "Frequent breakdowns")):
+        stats = {}
+        for m in METHODS:
+            v = np.array([float(r["mean_tardiness"]) for r in rows if r["level"] == level and r["method"] == m])
+            stats[m] = (v.mean(), *bootstrap_ci(v))
         y = np.arange(len(METHODS))[::-1]
         for yi, m in zip(y, METHODS):
-            mean, low, high = table[(level, m)]
-            c = colours.get(m, colours["rule"])
-            ax.barh(yi, mean, color=c, height=0.62)
-            ax.errorbar(mean, yi, xerr=[[mean - low], [high - mean]], fmt="none", ecolor=ink, elinewidth=1, capsize=3)
-            ax.text(high + 1, yi, f"{mean:.1f}", va="center", fontsize=9, color=ink)
+            mean, lo, hi = stats[m]
+            ax.barh(yi, mean, color=colours.get(m, "#a7b0ba"), height=0.62)
+            ax.errorbar(mean, yi, xerr=[[mean - lo], [hi - mean]], fmt="none", ecolor=ink, elinewidth=1, capsize=3)
+            ax.text(hi + 1, yi, f"{mean:.1f}", va="center", fontsize=9, color=ink)
         ax.set_yticks(y, [PLAIN[m] for m in METHODS], fontsize=9.5, color=ink)
-        ax.set_title({"no breakdowns": "Calm shop (no breakdowns)",
-                      "frequent breakdowns": "Frequent breakdowns"}[level], fontsize=11, color=ink, loc="left")
-        ax.set_xlabel("average lateness per order (min)", fontsize=9, color=muted)
-        ax.set_xlim(0, max(table[(level, m)][2] for m in METHODS) * 1.18)
+        ax.set_title(title, fontsize=11, color=ink, loc="left")
+        ax.set_xlabel("mean tardiness per job (min)", fontsize=9, color=muted)
+        ax.set_xlim(0, max(s[2] for s in stats.values()) * 1.18)
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
         for s in ("left", "bottom"):
             ax.spines[s].set_color(rule)
         ax.tick_params(colors=muted, labelsize=8.5)
-        ax.grid(axis="x", color=rule, lw=0.6)
-        ax.set_axisbelow(True)
-    fig.tight_layout()
-    fig.savefig(path, facecolor=bg)
-    plt.close(fig)
+        ax.grid(axis="x", color=rule, lw=0.6); ax.set_axisbelow(True)
+    fig.tight_layout(); fig.savefig(OUT / "tardiness.png", facecolor=bg); plt.close(fig)
+    shutil.copy(repo / "results" / "gantt_breakdowns.png", OUT / "gantt_breakdowns.png")
 
 
-def make_cover(repo: Path, table, path: Path) -> None:
-    """The breakdowns level of the chart, drawn large to read at card size."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    ink, rule, bg = "#16202a", "#dcdfd8", "#fbfbf8"
-    level = "frequent breakdowns"
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=160)
-    fig.patch.set_facecolor(bg); ax.set_facecolor(bg)
-    y = np.arange(len(METHODS))[::-1]
-    for yi, m in zip(y, METHODS):
-        mean, low, high = table[(level, m)]
-        c = "#2a78d6" if m == "CP-SAT" else ("#7fb0e6" if m == "Greedy replan" else ("#8f6fd1" if m == "DQN" else "#b8c0c8"))
-        ax.barh(yi, mean, color=c, height=0.66)
-        ax.errorbar(mean, yi, xerr=[[mean - low], [high - mean]], fmt="none", ecolor=ink, elinewidth=1.2, capsize=4)
-    ax.set_yticks(y, METHODS, fontsize=15, color=ink)
-    ax.tick_params(axis="x", labelsize=11, colors="#6b7581")
-    ax.set_xlabel("mean tardiness per job under breakdowns (min)", fontsize=12, color="#6b7581")
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    for s in ("left", "bottom"):
-        ax.spines[s].set_color(rule)
-    ax.grid(axis="x", color=rule, lw=0.8); ax.set_axisbelow(True)
-    fig.tight_layout()
-    fig.savefig(path, facecolor=bg)
-    plt.close(fig)
+def write_zip(course, repo: Path) -> None:
+    path = OUT / f"{course.folder}-course.zip"
+    members = [(repo / rel, rel) for rel in ("README.md", "LICENSE", "requirements.txt", "pyproject.toml",
+                                             "results/results.md", "results/runs.csv")]
+    for pattern in ("jobshop/*.py", "scripts/*.py", "tests/*.py", "models/*.pt", "models/training.json"):
+        members += [(p, p.relative_to(repo).as_posix()) for p in sorted(repo.glob(pattern))]
+    members += [(p, f"code/{p.name}") for p in sorted((OUT / "code").glob("*.py"))]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for src, arc in members:
+            if src.exists():
+                z.write(src, f"{course.folder}-course/{arc}")
+    print(f"  {path.name}: {len(members)} members")
 
 
 def main() -> None:
-    repo = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_REPO
-    OUT.mkdir(parents=True, exist_ok=True)
-    z = write_zip(repo)
-    print(f"  {z.name}: {len(zipfile.ZipFile(z).namelist())} members")
-    table = tardiness_table(repo)
-    make_chart(table, OUT / "tardiness.png")
-    # cover.png is a static asset now (the question-led picture, light variant, 1280x800); not redrawn here
-    shutil.copy(repo / "results" / "gantt_breakdowns.png", OUT / "gantt_breakdowns.png")
-    # worked example: the schedules are computed and drawn by jobshop_toy_example.py, inlined in the page
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import re
-    import jobshop_toy_example
-    page = OUT / "index.html"
-    text = page.read_text(encoding="utf-8")
-    text = re.sub(r"<!-- TOY_GANTT:BEGIN -->.*?<!-- TOY_GANTT:END -->",
-                  lambda _: "<!-- TOY_GANTT:BEGIN -->\n" + jobshop_toy_example.svg() + "\n<!-- TOY_GANTT:END -->",
-                  text, flags=re.S)
-    page.write_text(text, encoding="utf-8", newline="\n")
-    for (level, m), (mean, low, high) in table.items():
-        if m in ("EDD", "SST", "DQN", "Greedy replan", "CP-SAT"):
-            print(f"  {level:20s} {m:14s} {mean:5.1f} [{low:.1f}, {high:.1f}]")
+    args = sys.argv[1:]
+    course = load_course(SRC / "course.yaml")
+    course_md.ASSET_VERSION = time.strftime("%Y%m%d%H%M%S")
+    (OUT / "code").mkdir(parents=True, exist_ok=True)
+    (OUT / "interactive").mkdir(parents=True, exist_ok=True)
+    if args[:1] == ["--only"]:
+        for cid in args[1:]:
+            ok = build_chapter(course, course.chapter(cid))
+            print(f"  {cid}: " + ("built " + str(OUT / (course.chapter(cid).slug + ".html")) if ok else "no source yet"))
+        return
+    repo = course.package_root
+    built = [ch.id for ch in course.chapters if build_chapter(course, ch)]
+    missing = [ch.id for ch in course.chapters if ch.id not in built]
+    print(f"  built {len(built)} chapters" + (f"; no source yet for {', '.join(missing)}" if missing else ""))
+    intro_md = (SRC / "index.md").read_text(encoding="utf-8")
+    m = re.match(r"^---\n(.*?)\n---\n", intro_md, flags=re.S)
+    intro = yaml.safe_load(m[1])
+    intro["body"] = postprocess(MD.render(mark_heading_ids(resolve_refs(intro_md[m.end():], course, course.chapters[0])), {}))
+    (OUT / "index.html").write_text(index_page(course, intro), encoding="utf-8")
+    if (SRC / "notation.md").exists():
+        (OUT / "notation.html").write_text(base.simple_page(
+            course, SRC / "notation.md", "Notation and the course's workshop",
+            "Every symbol the course uses, the method names, the worked example and the data of the course's workshop.",
+            [f"interactive/{course.lib}"]), encoding="utf-8")
+    (OUT / "concepts.html").write_text(base.concepts_page(course), encoding="utf-8")
+    if repo and repo.exists():
+        write_charts(repo)
+        write_zip(course, repo)
     print(f"Wrote {OUT}")
 
 

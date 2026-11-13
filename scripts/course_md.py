@@ -79,6 +79,7 @@ class Course:
     author: str = "Elie Rouphael"
     license: str = "MIT licensed."
     package_root: Path | None = None    # where `::: code` snippets are read from
+    lib: str = "mpc-lib.js"             # the course's shared demo toolkit, interactive/<lib>
 
     def chapter(self, cid: str) -> Chapter:
         for ch in self.chapters:
@@ -95,7 +96,8 @@ def load_course(path: Path) -> Course:
     chapters = [Chapter(**c) for c in data["chapters"]]
     return Course(name=data["name"], folder=data["folder"], parts=data["parts"], chapters=chapters,
                   author=data.get("author", "Elie Rouphael"), license=data.get("license", "MIT licensed."),
-                  package_root=Path(data["package_root"]).expanduser() if data.get("package_root") else None)
+                  package_root=Path(data["package_root"]).expanduser() if data.get("package_root") else None,
+                  lib=data.get("lib", "mpc-lib.js"))
 
 
 # ---------------------------------------------------------------- markdown
@@ -404,7 +406,7 @@ def chapter_page(course: Course, ch: Chapter, r: Rendered) -> str:
 {body}
   </div>
 </section>""")
-    scripts = ["interactive/mpc-lib.js"] + [f"interactive/{s}" for s in ch.extra_scripts] + ([f"interactive/{ch.id}.js"] if ch.script else [])
+    scripts = [f"interactive/{course.lib}"] + [f"interactive/{s}" for s in ch.extra_scripts] + ([f"interactive/{ch.id}.js"] if ch.script else [])
     extra_css = f"<style>\n{meta['css']}\n</style>\n" if meta.get("css") else ""
     description = meta.get("description", ch.build)
     return page_head(f"{ch.label} · {ch.short} · {course.name}", description, extra_css) + f"""
