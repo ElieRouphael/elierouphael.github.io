@@ -173,10 +173,10 @@ export const tutorials: Tutorial[] = [
   {
     title: 'Which Job Should the Machine Do Next?',
     description:
-      'Factory scheduling explained from zero. A workshop must keep deciding which order each machine works on next, while orders arrive at random, colour changes cost time and machines break down. A small example you can follow by hand shows why rules of thumb fall short, then a simulated workshop compares three ways of deciding: rules of thumb, an optimiser that re-plans the whole shop at every disruption, and a self-learning AI. Re-planning cuts lateness by 43 % under breakdowns; the AI does no better than the best rule.',
-    topics: ['Scheduling', 'Simulation', 'Optimisation', 'Constraint Programming', 'Reinforcement Learning', 'Python'],
-    prerequisites: 'No background in scheduling needed; Python to run the code',
-    level: 'Beginner',
+      'A ten-chapter course on dynamic scheduling, from the first definitions to a working system. What a schedule is and how to measure it; when a simple rule is provably optimal (exchange arguments) and why total tardiness with changeovers is NP-hard; the flexible job shop and its disjunctive graph; discrete-event simulation with Poisson arrivals, breakdowns and Little\'s law; dispatching rules as priority indices; a constraint-programming model solved with CP-SAT and how the solver proves optimality; re-planning on a rolling horizon; a reinforcement-learning dispatcher; and a fair benchmark with paired comparisons and the bootstrap. Each chapter derives its mathematics, has live demos and exercises with solutions, and every number is printed by a script you can run.',
+    topics: ['Scheduling', 'Simulation', 'Constraint Programming', 'CP-SAT', 'Reinforcement Learning', 'Statistics', 'Python'],
+    prerequisites: 'No background in scheduling needed; Python, basic probability and linear inequalities help',
+    level: 'Intermediate',
     added: '2026-11-13T17:00',
     href: '/tutorials/jobshop-digital-twin/index.html',
     cover: {
