@@ -200,8 +200,8 @@ function drawHero() {
   $("#hRhoV").textContent = fmt(st.rho, 2);
   let tail = "";
   if (s.finished()) {
-    tail = ` <b>The run is over.</b> ${s.nEvents} events moved the clock through ${s.t} minutes; a loop that advanced one minute at a time would visit the ${s.t + 1} instants 0 to ${s.t}, ${s.t + 1 - s.evTimes.size} of them with nothing to do. The area under [[N(t)]] is ${s.area} job-minutes, which is also the sum of the flow times, so [[L = ${s.area}/${s.t} = ${fmt(L, 3)}]] and [[\\lambda_T W_T = (${s.arrived}/${s.t}) \\times ${fmt(W, 2)} = ${fmt(lam * W, 3)}]]: Little's law, exact because the shop started and ended empty.` + (st.mode === "paint" && st.rule === "SPT" ? " On these four orders SPT happens to choose exactly as FIFO does; SST avoids two colour changes (exercise 1)." : "");
-  } else if (done && s.inShop) tail = ` Until the shop is empty again, [[L]] and [[\\lambda_T W_T]] differ: the jobs still inside have not yet contributed their flow time to [[W_T]] (Part 6).`;
+    tail = ` <b>The run is over.</b> ${s.nEvents} events moved the clock through ${s.t} minutes; a loop that advanced one minute at a time would visit the ${s.t + 1} instants 0 to ${s.t}, ${s.t + 1 - s.evTimes.size} of them with nothing to do. The area under [[N(t)]] is ${s.area} job-minutes, which is also the sum of the flow times, so [[L = ${s.area}/${s.t} = ${fmt(L, 3)}]] and [[\\lambda_T \\bar F_T = (${s.arrived}/${s.t}) \\times ${fmt(W, 2)} = ${fmt(lam * W, 3)}]]: Little's law, exact because the shop started and ended empty.` + (st.mode === "paint" && st.rule === "SPT" ? " On these four orders SPT happens to choose exactly as FIFO does; SST avoids two colour changes (exercise 1)." : "");
+  } else if (done && s.inShop) tail = ` Until the shop is empty again, [[L]] and [[\\lambda_T \\bar F_T]] differ: the jobs still inside have not yet contributed their flow time to [[\\bar F_T]] (Part 6).`;
   caption($("#hStatus"), s.note + tail);
   $("#hRhoF").hidden = st.mode !== "random"; $("#hSeedF").hidden = st.mode !== "random";
   $("#hStep").disabled = s.finished(); $("#hEnd").disabled = s.finished(); $("#hPlay").disabled = s.finished();

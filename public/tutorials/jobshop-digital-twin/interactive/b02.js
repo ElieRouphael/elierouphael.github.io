@@ -153,8 +153,8 @@ function drawHero() {
     FIFO: "The index is the order's place in the queue and never changes: a <b>static</b> index.",
     SPT: "The index is the processing time [[p_j]]; it does not depend on [[t]] or on the machine's set-up: <b>static</b>.",
     EDD: "The index is the due date [[d_j]]: <b>static</b>. It ignores how long a job takes and every changeover.",
-    SST: "The index is the changeover [[s_{lj}]] from the family [[l]] the machine is set up for, ties broken by due date: it changes after every order, a <b>dynamic</b> index.",
-    ATCS: `The index [[I_j(t,l) = \\frac{1}{p_j} e^{-\\max(d_j - p_j - t, 0)/(k_1 \\bar p)} e^{-s_{lj}/(k_2 \\bar s)}]], largest wins, with [[\\bar p = ${fmt(pbar, 2)}]], [[\\bar s = ${fmt(sbar, 2)}]], so the slack is measured in units of [[k_1 \\bar p = ${fmt(k1 * pbar, 2)}]] min and the changeover in units of [[k_2 \\bar s = ${fmt(k2 * sbar, 2)}]] min. It moves with [[t]] and with [[l]]: <b>dynamic</b>.`,
+    SST: "The index is the changeover [[s_m(g_m, f(j))]] from the family [[g_m]] the machine is set up for, ties broken by due date: it changes after every order, a <b>dynamic</b> index.",
+    ATCS: `The index [[I_j(t) = \\frac{1}{p_j} e^{-\\max(\\mathrm{slack}_j(t), 0)/(k_1 \\bar p)} e^{-s_m(g_m, f(j))/(k_2 \\bar s)}]], with [[\\mathrm{slack}_j(t) = d_j - p_j - t]], largest wins, with [[\\bar p = ${fmt(pbar, 2)}]], [[\\bar s = ${fmt(sbar, 2)}]], so the slack is measured in units of [[k_1 \\bar p = ${fmt(k1 * pbar, 2)}]] min and the changeover in units of [[k_2 \\bar s = ${fmt(k2 * sbar, 2)}]] min. It moves with [[t]] and with [[g_m]]: <b>dynamic</b>.`,
   }[st.rule];
   const gap = tot - b.value;
   caption($("#heroStatus"), `${RULE_TEXT[st.rule]} on ${inst.label}: ${what} ${st.rule === "ATCS" ? "Largest" : "Smallest"} index first gives <b>${seq.join(" ")}</b>, total tardiness <b>${tot} min</b> with ${setupMin} min of changeovers; the best of all ${b.count} orders gives ${b.value} min${gap ? `, so this rule is ${gap} min worse` : ", which this rule reaches"}.`);
@@ -166,7 +166,7 @@ $$("#instSeg .btn").forEach(btn => btn.addEventListener("click", () => { st.inst
 /* ---------------- routing: the first reroute of test day 0, frequent breakdowns, SST ----------------
    Minute 124: m4 fails with job 0 (family 0, operation 2) in its queue. m4: 13 min left on its current
    operation, 17 min committed (job 2 on its way), 7 min of processing for job 0. m1: 3 min away, its
-   current operation has R = 22 min left, nothing else committed, 10 min of processing. The real repair
+   current operation has rem_1 = 22 min left, nothing else committed, 10 min of processing. The real repair
    ends at minute 137; the controller assumes breakdown + MTTR. */
 const R0 = { t: 124, stayRem: 13, stayCommitted: 17, stayP: 7, moveTravel: 3, moveP: 10, realUp: 137 };
 function drawRoute() {
@@ -197,7 +197,7 @@ function drawRoute() {
   });
   $("#rtStay").textContent = stayKey; $("#rtMove").textContent = moveKey; $("#rtDec").textContent = moves ? "move to m1" : "stay on m4";
   const threshold = mttr + R0.stayRem + R0.stayCommitted + R0.stayP - R0.moveP;
-  caption($("#routeCap"), `Job 0 waits at m4 when m4 fails at minute 124. The controller expects m4 back at [[124 + ${mttr} = ${up}]] (the shaded block; the dashed line is the real end of the repair, minute 137, which it does not know). <b>Stay</b>: [[\\max(124, ${up} + ${R0.stayRem} + ${R0.stayCommitted}) + ${R0.stayP} = ${stayKey}]]; the 17 min of job 2, still on its way, are counted ahead of job 0. <b>Move</b>: the cart needs 3 min (orange), m1 is busy for [[R = ${R}]] more min: [[\\max(127, 124 + ${R}) + ${R0.moveP} = ${moveKey}]]. Earliest expected finish: <b>${moves ? "move to m1" : "stay on m4"}</b>. With this repair estimate the job moves whenever [[R < ${threshold}]].`);
+  caption($("#routeCap"), `Job 0 waits at m4 when m4 fails at minute 124. The controller expects m4 back at [[124 + ${mttr} = ${up}]] (the shaded block; the dashed line is the real end of the repair, minute 137, which it does not know). <b>Stay</b>: [[\\max(124, ${up} + ${R0.stayRem} + ${R0.stayCommitted}) + ${R0.stayP} = ${stayKey}]]; the 17 min of job 2, still on its way, are counted ahead of job 0. <b>Move</b>: the cart needs 3 min (orange), m1 is busy for [[\\mathrm{rem}_1 = ${R}]] more min: [[\\max(127, 124 + ${R}) + ${R0.moveP} = ${moveKey}]]. Earliest expected finish: <b>${moves ? "move to m1" : "stay on m4"}</b>. With this repair estimate the job moves whenever [[\\mathrm{rem}_1 < ${threshold}]].`);
 }
 ["#rtM", "#rtR"].forEach(id => $(id).addEventListener("input", drawRoute));
 

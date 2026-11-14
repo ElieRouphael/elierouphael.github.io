@@ -188,12 +188,12 @@ $("#wReset").addEventListener("click", () => { $("#wPi").value = 15; $("#wDi").v
 /* ================================================================ how often is a rule optimal? */
 const S0 = JS.WORKSHOP.setup[0];                          /* the changeovers of the workshop's machine 0 */
 const ZERO = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
-function instance(r, n, tau, R = 0.6) {
+function instance(r, n, theta, R = 0.6) {
   const p = [], fam = [], d = [];
   for (let k = 0; k < n; k++) p.push(5 + Math.floor(r() * 26));
   for (let k = 0; k < n; k++) fam.push(Math.floor(r() * 4));
   const P = p.reduce((a, b) => a + b, 0);
-  for (let k = 0; k < n; k++) d.push(Math.max(0, Math.floor(P * (1 - tau + R * (r() - 0.5)) + 0.5)));
+  for (let k = 0; k < n; k++) d.push(Math.max(0, Math.floor(P * (1 - theta + R * (r() - 0.5)) + 0.5)));
   return { p, fam, d };
 }
 function tardiness(I, seq, St) {
@@ -220,14 +220,14 @@ function ruleSeqIdx(I, rule, St) {
 }
 const fixed1 = (numer, denom) => { const q = Math.floor((20 * numer + denom) / (2 * denom)); return `${Math.floor(q / 10)}.${q % 10}`; };
 const cache = {};
-function experiment(n, tau, withSetups, count = 300, seed = 2026) {
-  const key = [n, tau, withSetups].join("|");
+function experiment(n, theta, withSetups, count = 300, seed = 2026) {
+  const key = [n, theta, withSetups].join("|");
   if (cache[key]) return cache[key];
   const r = JS.rng(seed), St = withSetups ? S0 : ZERO, keys = [...RULES4, "best4"];
   const hits = Object.fromEntries(keys.map(k => [k, 0])), excess = Object.fromEntries(keys.map(k => [k, 0]));
   let optSum = 0;
   for (let c = 0; c < count; c++) {
-    const I = instance(r, n, tau), opt = brute(I, St);
+    const I = instance(r, n, theta), opt = brute(I, St);
     optSum += opt;
     const v = {}; RULES4.forEach(k => { v[k] = tardiness(I, ruleSeqIdx(I, k, St), St); });
     v.best4 = Math.min(...RULES4.map(k => v[k]));
@@ -236,9 +236,9 @@ function experiment(n, tau, withSetups, count = 300, seed = 2026) {
   return (cache[key] = { hits, excess, optSum, count });
 }
 function drawRand() {
-  const n = +$("#xN").value, tau = +$("#xTau").value / 10, withS = $("#xSetup").checked;
-  $("#xNV").textContent = n; $("#xTauV").textContent = tau.toFixed(1);
-  const E = experiment(n, tau, withS), keys = [...RULES4, "best4"], c = E.count;
+  const n = +$("#xN").value, theta = +$("#xTheta").value / 10, withS = $("#xSetup").checked;
+  $("#xNV").textContent = n; $("#xThetaV").textContent = theta.toFixed(1);
+  const E = experiment(n, theta, withS), keys = [...RULES4, "best4"], c = E.count;
   const cv = $("#randC"), narrow = narrowOf(cv);
   const fr = frame(cv, narrow ? 1.4 : 2.6, { x: [0, 100], y: [0, 5], pad: { l: 96, t: 8 }, yticks: false, xticks: [0, 20, 40, 60, 80, 100], xfmt: v => v + "%", xlabel: "instances on which the rule is optimal" });
   const ctx = fr.ctx, labels = { FIFO: "FIFO", SPT: "SPT", EDD: "EDD", SST: "SST", best4: "best of four" };
@@ -252,9 +252,9 @@ function drawRand() {
     ctx.fillText(`${fixed1(100 * E.hits[k], c)}%  (+${fixed1(E.excess[k], c)} min)`, Math.min(fr.X(v) + 6, fr.w - 150), y0 + h / 2);
   });
   const h = E.hits;
-  caption($("#randCap"), `${c} random instances of [[n = ${n}]] orders (processing times 5 to 30 min, four families, due dates uniform between [[(0.7-\\tau)\\sum p_j]] and [[(1.3-\\tau)\\sum p_j]], rounded and never below 0, with [[\\tau = ${tau.toFixed(1)}]])${withS ? ", with the changeovers of the workshop's machine 0" : ", without changeovers"}; the optimum of each is found exactly, by a search over orders that drops a prefix once it is as late as the best order found. FIFO is optimal on ${fixed1(100 * h.FIFO, c)}&nbsp;%, SPT on ${fixed1(100 * h.SPT, c)}&nbsp;%, EDD on ${fixed1(100 * h.EDD, c)}&nbsp;%, SST on ${fixed1(100 * h.SST, c)}&nbsp;%, and the best of the four on ${fixed1(100 * h.best4, c)}&nbsp;%. In brackets: the average number of minutes of total tardiness above the optimum. The mean optimum is ${fixed1(E.optSum, c)} min.${withS ? "" : " Without changeovers SST's first key is always 0, so it is EDD."}`);
+  caption($("#randCap"), `${c} random instances of [[n = ${n}]] orders (processing times 5 to 30 min, four families, due dates uniform between [[(0.7-\\theta)\\sum p_j]] and [[(1.3-\\theta)\\sum p_j]], rounded and never below 0, with [[\\theta = ${theta.toFixed(1)}]])${withS ? ", with the changeovers of the workshop's machine 0" : ", without changeovers"}; the optimum of each is found exactly, by a search over orders that drops a prefix once it is as late as the best order found. FIFO is optimal on ${fixed1(100 * h.FIFO, c)}&nbsp;%, SPT on ${fixed1(100 * h.SPT, c)}&nbsp;%, EDD on ${fixed1(100 * h.EDD, c)}&nbsp;%, SST on ${fixed1(100 * h.SST, c)}&nbsp;%, and the best of the four on ${fixed1(100 * h.best4, c)}&nbsp;%. In brackets: the average number of minutes of total tardiness above the optimum. The mean optimum is ${fixed1(E.optSum, c)} min.${withS ? "" : " Without changeovers SST's first key is always 0, so it is EDD."}`);
 }
-["#xN", "#xTau"].forEach(id => $(id).addEventListener("input", drawRand));
+["#xN", "#xTheta"].forEach(id => $(id).addEventListener("input", drawRand));
 $("#xSetup").addEventListener("change", drawRand);
 
 function drawAll() { drawHero(); drawSwap(); drawRand(); }

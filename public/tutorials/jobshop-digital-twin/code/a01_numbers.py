@@ -198,6 +198,11 @@ print("  every regular measure is no smaller:",
       all(m5[k] >= m0[k] for k in ("Cmax", "sumC", "sumF", "Lmax", "Tmax", "sumT", "sumU")),
       " total earliness:", m0["sumE"], "->", m5["sumE"])
 
+section("Part 4, the left-shift theorem: (LS) applied to the delayed FIFO timetable gives back the semi-active one")
+delayed = schedule("ABCD", idle={"B": 5}); tight = schedule("ABCD")
+print("  delayed starts:", {r["name"]: r["S"] for r in delayed}, " (LS) starts:", {r["name"]: r["S"] for r in tight},
+      " every end no later:", all(t_["C"] <= d_["C"] for t_, d_ in zip(tight, delayed)))
+
 section("Part 4: a semi-active schedule that is not non-delay can be better (two jobs, one machine)")
 J2 = {"1": (0, 10, 100), "2": (1, 1, 2)}   # name: (r, p, d)
 for seq in ("12", "21"):
@@ -250,6 +255,13 @@ with open(REPO / "results" / "runs.csv", newline="") as fh:
     every = list(csv.DictReader(fh))
 print(f"all {len(every)} runs in runs.csv (the seven methods and the agent's five training replicas): "
       f"{sum(int(r['checker_errors']) for r in every)} checker errors")
+# Part 2 (schedule): 480 = (7 methods + 5 DQN training seeds) x 20 days x 2 levels, of which 280 are the seven methods
+names = sorted(set(r["method"] for r in every)); days = sorted(set(int(r["seed"]) for r in every))
+levels = sorted(set(r["level"] for r in every))
+print(f"  methods in runs.csv: {len(names)} = 7 headline + {len([n for n in names if n not in METHODS])} DQN training seeds "
+      f"{[n for n in names if n not in METHODS]}; days {len(days)}; levels {len(levels)}; "
+      f"{len(names)} x {len(days)} x {len(levels)} = {len(names) * len(days) * len(levels)}, "
+      f"of which 7 x {len(days)} x {len(levels)} = {7 * len(days) * len(levels)} are the seven methods")
 COLS = ["makespan", "utilisation", "mean_flow_time", "mean_tardiness", "max_tardiness", "tardy_share"]
 
 section("Part 6 (objective), widget 4, result line, Parts 8, 9 and summary: mean over the 20 test days, per method")

@@ -256,6 +256,25 @@ for a, b, why in ((1, 2, "order 4, at m0 (station 1), to m1 (station 2)"), (5, 2
     print(f"  tau({a}, {b}) = {WS.travel[a][b]}   {why}")
 print("changeover of m3 from family 0 to family 2:", WS.setup_time(3, 0, 2))
 print("repairs before minute 117 still running: m2 down since 116 -> expected 116 + 20 = 136; m3 down since 109 -> 129")
+n_ops_117 = sum(WS.n_ops(pj.family) - pj.first_op for pj in snap.jobs)
+print(f"the minute-117 snapshot: {len(snap.jobs)} orders with a decision left, {n_ops_117} operations to place")
+# Part 2, for comparison: snapshot 101 of chapters C1 and C2 (seed 0, 60 jobs, frequent breakdowns, quick
+# re-planning, the snapshot recorded at the 102nd re-plan), rebuilt as c02_numbers.py does.
+SNAPS_C2 = []
+
+
+class _Recorder(cpsat.CPSATController):
+    def on_event(self, shop, kind, **info):
+        jobs = sorted(shop.active_jobs(), key=lambda j: (j.due, j.idx))[: self.max_jobs]
+        SNAPS_C2.append(cpsat.take_snapshot(shop, jobs, self.allowance))
+        super().on_event(shop, kind, **info)
+
+
+Shop(WS, make_scenario(WS, 0, n_jobs=60, mtbf=120.0), _Recorder(use_solver=False)).run()
+s101 = SNAPS_C2[101]
+print(f"snapshot 101 of chapter C2: minute {s101.now}, {len(s101.jobs)} orders, "
+      f"{sum(WS.n_ops(pj.family) - pj.first_op for pj in s101.jobs)} operations to place; the minute-117 one has "
+      f"{len(snap.jobs)} orders, fewer on purpose, so that every ready time can be read by hand")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -451,13 +470,15 @@ print(f"certainty equivalence, two-point version: D = 10 or 30 with probability 
 print("certainty equivalence: a repair lasts uniform [10, 30] min, the planner assumes 20. A job planned to finish")
 print("exactly at its due date behind the repair has planned tardiness 0 and expected tardiness")
 xs = np.linspace(10, 30, 200001)
-print(f"  E[max(0, D - 20)] = {np.mean(np.maximum(0, xs - 20)):.3f} min (exact: 10^2 / 40 = {100 / 40}); with slack beta: (10 - beta)^2 / 40,"
-      f" e.g. beta = 5: {25 / 40:.3f} min")
+print(f"  E[max(0, D - 20)] = {np.mean(np.maximum(0, xs - 20)):.3f} min (exact: 10^2 / 40 = {100 / 40}); with margin eta: (10 - eta)^2 / 40,"
+      f" e.g. eta = 5: {25 / 40:.3f} min")
 # Pitfall 2: the breakdown of m3 at minute 109 (event 20 of the hero)
 e109 = next(e for e in ev if e["t"] == 109)
 print("pitfall 2: at minute 109 order 3 is", [s for s in e109["states"] if s[0] == 3], "; the plan puts (3, 0) on",
       e109["plan"][(3, 0)], "; m3 expected back at", e109["snap"].machine_free[3],
       "; real repair", [d for d in FULL.downtime[3] if d[0] == 109])
+_d109 = next(d for d in FULL.downtime[3] if d[0] == 109)
+print(f"  the real repair took {_d109[1] - _d109[0]} min; a 30-minute repair would have kept m3 down until {_d109[0] + 30}")
 
 section("Exercise 5 (re-plan only at arrivals): greedy re-planning that ignores breakdowns and repairs")
 

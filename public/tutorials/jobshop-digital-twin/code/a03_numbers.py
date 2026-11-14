@@ -17,7 +17,15 @@ from pathlib import Path
 REPO = Path(os.environ.get("JOBSHOP_REPO", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(REPO))
 
-from jobshop.cpsat import transport_lag  # noqa: E402
+import inspect  # noqa: E402
+
+from jobshop.cpsat import CPSATController, solve_snapshot, transport_lag  # noqa: E402
+
+# defaults of the repository's planner: the allowance delta (Part 'extras') and the job cap (Part 'workshop' fold)
+PLANNER_ARGS = inspect.signature(CPSATController.__init__).parameters
+ALLOWANCE = PLANNER_ARGS["allowance"].default
+MAX_JOBS = PLANNER_ARGS["max_jobs"].default
+assert ALLOWANCE == inspect.signature(solve_snapshot).parameters["allowance"].default
 from jobshop.scenario import LOAD_STATION, make_scenario, make_workshop  # noqa: E402
 
 
@@ -50,12 +58,13 @@ def pairs_of(jobs):
 def longest_paths(jobs, arcs_dis, tau=0, s=0):
     """Earliest start of every operation for a (partial) selection, or None if the graph has a cycle.
 
-    arcs_dis: list of (u, v) meaning "u before v on their machine". Arc weights, as on the page:
-      source -> (j, 0)       tau + sigma_v             (the cart from the load station)
-      (j, k) -> (j, k + 1)   p_jk + tau + sigma_v      (transport, then the changeover once the job is there)
+    arcs_dis: list of (u, v) meaning "u before v on their machine". Arc weights, as on the page
+    (the source node is written 0 on the page, the sink *):
+      source 0 -> (j, 0)     tau + chg_v               (the cart from the load station)
+      (j, k) -> (j, k + 1)   p_jk + tau + chg_v        (transport, then the changeover once the job is there)
       u -> v (disjunctive)   p_u + s                   (the machine is free, then the changeover)
-      (j, last) -> sink      p_j,last
-    sigma_v = s if some disjunctive arc enters v (v is not first on its machine), else 0.
+      (j, last) -> sink *    p_j,last
+    chg_v (the dict `sig`) = s if some disjunctive arc enters v (v is not first on its machine), else 0.
     """
     ops = [(j, k) for j, r in enumerate(jobs) for k in range(len(r))]
     has_pred = {o: False for o in ops}
@@ -136,7 +145,8 @@ print("machine loads M0, M1, M2:", loads, " job lengths J0, J1, J2:", lengths, "
 best = min(v for v, _ in values)
 worst = max(v for v, _ in values)
 optimal = [b for v, b in values if v == best]
-print(f"optimum makespan {best} (reached by {len(optimal)} selection(s)); worst acyclic selection {worst}")
+print(f"optimum makespan {best} (reached by {len(optimal)} selection(s)); worst acyclic selection {worst}; "
+      f"optimum minus the lower bound: {best - max(loads + lengths)}")
 dist = Counter(v for v, _ in values)
 print("makespans of the 64 acyclic selections (value: count):", dict(sorted(dist.items())))
 opt_arcs = selection_arcs(pairs, optimal[0])
@@ -204,12 +214,17 @@ for tau, s in ((0, 0), (1, 0), (0, 1), (1, 1)):
           f"same optimal selection as plain: {optimal[0] in same}")
 
 # --------------------------------------------------------------------------------------------------------------
-section("Flexible widget: three operations get a second machine (Brandimarte's routing choice)")
+section("Part 'flexible': the instance table (eligible machines and minutes) and every assignment")
 FLEX = [
     [{0: 2}, {1: 7, 2: 6}, {2: 7}],
     [{1: 7, 2: 6}, {2: 4}, {0: 5}],
     [{2: 2}, {0: 6}, {1: 2, 0: 3}],
 ]
+for j in range(3):
+    print(f"J{j}: " + " | ".join(
+        f"step {k}: " + " or ".join(f"M{m}: {p}" + (" (classical)" if TOY[j][k][0] == m else "")
+                                   for m, p in sorted(FLEX[j][k].items(), key=lambda kv: kv[0] != TOY[j][k][0]))
+        for k in range(3)))
 flex_ops = [(j, k) for j in range(3) for k in range(3) if len(FLEX[j][k]) > 1]
 print("flexible operations:", [name(o) for o in flex_ops], " assignments: 2^3 =", 2 ** len(flex_ops))
 
@@ -263,7 +278,7 @@ print(f"best over all assignments: {gbest}, reached by {sum(1 for r in rows if r
 # The course's workshop
 # ==============================================================================================================
 ws = make_workshop()
-section("Part 'workshop': routings, eligible machines and processing times (make_workshop(), seed 0)")
+section("Part 'workshop': routes, eligible machines and processing times (make_workshop(), seed 0)")
 sizes = Counter()
 all_p = []
 for f in range(ws.n_families):
@@ -275,6 +290,7 @@ for f in range(ws.n_families):
         cells.append(", ".join(f"m{m}: {p}" for m, p in sorted(alt.items())))
     print(f"family {f}: " + " | ".join(cells) + f" | fastest route {ws.min_remaining_work(f, 0)}"
           f", slowest route {sum(max(a.values()) for a in ws.routings[f])}")
+print("machines:", ws.n_machines, " carts (AGVs):", ws.n_agvs, " families:", ws.n_families)
 print("operations per family:", [ws.n_ops(f) for f in range(ws.n_families)], " total operation types:", sum(sizes.values()))
 print("operations with 1, 2, 3 eligible machines:", sizes[1], sizes[2], sizes[3],
       " mean |M_fk| =", round(sum(k * v for k, v in sizes.items()) / sum(sizes.values()), 3))
@@ -333,16 +349,18 @@ def counts_for(families):
 
 
 nm, all_pairs, same, n_pairs, log_orient, log_perm, log_orders = counts_for(fams)
-print(f"60 jobs: operations per machine {nm}; pairs of operations sharing a machine {all_pairs}, of which {same} "
+print(f"60 jobs: operations per machine {nm} (max/min = {max(nm) / min(nm):.1f}); about 10^{log_perm:.0f} orders of every machine;"
+      f" pairs of operations sharing a machine {all_pairs}, of which {same} "
       f"belong to the same job; disjunctive pairs {n_pairs}, orientations 2^{n_pairs} = 10^{log_orient:.0f}; "
       f"orders of every machine prod n_m! = 10^{log_perm:.1f}; respecting the routes prod n_m!/2^{same} = 10^{log_orders:.1f}")
-for n in (1, 2, 3, 5, 10, 25):
+print("Part 'workshop' fold: the planner of C3 plans at most max_jobs =", MAX_JOBS, "jobs (CPSATController default)")
+for n in sorted({1, 2, 3, 5, 10, MAX_JOBS}):
     nm_n, all_n, same_n, pairs_n, lo_n, lp_n, lord_n = counts_for(fams[:n])
     la_n = sum(math.log10(per_family[f]) for f in fams[:n])
     print(f"first {n:2d} jobs: assignments 10^{la_n:.1f}, ops per machine {nm_n}, same-job pairs {same_n}, pairs {pairs_n}, "
           f"orientations 10^{lo_n:.1f}, prod n_m! 10^{lp_n:.1f}, machine orders respecting the routes 10^{lord_n:.1f}")
 
-section("Part 'workshop': changeovers s_m(f, g) and travel times tau(a, b)")
+section("Part 'workshop': changeovers s_m(f, g) and travel times tau(a, b); the triangle inequality (A2 #setups, C1)")
 offdiag = [ws.setup[m][f][g] for m in range(ws.n_machines) for f in range(ws.n_families) for g in range(ws.n_families) if f != g]
 print("changeovers from", min(offdiag), "to", max(offdiag), "min;", len(offdiag), "off-diagonal entries; mean",
       round(sum(offdiag) / len(offdiag), 2))
@@ -360,12 +378,15 @@ print("shortest processing time on each machine:", pmin_m)
 weak = [(m, f, g, h) for m, f, g, h in viol if ws.setup[m][f][h] > ws.setup[m][f][g] + pmin_m[m] + ws.setup[m][g][h]]
 print("weak triangle s_m(f,h) <= s_m(f,g) + p_min(m) + s_m(g,h) violated in", len(weak), "triples")
 min_nonzero = min(offdiag)
-print(f"bound used on the page: 2 x {min_nonzero} + {min(pmin_m)} = {2 * min_nonzero + min(pmin_m)} >= {max(offdiag)}")
+print(f"Part 'extras' (One caution): plain triangle broken in {len(viol)} triples, weak form in {len(weak)}; "
+      f"why: largest changeover {max(offdiag)} <= smallest {min_nonzero} + shortest operation {min(pmin_m)} + smallest {min_nonzero}"
+      f" = {2 * min_nonzero + min(pmin_m)}")
 tv = [ws.travel[a][b] for a in range(ws.n_machines + 1) for b in range(ws.n_machines + 1) if a != b]
 print("travel times between distinct stations:", sorted(set(tv)), " from the load station:",
       [ws.travel[LOAD_STATION][ws.station(m)] for m in range(ws.n_machines)])
-print("planner's transport lag tau + delta between machines 1 and 4:", transport_lag(ws, 1, 4, 2),
-      "= travel", ws.travel[ws.station(1)][ws.station(4)], "+ 2; same machine:", transport_lag(ws, 3, 3, 2))
+print("Part 'extras': planner allowance delta (CPSATController default) =", ALLOWANCE, "min")
+print("planner's transport lag tau + delta between machines 1 and 4:", transport_lag(ws, 1, 4, ALLOWANCE),
+      "= travel", ws.travel[ws.station(1)][ws.station(4)], f"+ {ALLOWANCE}; same machine:", transport_lag(ws, 3, 3, ALLOWANCE))
 
 section("Part 'constraints': a worked case of constraints 2 and 5 (release, first ride, changeover)")
 r_j, f_j, m_j = 100, 0, 1
@@ -376,8 +397,13 @@ s_case = ws.setup_time(m_j, 2, f_j)
 for free in (98, 105):
     S = max(free, A) + s_case
     print(f"family-{f_j} job released at r = {r_j}, step 0 on machine {m_j} ({p_j} min): tau(0, st({m_j})) = {ride}, "
-          f"A = {A}; machine last ran family 2, free from {free}; s_{m_j}(2, {f_j}) = {s_case}; "
+          f"alpha = {A}; machine last ran family 2, free from {free}; s_{m_j}(2, {f_j}) = {s_case}; "
           f"S = max({free}, {A}) + {s_case} = {S}, E = {S + p_j}")
+
+section("Part 'constraints': the planner's objective weight, 10 * tardiness + end (jobshop/cpsat.py)")
+import inspect  # noqa: E402
+import jobshop.cpsat as _cp  # noqa: E402
+print("objective terms in cpsat.py:", sorted({ln.strip() for ln in inspect.getsource(_cp).splitlines() if "10 * " in ln}))
 
 section("Part 'code': the literals of make_workshop (jobshop/scenario.py), checked against the drawn workshop")
 print("operations per family drawn from integers(3, 5) = 3 or 4; drawn:", [ws.n_ops(f) for f in range(ws.n_families)])
@@ -399,4 +425,5 @@ for bits in itertools.product([1, 0], repeat=2):
     arcs = selection_arcs(pairs2, bits)
     st2 = longest_paths(TWO, arcs)
     print(", ".join(f"{name(u)} -> {name(v)}" for u, v in arcs), ":",
-          "cycle" if st2 is None else f"makespan {makespan(TWO, st2)}")
+          "cycle" if st2 is None else f"makespan {makespan(TWO, st2)}; " + ", ".join(
+              f"{name(o)} [{st2[o]}, {st2[o] + TWO[o[0]][o[1]][1]})" for o in sorted(st2, key=lambda o: (st2[o], o))))

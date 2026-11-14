@@ -137,6 +137,16 @@ print("Part 6: changeover minutes, six orders: SST", sum(r[2] - r[1] for r in ru
       " best order", sum(r[2] - r[1] for r in run(SIX, best(SIX))),
       " (changeovers of the best order:", [r[2] - r[1] for r in run(SIX, best(SIX))], ")")
 
+section("Exercise 1: a static index dispatched with every job present is a sort; a dynamic one need not be")
+for inst_name, inst in (("paint", PAINT), ("six orders", SIX)):
+    for rule in ("FIFO", "SPT", "EDD", "SST", "ATCS"):
+        srt = sorted(inst["orders"], key=lambda o: index(inst, rule, o, 0, inst["start"]),
+                     reverse=(rule == "ATCS"))
+        dis = dispatch(inst, rule)
+        print(f"  {inst_name:10s} {rule:5s} sorted by the index at t = 0: {' '.join(x[0] for x in srt)}"
+              f" (total {total(run(inst, srt))}); dispatched: {' '.join(x[0] for x in dis)} (total {total(run(inst, dis))});"
+              f" equal: {srt == dis}")
+
 section("Part 7: ATCS on the paint machine by hand, k1 = k2 = 1 (k1 p-bar = 17.5, k2 s-bar = 6.667)")
 seq = dispatch(PAINT, "ATCS", 1, 1, trace=True)
 rows = run(PAINT, seq)
@@ -325,6 +335,8 @@ A = 120 / 140
 print(f"mean gap between arrivals {lam_inv} min, 5 machines: {5 * lam_inv / 60 * 60:.2f} machine-minutes per job; availability A = {A:.3f}, downtime {100 * (1 - A):.0f} %")
 fr = float(np.mean([WS.min_remaining_work(f, 0) for f in range(4)]))
 print("mean fastest-route work of a job (uniform family mix):", fr, f"-> the course's load rho = {fr:.1f} / {5 * lam_inv:.2f} = {fr / (5 * lam_inv):.2f}")
+print("processing per job, every rule (FIFO is the one chapter B1 quotes):",
+      {f"{lv} {m}": round(float(STATS[lv, m]["proc_per_job"]), 1) for lv in LV for m in RULE_NAMES})
 LOADS = {}
 for level in LV:
     for m in ("EDD", "SST"):
@@ -337,6 +349,43 @@ for level in LV:
 
 for level in LV:
     print(f"  {level}: waiting factor EDD / SST = {LOADS[level, 'EDD'] / LOADS[level, 'SST']:.2f}")
+
+section("Part 5: the M/M/1 derivation, evaluated at the effective loads (a qualitative model, not the shop)")
+# birth-death balance: lambda pi_n = mu pi_{n+1}  ->  pi_n = (1 - rho) rho^n,  L = rho / (1 - rho)
+for rho in (0.5, 0.8):
+    pis = [(1 - rho) * rho ** n for n in range(2000)]
+    print(f"  check by summation, rho = {rho}: sum pi_n = {sum(pis):.6f}, sum n pi_n = {sum(n * x for n, x in enumerate(pis)):.6f},"
+          f" rho/(1-rho) = {rho / (1 - rho):.6f}")
+for level in LV:
+    rho_e = LOADS[level, "EDD"] / (1 + LOADS[level, "EDD"])          # back from rho/(1-rho) to rho
+    rho_s = LOADS[level, "SST"] / (1 + LOADS[level, "SST"])
+    saved = STATS[level, "EDD"]["setup_per_job"] - STATS[level, "SST"]["setup_per_job"]
+    dL = LOADS[level, "EDD"] - LOADS[level, "SST"]
+    print(f"  {level}: changeover saved by SST {saved:.1f} min per job -> load lowered by {rho_e - rho_s:.3f}"
+          f" ({rho_e:.3f} -> {rho_s:.3f}); L = rho/(1-rho) falls by {dL:.2f} jobs, {dL / saved:.2f} jobs per minute saved per job;"
+          f" slope dL/drho = 1/(1-rho)^2 at EDD's load {1 / (1 - rho_e) ** 2:.1f}")
+# Step 5 split: the load drop from saved changeovers alone is lambda * Delta s / (5 A); the rest of the table's gap
+# rho_e - rho_s comes from the small difference in processing per job between EDD and SST (both print as 67.1 / 67.4)
+for level in LV:
+    Alv = A if level == LV[1] else 1.0
+    saved = STATS[level, "EDD"]["setup_per_job"] - STATS[level, "SST"]["setup_per_job"]
+    dproc = STATS[level, "EDD"]["proc_per_job"] - STATS[level, "SST"]["proc_per_job"]
+    rho_e = LOADS[level, "EDD"] / (1 + LOADS[level, "EDD"])
+    rho_s = LOADS[level, "SST"] / (1 + LOADS[level, "SST"])
+    d_setup = saved / (5 * lam_inv * Alv)
+    d_proc = dproc / (5 * lam_inv * Alv)
+    rho_c = rho_e - d_setup                                            # EDD's load with only the changeovers saved
+    dL_setup = rho_e / (1 - rho_e) - rho_c / (1 - rho_c)
+    print(f"  Step 5 split, {level}: Delta s = {saved:.2f} min per job, changeover-only drop lambda*Delta s/(5A) ="
+          f" {saved:.2f}/({5 * lam_inv:.2f}*{Alv:.3f}) = {d_setup:.3f}; processing difference EDD - SST {dproc:+.2f} min per job"
+          f" -> {d_proc:+.4f}; sum {d_setup + d_proc:.4f} = table gap {rho_e - rho_s:.4f}")
+    print(f"    changeovers alone: rho_eff {rho_e:.3f} -> {rho_c:.3f}, L {rho_e / (1 - rho_e):.2f} -> {rho_c / (1 - rho_c):.2f},"
+          f" falls by {dL_setup:.2f} jobs, {dL_setup / saved:.2f} jobs per minute saved per job")
+slope = [1 / (1 - LOADS[lv, "EDD"] / (1 + LOADS[lv, "EDD"])) ** 2 for lv in LV]
+print(f"  the same saved minute is worth {slope[1] / slope[0]:.1f} times more at the breakdown load (ratio of the slopes)")
+for level in LV:
+    fe, fs = col(level, "EDD", "mean_flow_time").mean(), col(level, "SST", "mean_flow_time").mean()
+    print(f"  measured (runs.csv), {level}: mean flow time EDD {fe:.1f}, SST {fs:.1f} min; gap {fe - fs:.1f} min; ratio {fe / fs:.2f}")
 
 section("Part 6: what a non-delay rule cannot do (paint numbers)")
 # at minute 0 only B (red, 10 min, due 25) waits, the machine is set up for blue; A (blue, 20 min, due 30) arrives at minute 1

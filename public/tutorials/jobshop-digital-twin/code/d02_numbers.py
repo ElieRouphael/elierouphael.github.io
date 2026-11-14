@@ -122,6 +122,11 @@ for level in LV:
     worst = {m: int(np.argmax(MT[(level, m)])) for m in METHODS}
     print(f"  {level}: worst day of each method (seed):", worst)
 print("  runs in runs.csv that passed the checker:", n_checked, "of", len(rows))
+n_dqn_agents = len({x["method"] for x in rows if x["method"].startswith("DQN:")})
+n_levels, n_seeds = len({x["level"] for x in rows}), len({x["seed"] for x in rows})
+print(f"  runs.csv = ({len(METHODS)} methods + {n_dqn_agents} DQN agents) x {n_seeds} days x {n_levels} levels = "
+      f"{(len(METHODS) + n_dqn_agents) * n_seeds * n_levels} rows (file: {len(rows)}); headline runs of the seven methods: "
+      f"{len(METHODS) * n_seeds * n_levels}")
 print("  headline means (min):", {lv: {m: round(MT[(lv, m)].mean(), 1) for m in METHODS} for lv in LV})
 
 # ================================================================ Part 2: Var(X - Y) and the correlations
@@ -212,7 +217,7 @@ print(f"  P(resample mean = -15) = 1/27 = {1 / 27:.3f} > 0.025, so the 95 % perc
       f"[{min(allm):g}, {max(allm):g}]")
 print("  the repository's bootstrap_ci on these three values:", ci(h))
 
-section("Part 3 (bootstrap): Monte Carlo error of the bootstrap itself, 100 bootstrap seeds, B = 10,000")
+section("Part 3 (bootstrap) and its Going further block (what B buys): Monte Carlo error, 100 bootstrap seeds, B = 10,000")
 sig_hat = math.sqrt(((D - D.mean()) ** 2).mean())
 print(f"  the 20 days of CP-SAT - SST: plug-in sd {sig_hat:.2f}; exact bootstrap SE sigma_hat / sqrt(20) = {sig_hat / math.sqrt(20):.2f} "
       f"(against s / sqrt(n) = {D.std(ddof=1) / math.sqrt(20):.2f}); 20^20 = {20 ** 20:.2e} ordered resamples")
@@ -289,7 +294,7 @@ for level in LV:
     print(f"  {level}: pool correlations among the rules from {C[np.triu_indices(4, 1)].min():.2f} to "
           f"{C[np.triu_indices(4, 1)].max():.2f}; SST-EDD {C[2, 3]:.2f}")
 
-section("Pool: what independent days would have cost (SST on 20 days, EDD on 20 other days), frequent breakdowns")
+section("Part 2, Going further (truly independent days): SST on 20 days, EDD on 20 other days, frequent breakdowns")
 P = POOL[BD]
 a_same, b_same = P["SST"][:20], P["EDD"][:20]
 b_other = P["EDD"][20:40]
@@ -309,7 +314,7 @@ for _ in range(200):
     wp_.append(h1 - l1); wu_.append(h2 - l2)
 print(f"  over 200 such experiments (B = 2,000): mean width common days {np.mean(wp_):.1f}, independent days {np.mean(wu_):.1f}")
 
-section("Part 3 (bootstrap): coverage of the 95 % percentile interval, 1000 samples of 20 pool days (B = 2,000)")
+section("Part 3, Going further (coverage): the 95 % percentile interval on 1000 samples of 20 pool days (B = 2,000)")
 for level in LV:
     P = POOL[level]
     for label, v in ((f"SST mean", P["SST"]), ("SST - EDD paired", P["SST"] - P["EDD"])):
@@ -334,6 +339,15 @@ print(f"  test seeds 0-19 (scripts/evaluate.py); validation seeds {_dqn.VALIDATI
       f"training seeds {_dqn.TRAIN_SEED_BASE} + 1000 x training seed + episode, episodes 1-{cfg.episodes}, "
       f"so {_dqn.TRAIN_SEED_BASE + 1} to {_dqn.TRAIN_SEED_BASE + 1000 * 4 + cfg.episodes}; validation every {cfg.validate_every} episodes")
 training = json.loads((REPO / "models" / "training.json").read_text())
+# the days each agent trains on, exactly as dqn.train draws them: (scenario seed, breakdown level)
+_lv = list(LEVELS.values())
+days = {k: {(_dqn.TRAIN_SEED_BASE + 1_000 * k + e, _lv[e % len(_lv)]) for e in range(1, cfg.episodes + 1)}
+        for k in (run["seed"] for run in training["runs"])}
+ks = sorted(days)
+print(f"  {len(ks)} agents x {cfg.episodes} episodes = {sum(len(v) for v in days.values()):,} episodes; "
+      f"distinct (seed, level) days {len(set().union(*days.values())):,}; days shared by consecutive agents: "
+      + ", ".join(f"{a}&{b} {len(days[a] & days[b])}" for a, b in zip(ks, ks[1:]))
+      + f"; by agents two apart: {max(len(days[a] & days[a + 2]) for a in ks[:-2])}")
 print("  selected seed (best validation):", training["selected_seed"])
 for run in training["runs"]:
     k = run["seed"]
@@ -393,7 +407,7 @@ Xs = sig * (math.sqrt(rho) * Z0 + math.sqrt(1 - rho) * E)
 print(f"    simulated (R = {R}): mean of the winner's 20-day mean = {Xs.mean(axis=1).min(axis=1).mean():.2f} "
       f"(the true mean is 0 for every method)")
 
-section("Part 5 (winners): the real shop, the four rules, 2000 random 20-day test sets from the pool")
+section("Part 5, Going further (the four rules on the pool): 2000 random 20-day test sets")
 for level in LV:
     P = POOL[level]
     M = np.array([P[m] for m in RULES4])           # 4 x 500
@@ -420,7 +434,7 @@ d = A - Bv
 print(f"  CP-SAT {A.mean():.1f} {ci(A)}, SST {Bv.mean():.1f} {ci(Bv)}; difference {d.mean():+.1f} {ci(d)}")
 print(f"  relative reduction 1 - {A.mean():.1f}/{Bv.mean():.1f} = {100 * (1 - A.mean() / Bv.mean()):.0f} %; "
       f"standardised effect d_z = mean/sd of the difference = {d.mean() / d.std(ddof=1):.2f}")
-print(f"  days better {(d < 0).sum()} of 20; smallest gain {-d.max():.1f} min, largest {-d.min():.1f} min; median difference {np.median(d):+.1f}")
+print(f"  days better {(d < 0).sum()} of 20; smallest gain {-d.max():.1f} min, largest {-d.min():.1f} min; median difference {np.median(d):+.1f} (median gain {-np.median(d):.1f})")
 print(f"  probability that 20 of 20 days favour one side if each day were a coin toss: 2 x 0.5^20 = {2 * 0.5 ** 20:.1e}")
 dd = MT[(BD, "DQN")] - MT[(BD, "SST")]
 print(f"  DQN - SST: {dd.mean():+.1f} {ci(dd)}, d_z = {dd.mean() / dd.std(ddof=1):.2f}, better on {(dd < 0).sum()} of 20")
@@ -508,7 +522,30 @@ print(f"  squared deviations {[float(v) for v in (h4 - h4.mean()) ** 2]}")
 print(f"  plug-in variance {((h4 - h4.mean()) ** 2).mean():g}, exact bootstrap variance of the mean {m4.var():g}")
 print("  repository bootstrap_ci on the four values:", ci(h4))
 
-section("Exercise 6: the min-flow invariant on seed 3, EDD, a valid run and a shifted job")
+section("Exercise 3: two candidates, e_2 and the chance that the worse rule wins (EDD vs SST, pool, breakdowns)")
+print(f"  e_2 = {EK[2]:.3f}, 1/sqrt(pi) = {1 / math.sqrt(math.pi):.3f}")
+P = POOL[BD]
+d3 = P["EDD"] - P["SST"]                       # worse minus better, mean delta > 0
+dl3, sd3 = d3.mean(), d3.std(ddof=1)
+sE3, sS3 = P["EDD"].std(ddof=1), P["SST"].std(ddof=1)
+su3 = math.sqrt(sE3 ** 2 + sS3 ** 2)
+zp, zu = dl3 * math.sqrt(20) / sd3, dl3 * math.sqrt(20) / su3
+print(f"  delta = EDD - SST = {dl3:.2f}; s_Delta = {sd3:.2f}; spreads EDD {sE3:.2f}, SST {sS3:.2f}; "
+      f"sqrt of the sum of squares {su3:.2f}")
+print(f"  n = 20 common days: z = {zp:.2f}, P(EDD wins) = Phi(-z) = {Phi(-zp):.3f}; "
+      f"independent days: z = {zu:.2f}, P = {Phi(-zu):.3f}")
+rng = np.random.default_rng(5)
+wp3 = wu3 = 0
+R3 = 10_000
+for _ in range(R3):
+    idx = rng.permutation(500)
+    a3, b3 = idx[:20], idx[20:40]
+    wp3 += P["EDD"][a3].mean() < P["SST"][a3].mean()
+    wu3 += P["EDD"][b3].mean() < P["SST"][a3].mean()
+print(f"  on {R3:,} random 20-day sets of the pool, EDD wins {100 * wp3 / R3:.1f} % (common days), "
+      f"{100 * wu3 / R3:.1f} % (EDD on 20 other days)")
+
+section("Exercise 5: the min-flow invariant on seed 3, EDD, a valid run and a shifted job")
 from jobshop.shop import simulate  # noqa: E402
 
 ws6 = make_workshop()

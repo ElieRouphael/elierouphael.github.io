@@ -8,7 +8,8 @@ thing in all the others. Machines, jobs, families and operations are numbered **
 ## Time and units {#units}
 
 All times are **integer minutes**, measured from the start of the simulated day, $t = 0$. A simulated day has
-60 jobs and lasts about 1,350 minutes (the last job arrives near minute 1,250).
+60 jobs and lasts about 1,350 minutes without breakdowns: the last job arrives at minute 1,208 on average over the
+20 test days (between 895 and 1,491), and the shop then clears what remains.
 
 ## Jobs, operations, machines {#objects}
 
@@ -51,7 +52,7 @@ Introduced in chapter C1 (the model) and chapter C3 (the snapshot it is solved o
 | $H$ | the planning horizon | `horizon` |
 | $\phi_m$ | when machine $m$ is expected to be free (a broken machine: the *mean* repair time) | `machine_free` |
 | $g_m$ | the family machine $m$ is set up for (none if it has run nothing) | `machine_family` |
-| $R_{jm}$ | ready time: the earliest minute job $j$ can be at machine $m$ for its next operation (chapter C3 writes it $\alpha_j(m)$, the ready map) | `job.ready` |
+| $R_{jm}$ | ready time: the earliest minute job $j$ can be at machine $m$ for its next operation (the ready map) | `job.ready` |
 | $x_{jkm}$ | 1 if operation $(j,k)$ runs on machine $m$, else 0 (presence literal of an optional interval) | per-machine literal |
 | $\alpha_{jk}$ | when job $j$ reaches the machine of operation $(j,k)$; $S_{jk} \ge \alpha_{jk}$ | `a` |
 | $z^m_{ab}$ | 1 if, on machine $m$, operation $b$ directly follows $a$ (an arc of the circuit) | arc literal |
@@ -67,7 +68,7 @@ Introduced in chapter C1 (the model) and chapter C3 (the snapshot it is solved o
 | MTBF | mean time between a repair and the next failure, per machine ("frequent breakdowns") | 120 min |
 | MTTR | mean repair time; a repair lasts uniform $[0.5, 1.5] \times$ MTTR | 20 min |
 | $A = \frac{\text{MTBF}}{\text{MTBF} + \text{MTTR}}$ | availability of a machine | $120/140 = 0.857$, about 14 % downtime |
-| seed $i = 0, \dots, 19$ | the 20 test days; seeds 5000–5009 validate; the agent trains on seeds $100000 + 1000 \times$ training seed $+$ episode, 100001 to 105500 | |
+| seed $i = 0, \dots, 19$ | the 20 test days; seeds 5000–5009 validate; the agent of training seed $k = 0, \dots, 4$ trains on days $100000 + 1000k + e$, episodes $e = 1, \dots, 1500$: seeds 100001 to 105500, 5,500 distinct days, since consecutive agents share 500 of them | |
 
 ## Decision methods and their names {#methods}
 
@@ -90,8 +91,8 @@ earliest expected finish.
 
 | Symbol | Meaning |
 | --- | --- |
-| $s_t$, $a_t$, $r_{t+1}$ | state, action and reward at decision $t$ |
-| $a_t \in \{\text{FIFO}, \text{SPT}, \text{EDD}, \text{SST}\}$ | the action: which rule picks the next job |
+| $s_k$, $a_k$, $r_{k+1}$ | state, action and reward at decision $k$, taken at clock time $t_k$ |
+| $a_k \in \{\text{FIFO}, \text{SPT}, \text{EDD}, \text{SST}\}$ | the action: which rule picks the next job |
 | $\gamma = 0.97$ | discount factor |
 | $Q(s, a)$, $Q_\theta$ | action value; the network with weights $\theta$ that approximates it |
 
@@ -101,6 +102,46 @@ earliest expected finish.
 | --- | --- |
 | $\Delta_i$ | paired difference on test day $i$, e.g. $\bar T^{\text{CP-SAT}}_i - \bar T^{\text{SST}}_i$ |
 | $B = 10{,}000$ | bootstrap resamples; intervals are 95 % percentile intervals |
+
+## Local symbols {#local}
+
+Symbols that one or a few chapters introduce for their own argument. Each has one meaning across the course; the
+last column says where it is used.
+
+| Symbol | Meaning | Chapters |
+| --- | --- | --- |
+| $\sigma$ | an order (sequence) of jobs on one machine, wherever a sequence appears ($\sigma_m$ on machine $m$) | [[a01]], [[a02]], [[a03]], [[c02]] |
+| $\theta$ | tightness of the due dates in the random single-machine instances (not $\tau$, the travel time) | [[a02]] |
+| $\mathcal S$ | a selection of the disjunctive graph: one orientation for each pair of operations on a machine | [[a03]] |
+| $\operatorname{len}(u, v)$ | length of a longest path from $u$ to $v$ in the disjunctive graph (not $\ell$, the transport lag) | [[a03]] |
+| $\mu(j, k)$ | the routing: the machine assigned to operation $(j,k)$ | [[a01]], [[a03]], [[c01]], [[c03]] |
+| $\alpha_{jk}$ | arrival of job $j$ at the machine of operation $(j,k)$ (not $A$, the availability) | [[a01]], [[a03]], [[c01]], [[c03]] |
+| $R_{jm}$ | ready time of job $j$ at machine $m$ in a snapshot | [[a01]], [[b02]], [[c01]], [[c03]] |
+| $\ell(m', m)$ | transport lag from machine $m'$ to machine $m$; $\tau(a, b)$ stays the travel time between stations | [[a01]], [[c01]], [[c03]] |
+| $L = \lambda \bar F$ | Little's law, $\bar F$ the mean flow time (usually written $L = \lambda W$) | [[b01]] |
+| $I_j(t)$ | priority index of a rule for job $j$ at time $t$ | [[b02]] |
+| $\mathrm{slack}_j(t)$ | slack of job $j$ at time $t$, $d_j - t - P_j(t)$, with $P_j(t)$ its remaining fastest-route work; on one machine it is the ATCS slack $d_j - p_j - t$ | [[b02]], [[d01]] |
+| $\hat C_{jm}$ | expected completion of job $j$ if it is routed to machine $m$ | [[b02]] |
+| $U_m$ | work already committed to machine $m$ | [[b02]] |
+| $\Sigma_t$, $\Pi_t$ | the snapshot of the shop at time $t$; the plan computed from it | [[c03]] |
+| $\pi$ | a policy: a map from the state to an action | [[d01]] |
+| $\Theta(t)$ | committed tardiness at time $t$ (not $E$, an end time) | [[d01]] |
+| $W_f$ | fastest-route work of family $f$, the only meaning of $W$ in the course | [[a03]], [[b01]], [[d01]], [[d02]] |
+
+Standard symbols keep their textbook meaning inside the derivation that uses them: the M/M/1 queue of [[b02]]
+writes $\mu$ for the service rate, $N(t)$ for the number of jobs inside and $\pi_n$ for its stationary
+distribution; the statistics of [[d01]] and [[d02]] write $\mu$, $\sigma$ and $\rho$ for a mean, a standard
+deviation and a correlation; [[d01]] writes $\theta$ for the network's weights, $\beta$ for the soft-update rate
+and $\delta = r + \gamma \max_{a'} Q(s', a') - Q(s, a)$ for the temporal-difference (TD) error, not the cart
+allowance $\delta = 2$; Graham's notation in [[a01]] and [[a02]] writes $\alpha \mid \beta \mid \gamma$ for its
+three fields.
+
+A few other letters are reused on purpose, each inside one argument: [[a01]] writes $U_j$ for the late indicator
+($1$ if $C_j > d_j$, else $0$) and [[b02]] writes $U_m$ for the work committed to machine $m$; in [[b01]], $N(t)$
+is the number of jobs in the shop in Little's law ($N_s(t)$ the number of busy machines), $\omega_j$ the work
+actually done on job $j$, changeovers included (at least $W_{f(j)}$), and $X^{(f)}$ the wait for the first
+family-$f$ order of a split Poisson stream; [[c03]] writes $\eta$ for a safety margin, the minutes by which a plan
+finishes an order before its due date.
 
 ## The worked example: one paint machine {#paint}
 
@@ -122,8 +163,8 @@ minutes. `JS.PAINT` in `interactive/jobshop-lib.js` holds it; `scripts/jobshop_t
 The repository's `make_workshop()` with its default seed. Every chapter that needs real data uses these numbers
 (`JS.WORKSHOP` in the shared toolkit holds them).
 
-Routings: for each family, the four operations and, for each, the eligible machines with their processing times
-in minutes.
+Routes (the code's `routings`): for each family, the four operations and, for each, the eligible machines with
+their processing times in minutes. Choosing one of them for each operation is the routing $\mu$.
 
 | Family | Operation 0 | Operation 1 | Operation 2 | Operation 3 | Fastest route |
 | --- | --- | --- | --- | --- | --- |

@@ -166,6 +166,13 @@ class Mini:
         return self
 
 
+# The hero's random day (interactive/b01.js: N_RANDOM, P_CHOICES, MEAN_P, MTBF, MTTR), quoted in the hero hint
+HERO_N, HERO_P = 30, (10, 15, 20, 25)
+section("Hero (hint): the random day of the demo")
+print(f"{HERO_N} orders, blue or red with probability 1/2, processing time one of {HERO_P} min "
+      f"({min(HERO_P)} to {max(HERO_P)} min), mean {np.mean(HERO_P)} min; breakdowns MTBF {MTBF:.0f}, MTTR {MTTR:.0f} min")
+
+
 # The worked example: the paint orders of chapters A1-A2 arriving over time, one breakdown.
 PAINT = [("A", "blue", 20, 0), ("B", "red", 10, 5), ("C", "blue", 15, 12), ("D", "red", 25, 40)]
 section("Part 2 (events): the hand-traced event list, FIFO, machine down from 25 to 33")
@@ -177,12 +184,12 @@ print("events processed:", ex.n_events, "at", len(ev_minutes), "distinct minutes
 print("a 1-minute time-stepped loop visits the instants 0 to", ex.t, "=", ex.t + 1, "instants,",
       ex.t + 1 - len(ev_minutes), "of them with no event")
 flows = {j[0]: ex.done[j[0]] - j[3] for j in PAINT}
-print("completions", ex.done, " flow times", flows, " sum", sum(flows.values()), " mean W =", np.mean(list(flows.values())))
+print("completions", ex.done, " flow times", flows, " sum", sum(flows.values()), " mean F_bar =", np.mean(list(flows.values())))
 # N(t) by hand: integral = sum of flow times; Little's law on [0, 108]
 grid = np.arange(ex.t)
 N = np.array([sum(1 for j in PAINT if j[3] <= s < ex.done[j[0]]) for s in grid])
 print("integral of N(t) dt =", int(N.sum()), " L = integral / T =", round(N.sum() / ex.t, 3),
-      " lambda_hat = 4 /", ex.t, " lambda_hat * W =", round(4 / ex.t * np.mean(list(flows.values())), 3))
+      " lambda_hat = 4 /", ex.t, " lambda_hat * F_bar =", round(4 / ex.t * np.mean(list(flows.values())), 3))
 pieces = [int(s) for s in grid if s == 0 or N[s] != N[s - 1]] + [ex.t]
 print("N(t) pieces:", [(a, b, int(N[a])) for a, b in zip(pieces, pieces[1:])],
       " areas:", " + ".join(str((b - a) * int(N[a])) for a, b in zip(pieces, pieces[1:])))
@@ -281,7 +288,7 @@ for s in SEEDS:
     hours = int(a[-1] // 60)
     counts += [int(np.sum((a >= 60 * h) & (a < 60 * (h + 1)))) for h in range(hours)]
 counts = np.array(counts)
-print(f"arrivals per hour: theory Poisson mean = variance = {mu_h:.2f}; measured over {counts.size} full hours: "
+print(f"arrivals per hour, N_arr(t + 60) - N_arr(t): theory Poisson mean = variance = {mu_h:.2f}; measured over {counts.size} full hours: "
       f"mean {counts.mean():.2f}, variance {counts.var(ddof=1):.2f}")
 print(f"P(no arrival in an hour) theory {np.exp(-mu_h):.3f} (one hour in {1 / np.exp(-mu_h):.1f}), measured {np.mean(counts == 0):.3f} = {100 * np.mean(counts == 0):.1f} % (one hour in {1 / np.mean(counts == 0):.1f})")
 p5 = 1 - sum(np.exp(-mu_h) * mu_h ** k / factorial(k) for k in range(5))
@@ -294,7 +301,7 @@ for s in SEEDS:
     for f in range(4):
         a = np.array([j.arrival for j in sc.jobs if j.family == f])
         fam_gaps[f] += list(np.diff(a))
-print(f"each family is a Poisson stream of rate lambda/4: mean gap {4 * m_ia:.2f} min")
+print(f"splitting: each family is a Poisson stream of rate lambda/4; the wait X^(f) for a family-f order has mean {4 * m_ia:.2f} min")
 for f in range(4):
     g = np.array(fam_gaps[f])
     print(f"  family {f}: {g.size} gaps, mean {g.mean():.1f}, standard deviation {g.std(ddof=1):.1f}")
@@ -323,18 +330,22 @@ section("Part 4 (load): rho by hand and what it ignores")
 W = [WS.min_remaining_work(f, 0) for f in range(WS.n_families)]
 EW = float(np.mean(W))
 print("fastest-route work per family:", W, " mean", EW)
-print(f"1/lambda = E[work]/(rho m) = {EW}/(0.60 x 5) = {EW / 3:.2f} min;  rho = lambda E[work]/m = {EW / m_ia / 5:.2f}")
+print(f"1/lambda = E[W_f(j)]/(rho m) = {EW}/(0.60 x 5) = {EW / 3:.2f} min;  rho = lambda E[W_f(j)]/m = {EW / m_ia / 5:.2f}")
 mean_alt = float(np.mean([sum(np.mean(list(alt.values())) for alt in WS.routings[f]) for f in range(4)]))
-print(f"if every operation took the average of its eligible machines: E[work] = {mean_alt:.2f}, rho = {mean_alt / m_ia / 5:.2f}")
+print(f"if every operation took the average of its eligible machines: work per job = {mean_alt:.2f}, rho = {mean_alt / m_ia / 5:.2f}")
 off = [WS.setup[m][f][g] for m in range(5) for f in range(4) for g in range(4) if f != g]
 print(f"mean changeover between different families: {np.mean(off):.2f} min (range {min(off)}-{max(off)})")
 print(f"random order: P(family change) = 3/4, so about {0.75 * np.mean(off):.2f} min per operation, "
       f"{4 * 0.75 * np.mean(off):.1f} min per job -> rho = {(EW + 4 * 0.75 * np.mean(off)) / m_ia / 5:.2f}")
 print(f"with availability A = {MTBF / (MTBF + MTTR):.3f} the fastest-route load per available machine is {0.60 / (MTBF / (MTBF + MTTR)):.2f}")
+moves = sorted({WS.travel[a][b] for a in range(len(WS.travel)) for b in range(len(WS.travel)) if a != b})
+print(f"transport: a cart move between two different stations takes {' or '.join(map(str, moves))} min (make_workshop().travel)")
 # the hero's random day: processing 17.5 min on average, a 10-min colour change half the time under FIFO, A = 0.857
 fac = (17.5 + 0.5 * 10) / 17.5 / (MTBF / (MTBF + MTTR))
 print(f"hero random day: real load = slider x (17.5 + 0.5 x 10)/17.5 / A = {fac:.2f} x slider; "
       f"overloaded above slider = {1 / fac:.2f}")
+print(f"  (Part 6) busy fraction u = slider x (17.5 + 0.5 x 10)/17.5 = {(17.5 + 5) / 17.5:.2f} x slider; "
+      f"u < A = {MTBF / (MTBF + MTTR):.3f} means slider < {MTBF / (MTBF + MTTR) / ((17.5 + 5) / 17.5):.2f}")
 print("measured in results/runs.csv (mean over 20 days): processing and changeover per job, busy share")
 for level in LEVELS:
     for meth in ("FIFO", "SST", "CP-SAT"):
@@ -382,16 +393,28 @@ print(f"mean day length under breakdowns (rules' makespan): {mk_b:.0f} min")
 
 
 # ------------------------------------------------------------------------------------------------
-section("Part 6 (little): L = lambda W")
-print("W = mean flow time from results/runs.csv, L = W / 20.83 (jobs in the shop on average)")
+section("Part 6 (little): L = lambda F_bar (usually written L = lambda W)")
+print(f"opening illustration: {3} orders an hour x {2} hours each = {3 * 2} orders inside on average")
+print("F_bar = mean flow time from results/runs.csv, nominal L = lambda F_bar = F_bar / 20.83 (Going further block)")
 for level in LEVELS:
     for meth in ("FIFO", "SPT", "EDD", "SST", "DQN", "Greedy replan", "CP-SAT"):
         w = np.mean([float(x["mean_flow_time"]) for x in RUNS if x["level"] == level and x["method"] == meth])
-        print(f"  {level:20s} {meth:14s} W = {w:6.1f} min   L = lambda W = {w / m_ia:5.2f} jobs")
+        print(f"  {level:20s} {meth:14s} F_bar = {w:6.1f} min   L = lambda F_bar = {w / m_ia:5.2f} jobs")
 wf = np.mean([float(x["mean_flow_time"]) for x in RUNS if x["level"] == "no breakdowns" and x["method"] == "FIFO"])
 wc = np.mean([float(x["mean_flow_time"]) for x in RUNS if x["level"] == "no breakdowns" and x["method"] == "CP-SAT"])
-print(f"FIFO minus CP-SAT, no breakdowns: {wf / m_ia - wc / m_ia:.2f} fewer in lambda W with CP-SAT")
-print("job-minutes in the shop per day, n W = integral of N(t) dt (60 jobs a day):")
+print(f"FIFO minus CP-SAT, no breakdowns: {wf / m_ia - wc / m_ia:.2f} fewer in lambda F_bar with CP-SAT")
+section("Part 6: Little's law applied to the machines, busy fraction u = lambda E[omega] / m, omega_j the work actually done")
+proc_ex = sum(j[2] for j in PAINT)
+chg_ex = sum(1 for a, b in zip(["blue"] + [j[1] for j in PAINT], [j[1] for j in PAINT]) if a != b) * Mini.CHANGE
+print(f"worked example: processing {proc_ex} + changeover {chg_ex} = {proc_ex + chg_ex} busy minutes of {ex.t}: "
+      f"u = {(proc_ex + chg_ex) / ex.t:.3f} = (4/{ex.t}) x E[omega] with E[omega] = {(proc_ex + chg_ex) / 4:.0f} -> {4 / ex.t * (proc_ex + chg_ex) / 4:.3f}")
+for level in LEVELS:
+    for meth in ("FIFO", "SST", "CP-SAT"):
+        rr = [x for x in RUNS if x["level"] == level and x["method"] == meth]
+        day_u = np.mean([float(x["utilisation"]) + float(x["setup_time"]) / (5 * float(x["makespan"])) for x in rr])
+        print(f"  {level:20s} {meth:7s} busy fraction over its own day (n/T) E[omega]/m = {day_u:.3f} "
+              f"(with the nominal lambda: see Part 4)")
+print("job-minutes in the shop per day, n F_bar = integral of N(t) dt (60 jobs a day):")
 jm = {}
 for level in LEVELS:
     for meth in ("FIFO", "SPT", "EDD", "SST", "DQN", "Greedy replan", "CP-SAT"):
@@ -401,8 +424,8 @@ for level in LEVELS:
         rr = [x for x in RUNS if x["level"] == level and x["method"] == meth]
         # a day starts empty at 0 and ends empty at the makespan, so L_day = n W / C_max exactly
         Lday = np.mean([60 * float(x["mean_flow_time"]) / float(x["makespan"]) for x in rr])
-        print(f"  {level:20s} {meth:14s} n W = 60 x {w:.1f} = {60 * w:,.0f} job-minutes "
-              f"({100 * (1 - 60 * w / jm[level, 'FIFO']):.0f} % fewer than FIFO); day-average L = n W / C_max = {Lday:.2f}")
+        print(f"  {level:20s} {meth:14s} n F_bar = 60 x {w:.1f} = {60 * w:,.0f} job-minutes "
+              f"({100 * (1 - 60 * w / jm[level, 'FIFO']):.0f} % fewer than FIFO); day-average L = n F_bar / C_max = {Lday:.2f}")
 print(f"FIFO minus CP-SAT, no breakdowns: {jm['no breakdowns', 'FIFO'] - jm['no breakdowns', 'CP-SAT']:,.0f} job-minutes a day")
 print("re-running the four rules on the 20 test days, N(t) measured from the executed log:")
 t0 = time.perf_counter()
@@ -426,8 +449,8 @@ for level, mtbf in LEVELS.items():
             Nt = ((r_[None, :] <= minutes[:, None]) & (minutes[:, None] < c_[None, :])).sum(axis=1)
             Lfull.append(Nt.mean()); lamT.append(len(r_) / Tend); Wd.append((c_ - r_).mean())
             LWfull.append(len(r_) / Tend * (c_ - r_).mean())
-        print(f"  {level:20s} {rule}: day average L = {np.mean(Lfull):.3f}, (n/T) W = {np.mean(LWfull):.3f} "
-              f"(n/T = 1/{1 / np.mean(lamT):.1f} min);  nominal lambda W = {np.mean(Wd) / m_ia:.2f}")
+        print(f"  {level:20s} {rule}: day average L = {np.mean(Lfull):.3f}, (n/T) F_bar = {np.mean(LWfull):.3f} "
+              f"(n/T = 1/{1 / np.mean(lamT):.1f} min);  nominal lambda F_bar = {np.mean(Wd) / m_ia:.2f}")
 print(f"rerun agrees with runs.csv mean_flow_time to {diff:.1e}; 160 runs in {time.perf_counter() - t0:.1f} s")
 
 
@@ -472,7 +495,13 @@ proc = env.process(machine(env))
 env.process(breakdown(env, proc))
 env.run()
 
-section("Exercise: a LIFO controller through the controller interface, 20 test days, no breakdowns")
+section("Part 8 (code): the defaults of make_scenario")
+import inspect  # noqa: E402
+_d = inspect.signature(make_scenario).parameters
+print(f"n_jobs {_d['n_jobs'].default}, load {_d['load'].default}, mttr {_d['mttr'].default}; due date r_j + k W_f "
+      f"with k uniform in [{_d['tightness'].default[0]:.0f}, {_d['tightness'].default[1]:.0f}]")
+
+section("Exercise 4: a LIFO controller through the controller interface, 20 test days, no breakdowns")
 from jobshop.checker import check_schedule  # noqa: E402
 from jobshop.rules import route_earliest_finish  # noqa: E402
 
@@ -508,3 +537,97 @@ print(f"Ex. memoryless: P(X > 30 | X > 10) = P(X > 20) = exp(-20/20.83) = {np.ex
 a2 = 60 / 80
 print(f"Ex. MTBF 60, MTTR 20: A = {60 / 80:.2f}; fastest-route load per available machine = {0.60 / a2:.2f}")
 print(f"Ex. halving 1/lambda to {m_ia / 2:.2f} min: rho = {EW / (m_ia / 2) / 5:.2f} > 1, the queue grows without bound")
+
+
+section("Exercise 5 (exercises): a one-machine SimPy simulator written from scratch, the code printed on the page")
+EX5 = r'''
+import itertools, random
+import simpy
+
+class Machine:
+    def __init__(self, env):
+        self.env, self.colour, self.queue = env, "blue", []
+        self.up, self.working, self.busy = True, False, 0.0
+        self.flows, self.work, self.wake = [], [], env.event()
+        self.inside, self.area, self.last, self.log = 0, 0.0, 0.0, []
+        self.proc = env.process(self.run())
+
+    def count(self, step):                      # +1 arrival, -1 departure
+        now = self.env.now                      # area under N(t), measured
+        self.area += self.inside * (now - self.last)
+        self.inside, self.last = self.inside + step, now
+        self.log.append((now, self.inside))
+
+    def poke(self):                             # an arrival or a repair
+        if not self.wake.triggered:
+            self.wake.succeed()
+
+    def wait_until(self, ok):
+        while not ok():
+            self.wake = self.env.event()
+            yield self.wake
+
+    def run(self):
+        while True:
+            yield from self.wait_until(lambda: self.queue and self.up)
+            colour, p, arrival = self.queue.pop(0)                # FIFO
+            left = (10 if colour != self.colour else 0) + p       # colour change
+            self.colour = colour
+            self.work.append(left)
+            while left > 0:
+                yield from self.wait_until(lambda: self.up)
+                start, self.working = self.env.now, True
+                try:
+                    yield self.env.timeout(left)
+                    left = 0
+                except simpy.Interrupt:
+                    left -= self.env.now - start                  # keep the work done
+                self.working = False
+                self.busy += self.env.now - start
+            self.flows.append(self.env.now - arrival)
+            self.count(-1)
+
+def arrivals(env, mc, orders):                  # orders: (colour, p, gap)
+    for colour, p, gap in orders:
+        yield env.timeout(gap)
+        mc.queue.append((colour, p, env.now))
+        mc.count(+1)
+        mc.poke()
+
+def breakdowns(env, mc, cycles):                # cycles: (up time, repair time)
+    for up, repair in cycles:
+        yield env.timeout(up)                   # calendar time, busy or idle
+        mc.up = False
+        if mc.working:
+            mc.proc.interrupt()
+        yield env.timeout(repair)
+        mc.up = True
+        mc.poke()
+
+def run(orders, cycles, n):
+    env = simpy.Environment()
+    mc = Machine(env)
+    env.process(arrivals(env, mc, orders))
+    env.process(breakdowns(env, mc, cycles))
+    while len(mc.flows) < n:                    # until the last job has left
+        env.step()
+    return env.now, mc
+
+# (a) Part 2: gaps 0, 5, 7, 28; down from 25 to 33
+T, mc = run([("blue", 20, 0), ("red", 10, 5), ("blue", 15, 7), ("red", 25, 28)], [(25, 8)], 4)
+F = sum(mc.flows) / 4
+print(mc.log)                                   # (time, N) at every change
+print(T, mc.flows, f"L {mc.area / T:.3f} (n/T)F {4 / T * F:.3f} busy {mc.busy / T:.3f}")
+
+# (b) 50,000 orders, mean gap 40; MTBF 120, repairs uniform on [10, 30]
+n, lam, arr, brk = 50_000, 1 / 40, random.Random(1), random.Random(2)
+orders = ((arr.choice(("blue", "red")), arr.choice((10, 15, 20, 25)), arr.expovariate(lam)) for _ in range(n))
+cycles = ((brk.expovariate(1 / 120), brk.uniform(10, 30)) for _ in itertools.count())
+T, mc = run(orders, cycles, n)
+F, omega = sum(mc.flows) / n, sum(mc.work) / n
+print(f"L {mc.area / T:.3f} (n/T)F {n / T * F:.3f} lambda F {lam * F:.3f}")
+print(f"busy {mc.busy / T:.4f} (n/T)E[omega] {n / T * omega:.4f} lambda E[omega] {lam * omega:.4f} E[omega] {omega:.2f}")
+'''
+exec(compile(EX5, "exercise5", "exec"), {"__name__": "exercise5"})
+print("(a) the hand trace; (b) the identities hold exactly on a window that starts and ends empty, the nominal values differ by chance")
+print(f"  (b) nominal E[omega] = 17.5 + 10/2 = {17.5 + 10 / 2:.2f} min (half the jobs change colour under random colours)")

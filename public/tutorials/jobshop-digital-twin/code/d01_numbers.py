@@ -8,13 +8,15 @@ Needs numpy, simpy and torch (the repository's requirements). About one minute.
 Sections, in the order of the page:
   Hero / Part 1   the toy: tabular Q-learning picks a rule on random six-order paint-machine instances
                   (a line-by-line port of interactive/d01.js, same seeded generator, same numbers)
+  Exercise 4      the compact solution "Train the hero's agent yourself" (TOY_SOLUTION below), run here
   Part 2          the agent's state, actions and decisions in the workshop (jobshop/dqn.py)
-  Part 3          the telescoping reward, checked on short simulated runs; what discounting changes
+  Part 3          the telescoping reward (committed tardiness Theta), checked on short simulated runs
   Part 4          Bellman's equation on a two-decision example
   Part 5          overestimation: E[max] >= max E, the coin example and the Gaussian value
   Part 6          the hyper-parameters of DQNConfig and the size of the network
   Part 7          training curves and checkpoint selection, from models/training.json
   Part 8          the test results, from results/runs.csv (never re-run here)
+  Exercise 6      a 100-day training run of seed 0 (about 15 s), checked against models/training.json
   Data            the arrays embedded in interactive/d01.js for the training-curve widget
 """
 from __future__ import annotations
@@ -106,7 +108,7 @@ class Toy:
 
     @staticmethod
     def committed(t: int, done_tardiness: int, wait) -> int:
-        """E(t): finished orders in full, a waiting order as if it started now with no changeover."""
+        """Theta(t), the committed tardiness: finished orders in full, a waiting order as if it started now."""
         return done_tardiness + sum(max(0, t + p - d) for _, _, p, d in wait)
 
     def state(self, t: int, f: int, wait) -> int:
@@ -263,16 +265,121 @@ for s in range(18):
 seeds = [toy.train(sd) for sd in range(1, 6)]
 print("five training seeds 1-5, test of the best checkpoint:", [round(x["test"], 1) for x in seeds])
 print("decisions per episode in the toy:", N_ORDERS - 1, "(the last order needs no decision)")
+print("toy instances: validation from mulberry32(999), test from mulberry32(777), training instances and "
+      "exploration from mulberry32(training seed)")
+print(f"toy epsilon: max(0.05, 1 - episode / (0.6 x episodes)): linear from 1 towards 0 at 60 % of the episodes, "
+      f"floored at 0.05 from {100 * 0.6 * (1 - 0.05):.0f} % of the episodes on")
 
-section("Hero and exercise 6 (Room to learn): the toy at changeovers 0, 5, 10 and 15 min, same seed, test set")
+section("Hero and exercise 4, second part: the toy at changeovers 0, 5, 10 and 15 min, same seed, test set")
 for S in (0, 5, 10, 15):
     tS = toy if S == 5 else Toy(S, 0.7)
     b, best_t, single, succ, optS = tS.room(tS.test)
     agent = res["test"] if S == 5 else tS.train(1)["test"]
+    # the page's table shows means to one decimal, so gain and room are differences of the rounded means
+    best_t, agent, single, succ, optS = (round(float(x), 1) for x in (best_t, agent, single, succ, optS))
     print(f"changeover {S:2d}: test rules {[round(tS.mean_rule(tS.test, a), 1) for a in range(4)]}; best on validation "
           f"{RULE_NAMES[b]} {best_t:.1f}; agent {agent:.1f} (gain {best_t - agent:.1f}); hindsight single rule "
           f"{single:.1f}; hindsight succession {succ:.1f}; optimum {optS:.1f}; room (best rule - succession) "
           f"{best_t - succ:.1f}, its lower bound (best rule - single rule) {best_t - single:.1f}")
+
+# =====================================================================================================
+# Exercise 4, "Train the hero's agent yourself": the complete solution. Copy the text between the
+# triple quotes into a file and run it; the page shows its two central functions, run and train.
+# =====================================================================================================
+TOY_SOLUTION = r"""
+import math
+
+S, SPREAD, M32 = 5, 0.7, 0xFFFFFFFF          # changeover (min), due-date spread
+
+def rng(seed):                                # mulberry32, the hero's generator
+    s = seed & M32
+    def r():
+        nonlocal s
+        s = (s + 0x6D2B79F5) & M32
+        t = ((s ^ (s >> 15)) * (1 | s)) & M32
+        t = ((t + ((t ^ (t >> 7)) * (61 | t) & M32)) & M32) ^ t
+        return ((t ^ (t >> 14)) & M32) / 2**32
+    return r
+
+def instance(r):                              # six orders (index, colour, painting time, due date)
+    raw = [(int(r() < 0.5), 5 + math.floor(r() * 21)) for _ in range(6)]
+    tot = sum(p for _, p in raw)
+    return [(j, c, p, p + math.floor(r() * SPREAD * tot)) for j, (c, p) in enumerate(raw)]
+
+setup = lambda f, c: 0 if f == c else S
+KEY = (lambda o, f: o[0], lambda o, f: (o[2], o[0]), lambda o, f: (o[3], o[0]),
+       lambda o, f: (setup(f, o[1]), o[3], o[0]))      # FIFO, SPT, EDD, SST (ties by due date)
+pick = lambda a, wait, f: min(wait, key=lambda o: KEY[a](o, f))
+
+def state(t, f, wait):                        # one of 18 situations
+    n, e = len(wait), pick(2, wait, f)        # e: the most urgent order
+    size = 0 if n == 2 else 1 if n <= 4 else 2
+    colour = 1 if e[1] == f else 2 if any(o[1] == f for o in wait) else 0
+    tight = int(e[3] - t - setup(f, e[1]) - e[2] < S)
+    return (3 * size + colour) * 2 + tight
+
+def run(inst, policy, learn=None):     # returns the total tardiness
+    t, f, wait, done, prev = 0, 0, list(inst), 0, None
+    while wait:
+        o = wait[0]
+        if len(wait) >= 2:
+            s = state(t, f, wait)
+            theta = done + sum(max(0, t + q[2] - q[3]) for q in wait)   # committed tardiness
+            if prev and learn:
+                learn(prev[0], prev[1], -(theta - prev[2]), s)
+            a = policy(s)
+            prev, o = (s, a, theta), pick(a, wait, f)
+        wait.remove(o)
+        t, f = t + setup(f, o[1]) + o[2], o[1]
+        done += max(0, t - o[3])
+    if learn:
+        learn(prev[0], prev[1], -(done - prev[2]), None)
+    return done
+
+greedy = lambda Q: lambda s: max(range(4), key=lambda a: Q[s][a])   # ties: the first rule
+score = lambda policy, insts: sum(run(i, policy) for i in insts) / len(insts)
+
+def train(seed=1, episodes=5000, alpha=0.1, gamma=1.0):
+    r, Q, best = rng(seed), [[0.0] * 4 for _ in range(18)], (math.inf, None, 0)
+    def behave(s):
+        eps = max(0.05, 1 - ep / (0.6 * episodes))
+        return math.floor(r() * 4) if r() < eps else greedy(Q)(s)
+    def learn(s, a, rew, s2):
+        target = rew + (0.0 if s2 is None else gamma * max(Q[s2]))
+        Q[s][a] += alpha * (target - Q[s][a])
+    for ep in range(episodes + 1):
+        if ep % 100 == 0:              # checkpoint
+            v = score(greedy(Q), VAL)
+            if v < best[0]:
+                best = (v, [q[:] for q in Q], ep)
+        if ep < episodes:
+            run(instance(r), behave, learn)
+    return best
+
+rv, rt = rng(999), rng(777)
+VAL, TEST = [instance(rv) for _ in range(200)], [instance(rt) for _ in range(200)]
+rules = [score(lambda s, a=a: a, VAL) for a in range(4)]
+b = rules.index(min(rules))
+v, Qb, ep = train()
+print(f"best rule on validation: {'FIFO SPT EDD SST'.split()[b]}, test {score(lambda s: b, TEST):.1f}")
+print(f"agent: checkpoint at episode {ep}, validation {v:.1f}, test {score(greedy(Qb), TEST):.1f}")
+"""
+
+section("Exercise 4: the compact solution TOY_SOLUTION, run as printed on the page")
+ns: dict = {}
+exec(compile(TOY_SOLUTION, "exercise4_solution", "exec"), ns)
+print("same numbers as the Toy class above:",
+      abs(ns["score"](lambda s_, b_=ns["b"]: b_, ns["TEST"]) - test_rules[best_rule]) < 1e-9,
+      ns["ep"] == res["best_ep"], abs(ns["v"] - res["best_val"]) < 1e-9)
+for S_ in (0, 10, 15):                        # the second part of the exercise: set S and rerun
+    ns["S"] = S_
+    rules_ = [ns["score"](lambda s_, a_=a_: a_, ns["VAL"]) for a_ in range(4)]
+    b_ = rules_.index(min(rules_))
+    v_, Q_, ep_ = ns["train"]()
+    agent_ = ns["score"](ns["greedy"](Q_), ns["TEST"])
+    ref_ = Toy(S_, 0.7).train(1)
+    print(f"   changeover {S_:2d}: best rule {RULE_NAMES[b_]} {ns['score'](lambda s_, b_=b_: b_, ns['TEST']):.1f}, "
+          f"agent {agent_:.1f} (Toy class: {ref_['test']:.1f})")
 
 section("Part 3: the telescoping identity on one toy run (test instance 0, the trained agent)")
 trace: list = []
@@ -287,7 +394,7 @@ def state_label(s: int) -> str:
 
 
 for k, (s, a, E, rew) in enumerate(trace):
-    print(f"   decision {k}: state {s:2d} ({state_label(s)}), rule {RULE_NAMES[a]}, committed tardiness E = {E}, "
+    print(f"   decision {k}: state {s:2d} ({state_label(s)}), rule {RULE_NAMES[a]}, committed tardiness Theta = {E}, "
           f"reward {rew}")
 print(f"sum of rewards = {sum(x[3] for x in trace)}; total tardiness = {T_inst}")
 for g in (0.9, 0.97):
@@ -295,14 +402,14 @@ for g in (0.9, 0.97):
 
 
 def hand_trace(tt: "Toy", inst, rules, names="ABCDEF") -> None:
-    """E(t) term by term at each decision (Part 3 and exercise 1). rules: one rule per decision."""
+    """Theta(t) term by term at each decision (Part 3 and exercise 1). rules: one rule per decision."""
     t, f, wait, done, Es, k = 0, 0, list(inst), [], [], 0
     while len(wait) >= 2:
         terms = [f"{names[o[0]]}: {t}+{o[2]}-{o[3]} = {t + o[2] - o[3]}" for o in wait]
         E = sum(T for _, T in done) + sum(max(0, t + o[2] - o[3]) for o in wait)
         Es.append(E)
         print(f"   decision {k} at t = {t}: finished (order, T) {[(names[j], T) for j, T in done]}; waiting, "
-              f"t + p - d: {terms}; E = {E}; rule {RULE_NAMES[rules[k]]}")
+              f"t + p - d: {terms}; Theta = {E}; rule {RULE_NAMES[rules[k]]}")
         o = tt.pick(rules[k], wait, f)
         wait.remove(o)
         t += tt.setup(f, o[1]) + o[2]
@@ -319,7 +426,7 @@ def hand_trace(tt: "Toy", inst, rules, names="ABCDEF") -> None:
           f"rewards {[-(b - a) for a, b in zip(Es, Es[1:])]}, sum {-(total - Es[0])}")
 
 
-print("by hand: test instance 0 under the agent's rules, E(t) term by term")
+print("by hand: test instance 0 under the agent's rules, Theta(t) term by term")
 hand_trace(toy, toy.test[0], [a for _, a, _, _ in trace])
 
 section("Exercise 1: the rewards of the paint example (notation.md): changeover 10 min, set up for blue")
@@ -379,7 +486,7 @@ for seed, n_jobs, mtbf in ((91, 40, 120.0), (100_001, 60, None), (100_002, 60, 1
     disc = sum(CFG.gamma ** k * x for k, x in enumerate(rew))
     print(f"scenario seed {seed}, {n_jobs} jobs, {'no breakdowns' if mtbf is None else 'MTBF 120'}: "
           f"{len(tr)} decisions, total tardiness {T} min, sum of rewards x {CFG.reward_scale:.0f} = "
-          f"{rew.sum() * CFG.reward_scale:.6f} (difference = E at the first decision: "
+          f"{rew.sum() * CFG.reward_scale:.6f} (difference = Theta at the first decision: "
           f"{T + rew.sum() * CFG.reward_scale:.0f}); every reward <= 0: {bool((rew <= 0).all())}; "
           f"rewards equal to 0: {int((rew == 0).sum())}; "
           f"discounted return (gamma {CFG.gamma}) x 50 = {disc * CFG.reward_scale:.1f}")
@@ -394,10 +501,10 @@ for seed in range(100_000, 100_010):
         counts.append(pr.n)
         assert all(b >= a for a, b in zip(pr.E, pr.E[1:]))
         assert estimated_tardiness(sh) == total_tardiness(sh)
-print(f"20 training scenarios (seeds 100000-100009, both levels) under a random policy: E at the first decision "
+print(f"20 training scenarios (seeds 100000-100009, both levels) under a random policy: Theta at the first decision "
       f"= 0 in {sum(e == 0 for e in first_E)} of 20, otherwise {sorted(e for e in first_E if e)} min "
-      f"(the sum of the rewards is -(T - E(t_0)) / 50, exact only when E(t_0) = 0); E never decreased; "
-      f"E at the end = total tardiness; decisions per run {min(counts)}-{max(counts)}, mean {np.mean(counts):.0f}")
+      f"(the sum of the rewards is -(T - Theta(t_0)) / 50, exact only when Theta(t_0) = 0); Theta never decreased; "
+      f"Theta at the end = total tardiness; decisions per run {min(counts)}-{max(counts)}, mean {np.mean(counts):.0f}")
 print(f"effective horizon of gamma = {CFG.gamma}: 1/(1-gamma) = {1 / (1 - CFG.gamma):.1f} (about {1 / (1 - CFG.gamma):.0f}) decisions; "
       f"weight of the reward 79 decisions ahead: gamma^79 = {CFG.gamma ** 79:.3f}")
 print(f"weight after 23 decisions: gamma^23 = {CFG.gamma ** 23:.3f} (half-life ln 2 / -ln gamma = "
@@ -489,6 +596,20 @@ print(f"soft update: the target keeps (1 - tau)^n of an old value; half-life ln 
 section("Part 7: training curves and checkpoint selection (models/training.json)")
 tj = json.loads((REPO / "models" / "training.json").read_text())
 print("selected training seed:", tj["selected_seed"])
+from jobshop.dqn import TRAIN_SEED_BASE  # noqa: E402
+print(f"training scenario seeds: {TRAIN_SEED_BASE} + 1000 x training seed + day: "
+      f"{TRAIN_SEED_BASE + 1} to {TRAIN_SEED_BASE + 1000 * 4 + CFG.episodes}")
+# The ranges overlap: agent k's days 1001-1500 reuse agent k+1's days 1-500 (same seed, same parity, same level).
+_n_agents = len(tj["runs"])
+_days = {k: {e: TRAIN_SEED_BASE + 1000 * k + e for e in range(1, CFG.episodes + 1)} for k in range(_n_agents)}
+_distinct = set().union(*(set(d.values()) for d in _days.values()))
+_shared = [e for e in range(1, CFG.episodes + 1) if _days[0][e] in set(_days[1].values())]
+assert all(_days[k][e] == _days[k + 1][e - 1000] and e % 2 == (e - 1000) % 2
+           for k in range(_n_agents - 1) for e in _shared)
+print(f"training days: {_n_agents} agents x {CFG.episodes} = {_n_agents * CFG.episodes} played, "
+      f"{len(_distinct)} distinct scenario seeds ({min(_distinct)} to {max(_distinct)}); "
+      f"agent k's days {_shared[0]}-{_shared[-1]} are agent k+1's days {_shared[0] - 1000}-{_shared[-1] - 1000} "
+      f"(same seed and breakdown level)")
 curves = {}
 for run in tj["runs"]:
     h = run["history"]
@@ -529,7 +650,7 @@ frac_below = np.mean(allv < val_rule[best_val_rule])
 print(f"share of all {allv.size} validation checks (5 seeds x 60) below the best rule: {100 * frac_below:.0f} %")
 from jobshop.dqn import validate  # noqa: E402
 print(f"re-validated models/dqn.pt: {validate(WS, load_policy(REPO / 'models' / 'dqn.pt'), 60):.2f}; "
-      f"dqn_seed0-4.pt (exercise 5): "
+      f"dqn_seed0-4.pt (exercise 6): "
       + ", ".join(f"{validate(WS, load_policy(REPO / 'models' / f'dqn_seed{k}.pt'), 60):.2f}" for k in range(5)))
 print(f"mean decisions (= gradient steps, less the 1000 of warm-up) per training seed: "
       f"{np.mean([r['steps'] for r in tj['runs']]):.0f}")
@@ -591,6 +712,24 @@ for level, mtbf in LEVELS.items():
           + "  (mean tardiness identical to runs.csv)")
 
 # =====================================================================================================
+section("Exercise 6: training seed 0 for 100 days (scripts/train_dqn.py --seeds 1 --episodes 100), in-process")
+from jobshop.dqn import train as dqn_train  # noqa: E402
+
+t_ex6 = time.perf_counter()
+short = dqn_train(WS, replace(CFG, episodes=100), 0, log=lambda *a: None)
+t_ex6 = time.perf_counter() - t_ex6
+mine = [round(x["validation"], 2) for x in short["history"] if "validation" in x]
+ref0 = next(r_ for r_ in tj["runs"] if r_["seed"] == 0)["history"][:100]
+ref = [round(x["validation"], 2) for x in ref0 if "validation" in x]
+net6 = QNetwork(STATE_DIM, len(ACTIONS), CFG.hidden_sizes)
+net6.load_state_dict(short["state_dict"])
+net6.eval()
+print(f"100 days of training seed 0 in {t_ex6:.0f} s; validation checks {mine}; models/training.json, first "
+      f"100 days of seed 0: {ref}; identical: {mine == ref}")
+print(f"kept checkpoint: day {short['best_episode']}, validation {short['best_validation']:.2f}; re-validated "
+      f"{validate(WS, net6, 60):.2f}; SST on validation {val_rule['SST']:.2f}; epsilon after day 25: "
+      f"{ref0[24]['epsilon']:.3f}")
+
 section("Data embedded in interactive/d01.js (TRAIN constant)")
 emb = {"rules": {k: round(v, 2) for k, v in val_rule.items()}, "selected": tj["selected_seed"], "seeds": []}
 for run in tj["runs"]:

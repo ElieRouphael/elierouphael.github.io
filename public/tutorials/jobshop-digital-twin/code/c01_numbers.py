@@ -23,7 +23,7 @@ from ortools.linear_solver import pywraplp  # noqa: E402
 from ortools.sat.python import cp_model  # noqa: E402
 
 import jobshop.cpsat as cpsat  # noqa: E402
-from jobshop.cpsat import CPSATController, PlanJob, Snapshot, plan_cost, transport_lag  # noqa: E402
+from jobshop.cpsat import CPSATController, PlanJob, Snapshot, plan_cost, take_snapshot, transport_lag  # noqa: E402
 from jobshop.scenario import Workshop, make_scenario, make_workshop  # noqa: E402
 from jobshop.shop import simulate  # noqa: E402
 
@@ -330,35 +330,35 @@ print(f"  widget at load, y_AB = {yw}, M = {M}: {30 - M * (1 - yw):g} <= S_B - S
       f" the LP's (S_A, S_B) = (0, 10) has S_B - S_A = 10, inside")
 
 # ----------------------------------------------------------------------------------------------------------------
-section("Part 'code': solve_snapshot's model on a real snapshot (seed 0, 20 jobs, frequent breakdowns)")
+section("Part 'code': solve_snapshot's model on chapter C2's snapshot 101 (seed 0, 60 jobs, frequent breakdowns, "
+        "quick re-planning)")
+# Built exactly as code/c02_numbers.py builds it: the greedy re-planning loop (no solver) records a snapshot at every
+# replan; snapshot number 101 (0-based) is an arrival at minute 891 with 8 jobs.
 t0 = time.perf_counter()
-snaps = []
-original = cpsat.solve_snapshot
+SNAPS = []
 
 
-def recording(ws, snap, **kw):
-    snaps.append(snap)
-    return original(ws, snap, **kw)
+class Recorder(CPSATController):
+    """Quick re-planning (the greedy ablation, no solver), recording the snapshot of every replan."""
+
+    def on_event(self, shop, kind, **info):
+        jobs = sorted(shop.active_jobs(), key=lambda j: (j.due, j.idx))[: self.max_jobs]
+        SNAPS.append((kind, take_snapshot(shop, jobs, self.allowance), dict(self.plan)))
+        super().on_event(shop, kind, **info)
 
 
-cpsat.solve_snapshot = recording
-scenario = make_scenario(WS, 0, n_jobs=20, mtbf=120.0)
-ctrl = CPSATController()  # det_time 0.2, allowance 2, at most 25 jobs: the evaluated configuration
-print("controller defaults: det_time", ctrl.det_time, " allowance", ctrl.allowance, " max_jobs", ctrl.max_jobs,
-      " workers", ctrl.workers)
-log = simulate(WS, scenario, ctrl)
-cpsat.solve_snapshot = original
-print(f"simulated {len(scenario.jobs)} jobs: {ctrl.n_replans} replans, {ctrl.n_optimal} proven optimal, "
-      f"{ctrl.n_greedy} kept the warm start; {time.perf_counter() - t0:.1f} s")
+scenario = make_scenario(WS, 0, n_jobs=60, mtbf=120.0)
+simulate(WS, scenario, Recorder(use_solver=False))
+I_SNAP = 101
+kind_, big, prev_plan = SNAPS[I_SNAP]
+assert len(big.jobs) == 8, "the simulated day changed: chapter C2 must change snapshot too"
 
 
 def n_remaining(snap):
     return sum(WS.n_ops(j.family) - j.first_op for j in snap.jobs)
 
 
-big = max(snaps, key=lambda sn: (n_remaining(sn), -sn.now))
-which = snaps.index(big) + 1
-print(f"largest snapshot: replan {which} of {len(snaps)}, at minute {big.now}: {len(big.jobs)} jobs, "
+print(f"{len(SNAPS)} snapshots recorded; snapshot {I_SNAP}: {kind_} at minute {big.now}, {len(big.jobs)} jobs, "
       f"{n_remaining(big)} operations to plan")
 print("  machine_free:", big.machine_free, " machine_family:", big.machine_family)
 
@@ -372,7 +372,7 @@ def capture(self, model, *args, **kwargs):
 
 
 cp_model.CpSolver.solve = capture
-plan = cpsat.solve_snapshot(WS, big, allowance=2, det_time=0.2)
+plan = cpsat.solve_snapshot(WS, big, allowance=2, det_time=0.2, previous_plan=prev_plan)  # as in C2
 cp_model.CpSolver.solve = orig_solve
 size = describe(captured[-1])
 pr = proto_of(captured[-1])
@@ -399,7 +399,12 @@ print(f"  presence literals (= optional intervals): {presence}; circuit Booleans
       f" {sum(1 + 2 * n + n * (n - 1) for n in cands)}")
 hz = max(big.machine_free + [big.now] + [max(j.ready.values()) for j in big.jobs])
 print("  horizon: start", hz, "-> H =", pr.variables[0].domain[1], f"(H - now = {pr.variables[0].domain[1] - big.now})")
-print(f"  solved: status {plan.status}, objective {plan.objective}, check plan_cost = {plan_cost(big, WS, plan.ops)}")
+nops = n_remaining(big)
+print(f"  integer variables: 3 x {nops} operations (S, E, alpha) + {len(big.jobs)} tardiness = {3 * nops + len(big.jobs)}"
+      f" (model: {size['integers']}); plain linear: {nops} 's >= a' + {len(big.jobs)} tardiness bounds ="
+      f" {nops + len(big.jobs)} (model: {size['plain_linear']})")
+print(f"  solved with the benchmark's budget 0.2 and C2's hint: status {plan.status}, objective {plan.objective},"
+      f" check plan_cost = {plan_cost(big, WS, plan.ops)}")
 pairs = sum(n * (n - 1) // 2 for n in cands)
 print(f"  a pairwise big-M MILP of the same snapshot would need {presence} assignment binaries and {pairs} order binaries y_ab")
 print(f"total time {time.perf_counter() - t0:.1f} s")
@@ -485,7 +490,7 @@ def paint_with_release(release):
 
 print("CP-SAT with r_D = 50:", paint_with_release(R))
 
-section("Exercise 5: solve_snapshot's model on real_snapshot() of tests/test_cpsat.py")
+section("Exercise 6: solve_snapshot's model on real_snapshot() of tests/test_cpsat.py")
 sys.path.insert(0, str(REPO / "tests"))
 from test_cpsat import real_snapshot  # noqa: E402
 
@@ -513,3 +518,125 @@ print("arc literals with 3 candidates: (3 + 1)^2 =", (3 + 1) ** 2, "; of which s
 print("z_DC (red -> blue, changeover", s(COLOUR["D"], COLOUR["C"]), "): S_C >= E_D +", s(COLOUR["D"], COLOUR["C"]),
       "and S_C >= alpha_C +", s(COLOUR["D"], COLOUR["C"]), "= 0 +", s(COLOUR["D"], COLOUR["C"]))
 print("order A completing at 25 (due 30): T_A >= -5 and T_A >= 0; feasible T_A in [0, H] = [0,", H, "]; the optimum picks 0")
+
+# ----------------------------------------------------------------------------------------------------------------
+section("Exercise 5: chapter A3's flexible 3 x 3 instance in CP-SAT (makespan), classical and flexible")
+# A3 Part 'flexible': J0: M0 2, M1 7, M2 7; J1: M1 7, M2 4, M0 5; J2: M2 2, M0 6, M1 2;
+# made flexible: J0.1 and J1.0 also on M2 in 6 min, J2.2 also on M0 in 3 min.
+JOBS3 = [[{0: 2}, {1: 7}, {2: 7}], [{1: 7}, {2: 4}, {0: 5}], [{2: 2}, {0: 6}, {1: 2}]]
+FLEX3 = {(0, 1): {2: 6}, (1, 0): {2: 6}, (2, 2): {0: 3}}
+FAM3 = [0, 0, 1]  # "Going further": J0 and J1 in family 0, J2 in family 1
+
+
+def solve_flex(flexible, fixed=None, setup=0, arcs_out=None):
+    """The page's solution code; `fixed` pins the machine of the three flexible operations (for the enumeration);
+    `setup` > 0 adds the "Going further" family changeovers through one add_circuit per machine."""
+    m = cp_model.CpModel()
+    elig = {(j, k): ({**op, **FLEX3.get((j, k), {})} if flexible else dict(op))
+            for j, job in enumerate(JOBS3) for k, op in enumerate(job)}
+    if fixed:
+        for key, mach in fixed.items():
+            elig[key] = {mach: elig[key][mach]}
+    H = 60  # the page's horizon, larger than the total of the slowest times (printed below)
+    S, E, x, on = {}, {}, {}, {0: [], 1: [], 2: []}
+    for (j, k), e in elig.items():
+        S[j, k], E[j, k] = m.new_int_var(0, H, ""), m.new_int_var(0, H, "")
+        x[j, k] = {i: m.new_bool_var("") for i in e}
+        for i, p in e.items():
+            on[i].append(m.new_optional_interval_var(S[j, k], p, E[j, k], x[j, k][i], ""))
+        m.add_exactly_one(x[j, k].values())
+        if k:
+            m.add(S[j, k] >= E[j, k - 1])
+    for i, ivs in on.items():
+        m.add_no_overlap(ivs)
+        if not setup:
+            continue
+        cand = [o for o in elig if i in elig[o]]  # nodes 1, 2, ... of machine i
+        arcs = [(0, 0, m.new_bool_var(""))]  # the idle loop
+        for u, a in enumerate(cand, 1):
+            arcs += [(0, u, m.new_bool_var("")), (u, 0, m.new_bool_var("")), (u, u, x[a][i].Not())]
+            for v, b in enumerate(cand, 1):
+                if v != u:
+                    z, c = m.new_bool_var(""), setup * (FAM3[a[0]] != FAM3[b[0]])
+                    arcs.append((u, v, z))
+                    m.add(S[b] >= E[a] + c).only_enforce_if(z)
+                    if c and b[1]:  # alpha_b = end of the job's previous step
+                        m.add(S[b] >= E[b[0], b[1] - 1] + c).only_enforce_if(z)
+        m.add_circuit(arcs)
+        if arcs_out is not None:
+            arcs_out[f"M{i}"] = len(arcs)
+    cmax = m.new_int_var(0, H, "")
+    m.add_max_equality(cmax, [E[j, 2] for j in range(3)])
+    m.minimize(cmax)
+    sol = cp_model.CpSolver()
+    st = sol.solve(m)
+    mu = {f"J{j}.{k}": f"M{i}" for (j, k) in FLEX3 for i, v in x[j, k].items() if sol.boolean_value(v)}
+    return sol.status_name(st), int(sol.value(cmax)), mu
+
+
+_work = sum(max({**op, **FLEX3.get((j, k), {})}.values()) for j, job in enumerate(JOBS3) for k, op in enumerate(job))
+print("horizon used on the page: 60; total of the slowest eligible times:", _work, "-> safe:", 60 > _work)
+print("classical assignment:", solve_flex(False))
+print("with flexibility:", solve_flex(True), "(which optimal routing is returned may depend on the search)")
+enum = {}
+for choice in itertools.product(*[sorted({**JOBS3[j][k], **FLEX3[j, k]}) for (j, k) in FLEX3]):
+    enum["".join(f"M{c}" for c in choice)] = solve_flex(True, dict(zip(FLEX3, choice)))[1]
+print("best makespan of each of the 8 assignments of J0.1, J1.0, J2.2:", enum)
+print("assignments reaching", min(enum.values()), ":", sum(v == min(enum.values()) for v in enum.values()), "of", len(enum))
+
+
+# "Going further" of Exercise 5: family changeovers on every machine, through one circuit per machine.
+section("Exercise 5, going further: family changeovers (J0, J1 family 0; J2 family 1) through add_circuit per machine")
+
+
+def brute_flex(flexible, setup):
+    """Independent check: every assignment of the flexible operations and every order on every machine; for each,
+    the earliest starts S_b = max(E of the machine predecessor, alpha_b) + changeover (none for a machine's first
+    operation, alpha_b the end of the job's previous step, 0 for a first step); orders that form a cycle are skipped.
+    The makespan is regular, so the best of these semi-active schedules is the optimum."""
+    keys = list(FLEX3) if flexible else []
+    best = None
+    for choice in itertools.product(*[sorted({**JOBS3[j][k], **FLEX3[j, k]}) for (j, k) in keys]):
+        mu = {(j, k): next(iter(op)) for j, job in enumerate(JOBS3) for k, op in enumerate(job)}
+        mu.update(dict(zip(keys, choice)))
+        p = {o: {**JOBS3[o[0]][o[1]], **(FLEX3.get(o, {}) if flexible else {})}[mu[o]] for o in mu}
+        per = [[o for o in mu if mu[o] == i] for i in range(3)]
+        for orders in itertools.product(*[itertools.permutations(ops) for ops in per]):
+            pred = {b: a for seq in orders for a, b in zip(seq, seq[1:])}
+            S = {o: 0 for o in mu}
+            for _ in range(len(mu) + 2):  # longest-path relaxation; converges iff the orders are acyclic
+                changed = False
+                for o in mu:
+                    alpha = S[o[0], o[1] - 1] + p[o[0], o[1] - 1] if o[1] else 0
+                    if o in pred:
+                        a = pred[o]
+                        val = max(S[a] + p[a], alpha) + setup * (FAM3[a[0]] != FAM3[o[0]])
+                    else:
+                        val = alpha
+                    if val != S[o]:
+                        S[o], changed = val, True
+                if not changed:
+                    break
+            else:
+                continue
+            cm = max(S[j, 2] + p[j, 2] for j in range(3))
+            if best is None or cm < best[0]:
+                best = (cm, {f"J{j}.{k}": f"M{c}" for (j, k), c in zip(keys, choice)},
+                        {f"M{i}": [f"J{j}.{k}" for j, k in seq] for i, seq in enumerate(orders)})
+    return best
+
+
+print("changeover between families on the page: 2 minutes (and 1 minute for the closing remark)")
+for su in (0, 1, 2):
+    arcs = {}
+    cl, fl = solve_flex(False, setup=su), solve_flex(True, setup=su, arcs_out=arcs)
+    bc, bf = brute_flex(False, su), brute_flex(True, su)
+    print(f"setup {su}: CP-SAT classical {cl[:2]}, flexible {fl[:2]};  brute force classical {bc[0]}, flexible {bf[0]}"
+          f"  -> agree: {cl[1] == bc[0] and fl[1] == bf[0]}")
+    if su:
+        print(f"  circuit arcs per machine (flexible): {arcs} = (n_m + 1)^2 with n_m =",
+              {k: round(v ** 0.5) - 1 for k, v in arcs.items()})
+    if su == 2:
+        print("  a best flexible schedule (brute force): routing", bf[1], " machine orders", bf[2])
+print("flexibility's gain without changeovers:", solve_flex(False)[1] - solve_flex(True)[1],
+      "; with 2-minute changeovers:", solve_flex(False, setup=2)[1] - solve_flex(True, setup=2)[1])

@@ -139,8 +139,8 @@ for name in ("ABCD", "BCAD"):
     rows = run(name, 0)
     print(name, "completions", [r["end"] for r in rows], "sum C", measures(rows)["C"])
 p_spt = sorted(v[1] for v in PAINT.values())
-print("formula sum_k (n-k+1) p_[k] for SPT:", " + ".join(f"{4 - k}*{p}" for k, p in enumerate(p_spt)), "=",
-      sum((4 - k) * p for k, p in enumerate(p_spt)))
+print("formula sum_q (n-q+1) p_[q] for SPT:", " + ".join(f"{4 - q}*{p}" for q, p in enumerate(p_spt)), "=",
+      sum((4 - q) * p for q, p in enumerate(p_spt)))
 optC0 = min(measures(run(s, 0))["C"] for s in ALL)
 print("best sum C over the 24 orders, no changeover:", optC0, "; orders reaching it:",
       [s for s in ALL if measures(run(s, 0))["C"] == optC0])
@@ -298,11 +298,11 @@ SETUP0 = S[0]                     # changeovers of the workshop's machine 0, fam
 ZERO = [[0] * 4 for _ in range(4)]
 
 
-def instance(r, n, tau, R=0.6):
+def instance(r, n, theta, R=0.6):
     p = [5 + math.floor(r() * 26) for _ in range(n)]          # 5 to 30 min, as the workshop's operations
     fam = [math.floor(r() * 4) for _ in range(n)]
     P = sum(p)
-    d = [max(0, math.floor(P * (1 - tau + R * (r() - 0.5)) + 0.5)) for _ in range(n)]
+    d = [max(0, math.floor(P * (1 - theta + R * (r() - 0.5)) + 0.5)) for _ in range(n)]
     return p, fam, d
 
 
@@ -382,14 +382,14 @@ def fixed1(numer, denom):
     return f"{q // 10}.{q % 10}"
 
 
-def experiment(n, tau, with_setups, count=300, seed=2026):
+def experiment(n, theta, with_setups, count=300, seed=2026):
     r = mulberry32(seed)
     St = SETUP0 if with_setups else ZERO
     keys_ = RULE_NAMES + ["best4"]
     hits, excess = {k: 0 for k in keys_}, {k: 0 for k in keys_}
     dp_agree, naive_wrong, opt_sum, zero_opt = 0, 0, 0, 0
     for _ in range(count):
-        p, fam, d = instance(r, n, tau)
+        p, fam, d = instance(r, n, theta)
         opt = brute(p, fam, d, St)
         opt_sum += opt; zero_opt += opt == 0
         if not with_setups:
@@ -405,10 +405,10 @@ def experiment(n, tau, with_setups, count=300, seed=2026):
                 zero_opt=zero_opt, count=count)
 
 
-def show(n, tau, ws_, res):
+def show(n, theta, ws_, res):
     h, e, c = res["hits"], res["excess"], res["count"]
     keys_ = RULE_NAMES + ["best4"]
-    print(f"n = {n}, tau = {tau}, {'with' if ws_ else 'no  '} changeovers: optimal on "
+    print(f"n = {n}, theta = {theta}, {'with' if ws_ else 'no  '} changeovers: optimal on "
           + ", ".join(f"{k} {fixed1(100 * h[k], c)}%" for k in keys_)
           + " | mean excess (min) " + ", ".join(f"{k} {fixed1(e[k], c)}" for k in keys_)
           + f" | mean optimum {fixed1(res['opt_sum'], c)}, optimum 0 on {res['zero_opt']}"
@@ -416,22 +416,22 @@ def show(n, tau, ws_, res):
              f" | (set, last) DP wrong on {res['naive_wrong']} of {c}"))
 
 
-section("Part 7 (setups) widget, defaults: 300 instances, n = 6, tau = 0.5, R = 0.6, seed 2026, machine 0's changeovers")
+section("Part 7 (setups) widget, defaults: 300 instances, n = 6, theta = 0.5, R = 0.6, seed 2026, machine 0's changeovers")
 r = mulberry32(2026)
 p, fam, d = instance(r, 6, 0.5)
 print("first instance: p =", p, "families =", fam, "due =", d)
-print("due dates: round(P * (1 - tau + 0.6 * (u - 0.5))), u uniform on [0, 1), clipped at 0: uniform on [(", round(1 - 0.3, 1),
-      "- tau) P, (", round(1 + 0.3, 1), "- tau) P], P = sum of the p_j")
+print("due dates: round(P * (1 - theta + 0.6 * (u - 0.5))), u uniform on [0, 1), clipped at 0: uniform on [(", round(1 - 0.3, 1),
+      "- theta) P, (", round(1 + 0.3, 1), "- theta) P], P = sum of the p_j")
 g = mulberry32(1)
 print("mulberry32(1) first three draws (compare with JS.rng(1)):", [round(g(), 10) for _ in range(3)])
 for ws_ in (False, True):
     show(6, 0.5, ws_, experiment(6, 0.5, ws_))
 
-section("Part 7: the same experiment for every slider position (n = 4..7, tau = 0.2..0.8)")
+section("Part 7: the same experiment for every slider position (n = 4..7, theta = 0.2..0.8)")
 for n in (4, 5, 6, 7):
-    for tau in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
+    for theta in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
         for ws_ in (False, True):
-            show(n, tau, ws_, experiment(n, tau, ws_))
+            show(n, theta, ws_, experiment(n, theta, ws_))
 
 # ------------------------------------------------------------------ Part 8: the subset recursion by hand
 section("Part 8 (counting): F(S) by hand on X(10, 30), Y(20, 10), Z(30, 20), smallest sets first")

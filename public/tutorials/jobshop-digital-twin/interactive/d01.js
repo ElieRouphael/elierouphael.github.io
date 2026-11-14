@@ -176,7 +176,7 @@ function drawHero() {
   $("#hSV").textContent = p.S; $("#hFV").textContent = fmt(p.F, 1); $("#hAV").textContent = fmt(p.A, 2); $("#hGV").textContent = fmt(p.G, 2);
   $("#hEV").textContent = p.E; $("#hSeedV").textContent = p.seed;
   drawPolicy();
-  caption($("#heroStatus"), `Changeover ${p.S} min, due-date spread ${fmt(p.F, 1)}, seed ${p.seed}. Before any training every [[Q(s,a)]] is 0 and ties go to FIFO, so the curve starts at FIFO's ${fmt(run.curve[0], 1)} min. After ${p.E} episodes of [[\\varepsilon]]-greedy Q-learning (step size [[\\alpha = ${fmt(p.A, 2)}]], [[\\gamma = ${fmt(p.G, 2)}]]) the best checkpoint on the 200 validation instances, at episode ${run.bestEp}, scores ${fmt(run.bestVal, 1)}. On 200 fresh test instances it gives ${fmt(run.test, 1)} min against ${fmt(refs.testR[b], 1)} for ${RULES[b]}, the best fixed rule on validation: ${gain < 0 ? "a state-dependent choice of rule beats every single rule here" : "no better than the best single rule"}. In hindsight, the best single rule for each instance gives ${fmt(refs.hind, 1)}, the best succession of rules (one per decision, the most a rule selector could do) ${fmt(refs.succ, 1)}, and the optimal sequence ${fmt(refs.opt, 1)}.`);
+  caption($("#heroStatus"), `A toy, not the repository's agent: 18 situations against the workshop agent's 29 features, and a changeover of ${p.S} min (5 by default) against the 10 min of the paint example elsewhere in the course. Due-date spread ${fmt(p.F, 1)}, seed ${p.seed}. Before any training every [[Q(s,a)]] is 0 and ties go to FIFO, so the curve starts at FIFO's ${fmt(run.curve[0], 1)} min. After ${p.E} episodes of [[\\varepsilon]]-greedy Q-learning (step size [[\\alpha = ${fmt(p.A, 2)}]], [[\\gamma = ${fmt(p.G, 2)}]]) the best checkpoint on the 200 validation instances, at episode ${run.bestEp}, scores ${fmt(run.bestVal, 1)}. On 200 fresh test instances it gives ${fmt(run.test, 1)} min against ${fmt(refs.testR[b], 1)} for ${RULES[b]}, the best fixed rule on validation: ${gain < 0 ? "a state-dependent choice of rule beats every single rule here" : "no better than the best single rule"}. In hindsight, the best single rule for each instance gives ${fmt(refs.hind, 1)}, the best succession of rules (one per decision, the most a rule selector could do) ${fmt(refs.succ, 1)}, and the optimal sequence ${fmt(refs.opt, 1)}.`);
 }
 /* the optimum on the validation set, for the dotted line (computed lazily, cached per instance set) */
 function validOpt() {
@@ -261,9 +261,9 @@ function drawTel() {
     gctx.beginPath(); gctx.moveTo(x, y + 2); gctx.lineTo(x, y + (low ? 20 : 9)); gctx.stroke();
     gctx.fillText(L[o[0]], x, y + (low ? 21 : 10));
   });
-  // committed tardiness E(t) at each decision, and T at the end
+  // committed tardiness Θ(t) at each decision, and T at the end
   const cv = $("#telE"), narrow = narrowOf(cv), yMax = Math.max(10, T * 1.15);
-  const fr = frame(cv, narrow ? 1.6 : 3.2, { x: [0, tEnd], y: [0, yMax], xlabel: "time (min)", ylabel: "committed tardiness E(t) (min)", pad: { l: 70 } });
+  const fr = frame(cv, narrow ? 1.6 : 3.2, { x: [0, tEnd], y: [0, yMax], xlabel: "time (min)", ylabel: "committed tardiness Θ(t) (min)", pad: { l: 70 } });
   const { ctx, X, Y } = fr;
   const pts = trace.map(d => [d.t, d.E]).concat([[trace.end, T]]);
   ctx.strokeStyle = css("--accent"); ctx.lineWidth = 2; ctx.beginPath();
@@ -272,9 +272,9 @@ function drawTel() {
   pts.forEach(([t, e], k) => { ctx.fillStyle = k === pts.length - 1 ? css("--warm") : css("--accent"); ctx.beginPath(); ctx.arc(X(t), Y(e), 3.5, 0, 2 * Math.PI); ctx.fill(); });
   // table
   const sum = trace.reduce((s, d) => s + d.r, 0), disc = trace.reduce((s, d, k) => s + g ** k * d.r, 0);
-  let html = '<table class="num"><thead><tr><th>decision k</th><th>at minute</th><th class="sit" style="text-align:left">situation (state)</th><th>rule</th><th>this E</th><th>reward = −(next E − this E)</th></tr></thead><tbody>';
+  let html = '<table class="num"><thead><tr><th>decision k</th><th>at minute</th><th class="sit" style="text-align:left">situation (state)</th><th>rule</th><th>this Θ</th><th>reward = −(next Θ − this Θ)</th></tr></thead><tbody>';
   trace.forEach((d, k) => { html += `<tr><td>${k}</td><td>${d.t}</td><td class="sit">${SIT_LABEL(d.s)}</td><td>${RULES[d.a]}</td><td>${d.E}</td><td>${String(d.r).replace("-", "−")}</td></tr>`; });
-  html += `<tr><td colspan="4">end of the run: total tardiness T (the last "next E")</td><td>${T}</td><td>Σ = ${String(sum).replace("-", "−")}</td></tr></tbody></table>`;
+  html += `<tr><td colspan="4">end of the run: total tardiness T (the last "next Θ")</td><td>${T}</td><td>Σ = ${String(sum).replace("-", "−")}</td></tr></tbody></table>`;
   $("#telTab").innerHTML = html;
   caption($("#telCap"), `Test instance ${i}, ${TEL.policy < 0 ? "the trained agent of the hero" : "the fixed rule " + RULES[TEL.policy]}. Orders ${inst.map(o => `${L[o[0]]} (${o[1] ? "red" : "blue"}, [[p = ${o[2]}]], [[d = ${o[3]}]])`).join(", ")}; the ticks on the lower row are the due dates. The rewards are ${trace.map(d => String(d.r).replace("-", "−")).join(", ")} and their sum is [[${sum} = -T]], minus the run's total tardiness: each reward is minus one step of the blue staircase, and the steps add up to its final height. With [[\\gamma = ${fmt(g, 2)}]] the discounted return [[\\sum_k \\gamma^k r_{k+1} = ${fmt(disc, 2)}]]${g < 1 && sum < 0 ? ", less negative than [[-T]]: late penalties are worth less the later they come" : ""}.`);
 }

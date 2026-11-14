@@ -10,7 +10,9 @@ Parts of the page and where their numbers come from:
   Part 3    constraint propagation on a five-operation example              -> section "PROPAGATION"
   Part 4    a learned clause on the paint machine                           -> section "CLAUSE"
   Part 5    cores on the paint machine (and exercise 3)                     -> section "CORES"
+  Part 5    large neighbourhood search on the paint machine (exercise 4)    -> section "LNS"
   Part 5-7  CP-SAT on real snapshots of a simulated day                     -> sections "SNAPSHOTS" ...
+  Part 7    what deterministic time counts; the GREEDY fallback             -> "DETERMINISTIC TIME", "FALLBACK"
   Part 6    the replan statistics of the benchmark (results/runs.csv)       -> section "RUNS.CSV"
 """
 from __future__ import annotations
@@ -279,6 +281,63 @@ print("minimal cores (every proper subset can be on time):", [("".join(c), least
 print("core {A, B}: A first -> A 0-20, change, B 30-40, T_B =", 40 - 25, "; B first -> change, B 10-20, change, A 30-50, T_A =", 50 - 30)
 print("pairs of disjoint minimal cores:", [("".join(a), "".join(b)) for a, b in itertools.combinations(minimal, 2) if not set(a) & set(b)])
 
+section("LNS. Part 5 and exercise 4: large neighbourhood search on the paint machine")
+
+
+def lns_pairs(s):
+    """Free two positions (the two other orders stay in place) and re-solve exactly: both orderings of the pair."""
+    for i, j in itertools.combinations(range(4), 2):
+        l = list(s)
+        l[i], l[j] = l[j], l[i]
+        yield f"positions {i + 1},{j + 1}", "".join(l)
+
+
+def lns_window(s, w=3):
+    """Free w consecutive positions (a time window) and re-solve exactly: every ordering of the freed orders."""
+    for i in range(4 - w + 1):
+        for perm in itertools.permutations(s[i:i + w]):
+            yield f"positions {i + 1}-{i + w}", s[:i] + "".join(perm) + s[i + w:]
+
+
+def lns_descent(s, hood):
+    """Move to the best neighbour while it improves; ties broken alphabetically (min over (value, sequence))."""
+    path = [(s, values[s])]
+    while True:
+        v, t = min((values[t], t) for _, t in hood(s))
+        if v >= values[s]:
+            return path
+        s = t
+        path.append((s, v))
+
+
+print("from SST's ACBD (50), free any two positions:", [(n, t, values[t]) for n, t in lns_pairs("ACBD")])
+print("  best neighbour no better than 50: ACBD is a local optimum of this neighbourhood:",
+      min(values[t] for _, t in lns_pairs("ACBD")) >= values["ACBD"])
+print("from ACBD, free three consecutive positions:", [(n, t, values[t]) for n, t in lns_window("ACBD")])
+print("  descent:", lns_descent("ACBD", lns_window), "; ACBD is", values["ACBD"] - min(values.values()), "above the optimum")
+t, fam, g, st = run("ABDC")
+print("  ABDC, order by order (start after any change, end, tardiness):",
+      [(n, st[n], st[n] + ORDERS[n][1], max(0, st[n] + ORDERS[n][1] - ORDERS[n][2])) for n in "ABDC"], "total", g)
+for name, hood in (("two positions", lns_pairs), ("three consecutive", lns_window)):
+    minima = sorted(((s, v) for s, v in values.items() if all(values[t] >= v for _, t in hood(s))), key=lambda e: e[1])
+    stuck = sum(1 for s in values if lns_descent(s, hood)[-1][1] > min(values.values()))
+    print(f"  neighbourhood '{name}': local optima {minima}; of the 24 starting sequences, {stuck} end above the optimum"
+          " (ties broken alphabetically)")
+
+    def ends(s, hood=hood):
+        """Every final value a descent from s can reach, over all ways of breaking ties between best neighbours."""
+        best = min(values[t] for _, t in hood(s))
+        if best >= values[s]:
+            return {values[s]}
+        return set().union(*(ends(t) for _, t in hood(s) if values[t] == best))
+
+    opt = min(values.values())
+    tied = sorted((s, sorted(ends(s))) for s in values if len(ends(s)) > 1)
+    always = sum(1 for s in values if min(ends(s)) > opt)
+    sometimes = sum(1 for s in values if max(ends(s)) > opt)
+    print(f"    starts whose end depends on tie-breaking: {tied}")
+    print(f"    over all tie choices, between {always} and {sometimes} of the 24 starts end above the optimum")
+
 section("LP. Part 5 recalls chapter C1's result: the big-M relaxation bounds the paint machine's tardiness by 0")
 M = 120  # at least twice the longest changeover + painting, 2 x 35
 pts = {n: 0.0 for n in ORDERS}  # every start at 0, every ordering variable y = 1/2
@@ -458,7 +517,7 @@ def each_job_alone(snap):
     return total
 
 
-print("  exercise 5: each-job-alone bound of this snapshot:", each_job_alone(snap), "(CP-SAT's bound at budget 0.2 above);"
+print("  exercise 6: each-job-alone bound of this snapshot:", each_job_alone(snap), "(CP-SAT's bound at budget 0.2 above);"
       " of snapshot", I_MID, ":", each_job_alone(SNAPS[I_MID][1]), "(CP-SAT: 7540 at budgets up to 0.1, 7740 at 0.2)")
 
 # --------------------------------------------------------------------------------------------------------------
@@ -470,8 +529,78 @@ for seed in (0, 0, 1):
     runs.append((seed, plan, r))
     print(f"  random_seed {seed}: {r['solver_status']} objective {r['obj']} bound {r['bound']} branches {r['branches']} conflicts {r['conflicts']} wall {r['wall']:.3f} s")
 print("  the two seed-0 runs give the same plan:", runs[0][1].ops == runs[1][1].ops, "; same objective and bound:",
-      (runs[0][2]["obj"], runs[0][2]["bound"]) == (runs[1][2]["obj"], runs[1][2]["bound"]))
+      (runs[0][2]["obj"], runs[0][2]["bound"]) == (runs[1][2]["obj"], runs[1][2]["bound"]),
+      "; same counters:", (runs[0][2]["branches"], runs[0][2]["conflicts"]) == (runs[1][2]["branches"], runs[1][2]["conflicts"]))
 print("  seed 1 against seed 0: same plan:", runs[0][1].ops == runs[2][1].ops)
+
+# --------------------------------------------------------------------------------------------------------------
+# DETERMINISTIC TIME. Part 7: what the response's deterministic_time counts, and what interleave_search buys.
+# The solver is the same as solve_snapshot's; OVERRIDE changes num_workers / interleave_search after the
+# repository has set them (solve_snapshot itself is not modified).
+# --------------------------------------------------------------------------------------------------------------
+OVERRIDE: dict = {}
+_base_solve = LoggingSolver.solve
+
+
+def _solve_with_override(self, model, callback=None):
+    for k, v in OVERRIDE.items():
+        setattr(self.parameters, k, v)
+    return _base_solve(self, model, callback)
+
+
+LoggingSolver.solve = _solve_with_override
+UNIT = {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+
+
+def task_dtime_sum(log):
+    """Sum of the last column ('dtime', total per subsolver) of the log's 'Task timing' table."""
+    total, inside = 0.0, False
+    for line in log:
+        if line.startswith("Task timing"):
+            inside = True
+            continue
+        if inside:
+            if not line.strip().startswith("'"):
+                break
+            m = re.search(r"([\d.]+)(ns|us|ms|s)\s*$", line)
+            total += float(m.group(1)) * UNIT[m.group(2)]
+    return total
+
+
+section(f"DETERMINISTIC TIME. Part 7: snapshot {I_MID}, reported deterministic_time against the limit")
+kind, snap, prev = SNAPS[I_MID]
+for b in (0.2, 0.8):
+    for w in (1, 8):
+        for il in (True, False):
+            OVERRIDE.clear()
+            OVERRIDE.update(num_workers=w, interleave_search=il)
+            plan, r = solve(snap, prev, det_time=b)
+            print(f"  limit {b}  num_workers {w}  interleave {str(il):5}: {r['solver_status']:8} reported deterministic_time {r['det']:.3f}"
+                  f" = {r['det'] / b:.1f} x the limit; 'Task timing' dtime column summed over subsolvers {task_dtime_sum(r['log']):.3f}"
+                  f" (the rest is presolve)")
+OVERRIDE.clear()
+print("  -> with num_workers 1 the reported figure equals the limit; with 8 it is the work of all subsolvers added up."
+      " Values with interleave False change from one execution to the next (thread timing).")
+
+section(f"DETERMINISTIC TIME. Part 7: three solves of snapshot {I_MID} at 0.2 without interleave_search (8 workers)")
+OVERRIDE.update(interleave_search=False)
+plans_off = []
+for k in range(3):
+    plan, r = solve(snap, prev)
+    plans_off.append((plan.ops, r["bound"]))
+    print(f"  run {k + 1}: {r['solver_status']} objective {r['obj']} bound {r['bound']} (changes from one execution to the next)")
+OVERRIDE.clear()
+print("  same plan in the three runs:", all(p == plans_off[0][0] for p, _ in plans_off),
+      "; distinct bounds:", sorted({bd for _, bd in plans_off}), "; with interleave_search the bound was", runs[0][2]["bound"], "in both runs")
+
+section("FALLBACK. Part 7: a budget that runs out in presolve, before the search has loaded the hint")
+for i, b in ((I_MID, 0.01), (I_MID, 0.025), (I_BIG, 0.025), (I_BIG, 0.05)):
+    kind, snap, prev = SNAPS[i]
+    plan, r = solve(snap, prev, det_time=b)
+    hint_line = [l for l in r["log"] if "hint" in l.lower() and "complete" in l.lower()][:1]
+    started = any(l.startswith("Starting deterministic search") for l in r["log"])
+    print(f"  snapshot {i} ({len(snap.jobs)} jobs), budget {b}: solver {r['solver_status']}, search started: {started},"
+          f" returned status {plan.status} objective {plan.objective}; {hint_line}")
 
 # ==============================================================================================================
 # RUNS.CSV: the replan statistics of the benchmark (20 test days per level)

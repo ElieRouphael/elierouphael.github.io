@@ -33,8 +33,8 @@ function pairsOf(jobs) {
 }
 
 /* Earliest starts for the arcs chosen so far (arcs: [[u, v], ...] meaning u before v on their machine).
-   Arc weights as on the page: source -> (j,0): tau + sigma; (j,k) -> (j,k+1): p + tau + sigma;
-   u -> v: p_u + s; sigma_v = s when an arc of the selection enters v. Returns
+   Arc weights as on the page: source 0 -> (j,0): tau + chg; (j,k) -> (j,k+1): p + tau + chg;
+   u -> v: p_u + s; chg_v (kept in "sig") = s when an arc of the selection enters v. Returns
    {start, sig, cycle (list of operations) or null, cmax, crit (operations), critArcs (Set of "u>v")}. */
 function evaluate(jobs, arcs, tau = 0, s = 0) {
   const ops = opsOf(jobs), P = o => jobs[o[0]][o[1]][1];
@@ -190,7 +190,7 @@ function drawGraph(holder, jobs, pairs, sel, res, { tau = 0, s = 0, onPick = nul
     gNodes.appendChild(g);
   };
   ops.forEach(o => node(pos(o), nm(o), `M${jobs[o[0]][o[1]][0]} · ${P(o)}`, FAM.colours[o[0]], cycSet.has(id(o)) ? "ring-cyc" : critSet.has(id(o)) ? "ring-crit" : null));
-  [[SRC, "α"], [SNK, "ω"]].forEach(([p, l]) => { gNodes.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 13, class: "st" })); gNodes.appendChild(svgEl("text", { x: p.x, y: p.y + 5, class: "stl" }, l)); });
+  [[SRC, "0"], [SNK, "∗"]].forEach(([p, l]) => { gNodes.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 13, class: "st" })); const t = svgEl("text", { x: p.x, y: p.y + (l === "∗" ? 7 : 5), class: "stl" }, l); if (l === "∗") t.style.fontSize = "20px"; gNodes.appendChild(t); });
   svg.append(gArcs, gLab, gHit, gNodes);
   holder.replaceChildren(svg);
 }
@@ -270,7 +270,7 @@ function drawHero() {
     caption($("#heroStatus"), `${nOn} of ${HP.length} pairs ordered, no cycle so far. The chart is the earliest schedule that respects the arcs chosen so far; operations of an unordered pair may still overlap (each machine lane has one row per job, so overlaps show), so the longest path, ${res.cmax} min, is a lower bound on every completion of this selection.`);
   } else {
     const gap = res.cmax - opt.best;
-    caption($("#heroStatus"), `<b>An acyclic selection: a schedule.</b> Each operation starts at the length of the longest path from α to it, which gives the semi-active schedule above, and the makespan is the longest path from α to ω: [[C_{\\max} = ${res.cmax}]] min, along ${res.crit.map(nm).join(" → ")}. ${gap === 0 ? "This is the optimum: no acyclic selection does better." : `The optimum is ${opt.best} min, ${gap} min shorter: to shorten this schedule, flip a pair on the highlighted critical path.`}`);
+    caption($("#heroStatus"), `<b>An acyclic selection: a schedule.</b> Each operation starts at the length of the longest path from 0 to it, which gives the semi-active schedule above, and the makespan is the longest path from 0 to ∗: [[C_{\\max} = ${res.cmax}]] min, along ${res.crit.map(nm).join(" → ")}. ${gap === 0 ? "This is the optimum: no acyclic selection does better." : `The optimum is ${opt.best} min, ${gap} min shorter: to shorten this schedule, flip a pair on the highlighted critical path.`}`);
   }
 }
 function heroPreset(kind) {
@@ -399,7 +399,7 @@ function drawCount() {
   $("#cPairs").textContent = c.pairs.toLocaleString("en-US");
   $("#cOr").innerHTML = "10<sup>" + c.orient.toFixed(c.orient < 100 ? 1 : 0) + "</sup>";
   $("#cOrd").innerHTML = "10<sup>" + c.orders.toFixed(1) + "</sup>";
-  caption($("#cCap"), `The first ${n} job${n > 1 ? "s" : ""} of test day 0 have ${4 * n} operations. Choosing a machine for each gives [[\\prod |\\mathcal M_{jk}| \\approx 10^{${c.assign.toFixed(1)}}]] assignments. With every operation on its fastest machine the five machines receive ${c.nm5.join(", ")} operations, hence ${c.pairs.toLocaleString("en-US")} disjunctive pairs (${c.same} more pairs share a machine but belong to one job, already ordered by its route) and [[2^{${c.pairs}} \\approx 10^{${c.orient.toFixed(c.orient < 100 ? 1 : 0)}}]] orientations. Only those that order each machine as the routes allow can be acyclic: [[\\prod_m n_m! / 2^{${c.same}} \\approx 10^{${c.orders.toFixed(1)}}]] of them. These are counts of a static problem in which every job is present at once; release times rule most of them out in the real shop, and the planner of chapter <a href="c03-rescheduling-on-a-rolling-horizon.html">C3</a> never looks at more than 25 jobs.`);
+  caption($("#cCap"), `The first ${n} job${n > 1 ? "s" : ""} of test day 0 have ${4 * n} operations: about [[10^{${c.assign.toFixed(1)}}]] assignments and, with every operation on its fastest machine, about [[10^{${c.orders.toFixed(1)}}]] orders of the machines that respect the routes. The fold below explains each count and what it leaves out.`);
 }
 $("#cN").addEventListener("input", drawCount);
 

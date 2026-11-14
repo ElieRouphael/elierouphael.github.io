@@ -17,19 +17,21 @@ description: >-
 ## What you will be able to do {#goals}
 
 1. **Write a scheduling problem down precisely**: jobs, operations, machines, constraints and an objective, in the
-   standard notation, and compute every measure of a schedule by hand.
+   standard notation, and compute every measure of a schedule by hand. Chapters [[a01]] and [[a03]].
 2. **Know when a simple rule is the best possible** (and prove it with an exchange argument), and recognise the
-   problems where no rule can be, such as total tardiness with changeovers.
+   problems where no rule can be, such as total tardiness with changeovers; then use rules as priority indices that
+   dispatch a running shop. Chapters [[a02]] and [[b02]].
 3. **Build a discrete-event simulation** of a shop with random arrivals and breakdowns, and predict its load and
-   availability before running it.
+   availability before running it. Chapter [[b01]].
 4. **Model a flexible job shop for a constraint-programming solver**, and explain how the solver finds a plan and
-   proves that no better plan exists.
+   proves that no better plan exists. Chapters [[c01]] and [[c02]].
 5. **Turn a planner into a controller** that re-plans at every disruption, and know what such a controller can and
-   cannot see.
+   cannot see. Chapter [[c03]].
 6. **Formulate dispatching as a reinforcement-learning problem**, train an agent, and understand why it may not
-   beat a good rule.
+   beat a good rule. Chapter [[d01]].
 7. **Run a benchmark that deserves to be believed**: same random days for every method, paired comparisons,
-   bootstrap intervals, untouched test data and an independent checker.
+   bootstrap intervals, untouched test data and an independent checker. Chapter [[d02]], with the results of
+   [[b02]], [[c03]] and [[d01]].
 
 ## How the chapters are built {#how}
 
