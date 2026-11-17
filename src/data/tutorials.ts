@@ -181,7 +181,7 @@ export const tutorials: Tutorial[] = [
     href: '/tutorials/jobshop-digital-twin/index.html',
     cover: {
       src: '/tutorials/jobshop-digital-twin/cover.png',
-      alt: 'Four coloured orders waiting in front of a machine with a question mark, and the result: 43 % less lateness when an optimiser re-plans the whole shop',
+      alt: 'Four hours of a simulated workshop schedule: one lane per machine, orders coloured by product family, grey colour changes between them, and hatched breakdowns',
     },
     draft: false,
   },
