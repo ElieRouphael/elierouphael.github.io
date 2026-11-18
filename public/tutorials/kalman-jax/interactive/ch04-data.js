@@ -1,8 +1,8 @@
 /* Kalman filters with JAX, chapter 04 data: the test split of the UCI Air Quality dataset (De Vito et
    al., CC BY 4.0) prepared by the repository's pipeline -- timestamps, the eight standardised sensor and
    weather inputs, the current and next-hour NO2 -- with the standardisation constants, the baselines'
-   weights and metrics, and the trained Kalman-MLP forecasters. Printed by code/ch04_numbers.py data.
-   Forecasts and metrics are recomputed live. */
+   weights and metrics, and the trained Kalman-MLP forecasters. Written by code/ch04_numbers.py data
+   with JAX 0.12.0.1, NumPy 2.5 and Optax 0.2.8 on a CPU. Forecasts and metrics are recomputed live. */
 window.KJ3 = {columns:["PT08.S1(CO)", "PT08.S2(NMHC)", "PT08.S3(NOx)", "PT08.S4(NO2)", "PT08.S5(O3)", "T", "RH", "AH"], targetMean:100.177, targetStd:41.2889, controlMean:[1110.83,981.5446,850.2822,1580.683,1034.275,21.35412,47.17671,1.139654], controlStd:[221.6824,263.7401,261.8211,304.79,385.1808,8.013521,17.69275,0.3670108],
   sizes:{train:5173,val:1107,test:1110}, persistTrainMSE:0.2361, byHour:[89.022,75.219,61.387,null,48.536,52.031,64.476,86.911,106.34,114.97,119.24,116.1,110.94,106.89,104.09,106.69,112.55,125.78,133.66,133.81,126.82,111.89,100.05,95.107],
   baselines:{"val": {"persistence": [25.2423, 18.2493], "linear": [39.1617, 29.3009], "linear_ar": [25.3438, 18.4224], "climatology": [64.2624, 51.5217]}, "test": {"persistence": [25.3927, 18.9514], "linear": [43.9197, 33.824], "linear_ar": [24.8915, 18.4464], "climatology": [63.2002, 50.2771]}},

@@ -6,7 +6,8 @@ interactive/*.js); this script only produces the two generated assets next to th
     kalman-jax-course.zip   the JAX repository's code (package, scripts, tests, README, requirements, data notes),
                             the vehicle-tracking repository (chapter 01), the C program, original and corrected (chapter 05),
                             Part I's scripts (code/j1_numbers.py ... j6_numbers.py, under part1/, with code/requirements.txt),
-                            and Part II's (code/ch01_numbers.py ..., under part2/, with the data in code/data/)
+                            and Part II's (code/ch01_numbers.py ..., under part2/, with the data in code/data/),
+                            with code/COURSE.md at the top as the map of the archive
     cover.png               preview image for the tutorials card
 
 Usage:  python scripts/build_kalman_jax_course.py [path/to/Kalman-Filter-with-JAX]
@@ -49,6 +50,7 @@ def write_zip(repo: Path) -> Path:
     """Zip the repository's code (no data CSV, no virtual environment, no git metadata)."""
     path = OUT / ZIP_NAME
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(OUT / "code" / "COURSE.md", f"{ARCHIVE_FOLDER}/COURSE.md")     # which chapter each folder belongs to
         for rel in MEMBERS:
             src = repo / rel
             if src.exists():

@@ -331,8 +331,8 @@ if DATA:
         "/* Kalman filters with JAX, chapter 04 data: the test split of the UCI Air Quality dataset (De Vito et\n"
         "   al., CC BY 4.0) prepared by the repository's pipeline -- timestamps, the eight standardised sensor and\n"
         "   weather inputs, the current and next-hour NO2 -- with the standardisation constants, the baselines'\n"
-        "   weights and metrics, and the trained Kalman-MLP forecasters. Printed by code/ch04_numbers.py data.\n"
-        "   Forecasts and metrics are recomputed live. */\n"
+        "   weights and metrics, and the trained Kalman-MLP forecasters. Written by code/ch04_numbers.py data\n"
+        "   with JAX 0.12.0.1, NumPy 2.5 and Optax 0.2.8 on a CPU. Forecasts and metrics are recomputed live. */\n"
         f"window.KJ3 = {{columns:{json.dumps(DEFAULT_INPUT_COLUMNS)}, targetMean:{g(mean_t)}, targetStd:{g(std_t, 6)}, "
         f"controlMean:{vec(cs_.mean, 7)}, controlStd:{vec(cs_.std, 7)},\n"
         f"  sizes:{{train:{len(tr['controls'])},val:{len(va['controls'])},test:{len(te['controls'])}}}, "
@@ -448,7 +448,8 @@ out("test split, mean standardised inputs:", dict(zip(DEFAULT_INPUT_COLUMNS + ["
 out(f"linear + current NO2: weight on the current NO2 {float(w_ar[8, 0]):.3f}; its share of the bias "
     f"{(1 - float(w_ar[8, 0])) * float(xbar[8]) * std_t:+.1f}, the sensor terms' {-float(np.dot(w_ar[:8, 0], xbar[:8])) * std_t - float(w_ar[9, 0]) * std_t:+.1f}")
 c4 = te["controls"][:, 3]; ah = te["controls"][:, 7]
-out(f"within the test weeks, PT08.S4(NO2) correlates {np.corrcoef(c4, truth_te)[0, 1]:.2f} with NO2 and {np.corrcoef(c4, ah)[0, 1]:.2f} with AH")
+out(f"within the test weeks, PT08.S4(NO2) correlates {np.corrcoef(c4, truth_te)[0, 1]:.2f} with NO2 (the next hour's; "
+    f"{np.corrcoef(c4, cur_te)[0, 1]:.2f} with the same hour's) and {np.corrcoef(c4, ah)[0, 1]:.2f} with AH")
 
 section("6. What would beat persistence (Part 5, exercises 2 to 4)")
 

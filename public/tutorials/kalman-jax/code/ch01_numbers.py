@@ -3,11 +3,11 @@
 
 Usage:  python ch01_numbers.py          # print everything the page quotes
         python ch01_numbers.py data     # print the page's data file, interactive/ch01-data.js
-Needs numpy; the last section also uses JAX and Optax when they are installed, and is skipped otherwise.
+Needs numpy; the last two sections also use JAX and Optax when they are installed, and are skipped otherwise.
 
 The page runs on the kalman_vehicle_tracking repository's CSV as first committed (commit adf4b35,
 data/example_data.csv), shipped next to this script as data/vehicle_example_data_original.csv. The repository
-has since regenerated its CSV with a seed, which gives different numbers; the last section prints those, the
+has since regenerated its CSV with a seed, which gives different numbers; section 10 prints those, the
 numbers a reader of the download sees. The repository's original twenty-line class is copied verbatim below so
 that the script runs alone; if the CSV is not next to it, the script reads it from GitHub at that commit.
 """
@@ -126,8 +126,9 @@ if DATA:
     sys.stdout.write(
         "/* Kalman filters with JAX, chapter 01 data: the kalman_vehicle_tracking repository's recorded simulation (data/example_data.csv,\n"
         "   1000 samples at 0.01 s: a chirp position 15 sin(t^2) with N(0, 5^2) measurement noise, and the unrelated \"true_velocity\" 2t and\n"
-        "   \"noisy_velocity\" columns), with the repository's own Kalman estimates for the page's equivalence check. */\n"
-        "window.KV = " + json.dumps(kv, separators=(",", ":")) + ";")
+        "   \"noisy_velocity\" columns), with the repository's own Kalman estimates for the page's equivalence check.\n"
+        "   Written by code/ch01_numbers.py data with NumPy 2.5 on a CPU. */\n"
+        "window.KV = " + json.dumps(kv, separators=(",", ":")) + ";\n")
     sys.exit()
 
 out("numpy", np.__version__)
@@ -363,7 +364,7 @@ try:
     import optax
 except ImportError:
     jax = None
-    out("JAX or Optax is not installed: section skipped (pip install jax optax)")
+    out("JAX or Optax is not installed: sections 13 and 14 skipped (pip install jax optax)")
 
 if jax is not None:
     out("jax", jax.__version__, "optax", optax.__version__)
@@ -451,3 +452,11 @@ if jax is not None:
     hess = np.asarray(jax.hessian(nll_jax)(theta, z64))
     out(f"Hessian of the NLL per step at the minimum, in (log sigma_a, log sigma_z): eigenvalues "
         f"{fmt(np.linalg.eigvalsh(hess), 3)}")
+
+    section("14. Exercise 5: fit the noise with Optax (the solution's 300 Adam steps, float64)")
+    # The solution's loop is section 13's: Adam(0.05) on nll_jax from (100, 1); path[299] is theta after 300 steps.
+    sa300, sz300 = path[299]
+    e300, _, y300, S300 = run_batch(zs, [q_int(sa300 ** 2)], [sz300 ** 2])
+    out(f"after 300 steps: sigma_a {sa300:.1f}, sigma_z {sz300:.3f}, NLL per step "
+        f"{float(nll_jax(jnp.log(jnp.asarray(path[299])), z64)):.4f} (numpy filter: {nll(y300, S300)[0]:.4f}); "
+        f"position RMSE {rmse(e300[0], truth):.2f} m ({rmse(e300[0], truth):.4f})")

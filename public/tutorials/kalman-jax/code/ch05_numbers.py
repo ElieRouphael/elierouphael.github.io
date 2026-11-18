@@ -61,7 +61,8 @@ u = jnp.asarray(u_np)
 # The filter, as lax.scan. The carry (y_prev, u_prev) is TD3.c's Filtre struct and the step is filtre_step().
 # current=False is the program's form, y_k = z0 y_{k-1} + K (1 - z0) u_{k-1}, with y_0 = 0;
 # current=True feeds the current sample, y_k = z0 y_{k-1} + K (1 - z0) u_k, starting at rest (y_{-1} = 0).
-def filtrage(u, log_tau, K=1.0, current=False):
+# reverse=True runs the same recursion from the last sample to the first, also starting at rest (Part 5's offline pass).
+def filtrage(u, log_tau, K=1.0, current=False, reverse=False):
     z0 = jnp.exp(-Te / jnp.exp(log_tau))
     b = K * (1 - z0)
 
@@ -70,7 +71,7 @@ def filtrage(u, log_tau, K=1.0, current=False):
         y = z0 * y_prev + b * (uk if current else u_prev)
         return (y, uk), y
 
-    _, ys = lax.scan(step, (jnp.zeros(()), jnp.zeros(())), u)
+    _, ys = lax.scan(step, (jnp.zeros(()), jnp.zeros(())), u, reverse=reverse)
     return ys
 
 
@@ -118,14 +119,14 @@ fine_tau = np.logspace(-2.5, 0.5, 3001)
 fine = {cur: np.asarray(jax.vmap(loss, in_axes=(0, None))(jnp.log(fine_tau), cur)) for cur in (False, True)}
 
 
-def argmin_tau(current):
+def argmin_tau(current, lossf=loss, grid=fine):
     """Newton's method on log tau with jax.grad, from the best point of the fine grid."""
-    g = jax.grad(loss)
+    g = jax.grad(lossf)
     h = jax.grad(g)
-    lt = jnp.log(fine_tau[np.argmin(fine[current])])
+    lt = jnp.log(fine_tau[np.argmin(grid[current])])
     for _ in range(20):
         lt = lt - g(lt, current) / h(lt, current)
-    return float(jnp.exp(lt)), float(loss(lt, current)), float(g(lt, current))
+    return float(jnp.exp(lt)), float(lossf(lt, current)), float(g(lt, current))
 
 
 OPT = {cur: argmin_tau(cur) for cur in (False, True)}
@@ -192,7 +193,7 @@ if DATA:
         "/* Kalman filters with JAX, chapter 05 data: the First-Order-Filter-using-C repository's recording (enregistrement-bruit.txt,\n"
         "   250 samples at Te = 0.01 s of a 1 Hz sine with noise), the least-squares sine fitted to it, and the outputs of the repository's\n"
         "   filtrage() compiled with gcc for several time constants, which the page checks its own filter against as it loads.\n"
-        "   Printed by code/ch05_numbers.py data. */\n"
+        "   Written by code/ch05_numbers.py data with JAX 0.12.0.1, NumPy 2.5 and gcc 13.2 for the C program on a CPU. */\n"
         f'window.KC = {{"Te":{num(Te)},"input":{vec(u_np, 4)},"clean":{vec(clean, 4)},'
         f'"fitted":{{"f":{num(F0, 3)},"amp":{num(amp, 4)},"offset":{num(offset, 4)},"resid_sd":{num(resid_sd, 4)}}},'
         '"c":{' + ",".join(f'"{k}":{vec(C_OUT[k])}' for k in C_TAUS) + "},"
@@ -300,7 +301,31 @@ out(f"the 61-point sweep of the data file: u_{{k-1}} from {sweep[False].min():.5
 out(f"Bode axis: cutoff at tau = 2 s is {1 / (4 * np.pi):.4f} Hz, at the slider's ends (tau = {10 ** 0.5:.2f} and {10 ** -2.5:.4f} s) "
     f"{1 / (2 * np.pi * 10 ** 0.5):.4f} and {1 / (2 * np.pi * 10 ** -2.5):.1f} Hz; K = 2 gives {20 * np.log10(2):.1f} dB")
 
-section("4. Back to Kalman (Part 6)")
+section("4. Offline: forwards, then backwards over the result (Part 5)")
+# The zero-phase filter: each form run over the recording, then over its own output from the last sample to the first
+# (lax.scan with reverse=True). Both passes start at rest, as filtrage() does. Scored as the causal forms are: RMSE to
+# the 4-decimal clean sine over all 250 samples, tau from the same 3001-point grid, refined by Newton's method on log tau.
+zero_phase = lambda lt, current: filtrage(filtrage(u, lt, current=current), lt, current=current, reverse=True)
+loss_zp = lambda lt, current: jnp.sqrt(jnp.mean((zero_phase(lt, current) - jnp.asarray(clean)) ** 2))
+fine_zp = {cur: np.asarray(jax.vmap(loss_zp, in_axes=(0, None))(jnp.log(fine_tau), cur)) for cur in (False, True)}
+OPT_ZP = {cur: argmin_tau(cur, loss_zp, fine_zp) for cur in (False, True)}
+rev_check = max(float(jnp.abs(filtrage(u, np.log(0.02), current=c, reverse=True)
+                              - filtrage(u[::-1], np.log(0.02), current=c)[::-1]).max()) for c in (False, True))
+out(f"reverse=True is the recursion on the flipped recording, flipped back: max difference {rev_check:.1e}")
+for cur, name in ((False, "the program's form, u_{k-1}"), (True, "fed the current sample, u_k")):
+    tau_s, e, g = OPT_ZP[cur]
+    out(f"{name}, forwards then backwards: minimum RMSE {e:.5f} ({e:.4f}) at tau = {tau_s:.5f} s ({tau_s:.3f} s, "
+        f"{tau_s / Te:.2f} samples; grid best {fine_tau[np.argmin(fine_zp[cur])]:.5f} s), {1 - e / raw:.1%} ({1 - e / raw:.0%}) below the "
+        f"recording's {raw:.5f} ({raw:.4f}); causal best {OPT[cur][1]:.5f} (dRMSE/dlog tau there {g:.1e})")
+tz = OPT_ZP[False][0]
+dz = np.abs(np.asarray(zero_phase(np.log(tz), False)) - np.asarray(zero_phase(np.log(tz), True)))
+out(f"at tau = {tz:.4f} s the two forms' offline outputs differ by up to {dz.max():.3f} at the ends and by at most "
+    f"{dz[50:N - 50].max():.1e} from sample 50 to {N - 51}: run backwards, the program's sample of delay becomes a sample "
+    f"of advance, so both are the zero-phase filter |H|^2 and differ only by where each pass starts")
+out(f"RMSE at tau = 0.02 s, forwards then backwards: u_{{k-1}} {float(loss_zp(np.log(0.02), False)):.4f}, "
+    f"u_k {float(loss_zp(np.log(0.02), True)):.4f}")
+
+section("5. Back to Kalman (Part 6)")
 for tau in (2, 0.02, OPT[True][0]):
     Kinf = 1 - np.exp(-Te / tau)
     out(f"tau = {tau:.4g} s: K_inf = 1 - z0 = {Kinf:.4f}, implied q/r = K^2/(1 - K) = {Kinf ** 2 / (1 - Kinf):.3g}, "
@@ -325,7 +350,7 @@ out(f"scalar random-walk Kalman filter at K = {Kinf:.4f}, from x = 0: max |predi
     f"{np.abs(np.array(pred) - np.asarray(filtrage(u, np.log(0.02)))).max():.1e}, "
     f"max |update - u_k form| = {np.abs(np.array(upd) - np.asarray(filtrage(u, np.log(0.02), current=True))).max():.1e}")
 
-section("5. Exercises")
+section("6. Exercises")
 tau = 0.05
 step = jnp.asarray(np.r_[np.zeros(20), np.ones(80)])
 ys = np.asarray(filtrage(step, np.log(tau)))
